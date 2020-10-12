@@ -1,11 +1,12 @@
 # The LLVM Compiler Infrastructure-clang tidy check
 
-
 This directory and its sub-directories contain source code for LLVM,
 a toolkit for the construction of highly optimized compilers,
 optimizers, and run-time environments. Added to it is the source code for a mapreduce check.
 
 The README briefly describes how to get started with building clang-tidy.
+
+This project is still being worked on and so will have some bugs
 
 ## Building clang-tidy
 
