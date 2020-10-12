@@ -12,7 +12,7 @@ This project is still being worked on and so will have some bugs
 The clang-tidy check created is called MapReduce, and will look for loops that can be parallelized. Once found, the check will suggest transforming the source code to its parallel equivalent, using GrPPI(Generic Reusable Parallel Pattern Interface).
 
 More information to GrPPI can be found here:
-*https://github.com/arcosuc3m/grppi
+* https://github.com/arcosuc3m/grppi
 
 ## Building clang-tidy
 
