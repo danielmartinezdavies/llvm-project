@@ -17,13 +17,10 @@ accurate information.
 
 This is an example work-flow and configuration to get and build the LLVM source:
 
-1. Checkout LLVM (including related sub-projects like Clang):
+1. Get the modified LLVM source code:
 
      * ``git clone https://github.com/danielmartinezdavies/llvm-project-clang-tidy-check.git``
-
-     * Or, on windows, ``git clone --config core.autocrlf=false
-    https://github.com/llvm/llvm-project.git``
-
+`
 2. Configure and build LLVM and Clang-tidy:
 
      * ``cd llvm-project``
