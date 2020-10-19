@@ -107,12 +107,18 @@ namespace clang {
                 return false;
             }
 
+            /*
+             * Returns 3 for subscript where index is integer literal less than the start value or larger than the end value of the for loop
+             * Returns 2 for subscript where index is integer literal within bounds
+             * Returns 1 for subscript where index is iterator variable
+             * Returns 0 for anything else
+             * */
             int IntegerForLoopExplorer::isValidArraySubscript(ArraySubscriptExpr *ase) {
                 if (auto *index = dyn_cast<IntegerLiteral>(
                         ase->getIdx()->IgnoreParenImpCasts())) {
                     int indexValue = index->getValue().getZExtValue();
-                    if (indexValue < start || indexValue > end) return 2;
-                    return 1;
+                    if (indexValue < start || indexValue > end) return 3;
+                    return 2;
                 }
                 if (auto *dre = dyn_cast<DeclRefExpr>(
                         ase->getIdx()->IgnoreParenImpCasts())) {
@@ -130,7 +136,7 @@ namespace clang {
             bool IntegerForLoopExplorer::addToReadArraySubscriptList(ArraySubscriptExpr *ase,
                                                                      ASTContext *context) {
 
-                if (isValidArraySubscript(ase) == 2) return false;
+                if (isValidArraySubscript(ase) == 3) return false;
                 Expr *base = ase->getBase();
                 Expr *index = ase->getIdx();
                 for (ArraySubscriptExpr *array : writeArraySubscriptList) {
@@ -203,9 +209,9 @@ namespace clang {
                         return false;
                     } else if (!isLocalVariable(
                             ArraySubscriptPointer->getDecl()->getDeclName())) {
-                        return addToWriteArraySubscriptList(BO_LHS, Context);
+                      addToWriteArraySubscriptList(BO_LHS, Context);
+                      if(isValidArraySubscript(BO_LHS) == 1) return true;
                     }
-                    return true;
                 }
                 return false;
             }
