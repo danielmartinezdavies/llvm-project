@@ -44,6 +44,10 @@ namespace clang {
                 return write;
             }
 
+            int IntegerForLoopExplorer::getArrayOffset() const{
+              return start;
+            }
+
             bool IntegerForLoopExplorer::VisitArraySubscriptExpr(ArraySubscriptExpr *ase) {
                 const DeclRefExpr *base = getPointer(ase);
                 if (base == nullptr) {
@@ -133,8 +137,7 @@ namespace clang {
                 return 0;
             }
 
-            bool IntegerForLoopExplorer::addToReadArraySubscriptList(ArraySubscriptExpr *ase,
-                                                                     ASTContext *context) {
+            bool IntegerForLoopExplorer::addToReadArraySubscriptList(ArraySubscriptExpr *ase,ASTContext *context) {
 
                 if (isValidArraySubscript(ase) == 3) return false;
                 Expr *base = ase->getBase();

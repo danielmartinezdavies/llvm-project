@@ -577,6 +577,10 @@ namespace clang {
                     return validParameterList;
                 }
 
+                virtual int getArrayOffset() const{
+                  return 0;
+                }
+
                 std::string getMapTransformation() {
                     std::string transformation;
                     std::string mapLambda = "";
@@ -631,23 +635,30 @@ namespace clang {
                                 visitingForStmtBody->getSourceRange());
 
                         transformation += "grppi::map(grppi::dynamic_execution()";
+                        //Output
                         const DeclRefExpr *output = getPointer(map.Output);
                         if (output == nullptr)
                             return "output null";
-                        transformation += ", " + output->getNameInfo().getName().getAsString();
 
+                        std::string startOffsetString = "";
+                        if(getArrayOffset() != 0) startOffsetString = " + " + std::to_string(getArrayOffset());
+                        transformation += ", std::begin(" + output->getNameInfo().getName().getAsString() + ")" + startOffsetString ;
+                        transformation += ", std::end(" + output->getNameInfo().getName().getAsString() + ")";
+                        //Input
                         if (map.Input.empty())
                             transformation += ", " + output->getNameInfo().getName().getAsString();
+
                         for (auto &input : map.Input) {
                             const DeclRefExpr *inputName = getPointer(input);
                             if (inputName == nullptr)
                                 return "input null";
                             transformation +=
-                                    ", " + inputName->getNameInfo().getName().getAsString();
+                                    ", std::begin(" + inputName->getNameInfo().getName().getAsString() + ")" + startOffsetString;
                         }
+
                         transformation += ", [](";
                         std::vector<const Expr *> uniqueElementList;
-
+                        //Parameters for lambda expression
                         for (auto &element:map.Element) {
                             const DeclRefExpr *elementVar = getPointer(element);
 
@@ -740,7 +751,10 @@ namespace clang {
 
                 const Expr *getOutput(Expr *write) override;
 
+                int getArrayOffset() const override;
+
                 bool VisitArraySubscriptExpr(ArraySubscriptExpr *ase);
+
 
             protected:
                 bool addInput(Map &map, Expr *expr);
