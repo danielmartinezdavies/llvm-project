@@ -619,7 +619,7 @@ namespace clang {
                         rewriter.RemoveText(SourceRange(currentRange));
                         offset -= rewriter.getRangeSize(currentRange);
                         for (const auto *read:map.Element) {
-
+                            //TODO:Fix for container
                             const DeclRefExpr *elem = getPointer(read);
                             if (elem != nullptr) {
                                 currentRange = SourceRange(read->getSourceRange());
@@ -652,13 +652,16 @@ namespace clang {
                             const DeclRefExpr *inputName = getPointer(input);
                             if (inputName == nullptr)
                                 return "input null";
+
                             transformation +=
                                     ", std::begin(" + inputName->getNameInfo().getName().getAsString() + ")" + startOffsetString;
                         }
 
                         transformation += ", [](";
                         std::vector<const Expr *> uniqueElementList;
+
                         //Parameters for lambda expression
+                        //Get elements once
                         for (auto &element:map.Element) {
                             const DeclRefExpr *elementVar = getPointer(element);
 
@@ -677,6 +680,7 @@ namespace clang {
                             }
 
                         }
+                        //Place as parameters
                         int numElem = 0;
                         for (auto &element:uniqueElementList) {
                             if (numElem != 0) {

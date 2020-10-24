@@ -56,19 +56,19 @@ namespace clang {
                     parallelizable = false;
                     return true;
                 }
-                std::cout << "Type: " << ase->getType().getAsString() << std::endl;
 
                 if (!base->getType()->isArrayType()) {
                     PointerHasValidLastValue((VarDecl *) base->getDecl(), ase);
                 }
 
-                const auto PointerDereferences =
+                //TODO: check if can remove
+                /*const auto PointerDereferences =
                         match(findAll(expr(anyOf(
                                 arraySubscriptExpr(
                                         hasAncestor(forStmt(hasDescendant(equalsNode(visitingForStmtBody))))),
                                 unaryOperator(hasOperatorName("*"),
                                               hasAncestor(forStmt(equalsNode(visitingForStmtBody))))
-                        )).bind("pointer")), *Context);
+                        )).bind("pointer")), *Context);*/
 
                 bool isInput = addToReadArraySubscriptList(ase, Context);
                 if (isInput) {
