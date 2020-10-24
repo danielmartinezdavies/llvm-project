@@ -64,6 +64,20 @@ namespace clang {
                 }
             }
 
+            class CustomArray{
+            public:
+              CustomArray(Expr *base, Expr *index, Expr *original)
+                  : base(base), index(index), original(original) {}
+              Expr *getBase() const { return base; }
+              Expr *getIndex() const { return index; }
+              Expr *getOriginal() const { return original; }
+
+            private:
+              Expr* base;
+              Expr* index;
+              Expr* original;
+            };
+
             class MapReduceCheck : public ClangTidyCheck {
             public:
                 MapReduceCheck(StringRef name, ClangTidyContext *context)
@@ -415,6 +429,11 @@ namespace clang {
                     } else if (const auto *UO =
                             dyn_cast<UnaryOperator>(S->IgnoreParenImpCasts())) {
                         return getPointer(UO->getSubExpr());
+                    }else if (const auto *OO =
+                        dyn_cast<CXXOperatorCallExpr>(S->IgnoreParenImpCasts())) {
+                      if(OO->getOperator() == OO_Subscript){
+                        return getPointer(OO->getArg(0));
+                      }
                     }
                     return nullptr;
                 }
@@ -738,8 +757,8 @@ namespace clang {
 
             class IntegerForLoopExplorer : public LoopExplorer<IntegerForLoopExplorer> {
             private:
-                std::vector<ArraySubscriptExpr *> readArraySubscriptList;
-                std::vector<ArraySubscriptExpr *> writeArraySubscriptList;
+                std::vector<CustomArray> readArraySubscriptList;
+                std::vector<CustomArray> writeArraySubscriptList;
 
                 int start = 0, end = 0;
             public:
@@ -760,20 +779,23 @@ namespace clang {
 
                 const Expr *getOutput(Expr *write) override;
 
+                bool HandleArrayMapAssignment(CustomArray);
+
                 int getArrayBeginOffset() const override;
                 std::string getArrayEndString() const override;
                 int getArrayEndOffset() const override;
 
+                bool VisitArray(CustomArray);
               bool VisitArraySubscriptExpr(ArraySubscriptExpr *ase);
+              bool VisitCXXOperatorCallExpr(CXXOperatorCallExpr *OO);
 
 
             protected:
                 bool addInput(Map &map, Expr *expr);
                 //Check if arraysubscript is integer literal or iterator. If integer literal, return 2 if out of range. Else if valid, return 1
-                int isValidArraySubscript(ArraySubscriptExpr *ase);
-                bool addToReadArraySubscriptList(ArraySubscriptExpr *ase, ASTContext *context);
-                bool addToWriteArraySubscriptList(ArraySubscriptExpr *ase,
-                                                  ASTContext *context);
+                int isValidArraySubscript(CustomArray);
+                bool addToReadArraySubscriptList(CustomArray, ASTContext *context);
+                bool addToWriteArraySubscriptList(CustomArray,ASTContext *context);
                 bool isMapAssignment(Expr *write) override;
 
 

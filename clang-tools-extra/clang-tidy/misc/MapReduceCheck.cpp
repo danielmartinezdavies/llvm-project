@@ -54,51 +54,56 @@ namespace clang {
               return end+1;
             }
 
-            bool IntegerForLoopExplorer::VisitArraySubscriptExpr(ArraySubscriptExpr *ase) {
-                const DeclRefExpr *base = getPointer(ase);
-                if (base == nullptr) {
-                    Check.diag(ase->getBeginLoc(),
-                               "Pointer is invalid");
-                    parallelizable = false;
-                    return true;
-                }
-
-                if (!base->getType()->isArrayType()) {
-                    PointerHasValidLastValue((VarDecl *) base->getDecl(), ase);
-                }
-
-                //TODO: check if can remove
-                /*const auto PointerDereferences =
-                        match(findAll(expr(anyOf(
-                                arraySubscriptExpr(
-                                        hasAncestor(forStmt(hasDescendant(equalsNode(visitingForStmtBody))))),
-                                unaryOperator(hasOperatorName("*"),
-                                              hasAncestor(forStmt(equalsNode(visitingForStmtBody))))
-                        )).bind("pointer")), *Context);*/
-
-                bool isInput = addToReadArraySubscriptList(ase, Context);
-                if (isInput) {
-                    //add Input and Element for possible future map
-                    if (!MapList.empty()) {
-                        Map &currentMap = MapList[MapList.size() - 1];
-                        //Dont add element to placeholder if it is inside of current map
-                        if (!currentMap.isWithin(ase, Context)) {
-                            placeHolderMap.Element.push_back(ase);
-                            addInput(placeHolderMap, ase);
-                        }
-                        //add Input and Element for current maps if possible
-                        bool addedElem = currentMap.addElement(ase, Context);
-                        if (addedElem) {
-                            addInput(currentMap, ase);
-                        }
-                    } else {
-                        placeHolderMap.Element.push_back(ase);
-                        addInput(placeHolderMap, ase);
-                    }
-
-
-                }
+          bool IntegerForLoopExplorer::VisitArray(CustomArray array){
+            const DeclRefExpr *base = getPointer(array.getOriginal());
+            if(isa<ArraySubscriptExpr>(array.getOriginal())){
+              //if regular arraysubsript expression, check for valid pointer
+              if (base == nullptr) {
+                Check.diag(array.getOriginal()->getBeginLoc(),
+                           "Pointer is invalid");
+                parallelizable = false;
                 return true;
+              }
+              if (!base->getType()->isArrayType()) {
+                PointerHasValidLastValue((VarDecl *) base->getDecl(), array.getOriginal());
+              }
+            }
+
+
+            bool isInput = addToReadArraySubscriptList(array, Context);
+            if (isInput) {
+              //add Input and Element for possible future map
+              if (!MapList.empty()) {
+                Map &currentMap = MapList[MapList.size() - 1];
+                //Dont add element to placeholder if it is inside of current map
+                if (!currentMap.isWithin(array.getOriginal(), Context)) {
+                  placeHolderMap.Element.push_back(array.getOriginal());
+                  addInput(placeHolderMap, array.getOriginal());
+                }
+                //add Input and Element for current maps if possible
+                bool addedElem = currentMap.addElement(array.getOriginal(), Context);
+                if (addedElem) {
+                  addInput(currentMap, array.getOriginal());
+                }
+              } else {
+                placeHolderMap.Element.push_back(array.getOriginal());
+                addInput(placeHolderMap, array.getOriginal());
+              }
+            }
+            return true;
+          }
+
+            bool IntegerForLoopExplorer::VisitArraySubscriptExpr(ArraySubscriptExpr *ase) {
+               CustomArray array(ase->getBase(), ase->getIdx(), ase);
+               return VisitArray(array);
+            }
+
+            bool IntegerForLoopExplorer::VisitCXXOperatorCallExpr(CXXOperatorCallExpr *OO){
+              if(OO->getOperator() == OO_Subscript){
+                CustomArray array(OO->getArg(0), OO->getArg(1), OO);
+                return VisitArray(array);
+              }
+              return true;
             }
 
             bool IntegerForLoopExplorer::addInput(Map &map, Expr *expr) {
@@ -123,61 +128,63 @@ namespace clang {
              * Returns 1 for subscript where index is iterator variable
              * Returns 0 for anything else
              * */
-            int IntegerForLoopExplorer::isValidArraySubscript(ArraySubscriptExpr *ase) {
+            int IntegerForLoopExplorer::isValidArraySubscript(CustomArray array) {
                 if (auto *index = dyn_cast<IntegerLiteral>(
-                        ase->getIdx()->IgnoreParenImpCasts())) {
+                        array.getIndex()->IgnoreParenImpCasts())) {
                     int indexValue = index->getValue().getZExtValue();
                     if (indexValue < start || indexValue > end) return 3;
                     return 2;
                 }
                 if (auto *dre = dyn_cast<DeclRefExpr>(
-                        ase->getIdx()->IgnoreParenImpCasts())) {
+                        array.getIndex()->IgnoreParenImpCasts())) {
                     if (dre->getDecl() == iterator_variable) {
 
                         return 1;
                     }
                 }
                 parallelizable = false;
-                Check.diag(ase->getBeginLoc(),
+                Check.diag(array.getOriginal()->getBeginLoc(),
                            "Pointer has invalid subscript");
                 return 0;
             }
 
-            bool IntegerForLoopExplorer::addToReadArraySubscriptList(ArraySubscriptExpr *ase,ASTContext *context) {
+            bool IntegerForLoopExplorer::addToReadArraySubscriptList(CustomArray array,ASTContext *context) {
 
-                if (isValidArraySubscript(ase) == 3) return false;
-                Expr *base = ase->getBase();
-                Expr *index = ase->getIdx();
-                for (ArraySubscriptExpr *array : writeArraySubscriptList) {
-                    if (Functions::areSameExpr(context, array->getBase(), base)) {
-                        if (!Functions::areSameExpr(context, array->getIdx(), index)) {
-                            Check.diag(ase->getBeginLoc(),
+                if (isValidArraySubscript(array) == 3) return false;
+                Expr *base = array.getBase();
+                Expr *index = array.getIndex();
+                for (CustomArray write_array : writeArraySubscriptList) {
+                    if (Functions::areSameExpr(context, write_array.getBase(), base)) {
+                        if (!Functions::areSameExpr(context, write_array.getIndex(), index)) {
+                            Check.diag(
+                              write_array.getIndex()->getBeginLoc(),
                                        "Inconsistent array subscription makes for loop "
                                        "parallelization unsafe");
                             parallelizable = false;
                             return false;
                         } else {
                             // read is actually write
-                            if (ase->getSourceRange() == array->getSourceRange()) {
+                            if (array.getOriginal()->getSourceRange() == write_array.getOriginal()->getSourceRange()) {
                                 return false;
                             }
                         }
                     }
                 }
-                readArraySubscriptList.push_back(ase);
+                readArraySubscriptList.push_back(array);
                 return true;
             }
 
-            bool IntegerForLoopExplorer::addToWriteArraySubscriptList(ArraySubscriptExpr *ase,
+            bool IntegerForLoopExplorer::addToWriteArraySubscriptList(CustomArray array,
                                                                       ASTContext *context) {
-                if (isValidArraySubscript(ase) == 2) return false;
-                Expr *base = ase->getBase();
-                Expr *index = ase->getIdx();
+                if (isValidArraySubscript(array) == 2) return false;
+                Expr *base = array.getBase();
+                Expr *index = array.getIndex();
 
-                for (ArraySubscriptExpr *array : readArraySubscriptList) {
-                    if (Functions::areSameExpr(context, array->getBase(), base)) {
-                        if (!Functions::areSameExpr(context, array->getIdx(), index)) {
-                            Check.diag(ase->getBeginLoc(),
+                for (CustomArray read_array : readArraySubscriptList) {
+                    if (Functions::areSameExpr(context, read_array.getBase(), base)) {
+                        if (!Functions::areSameExpr(context, read_array.getIndex(), index)) {
+                            Check.diag(
+                              array.getOriginal()->getBeginLoc(),
                                        "Inconsistent array subscription makes for loop "
                                        "parallelization unsafe");
                             parallelizable = false;
@@ -186,10 +193,11 @@ namespace clang {
                     }
                 }
 
-                for (ArraySubscriptExpr *array : writeArraySubscriptList) {
-                    if (Functions::areSameExpr(context, array->getBase(), base)) {
-                        if (!Functions::areSameExpr(context, array->getIdx(), index)) {
-                            Check.diag(ase->getBeginLoc(),
+                for (CustomArray write_array : writeArraySubscriptList) {
+                    if (Functions::areSameExpr(context, write_array.getBase(), base)) {
+                        if (!Functions::areSameExpr(context, write_array.getIndex(), index)) {
+                            Check.diag(
+                              write_array.getOriginal()->getBeginLoc(),
                                        "Inconsistent array subscription makes for loop "
                                        "parallelization unsafe");
                             parallelizable = false;
@@ -202,26 +210,38 @@ namespace clang {
                     }
                 }
 
-                writeArraySubscriptList.push_back(ase);
+                writeArraySubscriptList.push_back(array);
                 return true;
+            }
+
+            bool IntegerForLoopExplorer::HandleArrayMapAssignment(CustomArray array){
+              // if not a local subscript to local array, make sure it is a valid write
+              const DeclRefExpr *ArraySubscriptPointer = getPointer(array.getOriginal());
+              if (ArraySubscriptPointer == nullptr) {
+                Check.diag(array.getOriginal()->getBeginLoc(),
+                           "Write to pointer subscript too complex to analyze makes "
+                           "loop parallelization unsafe");
+                parallelizable = false;
+                return false;
+              } else if (!isLocalVariable(
+                  ArraySubscriptPointer->getDecl()->getDeclName())) {
+                addToWriteArraySubscriptList(array, Context);
+                if(isValidArraySubscript(array) == 1) return true;
+              }
+              return false;
             }
 
             bool IntegerForLoopExplorer::isMapAssignment(Expr *write) {
                 if (auto *BO_LHS = dyn_cast<ArraySubscriptExpr>(write)) {
-                    // if not a local subscript to local array, make sure it is a valid write
-                    const DeclRefExpr *ArraySubscriptPointer = getPointer(BO_LHS);
-                    if (ArraySubscriptPointer == nullptr) {
-                        Check.diag(write->getBeginLoc(),
-                                   "Write to pointer subscript too complex to analyze makes "
-                                   "loop parallelization unsafe");
-                        parallelizable = false;
-                        return false;
-                    } else if (!isLocalVariable(
-                            ArraySubscriptPointer->getDecl()->getDeclName())) {
-                      addToWriteArraySubscriptList(BO_LHS, Context);
-                      if(isValidArraySubscript(BO_LHS) == 1) return true;
-                    }
+                    CustomArray a(BO_LHS->getBase(), BO_LHS->getIdx(), BO_LHS);
+                    return HandleArrayMapAssignment(a);
                 }
+                if (auto *OO = dyn_cast<CXXOperatorCallExpr>(write)) {
+                  if(OO->getOperator() == OO_Subscript){
+                    CustomArray a(OO->getArg(0), OO->getArg(1), OO);
+                    return HandleArrayMapAssignment(a);
+                  }
+              }
                 return false;
             }
 
@@ -250,6 +270,7 @@ namespace clang {
             }
 
             DeclRefExpr *ContainerForLoopExplorer::isValidDereference(Expr *expr) {
+              //TODO: include for C style arrays
                 if (auto *OO = dyn_cast<CXXOperatorCallExpr>(expr->IgnoreParenImpCasts())) {
                     if (OO->getOperator() == OO_Star) {
                         if (auto *dre = dyn_cast<DeclRefExpr>(OO->getArg(0)->IgnoreParenImpCasts())) {
@@ -512,7 +533,8 @@ namespace clang {
                 */
             }
 
-        } // namespace misc
+
+            } // namespace misc
     } // namespace tidy
 } // namespace clang
 
