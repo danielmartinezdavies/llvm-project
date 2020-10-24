@@ -619,7 +619,7 @@ namespace clang {
                         rewriter.RemoveText(SourceRange(currentRange));
                         offset -= rewriter.getRangeSize(currentRange);
                         for (const auto *read:map.Element) {
-                            //TODO:Fix for container
+
                             const DeclRefExpr *elem = getPointer(read);
                             if (elem != nullptr) {
                                 currentRange = SourceRange(read->getSourceRange());
@@ -646,22 +646,19 @@ namespace clang {
                         transformation += ", std::end(" + output->getNameInfo().getName().getAsString() + ")";
                         //Input
                         if (map.Input.empty())
-                            transformation += ", " + output->getNameInfo().getName().getAsString();
+                            transformation += ", std::begin(" + output->getNameInfo().getName().getAsString() + ")";
 
                         for (auto &input : map.Input) {
                             const DeclRefExpr *inputName = getPointer(input);
                             if (inputName == nullptr)
                                 return "input null";
-
                             transformation +=
                                     ", std::begin(" + inputName->getNameInfo().getName().getAsString() + ")" + startOffsetString;
                         }
 
                         transformation += ", [](";
                         std::vector<const Expr *> uniqueElementList;
-
                         //Parameters for lambda expression
-                        //Get elements once
                         for (auto &element:map.Element) {
                             const DeclRefExpr *elementVar = getPointer(element);
 
@@ -680,7 +677,6 @@ namespace clang {
                             }
 
                         }
-                        //Place as parameters
                         int numElem = 0;
                         for (auto &element:uniqueElementList) {
                             if (numElem != 0) {
@@ -696,7 +692,7 @@ namespace clang {
                             numElem++;
                         }
 
-                        transformation += ")" + mapLambda + ")};\n";
+                        transformation += ")" + mapLambda + "});\n";
                         PastMapList.push_back(map);
                     }
                     transformation.erase(
