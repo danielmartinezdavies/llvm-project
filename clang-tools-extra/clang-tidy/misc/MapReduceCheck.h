@@ -207,7 +207,10 @@ namespace clang {
                     if (!VD->hasGlobalStorage() && !VD->getType()->isReferenceType()) {
                         localVariables.push_back(VD->getDeclName());
                     }
-                    auto *temp = VD->getParentFunctionOrMethod();
+                    if(VD->getName().startswith(Map::startElement)){
+                      parallelizable = false;
+                    }
+                    /*auto *temp = VD->getParentFunctionOrMethod();
                     if (temp != nullptr) {
                         if (auto *Class = dyn_cast<CXXRecordDecl>(temp)) {
                             std::cout << Lexer::getSourceText(
@@ -216,7 +219,7 @@ namespace clang {
                                     Context->getSourceManager(), LangOptions())
                                     .str();
                         }
-                    }
+                    }*/
                     return true;
                 }
 
