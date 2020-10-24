@@ -577,7 +577,13 @@ namespace clang {
                     return validParameterList;
                 }
 
-                virtual int getArrayOffset() const{
+                virtual int getArrayBeginOffset() const{
+                  return 0;
+                }
+                virtual std::string getArrayEndString() const{
+                  return "std::end(";
+                }
+                virtual int getArrayEndOffset() const{
                   return 0;
                 }
 
@@ -641,9 +647,12 @@ namespace clang {
                             return "output null";
 
                         std::string startOffsetString = "";
-                        if(getArrayOffset() != 0) startOffsetString = " + " + std::to_string(getArrayOffset());
+                        if(getArrayBeginOffset() != 0) startOffsetString = " + " + std::to_string(getArrayBeginOffset());
                         transformation += ", std::begin(" + output->getNameInfo().getName().getAsString() + ")" + startOffsetString ;
-                        transformation += ", std::end(" + output->getNameInfo().getName().getAsString() + ")";
+
+                        std::string endOffsetString = "";
+                        if(getArrayEndOffset() != 0) endOffsetString = " + " + std::to_string(getArrayEndOffset());
+                        transformation += ", "+ getArrayEndString() + output->getNameInfo().getName().getAsString() + ")" + endOffsetString;
                         //Input
                         if (map.Input.empty())
                             transformation += ", std::begin(" + output->getNameInfo().getName().getAsString() + ")";
@@ -751,9 +760,11 @@ namespace clang {
 
                 const Expr *getOutput(Expr *write) override;
 
-                int getArrayOffset() const override;
+                int getArrayBeginOffset() const override;
+                std::string getArrayEndString() const override;
+                int getArrayEndOffset() const override;
 
-                bool VisitArraySubscriptExpr(ArraySubscriptExpr *ase);
+              bool VisitArraySubscriptExpr(ArraySubscriptExpr *ase);
 
 
             protected:

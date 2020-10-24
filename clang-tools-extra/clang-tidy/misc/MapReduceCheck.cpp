@@ -44,8 +44,14 @@ namespace clang {
                 return write;
             }
 
-            int IntegerForLoopExplorer::getArrayOffset() const{
+            int IntegerForLoopExplorer::getArrayBeginOffset() const{
               return start;
+            }
+            std::string IntegerForLoopExplorer::getArrayEndString() const{
+              return "std::begin(";
+            }
+            int IntegerForLoopExplorer::getArrayEndOffset() const{
+              return end+1;
             }
 
             bool IntegerForLoopExplorer::VisitArraySubscriptExpr(ArraySubscriptExpr *ase) {
