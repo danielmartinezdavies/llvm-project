@@ -455,6 +455,74 @@ namespace clang {
 					return nullptr;
 				}
 
+				// Auxiliary Functions
+				/*
+				 * Takes as first parameter the declaration of the pointer
+				 * Takes as second parameter the expression where the pointer is used for outputting error message
+				 *
+				 * */
+				bool PointerHasValidLastValue(VarDecl *pointerVarDecl, const Expr *expr) {
+
+					if (!this->hasElement<DeclarationName>(exploredPointers,
+														   pointerVarDecl->getDeclName())) {
+						exploredPointers.push_back(pointerVarDecl->getDeclName());
+						if (!pointerVarDecl->hasGlobalStorage()) {
+
+							const auto hasValidPointerAssignment = [] {
+								return cxxNewExpr();
+							};
+							bool hasValidInit = false;
+							if (pointerVarDecl->hasInit()) {
+								hasValidInit = true;
+								const auto validInit = match(findAll(varDecl(equalsNode(pointerVarDecl), hasInitializer(
+										hasValidPointerAssignment()))), *Context);
+								if (validInit.size() == 0) hasValidInit = false;
+							}
+							if (!hasValidInit) {
+								Check.diag(expr->getBeginLoc(),
+										   "Pointer has invalid initialization");
+								parallelizable = false;
+							}
+							if (auto *functionDecl = dyn_cast<FunctionDecl>(
+									pointerVarDecl->getParentFunctionOrMethod())) {
+								//
+
+								const auto isVariable = [](VarDecl *VD) {
+									return ignoringImpCasts(declRefExpr(to(varDecl(equalsNode(VD)))));
+								};
+								const auto invalidAssignments =
+//                                        match(findAll(
+//                                                binaryOperator(isAssignmentOperator(),
+//                                                        hasLHS(equalsNode(write)), unless(hasRHS(hasValidPointerAssignment())))),*Context);
+//*/
+										match(findAll(stmt(anyOf(
+												binaryOperator(
+														hasLHS(isVariable(pointerVarDecl)),
+														unless(hasRHS(hasValidPointerAssignment()))),
+												unaryOperator(hasUnaryOperand(isVariable(pointerVarDecl)),
+															  hasAnyOperatorName("++", "--"))
+
+										))), *Context);
+
+
+								if (invalidAssignments.size() > 0) {
+									Check.diag(expr->getBeginLoc(),
+											   "Pointer points to potentially unsafe memory space");
+									parallelizable = false;
+									return false;
+								}
+							}
+						} else {
+							Check.diag(expr->getBeginLoc(),
+									   "Global pointer makes parallelization unsafe");
+							parallelizable = false;
+							return false;
+						}
+						return true;
+					}
+					return true;
+				}
+
 				bool isParallelizable() { return parallelizable; }
 
 				bool isMapPattern() { return !MapList.empty(); }
@@ -621,43 +689,54 @@ namespace clang {
 						if (getArrayEndOffset() != 0) endOffsetString = " + " + std::to_string(getArrayEndOffset());
 
 						if (map.Input.empty()){
-							std::string cast = "";
-							if(output->getType()->isArrayType()){
-								std::string type = output->getType()->getAsArrayTypeUnsafe()->getElementType().getAsString();
-								cast+="(std::vector<" + type +">::iterator) ";
-							}
-							transformation += ", " + cast + "std::begin(" + output->getNameInfo().getName().getAsString() + ")"+startOffsetString;
-							transformation += ", " + cast + getArrayEndString() + output->getNameInfo().getName().getAsString() + ")" +
-									endOffsetString;
+							map.Input.push_back(map.Output);
 						}
 
-
+						std::string begin = "";
+						std::string close_begin = "";
+						std::string end = "";
 						for (auto &input : map.Input) {
 							const DeclRefExpr *inputName = getPointer(input);
 							if (inputName == nullptr)
 								return "input null";
 							std::string cast = "";
-							if(inputName->getType()->isArrayType()){
+
+							//if pointer
+							if(inputName->getType()->isPointerType()){
+								std::string type = inputName->getType()->getPointeeType().getAsString();
+								cast+="(std::vector<" + type + ">::iterator) ";
+							}
+
+							else if(inputName->getType()->isArrayType()){
 								std::string type = inputName->getType()->getAsArrayTypeUnsafe()->getElementType().getAsString();
 								cast+="(std::vector<" + type + ">::iterator) ";
 							}
-							transformation +=
-									", " + cast + "std::begin(" + inputName->getNameInfo().getName().getAsString() + ")" +
-									startOffsetString;
-							transformation +=
-									", " + cast + getArrayEndString() + inputName->getNameInfo().getName().getAsString() + ")" +
-									endOffsetString;
+							if(!inputName->getType()->isPointerType()){
+								begin = "std::begin(";
+								close_begin = ")";
+								end = getArrayEndString();
+							}
+
+								transformation +=
+										", " + cast + begin + inputName->getNameInfo().getName().getAsString() + close_begin +
+										startOffsetString;
+								transformation +=
+										", " + cast + end + inputName->getNameInfo().getName().getAsString()+ close_begin  +
+										endOffsetString;
+
+
 						}
 
 						//Output
 						if (output == nullptr)
 							return "output null";
 
-						transformation += ", std::begin(" + output->getNameInfo().getName().getAsString() + ")" +
+						transformation += ", "+ begin + output->getNameInfo().getName().getAsString() + close_begin +
 										  startOffsetString;
 
 						transformation += ", [](";
 						std::vector<const Expr *> uniqueElementList;
+
 						//Parameters for lambda expression
 						if (map.Element.empty()) {
 							transformation += "auto " + Map::startElement;
