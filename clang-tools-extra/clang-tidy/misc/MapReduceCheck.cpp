@@ -65,7 +65,9 @@ namespace clang {
                 return true;
               }
               if (!base->getType()->isArrayType()) {
-                PointerHasValidLastValue((VarDecl *) base->getDecl(), array.getOriginal());
+				  Check.diag(array.getOriginal()->getBeginLoc(),
+							 "Pointer is invalid");
+              	parallelizable = false;
               }
             }
 
