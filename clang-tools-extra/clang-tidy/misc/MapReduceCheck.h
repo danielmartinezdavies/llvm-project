@@ -689,8 +689,13 @@ namespace clang {
 						if (getArrayEndOffset() != 0) endOffsetString = " + " + std::to_string(getArrayEndOffset());
 
 						if (map.Input.empty()){
-							transformation += ", std::begin(" + output->getNameInfo().getName().getAsString() + ")"+startOffsetString;
-							transformation += ", " + getArrayEndString() + output->getNameInfo().getName().getAsString() + ")" +
+							std::string cast = "";
+							if(output->getType()->isArrayType()){
+								std::string type = output->getType()->getAsArrayTypeUnsafe()->getElementType().getAsString();
+								cast+="(std::vector<" + type +">::iterator) ";
+							}
+							transformation += ", " + cast + "std::begin(" + output->getNameInfo().getName().getAsString() + ")"+startOffsetString;
+							transformation += ", " + cast + getArrayEndString() + output->getNameInfo().getName().getAsString() + ")" +
 									endOffsetString;
 						}
 
@@ -699,11 +704,16 @@ namespace clang {
 							const DeclRefExpr *inputName = getPointer(input);
 							if (inputName == nullptr)
 								return "input null";
+							std::string cast = "";
+							if(inputName->getType()->isArrayType()){
+								std::string type = inputName->getType()->getAsArrayTypeUnsafe()->getElementType().getAsString();
+								cast+="(std::vector<" + type + ">::iterator) ";
+							}
 							transformation +=
-									", std::begin(" + inputName->getNameInfo().getName().getAsString() + ")" +
+									", " + cast + "std::begin(" + inputName->getNameInfo().getName().getAsString() + ")" +
 									startOffsetString;
 							transformation +=
-									", " + getArrayEndString() + inputName->getNameInfo().getName().getAsString() + ")" +
+									", " + cast + getArrayEndString() + inputName->getNameInfo().getName().getAsString() + ")" +
 									endOffsetString;
 						}
 
