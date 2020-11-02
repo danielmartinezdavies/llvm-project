@@ -681,7 +681,6 @@ namespace clang {
 						transformation += "grppi::map(grppi::dynamic_execution()";
 
 						//Input
-						const DeclRefExpr *output = getPointer(map.Output);
 						std::string startOffsetString = "";
 						if (getArrayBeginOffset() != 0)
 							startOffsetString = " + " + std::to_string(getArrayBeginOffset());
@@ -692,47 +691,40 @@ namespace clang {
 							map.Input.push_back(map.Output);
 						}
 
-						std::string begin = "";
-						std::string close_begin = "";
-						std::string end = "";
+						std::string add_comma = ", ";
+
+						//if more than one input, put it in a tuple
+						if(map.Input.size()>1){
+							transformation += ", std::make_tuple( ";
+							add_comma = "";
+						}
 						for (auto &input : map.Input) {
 							const DeclRefExpr *inputName = getPointer(input);
-							if (inputName == nullptr)
-								return "input null";
-							std::string cast = "";
+							if (inputName == nullptr) return "input null";
 
-							//if pointer
-							if(inputName->getType()->isPointerType()){
-								std::string type = inputName->getType()->getPointeeType().getAsString();
-								cast+="(std::vector<" + type + ">::iterator) ";
-							}
-
-							else if(inputName->getType()->isArrayType()){
-								std::string type = inputName->getType()->getAsArrayTypeUnsafe()->getElementType().getAsString();
-								cast+="(std::vector<" + type + ">::iterator) ";
-							}
-							if(!inputName->getType()->isPointerType()){
-								begin = "std::begin(";
-								close_begin = ")";
-								end = getArrayEndString();
-							}
-
-								transformation +=
-										", " + cast + begin + inputName->getNameInfo().getName().getAsString() + close_begin +
-										startOffsetString;
-								transformation +=
-										", " + cast + end + inputName->getNameInfo().getName().getAsString()+ close_begin  +
-										endOffsetString;
-
-
+							transformation += add_comma + getCastTransformation(inputName) + getBeginInputTransformation(inputName) +
+										inputName->getNameInfo().getName().getAsString()
+										+ getCloseBeginInputTransformation(inputName) + startOffsetString;
+							add_comma = ", ";
 						}
+						if(map.Input.size()>1){
+							transformation += ")";
+						}
+						//End iterator of input
+						const Expr* input = map.Input[0];
+						const DeclRefExpr *inputName = getPointer(input);
+						transformation +=
+								", " + getCastTransformation(inputName) + getEndInputTransformation(inputName) + inputName->getNameInfo().getName().getAsString()
+								+ getCloseBeginInputTransformation(inputName)  + endOffsetString;
+
 
 						//Output
+						const DeclRefExpr *output = getPointer(map.Output);
 						if (output == nullptr)
 							return "output null";
 
-						transformation += ", "+ begin + output->getNameInfo().getName().getAsString() + close_begin +
-										  startOffsetString;
+						transformation += ", "+ getBeginInputTransformation(output) + output->getNameInfo().getName().getAsString()
+								+ getCloseBeginInputTransformation(output) + startOffsetString;
 
 						transformation += ", [=](";
 						std::vector<const Expr *> uniqueElementList;
@@ -768,8 +760,7 @@ namespace clang {
 							const DeclRefExpr *name = getPointer(element);
 							if (name == nullptr) parallelizable = false;
 							else {
-								transformation += /*element->getType().getAsString()*/ +"auto " + Map::startElement +
-																					   name->getNameInfo().getName().getAsString();
+								transformation += "auto " + Map::startElement + name->getNameInfo().getName().getAsString();
 							}
 
 							numElem++;
@@ -782,6 +773,52 @@ namespace clang {
 							std::remove(transformation.begin(), transformation.end(), '\n'),
 							transformation.end());
 					return transformation;
+				}
+				/*
+				 * Gets beginning iterator for inputs that are not pointers
+				 *
+				 * */
+				std::string getBeginInputTransformation(const DeclRefExpr* expr){
+					if(!expr->getType()->isPointerType()){
+						return "std::begin(";
+					}
+					return "";
+				}
+				/*
+				 * Closes parenthesis for inputs that require it
+				 * */
+				std::string getCloseBeginInputTransformation(const DeclRefExpr* expr){
+					if(!expr->getType()->isPointerType()){
+						return ")";
+					}
+					return "";
+				}
+				/*
+				 * Gets back iterator for input
+				 * Integer for loops have their own ending
+				 **/
+				std::string getEndInputTransformation(const DeclRefExpr* expr){
+					if(!expr->getType()->isPointerType()){
+						return getArrayEndString();
+					}
+					return "";
+				}
+				/*
+				 * Get cast to turn into an iterator
+				 * Cast for pointers and C style arrays
+				 * A vector or containter like variable does not need a cast, so an empty string is returned
+				 * */
+				std::string getCastTransformation(const DeclRefExpr* expr){
+					if(expr->getType()->isPointerType()){
+						std::string type = expr->getType()->getPointeeType().getAsString();
+						return "(std::vector<" + type + ">::iterator) ";
+					}
+
+					else if(expr->getType()->isArrayType()){
+						std::string type = expr->getType()->getAsArrayTypeUnsafe()->getElementType().getAsString();
+						return "(std::vector<" + type + ">::iterator) ";
+					}
+					return "";
 				}
 
 
