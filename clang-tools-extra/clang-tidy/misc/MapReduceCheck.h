@@ -734,7 +734,7 @@ namespace clang {
 						transformation += ", "+ begin + output->getNameInfo().getName().getAsString() + close_begin +
 										  startOffsetString;
 
-						transformation += ", [](";
+						transformation += ", [=](";
 						std::vector<const Expr *> uniqueElementList;
 
 						//Parameters for lambda expression
