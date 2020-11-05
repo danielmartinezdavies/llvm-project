@@ -643,23 +643,24 @@ namespace clang {
 					BeforeThanCompare<SourceLocation> isBefore(SM);
 
 					std::vector<Map> PastMapList;
-					for (auto &map : MapList) {
+					for (std::vector<Map>::iterator map = MapList.begin(); map != MapList.end(); map++) {
 						Rewriter rewriter(SM, LangOptions());
 						int offset = 0;
 						SourceRange currentRange;
 
-						// remove past maps that were added
-						for (auto &pastMap : PastMapList) {
-
-							currentRange = SourceRange(pastMap.mapFunction->getBeginLoc().getLocWithOffset(offset),
-													   Lexer::getLocForEndOfToken(pastMap.mapFunction->getEndLoc(),
-																				  offset, SM, LangOptions()));
-							rewriter.RemoveText(currentRange);
-							offset -= rewriter.getRangeSize(currentRange);
+						// remove all other maps
+						for (std::vector<Map>::iterator otherMap = MapList.begin(); otherMap != MapList.end(); otherMap++)  {
+							if(otherMap != map){
+								currentRange = SourceRange(otherMap->mapFunction->getBeginLoc().getLocWithOffset(offset),
+														   Lexer::getLocForEndOfToken(otherMap->mapFunction->getEndLoc(),
+																					  offset, SM, LangOptions()));
+								rewriter.RemoveText(currentRange);
+								offset -= rewriter.getRangeSize(currentRange);
+							}
 						}
 
 						//remove left hand side of assignment if Binary Operator
-						if (auto *BO = dyn_cast<BinaryOperator>(map.mapFunction->IgnoreParenImpCasts())) {
+						if (auto *BO = dyn_cast<BinaryOperator>(map->mapFunction->IgnoreParenImpCasts())) {
 							currentRange = SourceRange(
 									BO->getBeginLoc().getLocWithOffset(offset),
 									BO->getOperatorLoc().getLocWithOffset(offset));
@@ -667,13 +668,7 @@ namespace clang {
 							offset -= rewriter.getRangeSize(currentRange);
 						}
 
-						currentRange = SourceRange(
-								Lexer::getLocForEndOfToken(map.mapFunction->getEndLoc(), offset, SM,
-														   LangOptions()).getLocWithOffset(1),
-								visitingForStmtBody->getEndLoc().getLocWithOffset(offset));
-						rewriter.RemoveText(SourceRange(currentRange));
-						offset -= rewriter.getRangeSize(currentRange);
-						for (const auto *read:map.Element) {
+						for (const auto *read:map->Element) {
 
 							const DeclRefExpr *elem = getPointer(read);
 							if (elem != nullptr) {
@@ -685,7 +680,7 @@ namespace clang {
 
 						std::string to_insert = "return ";
 						rewriter.InsertTextBefore(
-								map.mapFunction->getBeginLoc().getLocWithOffset(offset), to_insert);
+								map->mapFunction->getBeginLoc().getLocWithOffset(offset), to_insert);
 						mapLambda = rewriter.getRewrittenText(
 								visitingForStmtBody->getSourceRange());
 
@@ -698,18 +693,18 @@ namespace clang {
 						std::string endOffsetString = "";
 						if (getArrayEndOffset() != 0) endOffsetString = " + " + std::to_string(getArrayEndOffset());
 
-						if (map.Input.empty()){
-							map.Input.push_back(map.Output);
+						if (map->Input.empty()){
+							map->Input.push_back(map->Output);
 						}
 
 						std::string add_comma = ", ";
 
 						//if more than one input, put it in a tuple
-						if(map.Input.size()>1){
+						if(map->Input.size()>1){
 							transformation += ", std::make_tuple( ";
 							add_comma = "";
 						}
-						for (auto &input : map.Input) {
+						for (auto &input : map->Input) {
 							const DeclRefExpr *inputName = getPointer(input);
 							if (inputName == nullptr) return "input null";
 
@@ -718,11 +713,11 @@ namespace clang {
 										+ getCloseBeginInputTransformation(inputName) + startOffsetString;
 							add_comma = ", ";
 						}
-						if(map.Input.size()>1){
+						if(map->Input.size()>1){
 							transformation += ")";
 						}
 						//End iterator of input
-						const Expr* input = map.Input[0];
+						const Expr* input = map->Input[0];
 						const DeclRefExpr *inputName = getPointer(input);
 						transformation +=
 								", " + getCastTransformation(inputName) + getEndInputTransformation(inputName) + inputName->getNameInfo().getName().getAsString()
@@ -730,7 +725,7 @@ namespace clang {
 
 
 						//Output
-						const DeclRefExpr *output = getPointer(map.Output);
+						const DeclRefExpr *output = getPointer(map->Output);
 						if (output == nullptr)
 							return "output null";
 
@@ -741,11 +736,11 @@ namespace clang {
 						std::vector<const Expr *> uniqueElementList;
 
 						//Parameters for lambda expression
-						if (map.Element.empty()) {
+						if (map->Element.empty()) {
 							transformation += "auto " + Map::startElement;
 						}
 
-						for (auto &element:map.Element) {
+						for (auto &element:map->Element) {
 							const DeclRefExpr *elementVar = getPointer(element);
 
 							if (elementVar == nullptr) parallelizable = false;
@@ -777,8 +772,8 @@ namespace clang {
 							numElem++;
 						}
 
-						transformation += ")" + mapLambda + "});\n";
-						PastMapList.push_back(map);
+						transformation += ")" + mapLambda + ");\n";
+						PastMapList.push_back(*map);
 					}
 					transformation.erase(
 							std::remove(transformation.begin(), transformation.end(), '\n'),
