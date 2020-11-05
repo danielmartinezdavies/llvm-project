@@ -107,7 +107,7 @@ namespace clang {
 				return true;
 			}
 
-			bool IntegerForLoopExplorer::addInput(Map &map, Expr *expr) {
+			bool IntegerForLoopExplorer::addInput(Map &map, const  Expr *expr) {
 				bool isRepeated = false;
 				for (auto &currentInput:map.Input) {
 					const auto *inputPointer = getPointer(currentInput);
@@ -152,8 +152,8 @@ namespace clang {
 			bool IntegerForLoopExplorer::addToReadArraySubscriptList(CustomArray array, ASTContext *context) {
 
 				if (isValidArraySubscript(array) == 3) return false;
-				Expr *base = array.getBase();
-				Expr *index = array.getIndex();
+				const Expr *base = array.getBase();
+				const Expr *index = array.getIndex();
 				for (CustomArray write_array : writeArraySubscriptList) {
 					if (Functions::areSameExpr(context, write_array.getBase(), base)) {
 						if (!Functions::areSameExpr(context, write_array.getIndex(), index)) {
@@ -178,8 +178,8 @@ namespace clang {
 			bool IntegerForLoopExplorer::addToWriteArraySubscriptList(CustomArray array,
 																	  ASTContext *context) {
 				if (isValidArraySubscript(array) == 2) return false;
-				Expr *base = array.getBase();
-				Expr *index = array.getIndex();
+				const Expr *base = array.getBase();
+				const Expr *index = array.getIndex();
 
 				for (CustomArray read_array : readArraySubscriptList) {
 					if (Functions::areSameExpr(context, read_array.getBase(), base)) {
@@ -250,7 +250,7 @@ namespace clang {
 			bool ContainerForLoopExplorer::VisitCXXOperatorCallExpr(CXXOperatorCallExpr *OO) {
 				DeclRefExpr *DRE = isValidDereference(OO);
 				if (DRE != nullptr) {
-					if (!hasElement(writeList, DRE)) {
+					if (!Functions::hasElement(writeList, DRE)) {
 						if (!MapList.empty()) {
 							Map &currentMap = MapList[MapList.size() - 1];
 							//Dont add element to placeholder if it is inside of current map
@@ -301,7 +301,7 @@ namespace clang {
 			bool RangeForLoopExplorer::VisitDeclRefExpr(DeclRefExpr *DRE) {
 				bool continueExploring = LoopExplorer::VisitDeclRefExpr(DRE);
 				if (DRE->getFoundDecl() == iterator_variable) {
-					if (!hasElement(writeList, DRE)) {
+					if (!Functions::hasElement(writeList, DRE)) {
 						if (!MapList.empty()) {
 							Map &currentMap = MapList[MapList.size() - 1];
 							//Dont add element to placeholder if it is inside of current map

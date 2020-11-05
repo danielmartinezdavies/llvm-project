@@ -58,31 +58,39 @@ namespace clang {
 						return true;
 					}
 					return false;
-
 				}
 
 				static bool isSameVariable(const ValueDecl *First, const ValueDecl *Second) {
 					return First && Second &&
 						   First->getCanonicalDecl() == Second->getCanonicalDecl();
 				}
+
+				template<class T>
+				static bool hasElement(const std::vector<T> &list,const T &elem) {
+					if (list.end() != std::find(list.begin(), list.end(), elem)) {
+						return true;
+					}
+					return false;
+				}
 			}
 
 			class CustomArray {
 				public:
-				CustomArray(Expr *base, Expr *index, Expr *original)
+				CustomArray(const Expr *base,const Expr *index,const Expr *original)
 						: base(base), index(index), original(original) {}
 
-				Expr *getBase() const { return base; }
+				const Expr *getBase() const { return base; }
 
-				Expr *getIndex() const { return index; }
+				const Expr *getIndex() const { return index; }
 
-				Expr *getOriginal() const { return original; }
+				const Expr *getOriginal() const { return original; }
 
 				private:
-				Expr *base;
-				Expr *index;
-				Expr *original;
+				const Expr *base;
+				const Expr *index;
+				const Expr *original;
 			};
+
 
 			class MapReduceCheck : public ClangTidyCheck {
 				public:
@@ -172,8 +180,6 @@ namespace clang {
 
 				virtual ~LoopExplorer() = default;
 
-				virtual bool isMapAssignment(Expr *write) = 0;
-
 				const virtual Expr *getOutput(Expr *write) = 0;
 
 				public:
@@ -221,16 +227,6 @@ namespace clang {
 					if (VD->getName().startswith(Map::startElement)) {
 						parallelizable = false;
 					}
-					/*auto *temp = VD->getParentFunctionOrMethod();
-					if (temp != nullptr) {
-						if (auto *Class = dyn_cast<CXXRecordDecl>(temp)) {
-							std::cout << Lexer::getSourceText(
-									CharSourceRange::getTokenRange(
-											Class->getBody()->getSourceRange()),
-									Context->getSourceManager(), LangOptions())
-									.str();
-						}
-					}*/
 					return true;
 				}
 
@@ -246,7 +242,7 @@ namespace clang {
 					// Check constructor
 					if (CXXCE->getConstructor() != nullptr) {
 						// Only explore only if not explored before
-						if (!this->hasElement<const FunctionDecl *>(
+						if (!Functions::hasElement<const FunctionDecl *>(
 								visitedFunctionDeclarationList, CXXCE->getConstructor())) {
 							std::vector<DeclarationName> functionVariables;
 							LoopType constructorExpr(Context, Check, visitedForLoopList,
@@ -263,7 +259,7 @@ namespace clang {
 						if (CXXCE->getConstructor()->getParent() != nullptr &&
 							CXXCE->getConstructor()->getParent()->getDestructor() != nullptr) {
 							auto *destructor = CXXCE->getConstructor()->getParent()->getDestructor();
-							if (!this->hasElement<const FunctionDecl *>(
+							if (!Functions::hasElement<const FunctionDecl *>(
 									visitedFunctionDeclarationList, destructor)) {
 
 								std::vector<DeclarationName> functionVariables;
@@ -360,10 +356,18 @@ namespace clang {
 							isValidWrite(LHS);
 						}
 					}
-
 					return true;
 				}
 
+				bool isVisitedFunctionDecl(FunctionDecl *FD) {
+					for (const FunctionDecl *currentFunctionDecl :
+							visitedFunctionDeclarationList) {
+						if (currentFunctionDecl == FD) {
+							return true;
+						}
+					}
+					return false;
+				}
 
 				virtual bool isValidWrite(Expr *write) {
 					write = write->IgnoreParenImpCasts();
@@ -459,11 +463,10 @@ namespace clang {
 				/*
 				 * Takes as first parameter the declaration of the pointer
 				 * Takes as second parameter the expression where the pointer is used for outputting error message
-				 *
 				 * */
 				bool PointerHasValidLastValue(VarDecl *pointerVarDecl, const Expr *expr) {
 
-					if (!this->hasElement<DeclarationName>(exploredPointers,
+					if (!Functions::hasElement<DeclarationName>(exploredPointers,
 														   pointerVarDecl->getDeclName())) {
 						exploredPointers.push_back(pointerVarDecl->getDeclName());
 						if (!pointerVarDecl->hasGlobalStorage()) {
@@ -529,7 +532,9 @@ namespace clang {
 
 				bool isReducePattern() { return reducePattern; }
 
-				bool isReduceAssignment(BinaryOperator *BO) {
+				virtual bool isMapAssignment(Expr *write) = 0;
+
+				bool isReduceAssignment(const BinaryOperator *BO) {
 					Expr *LHS = BO->getLHS();
 					if (auto *write =
 							dyn_cast<DeclRefExpr>(LHS->IgnoreParenImpCasts())) {
@@ -583,17 +588,6 @@ namespace clang {
 					}
 					return false;
 				}
-
-				bool isVisitedFunctionDecl(FunctionDecl *FD) {
-					for (const FunctionDecl *currentFunctionDecl :
-							visitedFunctionDeclarationList) {
-						if (currentFunctionDecl == FD) {
-							return true;
-						}
-					}
-					return false;
-				}
-
 				void appendForLoopList() {
 					if (parallelizable) {
 						forLoopList.insert(forLoopList.begin(), visitedForLoopList.begin(),
@@ -612,6 +606,23 @@ namespace clang {
 					}
 					return validParameterList;
 				}
+				void appendVisitedFunctionDeclarationList(
+						std::vector<const FunctionDecl *> visitedFunctionDeclarations) {
+					visitedFunctionDeclarationList.insert(
+							visitedFunctionDeclarationList.begin(),
+							visitedFunctionDeclarations.begin(), visitedFunctionDeclarations.end());
+				}
+
+				bool isLocalVariable(DeclarationName DN) {
+					for (auto declarationName : localVariables) {
+						if (Functions::isSameVariable(declarationName, DN)) {
+							return true;
+						}
+					}
+					return false;
+				}
+
+
 
 				virtual int getArrayBeginOffset() const {
 					return 0;
@@ -820,31 +831,6 @@ namespace clang {
 					}
 					return "";
 				}
-
-
-				void appendVisitedFunctionDeclarationList(
-						std::vector<const FunctionDecl *> visitedFunctionDeclarations) {
-					visitedFunctionDeclarationList.insert(
-							visitedFunctionDeclarationList.begin(),
-							visitedFunctionDeclarations.begin(), visitedFunctionDeclarations.end());
-				}
-
-				bool isLocalVariable(DeclarationName DN) {
-					for (auto declarationName : localVariables) {
-						if (Functions::isSameVariable(declarationName, DN)) {
-							return true;
-						}
-					}
-					return false;
-				}
-
-				template<class T>
-				static bool hasElement(std::vector<T> list, T elem) {
-					if (list.end() != std::find(list.begin(), list.end(), elem)) {
-						return true;
-					}
-					return false;
-				}
 			};
 
 			class IntegerForLoopExplorer : public LoopExplorer<IntegerForLoopExplorer> {
@@ -888,7 +874,7 @@ namespace clang {
 
 
 				protected:
-				bool addInput(Map &map, Expr *expr);
+				bool addInput(Map &map,const Expr *expr);
 
 				//Check if arraysubscript is integer literal or iterator. If integer literal, return 2 if out of range. Else if valid, return 1
 				int isValidArraySubscript(CustomArray);
