@@ -8,14 +8,12 @@
 
 #include "MapReduceCheck.h"
 
+
+
 namespace clang {
 	namespace tidy {
 		namespace misc {
-
-
 			std::string Map::startElement = "grppi_";
-
-
 			//Map
 			bool Map::addElement(const Expr *expr, ASTContext *Context) {
 				BeforeThanCompare<SourceLocation> isBefore(Context->getSourceManager());
@@ -26,7 +24,6 @@ namespace clang {
 				}
 				return false;
 			}
-
 			bool Map::isWithin(const Expr *expr, ASTContext *Context) const {
 				BeforeThanCompare<SourceLocation> isBefore(Context->getSourceManager());
 				if (!isBefore(Lexer::getLocForEndOfToken(mapFunction->getEndLoc(), 0, Context->getSourceManager(),
@@ -37,25 +34,19 @@ namespace clang {
 				}
 				return false;
 			}
-
-
 			//IntegerForLoop
 			const Expr *IntegerForLoopExplorer::getOutput(Expr *write) {
 				return write;
 			}
-
 			int IntegerForLoopExplorer::getArrayBeginOffset() const {
 				return start;
 			}
-
 			std::string IntegerForLoopExplorer::getArrayEndString() const {
 				return "std::begin(";
 			}
-
 			int IntegerForLoopExplorer::getArrayEndOffset() const {
 				return end + 1;
 			}
-
 			bool IntegerForLoopExplorer::VisitArray(CustomArray array) {
 				const DeclRefExpr *base = getPointer(array.getOriginal());
 				if (isa<ArraySubscriptExpr>(array.getOriginal())) {
@@ -70,7 +61,6 @@ namespace clang {
 						PointerHasValidLastValue((VarDecl *) base->getDecl(), array.getOriginal());
 					}
 				}
-
 				bool isInput = addToReadArraySubscriptList(array, Context);
 				if (isInput) {
 					//add Input and Element for possible future map
@@ -93,12 +83,10 @@ namespace clang {
 				}
 				return true;
 			}
-
 			bool IntegerForLoopExplorer::VisitArraySubscriptExpr(ArraySubscriptExpr *ase) {
 				CustomArray array(ase->getBase(), ase->getIdx(), ase);
 				return VisitArray(array);
 			}
-
 			bool IntegerForLoopExplorer::VisitCXXOperatorCallExpr(CXXOperatorCallExpr *OO) {
 				if (OO->getOperator() == OO_Subscript) {
 					CustomArray array(OO->getArg(0), OO->getArg(1), OO);
@@ -106,7 +94,6 @@ namespace clang {
 				}
 				return true;
 			}
-
 			bool IntegerForLoopExplorer::addInput(Map &map, const  Expr *expr) {
 				bool isRepeated = false;
 				for (auto &currentInput:map.Input) {
@@ -122,7 +109,6 @@ namespace clang {
 				}
 				return false;
 			}
-
 			/*
 			 * Returns 3 for subscript where index is integer literal less than the start value or larger than the end value of the for loop
 			 * Returns 2 for subscript where index is integer literal within bounds
@@ -139,7 +125,6 @@ namespace clang {
 				if (auto *dre = dyn_cast<DeclRefExpr>(
 						array.getIndex()->IgnoreParenImpCasts())) {
 					if (dre->getDecl() == iterator_variable) {
-
 						return 1;
 					}
 				}
@@ -148,9 +133,7 @@ namespace clang {
 						   "Pointer has invalid subscript");
 				return 0;
 			}
-
 			bool IntegerForLoopExplorer::addToReadArraySubscriptList(CustomArray array, ASTContext *context) {
-
 				if (isValidArraySubscript(array) == 3) return false;
 				const Expr *base = array.getBase();
 				const Expr *index = array.getIndex();
@@ -174,13 +157,10 @@ namespace clang {
 				readArraySubscriptList.push_back(array);
 				return true;
 			}
-
-			bool IntegerForLoopExplorer::addToWriteArraySubscriptList(CustomArray array,
-																	  ASTContext *context) {
+			bool IntegerForLoopExplorer::addToWriteArraySubscriptList(CustomArray array, ASTContext *context) {
 				if (isValidArraySubscript(array) == 2) return false;
 				const Expr *base = array.getBase();
 				const Expr *index = array.getIndex();
-
 				for (CustomArray read_array : readArraySubscriptList) {
 					if (Functions::areSameExpr(context, read_array.getBase(), base)) {
 						if (!Functions::areSameExpr(context, read_array.getIndex(), index)) {
@@ -193,7 +173,6 @@ namespace clang {
 						}
 					}
 				}
-
 				for (CustomArray write_array : writeArraySubscriptList) {
 					if (Functions::areSameExpr(context, write_array.getBase(), base)) {
 						if (!Functions::areSameExpr(context, write_array.getIndex(), index)) {
@@ -210,11 +189,9 @@ namespace clang {
 						}
 					}
 				}
-
 				writeArraySubscriptList.push_back(array);
 				return true;
 			}
-
 			bool IntegerForLoopExplorer::HandleArrayMapAssignment(CustomArray array) {
 				// if not a local subscript to local array, make sure it is a valid write
 				const DeclRefExpr *ArraySubscriptPointer = getPointer(array.getOriginal());
@@ -231,7 +208,6 @@ namespace clang {
 				}
 				return false;
 			}
-
 			bool IntegerForLoopExplorer::isMapAssignment(Expr *write) {
 				if (auto *BO_LHS = dyn_cast<ArraySubscriptExpr>(write)) {
 					CustomArray a(BO_LHS->getBase(), BO_LHS->getIdx(), BO_LHS);
@@ -245,7 +221,33 @@ namespace clang {
 				}
 				return false;
 			}
+			/*
+			 * Checks to see if variable instance was used as index in either readArraySubscriptList and writeArraySubscriptList
+			 * Does not modify parallelizable boolean
+			 * */
+			bool IntegerForLoopExplorer::isVariableUsedInArraySubscript(DeclRefExpr* dre){
+				bool found = false;
+				for(auto readElem: readArraySubscriptList){
+					const Expr* index = readElem.getIndex();
+					if(auto *var = dyn_cast<DeclRefExpr>(index->IgnoreParenImpCasts())){
+						if(dre == var){
+							found = true; 
+							break;
+						}
+					}
+				}
+				for(auto writeElem: writeArraySubscriptList){
+					const Expr* index = writeElem.getIndex();
+					if(auto *var = dyn_cast<DeclRefExpr>(index->IgnoreParenImpCasts())){
+						if(dre == var){
+							found = true;
+							break;
+						}
+					}
+				}
 
+				return found;
+			}
 			//ContainerForLoop
 			bool ContainerForLoopExplorer::VisitCXXOperatorCallExpr(CXXOperatorCallExpr *OO) {
 				DeclRefExpr *DRE = isValidDereference(OO);
@@ -269,7 +271,6 @@ namespace clang {
 				}
 				return true;
 			}
-
 			DeclRefExpr *ContainerForLoopExplorer::isValidDereference(Expr *expr) {
 				//TODO: include for C style arrays
 				if (auto *OO = dyn_cast<CXXOperatorCallExpr>(expr->IgnoreParenImpCasts())) {
@@ -283,7 +284,6 @@ namespace clang {
 				}
 				return nullptr;
 			}
-
 			bool ContainerForLoopExplorer::isMapAssignment(Expr *write) {
 				DeclRefExpr *elem = isValidDereference(write);
 				if (elem != nullptr) {
@@ -292,11 +292,9 @@ namespace clang {
 				}
 				return false;
 			}
-
 			const Expr *ContainerForLoopExplorer::getOutput(Expr *write) {
 				return Output;
 			}
-
 			//Range For Loop
 			bool RangeForLoopExplorer::VisitDeclRefExpr(DeclRefExpr *DRE) {
 				bool continueExploring = LoopExplorer::VisitDeclRefExpr(DRE);
@@ -316,7 +314,6 @@ namespace clang {
 				}
 				return continueExploring;
 			}
-
 			DeclRefExpr *RangeForLoopExplorer::isElemDeclRefExpr(Expr *expr) {
 				if (auto *dre = dyn_cast<DeclRefExpr>(
 						expr->IgnoreParenImpCasts())) {
@@ -326,7 +323,6 @@ namespace clang {
 				}
 				return nullptr;
 			}
-
 			bool RangeForLoopExplorer::isMapAssignment(Expr *write) {
 				DeclRefExpr *elem = isElemDeclRefExpr(write);
 				if (elem != nullptr) {
@@ -335,7 +331,6 @@ namespace clang {
 				}
 				return false;
 			}
-
 			const Expr *RangeForLoopExplorer::getOutput(Expr *write) {
 				return Output;
 			}
@@ -361,8 +356,7 @@ namespace clang {
 			};
 
 			void MapReduceCheck::registerMatchers(MatchFinder *Finder) {
-				// FIXME: Add matchers.
-
+				//IntegerForLoop
 				Finder->addMatcher(
 						forStmt(
 								hasLoopInit(
@@ -383,7 +377,7 @@ namespace clang {
 								getForRestrictions())
 								.bind("forLoop"),
 						this);
-
+				//CointainerForLoop
 				Finder->addMatcher(
 						forStmt(
 								hasLoopInit(
@@ -421,6 +415,7 @@ namespace clang {
 								getForRestrictions())
 								.bind("iteratorForLoop"),
 						this);
+				//RangeForLoop
 				Finder->addMatcher(cxxForRangeStmt(getForRestrictions()).bind("rangeForLoop"),
 								   this);
 				/*Finder->addMatcher(
@@ -447,9 +442,7 @@ namespace clang {
 					return;
 
 				forLoopList.push_back(IntegerForLoop);
-
 				IntegerForLoop->dump();
-
 				IntegerForLoopExplorer currentMap(Result.Context, *this,
 												  std::vector<const Stmt *>(), IntegerForLoop->getBody(), startValue,
 												  endValue,
@@ -475,7 +468,6 @@ namespace clang {
 						if (auto *dre = dyn_cast<DeclRefExpr>(
 								member->getBase()->IgnoreParenImpCasts())) {
 							matchedArray = dre;
-
 						}
 					}
 				}
@@ -502,13 +494,13 @@ namespace clang {
 					addDiagnostic(currentMap, rangeForLoop);
 				}
 			}
-
 			void MapReduceCheck::check(const MatchFinder::MatchResult &Result) {
 				// FIXME: Add callback implementation.
 
 				const auto *const IntegerForLoop = Result.Nodes.getNodeAs<ForStmt>("forLoop");
 				if (IntegerForLoop != nullptr) {
 					ProcessIntegerForLoop(IntegerForLoop, Result);
+					//Result.SourceManager->getMainFileID();
 				}
 
 				const auto *const iteratorForLoop = Result.Nodes.getNodeAs<ForStmt>("iteratorForLoop");
@@ -519,9 +511,15 @@ namespace clang {
 				if (rangeForLoop != nullptr) {
 					ProcessRangeForLoop(rangeForLoop, Result);
 				}
+			}
 
 
-				/*const auto dummyForLoop = Result.Nodes.getNodeAs<ForStmt>("dummy");
+		} // namespace misc
+	} // namespace tidy
+} // namespace clang
+
+
+/*const auto dummyForLoop = Result.Nodes.getNodeAs<ForStmt>("dummy");
 				if(dummyForLoop != nullptr && Result.Context->getSourceManager().isInMainFile(dummyForLoop->getBeginLoc())){
 					dummyForLoop->dump();
 					return;
@@ -532,11 +530,3 @@ namespace clang {
 				Lexer::getSourceText(CharSourceRange::getTokenRange(init_range), sm,
 														   LangOptions());
 				*/
-			}
-
-
-		} // namespace misc
-	} // namespace tidy
-} // namespace clang
-
-

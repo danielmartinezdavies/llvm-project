@@ -12,7 +12,8 @@
 #include "../ClangTidyCheck.h"
 #include "clang/Basic/SourceManager.h"
 #include "clang/Lex/Lexer.h"
-
+#include "clang/Lex/PPCallbacks.h"
+#include "clang/Lex/Preprocessor.h"
 
 #include "clang/AST/ASTContext.h"
 #include "clang/ASTMatchers/ASTMatchFinder.h"
@@ -91,13 +92,32 @@ namespace clang {
 				const Expr *original;
 			};
 
+			class Prep : public PPCallbacks{
+				public:
+				Prep(const SourceManager& SM): SM(SM){}
+				virtual void InclusionDirective (SourceLocation HashLoc, const Token &IncludeTok, StringRef FileName,
+									 bool IsAngled, CharSourceRange FilenameRange, const FileEntry *File, StringRef SearchPath,
+									 StringRef RelativePath, const Module *Imported, SrcMgr::CharacteristicKind FileType){
 
+					std::string include_text = Lexer::getSourceText(FilenameRange, SM,
+										 LangOptions()).str();
+					//std::cout << "Includes: " << include_text << std::endl;
+				}
+				const SourceManager &SM;
+			};
+
+			
 			class MapReduceCheck : public ClangTidyCheck {
 				public:
 				MapReduceCheck(StringRef name, ClangTidyContext *context)
 						: ClangTidyCheck(name, context) {}
 
 				void registerMatchers(ast_matchers::MatchFinder *Finder) override;
+				void registerPPCallbacks(const SourceManager &SM, Preprocessor *PP,
+                            Preprocessor *ModuleExpanderPP) override {
+					std::unique_ptr<Prep> prep_callback(new Prep(SM));
+					PP->addPPCallbacks(std::move(prep_callback));
+				}
 
 				void check(const ast_matchers::MatchFinder::MatchResult &Result) override;
 
@@ -234,7 +254,16 @@ namespace clang {
 					if (DRE->getDecl()->getName().startswith(Map::startElement)) {
 						parallelizable = false;
 					}
+					if(Functions::isSameVariable(DRE->getDecl(), iterator_variable)){
+						std::cout << "Loop variable: " << iterator_variable->getNameAsString();
+						if(!isVariableUsedInArraySubscript(DRE)){
+							parallelizable = false;
+							Check.diag(DRE->getBeginLoc(),
+									   "Loop variable used outside of array subscript making loop parallelization impossible");
+						}
+					}
 					return true;
+
 				}
 
 				// Jump statements
@@ -346,7 +375,6 @@ namespace clang {
 					if (BO->isAssignmentOp()) {
 						// write variables
 						Expr *LHS = BO->getLHS();
-						// Check is left hand side is a valid write
 						if (isReduceAssignment(BO)) {
 							reducePattern = true;
 						} else if (isMapAssignment(LHS)) {
@@ -411,9 +439,10 @@ namespace clang {
 						Check.diag(BO_LHS->getBeginLoc(),
 								   "Write to overloaded operator could be unsafe");
 						return true;
-					} else {
+					}
+					else {
 						Check.diag(write->getBeginLoc(),
-								   "Write to type that is not array subscript or variable makes "
+								   "Write to type that is not variable or array subscript of loop variable makes "
 								   "for loop parallelization unsafe");
 						parallelizable = false;
 						return false;
@@ -460,6 +489,7 @@ namespace clang {
 				}
 
 				// Auxiliary Functions
+
 				/*
 				 * Takes as first parameter the declaration of the pointer
 				 * Takes as second parameter the expression where the pointer is used for outputting error message
@@ -535,36 +565,43 @@ namespace clang {
 				virtual bool isMapAssignment(Expr *write) = 0;
 
 				bool isReduceAssignment(const BinaryOperator *BO) {
+
 					Expr *LHS = BO->getLHS();
 					if (auto *write =
 							dyn_cast<DeclRefExpr>(LHS->IgnoreParenImpCasts())) {
 						if (write->getType()->isIntegerType() &&
 							!isLocalVariable(write->getFoundDecl()->getDeclName())) {
+
+							// invariant += i;
 							if (BO->isCompoundAssignmentOp()) {
 								if (BO->getOpcode() == BO_AddAssign ||
 									BO->getOpcode() == BO_MulAssign) {
-									// invariant += i;
+
 									return true;
 								}
-							} else if (BO->isAssignmentOp()) {
+							}
+							// invariant = invariant + i;
+							// invariant = i + invariant;
+							else if (BO->isAssignmentOp()) {
 								Expr *RHS = BO->getRHS();
 								if (auto *RHS_BO =
 										dyn_cast<BinaryOperator>(RHS->IgnoreParenImpCasts())) {
 									if (RHS_BO->getOpcode() == BO_Add ||
 										RHS_BO->getOpcode() == BO_Mul) {
+										// invariant = invariant + i;
 										if (auto *read = dyn_cast<DeclRefExpr>(
 												RHS_BO->getLHS()->IgnoreParenImpCasts())) {
 											if (Functions::isSameVariable(write->getFoundDecl()->getDeclName(),
 																		  read->getFoundDecl()->getDeclName())) {
-												// invariant = invariant + i;
 												return true;
 											}
 										}
+										// invariant = i + invariant;
 										if (auto *read = dyn_cast<DeclRefExpr>(
 												RHS_BO->getRHS()->IgnoreParenImpCasts())) {
 											if (Functions::isSameVariable(write->getFoundDecl()->getDeclName(),
 																		  read->getFoundDecl()->getDeclName())) {
-												// invariant = i + invariant;
+
 												return true;
 											}
 										}
@@ -634,6 +671,9 @@ namespace clang {
 
 				virtual int getArrayEndOffset() const {
 					return 0;
+				}
+				virtual bool isVariableUsedInArraySubscript(DeclRefExpr* dre){
+					return true;
 				}
 
 				std::string getMapTransformation() {
@@ -854,6 +894,8 @@ namespace clang {
 				const Expr *getOutput(Expr *write) override;
 
 				bool HandleArrayMapAssignment(CustomArray);
+
+				bool isVariableUsedInArraySubscript(DeclRefExpr* dre) override;
 
 				int getArrayBeginOffset() const override;
 
