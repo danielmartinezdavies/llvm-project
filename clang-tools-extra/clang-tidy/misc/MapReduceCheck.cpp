@@ -343,7 +343,12 @@ namespace clang {
 											hasDescendant(breakStmt()),
 											hasDescendant(returnStmt()),
 											hasDescendant(unaryOperator(hasOperatorName("*"),
-																		hasDescendant(binaryOperator())))
+																hasDescendant(binaryOperator()))),
+											hasDescendant(binaryOperator(isAssignmentOperator(),
+											anyOf(hasDescendant(binaryOperator(isAssignmentOperator())),
+												hasDescendant(unaryOperator(
+														anyOf(hasOperatorName("++"),
+														hasOperatorName("--")))))))
 				)));
 			};
 			const auto getIteratorForType = [] {
