@@ -40,5 +40,5 @@ This is an example work-flow and configuration to get and build the LLVM source:
      * ``make clang-tidy -j8``
      
  Alternatively:
-       * ``make install-clang-tidy -j8``
+      * ``make install-clang-tidy -j8``
 
