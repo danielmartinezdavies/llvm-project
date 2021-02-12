@@ -209,11 +209,11 @@ namespace clang {
 				return false;
 			}
 			bool IntegerForLoopExplorer::isLoopElem(Expr *write) {
-				if (auto *BO_LHS = dyn_cast<ArraySubscriptExpr>(write)) {
+				if (auto *BO_LHS = dyn_cast<ArraySubscriptExpr>(write->IgnoreParenImpCasts())) {
 					CustomArray a(BO_LHS->getBase(), BO_LHS->getIdx(), BO_LHS);
 					return HandleArrayMapAssignment(a);
 				}
-				if (auto *OO = dyn_cast<CXXOperatorCallExpr>(write)) {
+				if (auto *OO = dyn_cast<CXXOperatorCallExpr>(write->IgnoreParenImpCasts())) {
 					if (OO->getOperator() == OO_Subscript) {
 						CustomArray a(OO->getArg(0), OO->getArg(1), OO);
 						return HandleArrayMapAssignment(a);

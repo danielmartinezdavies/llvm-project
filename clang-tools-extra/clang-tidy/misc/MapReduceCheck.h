@@ -255,7 +255,6 @@ namespace clang {
 						parallelizable = false;
 					}
 					if(Functions::isSameVariable(DRE->getDecl(), iterator_variable)){
-						std::cout << "Loop variable: " << iterator_variable->getNameAsString();
 						if(!isVariableUsedInArraySubscript(DRE)){
 							parallelizable = false;
 							Check.diag(DRE->getBeginLoc(),
@@ -575,13 +574,12 @@ namespace clang {
 							dyn_cast<DeclRefExpr>(LHS->IgnoreParenImpCasts())) {
 						if (write->getType()->isIntegerType() &&
 							!isLocalVariable(write->getFoundDecl()->getDeclName())) {
-
 							// invariant += i;
 							if (BO->isCompoundAssignmentOp()) {
 								if (BO->getOpcode() == BO_AddAssign ||
 									BO->getOpcode() == BO_MulAssign) {
-
-									return true;
+									if(isLoopElem(BO->getRHS()))
+										return true;
 								}
 							}
 							// invariant = invariant + i;
@@ -597,16 +595,18 @@ namespace clang {
 												RHS_BO->getLHS()->IgnoreParenImpCasts())) {
 											if (Functions::isSameVariable(write->getFoundDecl()->getDeclName(),
 																		  read->getFoundDecl()->getDeclName())) {
-												return true;
+												if(isLoopElem(RHS_BO->getRHS()))
+													return true;
 											}
 										}
 										// invariant = i + invariant;
-										if (auto *read = dyn_cast<DeclRefExpr>(
+										else if (auto *read = dyn_cast<DeclRefExpr>(
 												RHS_BO->getRHS()->IgnoreParenImpCasts())) {
 											if (Functions::isSameVariable(write->getFoundDecl()->getDeclName(),
 																		  read->getFoundDecl()->getDeclName())) {
 
-												return true;
+												if(isLoopElem(RHS_BO->getLHS()))
+													return true;
 											}
 										}
 									}
