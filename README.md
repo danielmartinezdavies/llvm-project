@@ -39,6 +39,6 @@ This is an example work-flow and configuration to get and build the LLVM source:
      * ``cmake -G "Unix Makefiles" -DCMAKE_BUILD_TYPE=Release -DLLVM_ENABLE_PROJECTS="clang;clang-tools-extra;" ../llvm``
      * ``make clang-tidy -j8``
      
- Alternatively: \n
- ``make install-clang-tidy -j8``
+ Alternatively: 
+ * ``make install-clang-tidy -j8``
 
