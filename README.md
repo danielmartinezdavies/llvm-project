@@ -30,7 +30,7 @@ This is an example work-flow and configuration to get and build the LLVM source:
      
 2. Configure and build LLVM and Clang-tidy:
 
-     * ``cd llvm-project``
+     * ``cd llvm-project-clang-tidy-check``
 
      * ``mkdir build``
 
