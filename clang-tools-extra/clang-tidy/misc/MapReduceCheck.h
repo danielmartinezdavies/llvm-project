@@ -763,9 +763,11 @@ namespace clang {
 						//End iterator of input
 						const Expr* input = map->Input[0];
 						const DeclRefExpr *inputName = getPointer(input);
+
+						//TODO change for size? -> std::to_string(getArrayEndOffset() - getArrayBeginOffset())
 						transformation +=
-								", " + getCastTransformation(inputName) + getEndInputTransformation(inputName) + inputName->getNameInfo().getName().getAsString()
-								+ getCloseBeginInputTransformation(inputName)  + endOffsetString;
+								", " + std::to_string(getArrayEndOffset() - getArrayBeginOffset())/*getCastTransformation(inputName) + getEndInputTransformation(inputName) + inputName->getNameInfo().getName().getAsString()
+								+ getCloseBeginInputTransformation(inputName)  + endOffsetString*/;
 
 
 						//Output
@@ -773,8 +775,8 @@ namespace clang {
 						if (output == nullptr)
 							return "output null";
 
-						transformation += ", "+ getBeginInputTransformation(output) + output->getNameInfo().getName().getAsString()
-								+ getCloseBeginInputTransformation(output) + startOffsetString;
+						transformation += ", "+ /*getBeginInputTransformation(output) +*/ output->getNameInfo().getName().getAsString()
+								/*+ getCloseBeginInputTransformation(output)*/ + startOffsetString;
 
 						transformation += ", [=](";
 						std::vector<const Expr *> uniqueElementList;
