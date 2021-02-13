@@ -11,7 +11,7 @@ This project is still being worked on and so will have some bugs
 ## Clang-tidy check
 The clang-tidy check created is called MapReduce, and will look for loops that can be parallelized. Once found, the check will suggest transforming the source code to its parallel equivalent, using GrPPI(Generic Reusable Parallel Pattern Interface).
 
-More information to GrPPI can be found here:
+More information on GrPPI can be found here:
 * https://github.com/arcosuc3m/grppi
 
 ## Building clang-tidy
@@ -30,12 +30,15 @@ This is an example work-flow and configuration to get and build the LLVM source:
      
 2. Configure and build LLVM and Clang-tidy:
 
-     * ``cd llvm-project``
+     * ``cd llvm-project-clang-tidy-check``
 
      * ``mkdir build``
 
      * ``cd build``
 
      * ``cmake -G "Unix Makefiles" -DCMAKE_BUILD_TYPE=Release -DLLVM_ENABLE_PROJECTS="clang;clang-tools-extra;" ../llvm``
-     * ``make install-clang-tidy -j8``
+     * ``make clang-tidy -j8``
+     
+ Alternatively: 
+ * ``make install-clang-tidy -j8``
 
