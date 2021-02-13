@@ -764,7 +764,6 @@ namespace clang {
 						const Expr* input = map->Input[0];
 						const DeclRefExpr *inputName = getPointer(input);
 
-						//TODO change for size? -> std::to_string(getArrayEndOffset() - getArrayBeginOffset())
 						transformation +=
 								", " + getEndInput(inputName, endOffsetString);
 
@@ -830,7 +829,7 @@ namespace clang {
 				 *
 				 * */
 				std::string getBeginInputTransformation(const DeclRefExpr* expr){
-					if(!expr->getType()->isPointerType()){
+					if(!expr->getType()->isPointerType() && ! expr->getType()->isArrayType()){
 						return "std::begin(";
 					}
 					return "";
@@ -839,7 +838,7 @@ namespace clang {
 				 * Closes parenthesis for inputs that require it
 				 * */
 				std::string getCloseBeginInputTransformation(const DeclRefExpr* expr){
-					if(!expr->getType()->isPointerType()){
+					if(!expr->getType()->isPointerType() && ! expr->getType()->isArrayType()){
 						return ")";
 					}
 					return "";
@@ -847,7 +846,7 @@ namespace clang {
 
 				virtual std::string getEndInput(const DeclRefExpr* inputName, std::string endOffsetString){
 					return getCastTransformation(inputName) + getEndInputTransformation(inputName) + inputName->getNameInfo().getName().getAsString()
-					+ getCloseBeginInputTransformation(inputName) + endOffsetString;
+					+ getCloseEndInputTransformation(inputName) + endOffsetString;
 				}
 
 				/*
@@ -860,6 +859,16 @@ namespace clang {
 					}
 					return "";
 				}
+				/*
+				 * Closes parenthesis for inputs that require it
+				 * */
+				std::string getCloseEndInputTransformation(const DeclRefExpr* expr){
+					if(!expr->getType()->isPointerType()){
+						return ")";
+					}
+					return "";
+				}
+
 				/*
 				 * Get cast to turn into an iterator
 				 * Cast for pointers and C style arrays

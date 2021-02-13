@@ -289,7 +289,6 @@ namespace clang {
 				return nullptr;
 			}
 			bool ContainerForLoopExplorer::isLoopElem(Expr *write) {
-				std::cout << "Here" << std::endl;
 				DeclRefExpr *elem = isValidDereference(write);
 				if (elem != nullptr) {
 					writeList.push_back(elem);
