@@ -47,6 +47,10 @@ namespace clang {
 			int IntegerForLoopExplorer::getArrayEndOffset() const {
 				return end + 1;
 			}
+			std::string IntegerForLoopExplorer::getEndInput(const DeclRefExpr* inputName, std::string endOffsetString){
+				return std::to_string(getArrayEndOffset()-getArrayBeginOffset());
+			};
+
 			bool IntegerForLoopExplorer::VisitArray(CustomArray array) {
 				const DeclRefExpr *base = getPointer(array.getOriginal());
 				if (isa<ArraySubscriptExpr>(array.getOriginal())) {
@@ -285,6 +289,7 @@ namespace clang {
 				return nullptr;
 			}
 			bool ContainerForLoopExplorer::isLoopElem(Expr *write) {
+				std::cout << "Here" << std::endl;
 				DeclRefExpr *elem = isValidDereference(write);
 				if (elem != nullptr) {
 					writeList.push_back(elem);
@@ -382,7 +387,7 @@ namespace clang {
 								getForRestrictions())
 								.bind("forLoop"),
 						this);
-				//CointainerForLoop
+				//ContainerForLoop
 				Finder->addMatcher(
 						forStmt(
 								hasLoopInit(

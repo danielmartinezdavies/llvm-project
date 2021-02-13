@@ -766,8 +766,7 @@ namespace clang {
 
 						//TODO change for size? -> std::to_string(getArrayEndOffset() - getArrayBeginOffset())
 						transformation +=
-								", " + std::to_string(getArrayEndOffset() - getArrayBeginOffset())/*getCastTransformation(inputName) + getEndInputTransformation(inputName) + inputName->getNameInfo().getName().getAsString()
-								+ getCloseBeginInputTransformation(inputName)  + endOffsetString*/;
+								", " + getEndInput(inputName, endOffsetString);
 
 
 						//Output
@@ -775,8 +774,8 @@ namespace clang {
 						if (output == nullptr)
 							return "output null";
 
-						transformation += ", "+ /*getBeginInputTransformation(output) +*/ output->getNameInfo().getName().getAsString()
-								/*+ getCloseBeginInputTransformation(output)*/ + startOffsetString;
+						transformation += ", "+ getBeginInputTransformation(output) + output->getNameInfo().getName().getAsString()
+								+ getCloseBeginInputTransformation(output) + startOffsetString;
 
 						transformation += ", [=](";
 						std::vector<const Expr *> uniqueElementList;
@@ -845,6 +844,12 @@ namespace clang {
 					}
 					return "";
 				}
+
+				virtual std::string getEndInput(const DeclRefExpr* inputName, std::string endOffsetString){
+					return getCastTransformation(inputName) + getEndInputTransformation(inputName) + inputName->getNameInfo().getName().getAsString()
+					+ getCloseBeginInputTransformation(inputName) + endOffsetString;
+				}
+
 				/*
 				 * Gets back iterator for input
 				 * Integer for loops have their own ending
@@ -909,6 +914,7 @@ namespace clang {
 
 				int getArrayEndOffset() const override;
 
+				std::string getEndInput(const DeclRefExpr* inputName, std::string endOffsetString) override;
 				bool VisitArray(CustomArray);
 
 				bool VisitArraySubscriptExpr(ArraySubscriptExpr *ase);
