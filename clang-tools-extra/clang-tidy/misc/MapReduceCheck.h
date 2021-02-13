@@ -562,7 +562,11 @@ namespace clang {
 
 				bool isReducePattern() { return reducePattern; }
 
-				virtual bool isMapAssignment(Expr *write) = 0;
+				virtual bool isMapAssignment(Expr *write){
+					return isLoopElem(write);
+				};
+
+				virtual bool isLoopElem(Expr *write) = 0;
 
 				bool isReduceAssignment(const BinaryOperator *BO) {
 
@@ -920,7 +924,7 @@ namespace clang {
 
 				bool addToWriteArraySubscriptList(CustomArray, ASTContext *context);
 
-				bool isMapAssignment(Expr *write) override;
+				bool isLoopElem(Expr *write) override;
 
 
 			};
@@ -930,7 +934,7 @@ namespace clang {
 				const DeclRefExpr *Output = nullptr;
 				std::vector<DeclRefExpr *> writeList;
 
-				bool isMapAssignment(Expr *write) override;
+				bool isLoopElem(Expr *write) override;
 
 				const Expr *getOutput(Expr *write) override;
 
@@ -965,7 +969,7 @@ namespace clang {
 
 				DeclRefExpr *isElemDeclRefExpr(Expr *expr);
 
-				bool isMapAssignment(Expr *write) override;
+				bool isLoopElem(Expr *write) override;
 
 				const Expr *getOutput(Expr *write) override;
 

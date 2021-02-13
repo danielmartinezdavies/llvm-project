@@ -208,7 +208,7 @@ namespace clang {
 				}
 				return false;
 			}
-			bool IntegerForLoopExplorer::isMapAssignment(Expr *write) {
+			bool IntegerForLoopExplorer::isLoopElem(Expr *write) {
 				if (auto *BO_LHS = dyn_cast<ArraySubscriptExpr>(write)) {
 					CustomArray a(BO_LHS->getBase(), BO_LHS->getIdx(), BO_LHS);
 					return HandleArrayMapAssignment(a);
@@ -284,7 +284,7 @@ namespace clang {
 				}
 				return nullptr;
 			}
-			bool ContainerForLoopExplorer::isMapAssignment(Expr *write) {
+			bool ContainerForLoopExplorer::isLoopElem(Expr *write) {
 				DeclRefExpr *elem = isValidDereference(write);
 				if (elem != nullptr) {
 					writeList.push_back(elem);
@@ -323,7 +323,7 @@ namespace clang {
 				}
 				return nullptr;
 			}
-			bool RangeForLoopExplorer::isMapAssignment(Expr *write) {
+			bool RangeForLoopExplorer::isLoopElem(Expr *write) {
 				DeclRefExpr *elem = isElemDeclRefExpr(write);
 				if (elem != nullptr) {
 					writeList.push_back(elem);
