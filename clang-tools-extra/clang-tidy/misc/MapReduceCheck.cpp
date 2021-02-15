@@ -13,7 +13,6 @@
 namespace clang {
 	namespace tidy {
 		namespace misc {
-			std::string Map::startElement = "grppi_";
 			//Map
 			bool Map::addElement(const Expr *expr, ASTContext *Context) {
 				BeforeThanCompare<SourceLocation> isBefore(Context->getSourceManager());

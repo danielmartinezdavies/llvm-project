@@ -36,6 +36,10 @@ namespace clang {
 
 
 			static std::vector<const Stmt *> forLoopList;
+
+			namespace LoopConstant{
+				static std::string startElement = "grppi_";
+			}
 			namespace Functions {
 				static bool areSameExpr(const ASTContext *Context, const Expr *First, const Expr *Second) {
 					if (!First || !Second)
@@ -160,15 +164,20 @@ namespace clang {
 
 				bool isWithin(const Expr *expr, ASTContext *Context) const;
 
-				static std::string startElement;
 				std::vector<const Expr *> Element;
 				std::vector<const Expr *> Input;
 				const Expr *Output;
 				Expr *mapFunction;
 			};
 
+			class Reduce{
+				public:
+				std::vector<const Expr *> Input;
 
-// MAP PATTERN
+			};
+
+
+// Loop Explorer
 			template<class LoopType>
 			class LoopExplorer : public RecursiveASTVisitor<LoopType> {
 				protected:
@@ -249,14 +258,14 @@ namespace clang {
 					if (!VD->hasGlobalStorage() && !VD->getType()->isReferenceType()) {
 						localVariables.push_back(VD->getDeclName());
 					}
-					if (VD->getName().startswith(Map::startElement)) {
+					if (VD->getName().startswith(LoopConstant::startElement)) {
 						parallelizable = false;
 					}
 					return true;
 				}
 
 				bool VisitDeclRefExpr(DeclRefExpr *DRE) {
-					if (DRE->getDecl()->getName().startswith(Map::startElement)) {
+					if (DRE->getDecl()->getName().startswith(LoopConstant::startElement)) {
 						parallelizable = false;
 					}
 					if (Functions::isSameVariable(DRE->getDecl(), iterator_variable)) {
@@ -807,7 +816,7 @@ namespace clang {
 
 					std::vector<const Expr *> uniqueElementList;
 					if (map->Element.empty()) {
-						transformation += "auto " + Map::startElement;
+						transformation += "auto " + LoopConstant::startElement;
 					}
 
 					for (auto &element:map->Element) {
@@ -837,7 +846,7 @@ namespace clang {
 						if (name == nullptr) parallelizable = false;
 						else {
 							transformation +=
-									"auto " + Map::startElement + name->getNameInfo().getName().getAsString();
+									"auto " + LoopConstant::startElement + name->getNameInfo().getName().getAsString();
 						}
 
 						numElem++;
@@ -880,7 +889,7 @@ namespace clang {
 						if (elem != nullptr) {
 							currentRange = SourceRange(read->getSourceRange());
 							rewriter.ReplaceText(currentRange,
-												 Map::startElement + elem->getNameInfo().getAsString());
+												 LoopConstant::startElement + elem->getNameInfo().getAsString());
 						}
 					}
 
