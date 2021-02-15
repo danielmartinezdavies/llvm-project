@@ -67,7 +67,7 @@ namespace clang {
 				}
 
 				template<class T>
-				static bool hasElement(const std::vector<T> &list,const T &elem) {
+				static bool hasElement(const std::vector<T> &list, const T &elem) {
 					if (list.end() != std::find(list.begin(), list.end(), elem)) {
 						return true;
 					}
@@ -77,7 +77,7 @@ namespace clang {
 
 			class CustomArray {
 				public:
-				CustomArray(const Expr *base,const Expr *index,const Expr *original)
+				CustomArray(const Expr *base, const Expr *index, const Expr *original)
 						: base(base), index(index), original(original) {}
 
 				const Expr *getBase() const { return base; }
@@ -92,29 +92,34 @@ namespace clang {
 				const Expr *original;
 			};
 
-			class Prep : public PPCallbacks{
+			class Prep : public PPCallbacks {
 				public:
-				Prep(const SourceManager& SM): SM(SM){}
-				virtual void InclusionDirective (SourceLocation HashLoc, const Token &IncludeTok, StringRef FileName,
-									 bool IsAngled, CharSourceRange FilenameRange, const FileEntry *File, StringRef SearchPath,
-									 StringRef RelativePath, const Module *Imported, SrcMgr::CharacteristicKind FileType){
+				Prep(const SourceManager &SM) : SM(SM) {}
+
+				virtual void InclusionDirective(SourceLocation HashLoc, const Token &IncludeTok, StringRef FileName,
+												bool IsAngled, CharSourceRange FilenameRange, const FileEntry *File,
+												StringRef SearchPath,
+												StringRef RelativePath, const Module *Imported,
+												SrcMgr::CharacteristicKind FileType) {
 
 					std::string include_text = Lexer::getSourceText(FilenameRange, SM,
-										 LangOptions()).str();
+																	LangOptions()).str();
 					//std::cout << "Includes: " << include_text << std::endl;
 				}
+
 				const SourceManager &SM;
 			};
 
-			
+
 			class MapReduceCheck : public ClangTidyCheck {
 				public:
 				MapReduceCheck(StringRef name, ClangTidyContext *context)
 						: ClangTidyCheck(name, context) {}
 
 				void registerMatchers(ast_matchers::MatchFinder *Finder) override;
+
 				void registerPPCallbacks(const SourceManager &SM, Preprocessor *PP,
-                            Preprocessor *ModuleExpanderPP) override {
+										 Preprocessor *ModuleExpanderPP) override {
 					std::unique_ptr<Prep> prep_callback(new Prep(SM));
 					PP->addPPCallbacks(std::move(prep_callback));
 				}
@@ -254,8 +259,8 @@ namespace clang {
 					if (DRE->getDecl()->getName().startswith(Map::startElement)) {
 						parallelizable = false;
 					}
-					if(Functions::isSameVariable(DRE->getDecl(), iterator_variable)){
-						if(!isVariableUsedInArraySubscript(DRE)){
+					if (Functions::isSameVariable(DRE->getDecl(), iterator_variable)) {
+						if (!isVariableUsedInArraySubscript(DRE)) {
 							parallelizable = false;
 							Check.diag(DRE->getBeginLoc(),
 									   "Loop variable used outside of array subscript making loop parallelization impossible");
@@ -438,8 +443,7 @@ namespace clang {
 						Check.diag(BO_LHS->getBeginLoc(),
 								   "Write to overloaded operator could be unsafe");
 						return true;
-					}
-					else {
+					} else {
 						Check.diag(write->getBeginLoc(),
 								   "Write to type that is not variable or array subscript of loop variable makes "
 								   "for loop parallelization unsafe");
@@ -496,7 +500,7 @@ namespace clang {
 				bool PointerHasValidLastValue(VarDecl *pointerVarDecl, const Expr *expr) {
 
 					if (!Functions::hasElement<DeclarationName>(exploredPointers,
-														   pointerVarDecl->getDeclName())) {
+																pointerVarDecl->getDeclName())) {
 						exploredPointers.push_back(pointerVarDecl->getDeclName());
 						if (!pointerVarDecl->hasGlobalStorage()) {
 
@@ -561,7 +565,7 @@ namespace clang {
 
 				bool isReducePattern() { return reducePattern; }
 
-				virtual bool isMapAssignment(Expr *write){
+				virtual bool isMapAssignment(Expr *write) {
 					return isLoopElem(write);
 				};
 
@@ -578,12 +582,12 @@ namespace clang {
 							if (BO->isCompoundAssignmentOp()) {
 								if (BO->getOpcode() == BO_AddAssign ||
 									BO->getOpcode() == BO_MulAssign) {
-									if(isLoopElem(BO->getRHS()))
+									if (isLoopElem(BO->getRHS()))
 										return true;
 								}
 							}
-							// invariant = invariant + i;
-							// invariant = i + invariant;
+								// invariant = invariant + i;
+								// invariant = i + invariant;
 							else if (BO->isAssignmentOp()) {
 								Expr *RHS = BO->getRHS();
 								if (auto *RHS_BO =
@@ -595,17 +599,17 @@ namespace clang {
 												RHS_BO->getLHS()->IgnoreParenImpCasts())) {
 											if (Functions::isSameVariable(write->getFoundDecl()->getDeclName(),
 																		  read->getFoundDecl()->getDeclName())) {
-												if(isLoopElem(RHS_BO->getRHS()))
+												if (isLoopElem(RHS_BO->getRHS()))
 													return true;
 											}
 										}
-										// invariant = i + invariant;
+											// invariant = i + invariant;
 										else if (auto *read = dyn_cast<DeclRefExpr>(
 												RHS_BO->getRHS()->IgnoreParenImpCasts())) {
 											if (Functions::isSameVariable(write->getFoundDecl()->getDeclName(),
 																		  read->getFoundDecl()->getDeclName())) {
 
-												if(isLoopElem(RHS_BO->getLHS()))
+												if (isLoopElem(RHS_BO->getLHS()))
 													return true;
 											}
 										}
@@ -629,6 +633,7 @@ namespace clang {
 					}
 					return false;
 				}
+
 				void appendForLoopList() {
 					if (parallelizable) {
 						forLoopList.insert(forLoopList.begin(), visitedForLoopList.begin(),
@@ -647,6 +652,7 @@ namespace clang {
 					}
 					return validParameterList;
 				}
+
 				void appendVisitedFunctionDeclarationList(
 						std::vector<const FunctionDecl *> visitedFunctionDeclarations) {
 					visitedFunctionDeclarationList.insert(
@@ -663,8 +669,7 @@ namespace clang {
 					return false;
 				}
 
-
-
+				//Transformation
 				virtual int getArrayBeginOffset() const {
 					return 0;
 				}
@@ -676,8 +681,108 @@ namespace clang {
 				virtual int getArrayEndOffset() const {
 					return 0;
 				}
-				virtual bool isVariableUsedInArraySubscript(DeclRefExpr* dre){
+
+				virtual bool isVariableUsedInArraySubscript(DeclRefExpr *dre) {
 					return true;
+				}
+
+				virtual std::string getMapTransformationInput(const std::vector<Map>::iterator &map, const std::string &startOffsetString) {
+					std::string transformation = "";
+					if (map->Input.empty()) {
+						map->Input.push_back(map->Output);
+					}
+
+					std::string add_comma = ", ";
+
+					//if more than one input, put it in a tuple
+					if (map->Input.size() > 1) {
+						transformation += ", std::make_tuple( ";
+						add_comma = "";
+					}
+					for (auto &input : map->Input) {
+						const DeclRefExpr *inputName = getPointer(input);
+						if (inputName == nullptr) return "input null";
+
+						transformation +=
+								add_comma + getCastTransformation(inputName) + getBeginInputTransformation(inputName) +
+								inputName->getNameInfo().getName().getAsString()
+								+ getCloseBeginInputTransformation(inputName) + startOffsetString;
+						add_comma = ", ";
+					}
+					if (map->Input.size() > 1) {
+						transformation += ")";
+					}
+					return transformation;
+				}
+				virtual std::string getMapTransformationInputEnd(const std::vector<Map>::iterator &map, const std::string &endOffsetString) {
+					const Expr *input = map->Input[0];
+					const DeclRefExpr *inputName = getPointer(input);
+					std::string transformation = "";
+					transformation +=
+							", " + getEndInput(inputName, endOffsetString);
+					return transformation;
+				}
+				virtual std::string getMapTransformationOutput(const std::vector<Map>::iterator &map, const std::string &startOffsetString) {
+					std::string transformation = "";
+
+					const DeclRefExpr *output = getPointer(map->Output);
+					if (output == nullptr)
+						return "output null";
+
+					transformation += ", " + getBeginInputTransformation(output) +
+									  output->getNameInfo().getName().getAsString()
+									  + getCloseBeginInputTransformation(output) + startOffsetString;
+
+					transformation += ", [=](";
+
+					return transformation;
+				}
+				virtual std::string getMapTransformationLambdaParameters(const std::vector<Map>::iterator &map) {
+					std::string transformation = "";
+
+					std::vector<const Expr *> uniqueElementList;
+					if (map->Element.empty()) {
+						transformation += "auto " + Map::startElement;
+					}
+
+					for (auto &element:map->Element) {
+						const DeclRefExpr *elementVar = getPointer(element);
+
+						if (elementVar == nullptr) parallelizable = false;
+						DeclarationName elementName = elementVar->getNameInfo().getName();
+						bool isRepeated = false;
+						for (auto &elem:uniqueElementList) {
+							auto elemVar = getPointer(elem);
+							if (elemVar != nullptr &&
+								Functions::isSameVariable(elemVar->getNameInfo().getName(), elementName)) {
+								isRepeated = true;
+							}
+						}
+						if (!isRepeated) {
+							uniqueElementList.push_back(element);
+						}
+
+					}
+					int numElem = 0;
+					for (auto &element:uniqueElementList) {
+						if (numElem != 0) {
+							transformation += ", ";
+						}
+						const DeclRefExpr *name = getPointer(element);
+						if (name == nullptr) parallelizable = false;
+						else {
+							transformation +=
+									"auto " + Map::startElement + name->getNameInfo().getName().getAsString();
+						}
+
+						numElem++;
+					}
+
+					return transformation;
+				}
+				virtual std::string getMapTransformationLambdaBody(const std::vector<Map>::iterator &map) {
+					std::string transformation = "";
+					return transformation;
 				}
 
 				std::string getMapTransformation() {
@@ -693,11 +798,13 @@ namespace clang {
 						SourceRange currentRange;
 
 						// remove all other maps
-						for (std::vector<Map>::iterator otherMap = MapList.begin(); otherMap != MapList.end(); otherMap++)  {
-							if(otherMap != map){
-								currentRange = SourceRange(otherMap->mapFunction->getBeginLoc().getLocWithOffset(offset),
-														   Lexer::getLocForEndOfToken(otherMap->mapFunction->getEndLoc(),
-																					  offset, SM, LangOptions()));
+						for (std::vector<Map>::iterator otherMap = MapList.begin();
+							 otherMap != MapList.end(); otherMap++) {
+							if (otherMap != map) {
+								currentRange = SourceRange(
+										otherMap->mapFunction->getBeginLoc().getLocWithOffset(offset),
+										Lexer::getLocForEndOfToken(otherMap->mapFunction->getEndLoc(),
+																   offset, SM, LangOptions()));
 								rewriter.RemoveText(currentRange);
 								offset -= rewriter.getRangeSize(currentRange);
 							}
@@ -730,140 +837,77 @@ namespace clang {
 
 						transformation += "grppi::map(grppi::dynamic_execution()";
 
-						//Input
 						std::string startOffsetString = "";
 						if (getArrayBeginOffset() != 0)
 							startOffsetString = " + " + std::to_string(getArrayBeginOffset());
 						std::string endOffsetString = "";
 						if (getArrayEndOffset() != 0) endOffsetString = " + " + std::to_string(getArrayEndOffset());
 
-						if (map->Input.empty()){
-							map->Input.push_back(map->Output);
-						}
+						//Input
+						transformation += getMapTransformationInput(map, startOffsetString);
 
-						std::string add_comma = ", ";
-
-						//if more than one input, put it in a tuple
-						if(map->Input.size()>1){
-							transformation += ", std::make_tuple( ";
-							add_comma = "";
-						}
-						for (auto &input : map->Input) {
-							const DeclRefExpr *inputName = getPointer(input);
-							if (inputName == nullptr) return "input null";
-
-							transformation += add_comma + getCastTransformation(inputName) + getBeginInputTransformation(inputName) +
-										inputName->getNameInfo().getName().getAsString()
-										+ getCloseBeginInputTransformation(inputName) + startOffsetString;
-							add_comma = ", ";
-						}
-						if(map->Input.size()>1){
-							transformation += ")";
-						}
 						//End iterator of input
-						const Expr* input = map->Input[0];
-						const DeclRefExpr *inputName = getPointer(input);
-
-						transformation +=
-								", " + getEndInput(inputName, endOffsetString);
-
+						transformation += getMapTransformationInputEnd(map, endOffsetString);
 
 						//Output
-						const DeclRefExpr *output = getPointer(map->Output);
-						if (output == nullptr)
-							return "output null";
-
-						transformation += ", "+ getBeginInputTransformation(output) + output->getNameInfo().getName().getAsString()
-								+ getCloseBeginInputTransformation(output) + startOffsetString;
-
-						transformation += ", [=](";
-						std::vector<const Expr *> uniqueElementList;
+						transformation += getMapTransformationOutput(map, startOffsetString);
 
 						//Parameters for lambda expression
-						if (map->Element.empty()) {
-							transformation += "auto " + Map::startElement;
-						}
-
-						for (auto &element:map->Element) {
-							const DeclRefExpr *elementVar = getPointer(element);
-
-							if (elementVar == nullptr) parallelizable = false;
-							DeclarationName elementName = elementVar->getNameInfo().getName();
-							bool isRepeated = false;
-							for (auto &elem:uniqueElementList) {
-								auto elemVar = getPointer(elem);
-								if (elemVar != nullptr &&
-									Functions::isSameVariable(elemVar->getNameInfo().getName(), elementName)) {
-									isRepeated = true;
-								}
-							}
-							if (!isRepeated) {
-								uniqueElementList.push_back(element);
-							}
-
-						}
-						int numElem = 0;
-						for (auto &element:uniqueElementList) {
-							if (numElem != 0) {
-								transformation += ", ";
-							}
-							const DeclRefExpr *name = getPointer(element);
-							if (name == nullptr) parallelizable = false;
-							else {
-								transformation += "auto " + Map::startElement + name->getNameInfo().getName().getAsString();
-							}
-
-							numElem++;
-						}
+						transformation += getMapTransformationLambdaParameters(map);
 
 						transformation += ")" + mapLambda + ");\n";
 						PastMapList.push_back(*map);
 					}
+
 					transformation.erase(
 							std::remove(transformation.begin(), transformation.end(), '\n'),
 							transformation.end());
 					return transformation;
 				}
+
 				/*
 				 * Gets beginning iterator for inputs that are not pointers
 				 *
 				 * */
-				std::string getBeginInputTransformation(const DeclRefExpr* expr){
-					if(!expr->getType()->isPointerType() && ! expr->getType()->isArrayType()){
+				std::string getBeginInputTransformation(const DeclRefExpr *expr) {
+					if (!expr->getType()->isPointerType() && !expr->getType()->isArrayType()) {
 						return "std::begin(";
 					}
 					return "";
 				}
+
 				/*
 				 * Closes parenthesis for inputs that require it
 				 * */
-				std::string getCloseBeginInputTransformation(const DeclRefExpr* expr){
-					if(!expr->getType()->isPointerType() && ! expr->getType()->isArrayType()){
+				std::string getCloseBeginInputTransformation(const DeclRefExpr *expr) {
+					if (!expr->getType()->isPointerType() && !expr->getType()->isArrayType()) {
 						return ")";
 					}
 					return "";
 				}
 
-				virtual std::string getEndInput(const DeclRefExpr* inputName, std::string endOffsetString){
-					return getCastTransformation(inputName) + getEndInputTransformation(inputName) + inputName->getNameInfo().getName().getAsString()
-					+ getCloseEndInputTransformation(inputName) + endOffsetString;
+				virtual std::string getEndInput(const DeclRefExpr *inputName, std::string endOffsetString) {
+					return getCastTransformation(inputName) + getEndInputTransformation(inputName) +
+						   inputName->getNameInfo().getName().getAsString()
+						   + getCloseEndInputTransformation(inputName) + endOffsetString;
 				}
 
 				/*
 				 * Gets back iterator for input
 				 * Integer for loops have their own ending
 				 **/
-				std::string getEndInputTransformation(const DeclRefExpr* expr){
-					if(!expr->getType()->isPointerType()){
+				std::string getEndInputTransformation(const DeclRefExpr *expr) {
+					if (!expr->getType()->isPointerType()) {
 						return getArrayEndString();
 					}
 					return "";
 				}
+
 				/*
 				 * Closes parenthesis for inputs that require it
 				 * */
-				std::string getCloseEndInputTransformation(const DeclRefExpr* expr){
-					if(!expr->getType()->isPointerType()){
+				std::string getCloseEndInputTransformation(const DeclRefExpr *expr) {
+					if (!expr->getType()->isPointerType()) {
 						return ")";
 					}
 					return "";
@@ -874,13 +918,11 @@ namespace clang {
 				 * Cast for pointers and C style arrays
 				 * A vector or containter like variable does not need a cast, so an empty string is returned
 				 * */
-				std::string getCastTransformation(const DeclRefExpr* expr){
-					if(expr->getType()->isPointerType()){
+				std::string getCastTransformation(const DeclRefExpr *expr) {
+					if (expr->getType()->isPointerType()) {
 						std::string type = expr->getType()->getPointeeType().getAsString();
 						return "(std::vector<" + type + ">::iterator) ";
-					}
-
-					else if(expr->getType()->isArrayType()){
+					} else if (expr->getType()->isArrayType()) {
 						std::string type = expr->getType()->getAsArrayTypeUnsafe()->getElementType().getAsString();
 						return "(std::vector<" + type + ">::iterator) ";
 					}
@@ -915,7 +957,7 @@ namespace clang {
 
 				bool HandleArrayMapAssignment(CustomArray);
 
-				bool isVariableUsedInArraySubscript(DeclRefExpr* dre) override;
+				bool isVariableUsedInArraySubscript(DeclRefExpr *dre) override;
 
 				int getArrayBeginOffset() const override;
 
@@ -923,7 +965,8 @@ namespace clang {
 
 				int getArrayEndOffset() const override;
 
-				std::string getEndInput(const DeclRefExpr* inputName, std::string endOffsetString) override;
+				std::string getEndInput(const DeclRefExpr *inputName, std::string endOffsetString) override;
+
 				bool VisitArray(CustomArray);
 
 				bool VisitArraySubscriptExpr(ArraySubscriptExpr *ase);
@@ -932,7 +975,7 @@ namespace clang {
 
 
 				protected:
-				bool addInput(Map &map,const Expr *expr);
+				bool addInput(Map &map, const Expr *expr);
 
 				//Check if arraysubscript is integer literal or iterator. If integer literal, return 2 if out of range. Else if valid, return 1
 				int isValidArraySubscript(CustomArray);
