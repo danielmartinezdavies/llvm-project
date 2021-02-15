@@ -686,6 +686,71 @@ namespace clang {
 					return true;
 				}
 
+				/*
+				 * Gets beginning iterator for inputs that are not pointers
+				 *
+				 * */
+				std::string getBeginInputTransformation(const DeclRefExpr *expr) {
+					if (!expr->getType()->isPointerType() && !expr->getType()->isArrayType()) {
+						return "std::begin(";
+					}
+					return "";
+				}
+
+				/*
+				 * Closes parenthesis for inputs that require it
+				 * */
+				std::string getCloseBeginInputTransformation(const DeclRefExpr *expr) {
+					if (!expr->getType()->isPointerType() && !expr->getType()->isArrayType()) {
+						return ")";
+					}
+					return "";
+				}
+
+				virtual std::string getEndInput(const DeclRefExpr *inputName, std::string endOffsetString) {
+					return getCastTransformation(inputName) + getEndInputTransformation(inputName) +
+						   inputName->getNameInfo().getName().getAsString()
+						   + getCloseEndInputTransformation(inputName) + endOffsetString;
+				}
+
+				/*
+				 * Gets back iterator for input
+				 * Integer for loops have their own ending
+				 **/
+				std::string getEndInputTransformation(const DeclRefExpr *expr) {
+					if (!expr->getType()->isPointerType()) {
+						return getArrayEndString();
+					}
+					return "";
+				}
+
+				/*
+				 * Closes parenthesis for inputs that require it
+				 * */
+				std::string getCloseEndInputTransformation(const DeclRefExpr *expr) {
+					if (!expr->getType()->isPointerType()) {
+						return ")";
+					}
+					return "";
+				}
+
+				/*
+				 * Get cast to turn into an iterator
+				 * Cast for pointers and C style arrays
+				 * A vector or container like variable does not need a cast, so an empty string is returned
+				 * */
+				std::string getCastTransformation(const DeclRefExpr *expr) {
+					if (expr->getType()->isPointerType()) {
+						std::string type = expr->getType()->getPointeeType().getAsString();
+						return "(std::vector<" + type + ">::iterator) ";
+					} else if (expr->getType()->isArrayType()) {
+						std::string type = expr->getType()->getAsArrayTypeUnsafe()->getElementType().getAsString();
+						return "(std::vector<" + type + ">::iterator) ";
+					}
+					return "";
+				}
+
+				//Map Transformation
 				virtual std::string getMapTransformationInput(const std::vector<Map>::iterator &map, const std::string &startOffsetString) {
 					std::string transformation = "";
 					if (map->Input.empty()) {
@@ -780,61 +845,59 @@ namespace clang {
 
 					return transformation;
 				}
-				virtual std::string getMapTransformationLambdaBody(const std::vector<Map>::iterator &map) {
-					std::string transformation = "";
-					return transformation;
+				virtual std::string getMapTransformationLambdaBody(const std::vector<Map>::iterator &map, SourceManager &SM) {
+					std::string mapLambda = "";
+
+					Rewriter rewriter(SM, LangOptions());
+					int offset = 0;
+					SourceRange currentRange;
+
+					// remove all other maps
+					for (std::vector<Map>::iterator otherMap = MapList.begin();
+						 otherMap != MapList.end(); otherMap++) {
+						if (otherMap != map) {
+							currentRange = SourceRange(
+									otherMap->mapFunction->getBeginLoc().getLocWithOffset(offset),
+									Lexer::getLocForEndOfToken(otherMap->mapFunction->getEndLoc(),
+															   offset, SM, LangOptions()));
+							rewriter.RemoveText(currentRange);
+							offset -= rewriter.getRangeSize(currentRange);
+						}
+					}
+
+					//remove left hand side of assignment if Binary Operator
+					if (auto *BO = dyn_cast<BinaryOperator>(map->mapFunction->IgnoreParenImpCasts())) {
+						currentRange = SourceRange(
+								BO->getBeginLoc().getLocWithOffset(offset),
+								BO->getOperatorLoc().getLocWithOffset(offset));
+						rewriter.RemoveText(currentRange);
+						offset -= rewriter.getRangeSize(currentRange);
+					}
+
+					for (const auto *read:map->Element) {
+
+						const DeclRefExpr *elem = getPointer(read);
+						if (elem != nullptr) {
+							currentRange = SourceRange(read->getSourceRange());
+							rewriter.ReplaceText(currentRange,
+												 Map::startElement + elem->getNameInfo().getAsString());
+						}
+					}
+
+					std::string to_insert = "return ";
+					rewriter.InsertTextBefore(
+							map->mapFunction->getBeginLoc().getLocWithOffset(offset), to_insert);
+					mapLambda = rewriter.getRewrittenText(
+							visitingForStmtBody->getSourceRange());
+
+					return mapLambda;
 				}
 
 				std::string getMapTransformation() {
 					std::string transformation;
-					std::string mapLambda = "";
 					SourceManager &SM = Context->getSourceManager();
-					BeforeThanCompare<SourceLocation> isBefore(SM);
-
 					std::vector<Map> PastMapList;
 					for (std::vector<Map>::iterator map = MapList.begin(); map != MapList.end(); map++) {
-						Rewriter rewriter(SM, LangOptions());
-						int offset = 0;
-						SourceRange currentRange;
-
-						// remove all other maps
-						for (std::vector<Map>::iterator otherMap = MapList.begin();
-							 otherMap != MapList.end(); otherMap++) {
-							if (otherMap != map) {
-								currentRange = SourceRange(
-										otherMap->mapFunction->getBeginLoc().getLocWithOffset(offset),
-										Lexer::getLocForEndOfToken(otherMap->mapFunction->getEndLoc(),
-																   offset, SM, LangOptions()));
-								rewriter.RemoveText(currentRange);
-								offset -= rewriter.getRangeSize(currentRange);
-							}
-						}
-
-						//remove left hand side of assignment if Binary Operator
-						if (auto *BO = dyn_cast<BinaryOperator>(map->mapFunction->IgnoreParenImpCasts())) {
-							currentRange = SourceRange(
-									BO->getBeginLoc().getLocWithOffset(offset),
-									BO->getOperatorLoc().getLocWithOffset(offset));
-							rewriter.RemoveText(currentRange);
-							offset -= rewriter.getRangeSize(currentRange);
-						}
-
-						for (const auto *read:map->Element) {
-
-							const DeclRefExpr *elem = getPointer(read);
-							if (elem != nullptr) {
-								currentRange = SourceRange(read->getSourceRange());
-								rewriter.ReplaceText(currentRange,
-													 Map::startElement + elem->getNameInfo().getAsString());
-							}
-						}
-
-						std::string to_insert = "return ";
-						rewriter.InsertTextBefore(
-								map->mapFunction->getBeginLoc().getLocWithOffset(offset), to_insert);
-						mapLambda = rewriter.getRewrittenText(
-								visitingForStmtBody->getSourceRange());
-
 						transformation += "grppi::map(grppi::dynamic_execution()";
 
 						std::string startOffsetString = "";
@@ -855,78 +918,19 @@ namespace clang {
 						//Parameters for lambda expression
 						transformation += getMapTransformationLambdaParameters(map);
 
+						//Lambda body
+						std::string mapLambda = getMapTransformationLambdaBody(map, SM);
 						transformation += ")" + mapLambda + ");\n";
+
+						//End of current map translation
 						PastMapList.push_back(*map);
 					}
-
+					//Removes new line characters that may have existed
 					transformation.erase(
 							std::remove(transformation.begin(), transformation.end(), '\n'),
 							transformation.end());
+
 					return transformation;
-				}
-
-				/*
-				 * Gets beginning iterator for inputs that are not pointers
-				 *
-				 * */
-				std::string getBeginInputTransformation(const DeclRefExpr *expr) {
-					if (!expr->getType()->isPointerType() && !expr->getType()->isArrayType()) {
-						return "std::begin(";
-					}
-					return "";
-				}
-
-				/*
-				 * Closes parenthesis for inputs that require it
-				 * */
-				std::string getCloseBeginInputTransformation(const DeclRefExpr *expr) {
-					if (!expr->getType()->isPointerType() && !expr->getType()->isArrayType()) {
-						return ")";
-					}
-					return "";
-				}
-
-				virtual std::string getEndInput(const DeclRefExpr *inputName, std::string endOffsetString) {
-					return getCastTransformation(inputName) + getEndInputTransformation(inputName) +
-						   inputName->getNameInfo().getName().getAsString()
-						   + getCloseEndInputTransformation(inputName) + endOffsetString;
-				}
-
-				/*
-				 * Gets back iterator for input
-				 * Integer for loops have their own ending
-				 **/
-				std::string getEndInputTransformation(const DeclRefExpr *expr) {
-					if (!expr->getType()->isPointerType()) {
-						return getArrayEndString();
-					}
-					return "";
-				}
-
-				/*
-				 * Closes parenthesis for inputs that require it
-				 * */
-				std::string getCloseEndInputTransformation(const DeclRefExpr *expr) {
-					if (!expr->getType()->isPointerType()) {
-						return ")";
-					}
-					return "";
-				}
-
-				/*
-				 * Get cast to turn into an iterator
-				 * Cast for pointers and C style arrays
-				 * A vector or containter like variable does not need a cast, so an empty string is returned
-				 * */
-				std::string getCastTransformation(const DeclRefExpr *expr) {
-					if (expr->getType()->isPointerType()) {
-						std::string type = expr->getType()->getPointeeType().getAsString();
-						return "(std::vector<" + type + ">::iterator) ";
-					} else if (expr->getType()->isArrayType()) {
-						std::string type = expr->getType()->getAsArrayTypeUnsafe()->getElementType().getAsString();
-						return "(std::vector<" + type + ">::iterator) ";
-					}
-					return "";
 				}
 			};
 

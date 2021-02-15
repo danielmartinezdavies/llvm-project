@@ -49,8 +49,7 @@ namespace clang {
 			}
 			std::string IntegerForLoopExplorer::getEndInput(const DeclRefExpr* inputName, std::string endOffsetString){
 				return std::to_string(getArrayEndOffset()-getArrayBeginOffset());
-			};
-
+			}
 			bool IntegerForLoopExplorer::VisitArray(CustomArray array) {
 				const DeclRefExpr *base = getPointer(array.getOriginal());
 				if (isa<ArraySubscriptExpr>(array.getOriginal())) {
