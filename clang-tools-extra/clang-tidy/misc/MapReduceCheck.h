@@ -154,36 +154,34 @@ namespace clang {
 				}
 			};
 
-			/*class Pattern {
+			class Pattern {
 				public:
-				Pattern( )
-				:   {}
+				Pattern( std::vector<const Expr *> Input, const Expr *Output)
+				:  Input(Input), Output(Output) {}
+				std::vector<const Expr *> Input;
+				const Expr *Output;
+			};
 
-			};*/
-
-			class Map {
+			class Map : public Pattern {
 				public:
 				Map(std::vector<const Expr *> Element, std::vector<const Expr *> Input, const Expr *Output,
 					Expr *mapFunction)
-						: Element(Element), Input(Input), Output(Output), mapFunction(mapFunction) {}
+						: Element(Element), mapFunction(mapFunction), Pattern(Input, Output) {}
 
 				bool addElement(const Expr *expr, ASTContext *Context);
 
 				bool isWithin(const Expr *expr, ASTContext *Context) const;
 
 				std::vector<const Expr *> Element;
-				std::vector<const Expr *> Input;
-				const Expr *Output;
+
 				Expr *mapFunction;
 			};
 
-			class Reduce{
+			class Reduce : public Pattern{
 				public:
 				Reduce(std::vector<const Expr *> Input, const Expr* Output, const BinaryOperator* binary_operator)
-					: Input(Input), Output(Output), binary_operator(binary_operator){}
+					:  binary_operator(binary_operator), Pattern(Input, Output){}
 
-				std::vector<const Expr *> Input;
-				const Expr *Output;
 				const BinaryOperator* binary_operator;
 
 			};
@@ -788,21 +786,20 @@ namespace clang {
 
 
 				//Pattern Transformation
-				template<class Pattern>
-				std::string getPatternTransformationInput(const typename std::vector<Pattern>::iterator &pattern) {
+				virtual std::string getPatternTransformationInput(Pattern &pattern) {
 					std::string transformation = "";
-					if (pattern->Input.empty()) {
-						pattern->Input.push_back(pattern->Output);
+					if (pattern.Input.empty()) {
+						pattern.Input.push_back(pattern.Output);
 					}
 
 					std::string add_comma = ", ";
 
 					//if more than one input, put it in a tuple
-					if (pattern->Input.size() > 1) {
+					if (pattern.Input.size() > 1) {
 						transformation += ", std::make_tuple( ";
 						add_comma = "";
 					}
-					for (auto &input : pattern->Input) {
+					for (auto &input : pattern.Input) {
 						const DeclRefExpr *inputName = getPointer(input);
 						if (inputName == nullptr) return "input null";
 
@@ -812,14 +809,13 @@ namespace clang {
 								+ getCloseBeginInputTransformation(inputName) + getStartOffsetString();
 						add_comma = ", ";
 					}
-					if (pattern->Input.size() > 1) {
+					if (pattern.Input.size() > 1) {
 						transformation += ")";
 					}
 					return transformation;
 				}
-				template<class Pattern>
-				std::string getPatternTransformationInputEnd(const typename std::vector<Pattern>::iterator &pattern) {
-					const Expr *input = pattern->Input[0];
+				virtual std::string getPatternTransformationInputEnd(const Pattern &pattern) {
+					const Expr *input = pattern.Input[0];
 					const DeclRefExpr *inputName = getPointer(input);
 					std::string transformation = "";
 					transformation +=
@@ -827,11 +823,10 @@ namespace clang {
 					return transformation;
 				}
 
-				template<class Pattern>
-				std::string getMapTransformationOutput(const typename std::vector<Pattern>::iterator &pattern) {
+				virtual std::string getMapTransformationOutput(const Pattern &pattern) {
 					std::string transformation = "";
 
-					const DeclRefExpr *output = getPointer(pattern->Output);
+					const DeclRefExpr *output = getPointer(pattern.Output);
 					if (output == nullptr)
 						return "output null";
 
@@ -949,13 +944,13 @@ namespace clang {
 						if (getArrayEndOffset() != 0) endOffsetString = " + " + std::to_string(getArrayEndOffset());
 
 						//Input
-						transformation += getPatternTransformationInput<Map>(map);
+						transformation += getPatternTransformationInput(*map);
 
 						//End iterator of input
-						transformation += getPatternTransformationInputEnd<Map>(map);
+						transformation += getPatternTransformationInputEnd(*map);
 
 						//Output
-						transformation += getMapTransformationOutput<Map>(map);
+						transformation += getMapTransformationOutput(*map);
 
 						//Parameters for lambda expression
 						transformation += getMapTransformationLambdaParameters(map);
