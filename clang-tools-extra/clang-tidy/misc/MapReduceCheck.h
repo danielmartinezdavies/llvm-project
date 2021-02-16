@@ -154,9 +154,12 @@ namespace clang {
 				}
 			};
 
-			class Pattern {
+			/*class Pattern {
+				public:
+				Pattern( )
+				:   {}
 
-			};
+			};*/
 
 			class Map {
 				public:
@@ -176,11 +179,11 @@ namespace clang {
 
 			class Reduce{
 				public:
-				Reduce(const Expr * Input, const Expr* OutputVariable, const BinaryOperator* binary_operator)
-					: Input(Input), OutputVariable(OutputVariable), binary_operator(binary_operator){}
+				Reduce(std::vector<const Expr *> Input, const Expr* Output, const BinaryOperator* binary_operator)
+					: Input(Input), Output(Output), binary_operator(binary_operator){}
 
-				const Expr* Input;
-				const Expr* OutputVariable;
+				std::vector<const Expr *> Input;
+				const Expr *Output;
 				const BinaryOperator* binary_operator;
 
 			};
@@ -602,7 +605,7 @@ namespace clang {
 								if (BO->getOpcode() == BO_AddAssign ||
 									BO->getOpcode() == BO_MulAssign) {
 									if (isLoopElem(BO->getRHS()))
-										return new Reduce(BO->getRHS(), write, BO);
+										return new Reduce({BO->getRHS()}, write, BO);
 								}
 							}
 								// invariant = invariant + i;
@@ -613,23 +616,24 @@ namespace clang {
 										dyn_cast<BinaryOperator>(RHS->IgnoreParenImpCasts())) {
 									if (RHS_BO->getOpcode() == BO_Add ||
 										RHS_BO->getOpcode() == BO_Mul) {
+
 										// invariant = invariant + i;
 										if (auto *read = dyn_cast<DeclRefExpr>(
 												RHS_BO->getLHS()->IgnoreParenImpCasts())) {
 											if (Functions::isSameVariable(write->getFoundDecl()->getDeclName(),
 																		  read->getFoundDecl()->getDeclName())) {
 												if (isLoopElem(RHS_BO->getRHS()))
-													return new Reduce(RHS_BO->getRHS(), write, RHS_BO);
+													return new Reduce({RHS_BO->getRHS()}, write, RHS_BO);
 											}
 										}
-											// invariant = i + invariant;
+										// invariant = i + invariant;
 										else if (auto *read = dyn_cast<DeclRefExpr>(
 												RHS_BO->getRHS()->IgnoreParenImpCasts())) {
 											if (Functions::isSameVariable(write->getFoundDecl()->getDeclName(),
 																		  read->getFoundDecl()->getDeclName())) {
 
 												if (isLoopElem(RHS_BO->getLHS()))
-													return new Reduce(RHS_BO->getLHS(), write, RHS_BO);
+													return new Reduce({RHS_BO->getLHS()}, write, RHS_BO);
 											}
 										}
 									}
@@ -769,54 +773,71 @@ namespace clang {
 					return "";
 				}
 
-				//Map Transformation
-				virtual std::string getMapTransformationInput(const std::vector<Map>::iterator &map, const std::string &startOffsetString) {
+				std::string getStartOffsetString(){
+					std::string startOffsetString = "";
+					if (getArrayBeginOffset() != 0)
+						startOffsetString = " + " + std::to_string(getArrayBeginOffset());
+					return startOffsetString;
+				}
+				std::string getEndOffsetString(){
+					std::string endOffsetString = "";
+					if (getArrayEndOffset() != 0)
+						endOffsetString = " + " + std::to_string(getArrayEndOffset());
+					return endOffsetString;
+				}
+
+
+				//Pattern Transformation
+				template<class Pattern>
+				std::string getPatternTransformationInput(const typename std::vector<Pattern>::iterator &pattern) {
 					std::string transformation = "";
-					if (map->Input.empty()) {
-						map->Input.push_back(map->Output);
+					if (pattern->Input.empty()) {
+						pattern->Input.push_back(pattern->Output);
 					}
 
 					std::string add_comma = ", ";
 
 					//if more than one input, put it in a tuple
-					if (map->Input.size() > 1) {
+					if (pattern->Input.size() > 1) {
 						transformation += ", std::make_tuple( ";
 						add_comma = "";
 					}
-					for (auto &input : map->Input) {
+					for (auto &input : pattern->Input) {
 						const DeclRefExpr *inputName = getPointer(input);
 						if (inputName == nullptr) return "input null";
 
 						transformation +=
 								add_comma + getCastTransformation(inputName) + getBeginInputTransformation(inputName) +
 								inputName->getNameInfo().getName().getAsString()
-								+ getCloseBeginInputTransformation(inputName) + startOffsetString;
+								+ getCloseBeginInputTransformation(inputName) + getStartOffsetString();
 						add_comma = ", ";
 					}
-					if (map->Input.size() > 1) {
+					if (pattern->Input.size() > 1) {
 						transformation += ")";
 					}
 					return transformation;
 				}
-				virtual std::string getMapTransformationInputEnd(const std::vector<Map>::iterator &map, const std::string &endOffsetString) {
-					const Expr *input = map->Input[0];
+				template<class Pattern>
+				std::string getPatternTransformationInputEnd(const typename std::vector<Pattern>::iterator &pattern) {
+					const Expr *input = pattern->Input[0];
 					const DeclRefExpr *inputName = getPointer(input);
 					std::string transformation = "";
 					transformation +=
-							", " + getEndInput(inputName, endOffsetString);
+							", " + getEndInput(inputName, getEndOffsetString());
 					return transformation;
 				}
 
-				virtual std::string getMapTransformationOutput(const std::vector<Map>::iterator &map, const std::string &startOffsetString) {
+				template<class Pattern>
+				std::string getMapTransformationOutput(const typename std::vector<Pattern>::iterator &pattern) {
 					std::string transformation = "";
 
-					const DeclRefExpr *output = getPointer(map->Output);
+					const DeclRefExpr *output = getPointer(pattern->Output);
 					if (output == nullptr)
 						return "output null";
 
 					transformation += ", " + getBeginInputTransformation(output) +
 									  output->getNameInfo().getName().getAsString()
-									  + getCloseBeginInputTransformation(output) + startOffsetString;
+									  + getCloseBeginInputTransformation(output) + getStartOffsetString();
 
 					transformation += ", [=](";
 
@@ -928,13 +949,13 @@ namespace clang {
 						if (getArrayEndOffset() != 0) endOffsetString = " + " + std::to_string(getArrayEndOffset());
 
 						//Input
-						transformation += getMapTransformationInput(map, startOffsetString);
+						transformation += getPatternTransformationInput<Map>(map);
 
 						//End iterator of input
-						transformation += getMapTransformationInputEnd(map, endOffsetString);
+						transformation += getPatternTransformationInputEnd<Map>(map);
 
 						//Output
-						transformation += getMapTransformationOutput(map, startOffsetString);
+						transformation += getMapTransformationOutput<Map>(map);
 
 						//Parameters for lambda expression
 						transformation += getMapTransformationLambdaParameters(map);
