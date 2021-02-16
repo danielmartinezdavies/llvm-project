@@ -154,6 +154,10 @@ namespace clang {
 				}
 			};
 
+			class Pattern {
+
+			};
+
 			class Map {
 				public:
 				Map(std::vector<const Expr *> Element, std::vector<const Expr *> Input, const Expr *Output,
@@ -172,7 +176,12 @@ namespace clang {
 
 			class Reduce{
 				public:
-				std::vector<const Expr *> Input;
+				Reduce(const Expr * Input, const Expr* OutputVariable, const BinaryOperator* binary_operator)
+					: Input(Input), OutputVariable(OutputVariable), binary_operator(binary_operator){}
+
+				const Expr* Input;
+				const Expr* OutputVariable;
+				const BinaryOperator* binary_operator;
 
 			};
 
@@ -188,8 +197,9 @@ namespace clang {
 
 				bool parallelizable = true;
 				std::vector<Map> MapList;
+				std::vector<Reduce> ReduceList;
 				Map placeHolderMap = {{}, {}, nullptr, nullptr};
-				bool reducePattern = false;
+
 
 				std::vector<const Stmt *> visitedForLoopList;
 				std::vector<const FunctionDecl *> visitedFunctionDeclarationList;
@@ -388,8 +398,9 @@ namespace clang {
 					if (BO->isAssignmentOp()) {
 						// write variables
 						Expr *LHS = BO->getLHS();
-						if (isReduceAssignment(BO)) {
-							reducePattern = true;
+						Reduce *r = isReduceAssignment(BO);
+						if (r != nullptr) {
+							ReduceList.push_back(*r);
 						} else if (isMapAssignment(LHS)) {
 							Map m(placeHolderMap.Element, placeHolderMap.Input, getOutput(LHS), BO);
 							MapList.push_back(m);
@@ -572,7 +583,7 @@ namespace clang {
 
 				bool isMapPattern() { return !MapList.empty(); }
 
-				bool isReducePattern() { return reducePattern; }
+				bool isReducePattern() { return !ReduceList.empty(); }
 
 				virtual bool isMapAssignment(Expr *write) {
 					return isLoopElem(write);
@@ -580,8 +591,7 @@ namespace clang {
 
 				virtual bool isLoopElem(Expr *write) = 0;
 
-				bool isReduceAssignment(const BinaryOperator *BO) {
-
+				Reduce* isReduceAssignment(const BinaryOperator *BO) {
 					Expr *LHS = BO->getLHS();
 					if (auto *write =
 							dyn_cast<DeclRefExpr>(LHS->IgnoreParenImpCasts())) {
@@ -592,7 +602,7 @@ namespace clang {
 								if (BO->getOpcode() == BO_AddAssign ||
 									BO->getOpcode() == BO_MulAssign) {
 									if (isLoopElem(BO->getRHS()))
-										return true;
+										return new Reduce(BO->getRHS(), write, BO);
 								}
 							}
 								// invariant = invariant + i;
@@ -609,7 +619,7 @@ namespace clang {
 											if (Functions::isSameVariable(write->getFoundDecl()->getDeclName(),
 																		  read->getFoundDecl()->getDeclName())) {
 												if (isLoopElem(RHS_BO->getRHS()))
-													return true;
+													return new Reduce(RHS_BO->getRHS(), write, RHS_BO);
 											}
 										}
 											// invariant = i + invariant;
@@ -619,7 +629,7 @@ namespace clang {
 																		  read->getFoundDecl()->getDeclName())) {
 
 												if (isLoopElem(RHS_BO->getLHS()))
-													return true;
+													return new Reduce(RHS_BO->getLHS(), write, RHS_BO);
 											}
 										}
 									}
@@ -628,7 +638,7 @@ namespace clang {
 						}
 					}
 
-					return false;
+					return nullptr;
 				}
 
 				bool isRepeatedForStmt(Stmt *FS) {
@@ -796,6 +806,7 @@ namespace clang {
 							", " + getEndInput(inputName, endOffsetString);
 					return transformation;
 				}
+
 				virtual std::string getMapTransformationOutput(const std::vector<Map>::iterator &map, const std::string &startOffsetString) {
 					std::string transformation = "";
 
@@ -811,6 +822,7 @@ namespace clang {
 
 					return transformation;
 				}
+
 				virtual std::string getMapTransformationLambdaParameters(const std::vector<Map>::iterator &map) {
 					std::string transformation = "";
 
