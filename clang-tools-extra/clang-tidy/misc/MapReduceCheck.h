@@ -104,7 +104,7 @@ namespace clang {
 												bool IsAngled, CharSourceRange FilenameRange, const FileEntry *File,
 												StringRef SearchPath,
 												StringRef RelativePath, const Module *Imported,
-												SrcMgr::CharacteristicKind FileType) {
+												SrcMgr::CharacteristicKind FileType) override{
 
 					std::string include_text = Lexer::getSourceText(FilenameRange, SM,
 																	LangOptions()).str();
@@ -140,7 +140,10 @@ namespace clang {
 				void addDiagnostic(LoopExplorer currentMap, Loop loop) {
 					if (currentMap.isReducePattern() && currentMap.isParallelizable()) {
 						diag(loop->getBeginLoc(),
-							 "Reduce pattern detected. Loop can be parallelized.");
+							 "Reduce pattern detected. Loop can be parallelized.",
+							 DiagnosticIDs::Remark)
+								<< FixItHint::CreateReplacement(loop->getSourceRange(),
+																currentMap.getReduceTransformation());
 					} else if (currentMap.isMapPattern() && currentMap.isParallelizable()) {
 						diag(loop->getBeginLoc(),
 							 "Map pattern detected. Loop can be parallelized.",
@@ -166,7 +169,7 @@ namespace clang {
 				public:
 				Map(std::vector<const Expr *> Element, std::vector<const Expr *> Input, const Expr *Output,
 					Expr *mapFunction)
-						: Element(Element), mapFunction(mapFunction), Pattern(Input, Output) {}
+						:  Pattern(Input, Output) ,Element(Element), mapFunction(mapFunction){}
 
 				bool addElement(const Expr *expr, ASTContext *Context);
 
@@ -179,10 +182,32 @@ namespace clang {
 
 			class Reduce : public Pattern{
 				public:
-				Reduce(std::vector<const Expr *> Input, const Expr* Output, const BinaryOperator* binary_operator)
-					:  binary_operator(binary_operator), Pattern(Input, Output){}
+				Reduce(std::vector<const Expr *> Input, const Expr* Output, const BinaryOperator* binary_operator, const Expr* original_expr)
+					:   Pattern(Input, Output),binary_operator(binary_operator), original_expr(original_expr){}
 
 				const BinaryOperator* binary_operator;
+				const Expr* original_expr;
+
+				std::string getOperatorAsString(){
+					if(binary_operator->getOpcode() == BO_AddAssign || binary_operator->getOpcode() == BO_Add){
+						return "+";
+					}
+					if(binary_operator->getOpcode() == BO_MulAssign || binary_operator->getOpcode() == BO_Mul){
+						return "*";
+					}
+
+					return "No valid operator";
+				}
+
+				std::string getIdentityAsString(){
+					if(binary_operator->getOpcode() == BO_AddAssign || binary_operator->getOpcode() == BO_Add){
+						return "0L";
+					}
+					if(binary_operator->getOpcode() == BO_MulAssign || binary_operator->getOpcode() == BO_Mul){
+						return "1L";
+					}
+					return "No identity";
+				}
 
 			};
 
@@ -603,7 +628,7 @@ namespace clang {
 								if (BO->getOpcode() == BO_AddAssign ||
 									BO->getOpcode() == BO_MulAssign) {
 									if (isLoopElem(BO->getRHS()))
-										return new Reduce({BO->getRHS()}, write, BO);
+										return new Reduce({BO->getRHS()}, write, BO, BO);
 								}
 							}
 								// invariant = invariant + i;
@@ -621,7 +646,7 @@ namespace clang {
 											if (Functions::isSameVariable(write->getFoundDecl()->getDeclName(),
 																		  read->getFoundDecl()->getDeclName())) {
 												if (isLoopElem(RHS_BO->getRHS()))
-													return new Reduce({RHS_BO->getRHS()}, write, RHS_BO);
+													return new Reduce({RHS_BO->getRHS()}, write, RHS_BO, BO);
 											}
 										}
 										// invariant = i + invariant;
@@ -631,7 +656,7 @@ namespace clang {
 																		  read->getFoundDecl()->getDeclName())) {
 
 												if (isLoopElem(RHS_BO->getLHS()))
-													return new Reduce({RHS_BO->getLHS()}, write, RHS_BO);
+													return new Reduce({RHS_BO->getLHS()}, write, RHS_BO, BO);
 											}
 										}
 									}
@@ -786,7 +811,7 @@ namespace clang {
 
 
 				//Pattern Transformation
-				virtual std::string getPatternTransformationInput(Pattern &pattern) {
+				std::string getPatternTransformationInput(Pattern &pattern) {
 					std::string transformation = "";
 					if (pattern.Input.empty()) {
 						pattern.Input.push_back(pattern.Output);
@@ -814,7 +839,7 @@ namespace clang {
 					}
 					return transformation;
 				}
-				virtual std::string getPatternTransformationInputEnd(const Pattern &pattern) {
+				std::string getPatternTransformationInputEnd(const Pattern &pattern) {
 					const Expr *input = pattern.Input[0];
 					const DeclRefExpr *inputName = getPointer(input);
 					std::string transformation = "";
@@ -823,7 +848,7 @@ namespace clang {
 					return transformation;
 				}
 
-				virtual std::string getMapTransformationOutput(const Pattern &pattern) {
+				std::string getMapTransformationOutput(const Pattern &pattern) {
 					std::string transformation = "";
 
 					const DeclRefExpr *output = getPointer(pattern.Output);
@@ -834,13 +859,11 @@ namespace clang {
 									  output->getNameInfo().getName().getAsString()
 									  + getCloseBeginInputTransformation(output) + getStartOffsetString();
 
-					transformation += ", [=](";
-
 					return transformation;
 				}
 
-				virtual std::string getMapTransformationLambdaParameters(const std::vector<Map>::iterator &map) {
-					std::string transformation = "";
+				std::string getMapTransformationLambdaParameters(const std::vector<Map>::iterator &map) {
+					std::string transformation = ", [=](";
 
 					std::vector<const Expr *> uniqueElementList;
 					if (map->Element.empty()) {
@@ -879,10 +902,12 @@ namespace clang {
 
 						numElem++;
 					}
+					transformation += ")";
 
 					return transformation;
 				}
-				virtual std::string getMapTransformationLambdaBody(const std::vector<Map>::iterator &map, SourceManager &SM) {
+
+				std::string getMapTransformationLambdaBody(const std::vector<Map>::iterator &map, SourceManager &SM) {
 					std::string mapLambda = "";
 
 					Rewriter rewriter(SM, LangOptions());
@@ -930,19 +955,54 @@ namespace clang {
 					return mapLambda;
 				}
 
+				std::string getReduceTransformationLambdaParameters() {
+					std::string transformation = ", [=](auto x, auto y)";
+					return transformation;
+				}
+
+				std::string getReduceTransformationLambdaBody(const std::vector<Reduce>::iterator &reduce, SourceManager &SM) {
+					std::string mapLambda = "";
+
+					Rewriter rewriter(SM, LangOptions());
+					int offset = 0;
+					SourceRange currentRange;
+
+					// remove all other reduces
+					for (std::vector<Reduce>::iterator otherReduce = ReduceList.begin();
+						 otherReduce != ReduceList.end(); otherReduce++) {
+						if (otherReduce != reduce) {
+							currentRange = SourceRange(
+									otherReduce->original_expr->getBeginLoc().getLocWithOffset(offset),
+									Lexer::getLocForEndOfToken(otherReduce->original_expr->getEndLoc(),
+															   offset, SM, LangOptions()));
+							rewriter.RemoveText(currentRange);
+							offset -= rewriter.getRangeSize(currentRange);
+						}
+					}
+
+					//remove original reduce expression to be replaced
+					currentRange = SourceRange(
+							reduce->original_expr->getBeginLoc().getLocWithOffset(offset),
+							reduce->original_expr->getEndLoc().getLocWithOffset(offset));
+					rewriter.RemoveText(currentRange);
+					offset -= rewriter.getRangeSize(currentRange);
+
+					std::string to_insert = "return x" + reduce->getOperatorAsString() + "y";
+
+					rewriter.InsertTextBefore(
+							reduce->original_expr->getBeginLoc().getLocWithOffset(offset), to_insert);
+					mapLambda = rewriter.getRewrittenText(
+							visitingForStmtBody->getSourceRange());
+
+					return mapLambda;
+				}
+
 				std::string getMapTransformation() {
 					std::string transformation;
 					SourceManager &SM = Context->getSourceManager();
 					std::vector<Map> PastMapList;
 					for (std::vector<Map>::iterator map = MapList.begin(); map != MapList.end(); map++) {
 						transformation += "grppi::map(grppi::dynamic_execution()";
-
-						std::string startOffsetString = "";
-						if (getArrayBeginOffset() != 0)
-							startOffsetString = " + " + std::to_string(getArrayBeginOffset());
-						std::string endOffsetString = "";
-						if (getArrayEndOffset() != 0) endOffsetString = " + " + std::to_string(getArrayEndOffset());
-
 						//Input
 						transformation += getPatternTransformationInput(*map);
 
@@ -957,10 +1017,51 @@ namespace clang {
 
 						//Lambda body
 						std::string mapLambda = getMapTransformationLambdaBody(map, SM);
-						transformation += ")" + mapLambda + ");\n";
+						transformation +=  mapLambda + ");\n";
 
 						//End of current map translation
 						PastMapList.push_back(*map);
+					}
+					//Removes new line characters that may have existed
+					transformation.erase(
+							std::remove(transformation.begin(), transformation.end(), '\n'),
+							transformation.end());
+
+					return transformation;
+				}
+
+				//TODO: test
+				std::string getReduceTransformation(){
+					std::string transformation;
+					SourceManager &SM = Context->getSourceManager();
+					std::vector<Reduce> PastReduceList;
+					for (std::vector<Reduce>::iterator reduce = ReduceList.begin(); reduce != ReduceList.end(); reduce++) {
+						std::string variable = "";
+						const DeclRefExpr *dre = getPointer(reduce->Output);
+						if (dre != nullptr) {
+							 variable = dre->getNameInfo().getAsString();
+						}
+						transformation += variable + " " + reduce->getOperatorAsString() + "= ";
+						transformation += "grppi::reduce(grppi::dynamic_execution()";
+
+						//Input
+						transformation += getPatternTransformationInput(*reduce);
+
+						//End iterator of input
+						transformation += getPatternTransformationInputEnd(*reduce);
+
+						//Get reduce identity
+						transformation += ", " + reduce->getIdentityAsString();
+
+						//Parameters for lambda expression
+						transformation += getReduceTransformationLambdaParameters();
+
+						//Lambda body
+						std::string reduceLambda = getReduceTransformationLambdaBody(reduce, SM);
+						transformation +=  reduceLambda + ");\n";
+
+						//End of current map translation
+						PastReduceList.push_back(*reduce);
 					}
 					//Removes new line characters that may have existed
 					transformation.erase(
