@@ -175,6 +175,12 @@ namespace clang {
 
 				bool isWithin(const Expr *expr, ASTContext *Context) const;
 
+				BinaryOperator* getBinaryOperator() const;
+
+				bool isCompoundAssignmentBO() const;
+
+				std::string getOperatorAsString(SourceManager&) const;
+
 				std::vector<const Expr *> Element;
 
 				Expr *mapFunction;
@@ -188,26 +194,9 @@ namespace clang {
 				const BinaryOperator* binary_operator;
 				const Expr* original_expr;
 
-				std::string getOperatorAsString(){
-					if(binary_operator->getOpcode() == BO_AddAssign || binary_operator->getOpcode() == BO_Add){
-						return "+";
-					}
-					if(binary_operator->getOpcode() == BO_MulAssign || binary_operator->getOpcode() == BO_Mul){
-						return "*";
-					}
+				std::string getOperatorAsString() const;
 
-					return "No valid operator";
-				}
-
-				std::string getIdentityAsString(){
-					if(binary_operator->getOpcode() == BO_AddAssign || binary_operator->getOpcode() == BO_Add){
-						return "0L";
-					}
-					if(binary_operator->getOpcode() == BO_MulAssign || binary_operator->getOpcode() == BO_Mul){
-						return "1L";
-					}
-					return "No identity";
-				}
+				std::string getIdentityAsString() const;
 
 			};
 
@@ -865,31 +854,14 @@ namespace clang {
 				std::string getMapTransformationLambdaParameters(const std::vector<Map>::iterator &map) {
 					std::string transformation = ", [=](";
 
-					std::vector<const Expr *> uniqueElementList;
-					if (map->Element.empty()) {
-						transformation += "auto " + LoopConstant::startElement;
+					if(map->isCompoundAssignmentBO()) {
+						if(!Functions::hasElement(map->Input, map->Output)){
+							map->Input.push_back(map->Output);
+						}
 					}
 
-					for (auto &element:map->Element) {
-						const DeclRefExpr *elementVar = getPointer(element);
-
-						if (elementVar == nullptr) parallelizable = false;
-						DeclarationName elementName = elementVar->getNameInfo().getName();
-						bool isRepeated = false;
-						for (auto &elem:uniqueElementList) {
-							auto elemVar = getPointer(elem);
-							if (elemVar != nullptr &&
-								Functions::isSameVariable(elemVar->getNameInfo().getName(), elementName)) {
-								isRepeated = true;
-							}
-						}
-						if (!isRepeated) {
-							uniqueElementList.push_back(element);
-						}
-
-					}
 					int numElem = 0;
-					for (auto &element:uniqueElementList) {
+					for (auto &element:map->Input) {
 						if (numElem != 0) {
 							transformation += ", ";
 						}
@@ -946,9 +918,26 @@ namespace clang {
 						}
 					}
 
+
+					if(map->isCompoundAssignmentBO()) {
+						const DeclRefExpr *output = getPointer(map->Output);
+						if (output == nullptr)
+							return "output null";
+						std::string end_lambda = " ) " + map->getOperatorAsString(SM) + " " +
+												 LoopConstant::startElement + output->getNameInfo().getName().getAsString();
+						rewriter.InsertTextAfter(Lexer::getLocForEndOfToken(map->mapFunction->getEndLoc(),
+																			offset, SM, LangOptions()),  end_lambda);
+					}
+
 					std::string to_insert = "return ";
+					if(map->isCompoundAssignmentBO()) {
+						to_insert += "(";
+					}
 					rewriter.InsertTextBefore(
 							map->mapFunction->getBeginLoc().getLocWithOffset(offset), to_insert);
+
+
+
 					mapLambda = rewriter.getRewrittenText(
 							visitingForStmtBody->getSourceRange());
 

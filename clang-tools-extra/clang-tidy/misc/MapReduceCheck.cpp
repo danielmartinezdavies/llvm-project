@@ -33,6 +33,54 @@ namespace clang {
 				}
 				return false;
 			}
+
+			BinaryOperator* Map::getBinaryOperator() const{
+				if(auto *BO = dyn_cast<BinaryOperator>(this->mapFunction)) {
+					return BO;
+				}
+				return nullptr;
+			}
+			bool Map::isCompoundAssignmentBO() const{
+				BinaryOperator* BO = this->getBinaryOperator();
+				if(BO != nullptr) {
+					if(BO->isCompoundAssignmentOp()){
+						return true;
+					}
+				}
+				return false;
+			}
+
+			std::string Map::getOperatorAsString(SourceManager &SM) const {
+				SourceRange currentRange;
+				auto BO = this->getBinaryOperator();
+				return Lexer::getSourceText(CharSourceRange::getTokenRange(BO->getOperatorLoc(), BO->getOperatorLoc()), SM,
+									 LangOptions()).str().substr(0,1);
+
+
+			}
+
+			//Reduce
+			std::string Reduce::getOperatorAsString() const {
+				if(binary_operator->getOpcode() == BO_AddAssign || binary_operator->getOpcode() == BO_Add){
+					return "+";
+				}
+				if(binary_operator->getOpcode() == BO_MulAssign || binary_operator->getOpcode() == BO_Mul){
+					return "*";
+				}
+
+				return "No valid operator";
+			}
+
+			std::string Reduce::getIdentityAsString() const {
+				if(binary_operator->getOpcode() == BO_AddAssign || binary_operator->getOpcode() == BO_Add){
+					return "0L";
+				}
+				if(binary_operator->getOpcode() == BO_MulAssign || binary_operator->getOpcode() == BO_Mul){
+					return "1L";
+				}
+				return "No identity";
+			}
+
 			//IntegerForLoop
 			const Expr *IntegerForLoopExplorer::getOutput(Expr *write) {
 				return write;
