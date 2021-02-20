@@ -64,7 +64,12 @@ static int LLVM_ATTRIBUTE_UNUSED FuchsiaModuleAnchorDestination =
 extern volatile int GoogleModuleAnchorSource;
 static int LLVM_ATTRIBUTE_UNUSED GoogleModuleAnchorDestination =
     GoogleModuleAnchorSource;
-
+    
+// This anchor is used to force the linker to link the GrppiModule.
+extern volatile int GrppiModuleAnchorSource;
+static int LLVM_ATTRIBUTE_UNUSED GrppiModuleAnchorDestination =
+    GrppiModuleAnchorSource;
+    
 // This anchor is used to force the linker to link the HICPPModule.
 extern volatile int HICPPModuleAnchorSource;
 static int LLVM_ATTRIBUTE_UNUSED HICPPModuleAnchorDestination =
