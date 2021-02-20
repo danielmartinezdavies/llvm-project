@@ -395,7 +395,6 @@ namespace clang {
 						isValidWrite(UO->getSubExpr());
 						return true;
 					} else if (UO->getOpcode() == UO_Deref) {
-						// TODO implement dereference
 						parallelizable = false;
 						if (auto *BO_LHS =
 								dyn_cast<DeclRefExpr>(UO->getSubExpr()->IgnoreParenImpCasts()))
