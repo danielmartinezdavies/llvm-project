@@ -10,6 +10,7 @@
 #include "../ClangTidyModule.h"
 #include "../ClangTidyModuleRegistry.h"
 #include "MapReduceCheck.h"
+#include "TestCheck.h"
 
 namespace clang {
 namespace tidy {
@@ -21,6 +22,8 @@ public:
     CheckFactories.registerCheck<MapReduceCheck>(
         "grppi-map-reduce");
    
+    CheckFactories.registerCheck<TestCheck>(
+        "grppi-test");
   }
 };
 

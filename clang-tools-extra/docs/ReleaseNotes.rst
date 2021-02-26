@@ -106,6 +106,11 @@ New checks
   Finds condition variables in nested ``if`` statements that were also checked
   in the outer ``if`` statement and were not changed.
 
+- New :doc:`grppi-test
+  <clang-tidy/checks/grppi-test>` check.
+
+  FIXME: add release notes.
+
 - New :doc:`readability-function-cognitive-complexity
   <clang-tidy/checks/readability-function-cognitive-complexity>` check.
 

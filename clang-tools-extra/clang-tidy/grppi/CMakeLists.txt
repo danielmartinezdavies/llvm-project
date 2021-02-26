@@ -6,6 +6,7 @@ set(LLVM_LINK_COMPONENTS
 add_clang_library(clangTidyGrppiModule
   MapReduceCheck.cpp
   GrppiTidyModule.cpp
+  TestCheck.cpp
  
 
   LINK_LIBS

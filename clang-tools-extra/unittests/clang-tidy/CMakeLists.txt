@@ -14,6 +14,7 @@ add_extra_unittest(ClangTidyTests
   IncludeInserterTest.cpp
   GlobListTest.cpp
   GoogleModuleTest.cpp
+  GrppiModuleTest.cpp
   LLVMModuleTest.cpp
   NamespaceAliaserTest.cpp
   ObjCModuleTest.cpp
@@ -40,6 +41,7 @@ target_link_libraries(ClangTidyTests
   clangTidy
   clangTidyAndroidModule
   clangTidyGoogleModule
+  clangTidyGrppiModule
   clangTidyLLVMModule
   clangTidyObjCModule
   clangTidyReadabilityModule
