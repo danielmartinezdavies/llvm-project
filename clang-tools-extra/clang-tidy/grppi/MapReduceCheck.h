@@ -723,13 +723,13 @@ namespace clang {
 					return "std::make_tuple( ";
 				}
 				virtual std::string getBeginInputAsString(const DeclRefExpr *inputName) {
-					return getCastTransformation(inputName) + getBeginInputTransformation(inputName) +
+					return  getBeginInputTransformation(inputName) +
 						   inputName->getNameInfo().getName().getAsString()
 						   + getCloseBeginInputTransformation(inputName) + getStartOffsetString();
 				}
 
 				virtual std::string getEndInputAsString(const DeclRefExpr *inputName) {
-					return getCastTransformation(inputName) + getEndInputTransformation(inputName) +
+					return  getEndInputTransformation(inputName) +
 						   inputName->getNameInfo().getName().getAsString()
 						   + getCloseEndInputTransformation(inputName) + getEndOffsetString();
 				}
@@ -777,22 +777,6 @@ namespace clang {
 				std::string getCloseEndInputTransformation(const DeclRefExpr *expr) {
 					if (!expr->getType()->isPointerType()) {
 						return ")";
-					}
-					return "";
-				}
-
-				/*
-				 * Get cast to turn into an iterator
-				 * Cast for pointers and C style arrays
-				 * A vector or container like variable does not need a cast, so an empty string is returned
-				 * */
-				std::string getCastTransformation(const DeclRefExpr *expr) {
-					if (expr->getType()->isPointerType()) {
-						std::string type = expr->getType()->getPointeeType().getAsString();
-						return "(std::vector<" + type + ">::iterator) ";
-					} else if (expr->getType()->isArrayType()) {
-						std::string type = expr->getType()->getAsArrayTypeUnsafe()->getElementType().getAsString();
-						return "(std::vector<" + type + ">::iterator) ";
 					}
 					return "";
 				}

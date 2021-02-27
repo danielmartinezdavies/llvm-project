@@ -46,7 +46,7 @@ namespace clang {
 																	 "	}\n");
 
 				std::string Expected = InsertLoopIntoDeclarations(
-						"	grppi::map(grppi::dynamic_execution(), (std::vector<int>::iterator) array, 10, array, [=](auto grppi_array){return  0;});\n");
+						"	grppi::map(grppi::dynamic_execution(), array, 10, array, [=](auto grppi_array){return  0;});\n");
 
 				std::string Code = runCheckOnCode<MapReduceCheck>(Input);
 				removeSpaces(Code, Expected);
@@ -59,7 +59,7 @@ namespace clang {
 																	 "	}\n");
 
 				std::string Expected = InsertLoopIntoDeclarations(
-						"	grppi::map(grppi::dynamic_execution(), (std::vector<int>::iterator) pointer, 10, pointer, [=](auto grppi_pointer){return  0;});\n");
+						"	grppi::map(grppi::dynamic_execution(), pointer, 10, pointer, [=](auto grppi_pointer){return  0;});\n");
 
 				std::string Code = runCheckOnCode<MapReduceCheck>(Input);
 				removeSpaces(Code, Expected);
@@ -98,9 +98,8 @@ namespace clang {
 																	 "	}\n");
 				std::string Expected =
 						InsertLoopIntoDeclarations(
-								"	grppi::map(grppi::dynamic_execution(), std::make_tuple( std::begin(b), "
-		"(std::vector<int>::iterator) pointer, (std::vector<int>::iterator) array), 10, std::begin(a), "
-  "[=](auto grppi_b, auto grppi_pointer, auto grppi_array){return  grppi_b + grppi_pointer + grppi_array;});\n");
+								"	grppi::map(grppi::dynamic_execution(), std::make_tuple( std::begin(b), pointer, array), 10, std::begin(a), "
+								"[=](auto grppi_b, auto grppi_pointer, auto grppi_array){return  grppi_b + grppi_pointer + grppi_array;});\n");
 
 				std::string Code = runCheckOnCode<MapReduceCheck>(Input);
 				removeSpaces(Code, Expected);
@@ -113,17 +112,18 @@ namespace clang {
 																	 "	}\n");
 				std::string Expected =
 						InsertLoopIntoDeclarations(
-								"	grppi::map(grppi::dynamic_execution(), std::make_tuple( std::begin(b) + 5,"
-								" (std::vector<int>::iterator) pointer + 5, (std::vector<int>::iterator) array + 5), 3, std::begin(a) + 5, "
-								"[=](auto grppi_b, auto grppi_pointer, auto grppi_array){return  grppi_b + grppi_pointer + grppi_array;});\n");
+								"	grppi::map(grppi::dynamic_execution(), std::make_tuple( std::begin(b) + 5, pointer + 5, array + 5),"
+								" 3, std::begin(a) + 5, [=](auto grppi_b, auto grppi_pointer, auto grppi_array){"
+								"							return  grppi_b + grppi_pointer + grppi_array;});\n");
 			}
+
 			TEST(MapCheckTest, ContainerLoopNoInputBegin) {
-					const std::string Input = InsertLoopIntoDeclarations("	for(auto i = a.begin(); i != a.end(); i++){\n"
-																		 "		*i = 0;\n"
-																		 "	}\n");
-					std::string Expected =
-							InsertLoopIntoDeclarations(
-									"	grppi::map(grppi::dynamic_execution(), std::begin(a), std::end(a), std::begin(a), [=](auto grppi_a){return  0;});\n");
+				const std::string Input = InsertLoopIntoDeclarations("	for(auto i = a.begin(); i != a.end(); i++){\n"
+																	 "		*i = 0;\n"
+																	 "	}\n");
+				std::string Expected =
+						InsertLoopIntoDeclarations(
+								"	grppi::map(grppi::dynamic_execution(), std::begin(a), std::end(a), std::begin(a), [=](auto grppi_a){return  0;});\n");
 
 				std::string Code = runCheckOnCode<MapReduceCheck>(Input);
 				removeSpaces(Code, Expected);
@@ -177,7 +177,7 @@ namespace clang {
 //Vector API from std
 static const std::string getVectorString() {
 	return "namespace std{\n"
-	       "template <class T>\n"
+		   "template <class T>\n"
 		   "class  vector\n"
 		   "{\n"
 		   "public:\n"
