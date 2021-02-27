@@ -704,7 +704,7 @@ if(NOT Python3_Interpreter_FOUND)
   endif()
 
   # Treat python2 as python3
-  add_executable(Python3::Interpreter IMPORTED)
+  add_executable(Python3::Interpreter IMPORTED ../clang-tools-extra/unittests/clang-tidy/StdVector.h)
   set_target_properties(Python3::Interpreter PROPERTIES
     IMPORTED_LOCATION ${Python2_EXECUTABLE})
   set(Python3_EXECUTABLE ${Python2_EXECUTABLE})

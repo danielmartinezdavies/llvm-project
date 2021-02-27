@@ -93,7 +93,7 @@ namespace clang {
 			int IntegerForLoopExplorer::getArrayEndOffset() const {
 				return end + 1;
 			}
-			std::string IntegerForLoopExplorer::getEndInput(const DeclRefExpr* inputName, std::string endOffsetString){
+			std::string IntegerForLoopExplorer::getEndInputAsString(const DeclRefExpr* inputName){
 				return std::to_string(getArrayEndOffset()-getArrayBeginOffset());
 			}
 			bool IntegerForLoopExplorer::VisitArray(CustomArray array) {
@@ -321,10 +321,18 @@ namespace clang {
 				return true;
 			}
 			DeclRefExpr *ContainerForLoopExplorer::isValidDereference(Expr *expr) {
-				//TODO: include for C style arrays
 				if (auto *OO = dyn_cast<CXXOperatorCallExpr>(expr->IgnoreParenImpCasts())) {
 					if (OO->getOperator() == OO_Star) {
 						if (auto *dre = dyn_cast<DeclRefExpr>(OO->getArg(0)->IgnoreParenImpCasts())) {
+							if (dre->getFoundDecl() == iterator_variable) {
+								return dre;
+							}
+						}
+					}
+				}
+				if (auto *UO = dyn_cast<UnaryOperator>(expr->IgnoreParenImpCasts())) {
+					if (UO->getOpcode() == UO_Deref) {
+						if (auto *dre = dyn_cast<DeclRefExpr>(UO->getSubExpr()->IgnoreParenImpCasts())) {
 							if (dre->getFoundDecl() == iterator_variable) {
 								return dre;
 							}
@@ -382,6 +390,21 @@ namespace clang {
 			}
 			const Expr *RangeForLoopExplorer::getOutput(Expr *write) {
 				return Output;
+			}
+
+			std::string RangeForLoopExplorer::getMultipleInputTransformation(){
+				return "grppi::zip( ";
+			}
+
+			std::string RangeForLoopExplorer::getBeginInputAsString(const DeclRefExpr *inputName) {
+				return inputName->getNameInfo().getName().getAsString();
+			}
+			std::string RangeForLoopExplorer::getEndInputAsString(const DeclRefExpr *inputName) {
+				return "";
+			}
+
+			std::string RangeForLoopExplorer::getOutputAsString(const DeclRefExpr *output){
+				return output->getNameInfo().getName().getAsString();
 			}
 
 //

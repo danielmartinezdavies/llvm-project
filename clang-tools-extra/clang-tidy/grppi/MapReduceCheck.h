@@ -395,10 +395,9 @@ namespace clang {
 						isValidWrite(UO->getSubExpr());
 						return true;
 					} else if (UO->getOpcode() == UO_Deref) {
-						parallelizable = false;
-						if (auto *BO_LHS =
-								dyn_cast<DeclRefExpr>(UO->getSubExpr()->IgnoreParenImpCasts()))
-							return true;
+						if(!isMapAssignment(UO->IgnoreParenImpCasts())){parallelizable = false;}
+
+
 					}
 					return true;
 				}
@@ -720,6 +719,26 @@ namespace clang {
 					return true;
 				}
 
+				virtual std::string getMultipleInputTransformation(){
+					return "std::make_tuple( ";
+				}
+				virtual std::string getBeginInputAsString(const DeclRefExpr *inputName) {
+					return getCastTransformation(inputName) + getBeginInputTransformation(inputName) +
+						   inputName->getNameInfo().getName().getAsString()
+						   + getCloseBeginInputTransformation(inputName) + getStartOffsetString();
+				}
+
+				virtual std::string getEndInputAsString(const DeclRefExpr *inputName) {
+					return getCastTransformation(inputName) + getEndInputTransformation(inputName) +
+						   inputName->getNameInfo().getName().getAsString()
+						   + getCloseEndInputTransformation(inputName) + getEndOffsetString();
+				}
+
+				virtual std::string getOutputAsString(const DeclRefExpr *output){
+					return getBeginInputTransformation(output) +
+						   output->getNameInfo().getName().getAsString()
+						   + getCloseBeginInputTransformation(output) + getStartOffsetString();;
+				}
 				/*
 				 * Gets beginning iterator for inputs that are not pointers
 				 *
@@ -739,12 +758,6 @@ namespace clang {
 						return ")";
 					}
 					return "";
-				}
-
-				virtual std::string getEndInput(const DeclRefExpr *inputName, std::string endOffsetString) {
-					return getCastTransformation(inputName) + getEndInputTransformation(inputName) +
-						   inputName->getNameInfo().getName().getAsString()
-						   + getCloseEndInputTransformation(inputName) + endOffsetString;
 				}
 
 				/*
@@ -809,17 +822,13 @@ namespace clang {
 
 					//if more than one input, put it in a tuple
 					if (pattern.Input.size() > 1) {
-						transformation += ", std::make_tuple( ";
-						add_comma = "";
+						add_comma += getMultipleInputTransformation();
 					}
 					for (auto &input : pattern.Input) {
 						const DeclRefExpr *inputName = getPointer(input);
 						if (inputName == nullptr) return "input null";
 
-						transformation +=
-								add_comma + getCastTransformation(inputName) + getBeginInputTransformation(inputName) +
-								inputName->getNameInfo().getName().getAsString()
-								+ getCloseBeginInputTransformation(inputName) + getStartOffsetString();
+						transformation += add_comma + getBeginInputAsString(inputName);
 						add_comma = ", ";
 					}
 					if (pattern.Input.size() > 1) {
@@ -831,8 +840,11 @@ namespace clang {
 					const Expr *input = pattern.Input[0];
 					const DeclRefExpr *inputName = getPointer(input);
 					std::string transformation = "";
-					transformation +=
-							", " + getEndInput(inputName, getEndOffsetString());
+					std::string endInput = getEndInputAsString(inputName);
+					if(endInput != ""){
+						transformation += ", " + endInput;
+					}
+
 					return transformation;
 				}
 
@@ -843,9 +855,7 @@ namespace clang {
 					if (output == nullptr)
 						return "output null";
 
-					transformation += ", " + getBeginInputTransformation(output) +
-									  output->getNameInfo().getName().getAsString()
-									  + getCloseBeginInputTransformation(output) + getStartOffsetString();
+					transformation += ", " + getOutputAsString(output);
 
 					return transformation;
 				}
@@ -1095,7 +1105,7 @@ namespace clang {
 
 				int getArrayEndOffset() const override;
 
-				std::string getEndInput(const DeclRefExpr *inputName, std::string endOffsetString) override;
+				std::string getEndInputAsString(const DeclRefExpr *inputName) override;
 
 				bool VisitArray(CustomArray);
 
@@ -1163,6 +1173,10 @@ namespace clang {
 
 				const Expr *getOutput(Expr *write) override;
 
+				std::string getMultipleInputTransformation() override;
+				std::string getBeginInputAsString(const DeclRefExpr *inputName) override;
+				std::string getEndInputAsString(const DeclRefExpr *inputName) override;
+				std::string getOutputAsString(const DeclRefExpr *output) override;
 
 				public:
 				RangeForLoopExplorer(ASTContext *Context, ClangTidyCheck &Check,
