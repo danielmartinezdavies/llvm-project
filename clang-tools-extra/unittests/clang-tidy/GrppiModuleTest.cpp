@@ -75,53 +75,40 @@ namespace clang {
 			TEST(MapCheckTest, IntegerLoopContainerOutputInputModifiedStartAndEnd) {
 
 				std::string Expected =
-								"	grppi::map(grppi::dynamic_execution(), std::make_tuple( std::begin(b) + 5, pointer + 5, array + 5),"
+								"grppi::map(grppi::dynamic_execution(), std::make_tuple( std::begin(b) + 5, pointer + 5, array + 5),"
 								" 3, std::begin(a) + 5, [=](auto grppi_b, auto grppi_pointer, auto grppi_array){"
-								"							return  grppi_b + grppi_pointer + grppi_array;});\n";
+								"return  grppi_b + grppi_pointer + grppi_array;});\n";
 				std::string Code = runCheckOnFile<MapReduceCheck>("MapIntegerLoopContainerOutputInputModifiedStartAndEnd.cpp", test_path);
 				removeSpaces(Code, Expected);
 				EXPECT_EQ(Code, Expected);
 			}
 
-			//TODO: complete following tests
-			/*TEST(MapCheckTest, ContainerLoopNoInputBegin) {
-				const std::string Input = InsertLoopIntoDeclarations("	for(auto i = a.begin(); i != a.end(); i++){\n"
-																	 "		*i = 0;\n"
-																	 "	}\n");
-				std::string Expected =
-						InsertLoopIntoDeclarations(
-								"	grppi::map(grppi::dynamic_execution(), std::begin(a), std::end(a), std::begin(a), [=](auto grppi_a){return  0;});\n");
+			TEST(MapCheckTest, ContainerLoopNoInputBegin) {
 
-				std::string Code = runCheckOnCode<MapReduceCheck>(Input);
+				std::string Expected ="grppi::map(grppi::dynamic_execution(), std::begin(a), std::end(a), std::begin(a), [=](auto grppi_a){return  0;});\n";
+
+				std::string Code = runCheckOnFile<MapReduceCheck>("MapContainerLoopNoInputBegin.cpp", test_path);
 				removeSpaces(Code, Expected);
 				EXPECT_EQ(Code, Expected);
-			}*/
+			}
 
-			/*TEST(MapCheckTest, ContainerLoopNoInputSTDBegin) {
-				const std::string Input = InsertLoopIntoDeclarations("	for(auto i = std::begin(a); i != std::end(a); i++){\n"
-																	 "			*i = 0;\n"
-																	 "	}\n");
-				std::string Expected =
-						InsertLoopIntoDeclarations(
-								"	grppi::map(grppi::dynamic_execution(), std::begin(a), std::end(a), std::begin(a), [=](auto grppi_a){return  0;});\n");
+			TEST(MapCheckTest, ContainerLoopNoInputSTDBegin) {
 
-				std::string Code = runCheckOnCode<MapReduceCheck>(Input);
+				std::string Expected ="grppi::map(grppi::dynamic_execution(), std::begin(a), std::end(a), std::begin(a), [=](auto grppi_a){return  0;});\n";
+
+				std::string Code = runCheckOnFile<MapReduceCheck>("MapContainerLoopNoInputSTDBegin.cpp", test_path);
 				removeSpaces(Code, Expected);
 				EXPECT_EQ(Code, Expected);
-			}*/
+			}
 
-			/*TEST(MapCheckTest, RangeLoopArrayOutput) {
-				const std::string Input = InsertLoopIntoDeclarations("	for(auto &elem: array){\n"
-																	 "			elem = 0;\n"
-																	 "	}\n");
-				std::string Expected =
-						InsertLoopIntoDeclarations(
-								"	grppi::map(grppi::dynamic_execution(), array, array, [=](auto grppi_array){return  0;});\n");
+			TEST(MapCheckTest, RangeLoopArrayOutput) {
 
-				std::string Code = runCheckOnCode<MapReduceCheck>(Input);
+				std::string Expected = "grppi::map(grppi::dynamic_execution(), array, array, [=](auto grppi_array){return  0;});\n";
+
+				std::string Code = runCheckOnFile<MapReduceCheck>("MapRangeLoopArrayOutput.cpp", test_path);
 				removeSpaces(Code, Expected);
 				EXPECT_EQ(Code, Expected);
-			}*/
+			}
 
 			TEST(MapCheckTest, RangeLoopContainerOutput) {
 
