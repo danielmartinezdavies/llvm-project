@@ -6,3 +6,4 @@ int main() {
 		array[i] = 0;
 	}
 }
+
