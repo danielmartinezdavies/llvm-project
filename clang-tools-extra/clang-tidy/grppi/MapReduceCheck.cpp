@@ -375,7 +375,10 @@ namespace clang {
 				if (auto *dre = dyn_cast<DeclRefExpr>(
 						expr->IgnoreParenImpCasts())) {
 					if (dre->getDecl() == iterator_variable) {
-						return dre;
+						if(iterator_variable->getType()->isReferenceType()){
+							return dre;
+						}
+
 					}
 				}
 				return nullptr;
