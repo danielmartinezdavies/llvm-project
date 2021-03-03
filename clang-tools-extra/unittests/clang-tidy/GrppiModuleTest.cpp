@@ -119,6 +119,25 @@ namespace clang {
 				EXPECT_EQ(Code, Expected);
 			}
 
+			TEST(MapCheckTest, RangeLoopNoReferenceVariable) {
+				//No transformation should be applied
+				std::string Expected ="";
+
+				std::string Code = runCheckOnFile<MapReduceCheck>("MapRangeLoopNoReferenceVariable.cpp", test_path);
+				removeSpaces(Code, Expected);
+				EXPECT_EQ(Code, Expected);
+			}
+
+
+			TEST(MapCheckTest, RangeLoopRValueReferenceVariable) {
+
+				std::string Expected ="	grppi::map(grppi::dynamic_execution(), a, a, [=](auto grppi_a){return  0;});\n";
+
+				std::string Code = runCheckOnFile<MapReduceCheck>("MapRangeLoopRValueReferenceVariable.cpp", test_path);
+				removeSpaces(Code, Expected);
+				EXPECT_EQ(Code, Expected);
+			}
+
 
 
 		} // namespace test
