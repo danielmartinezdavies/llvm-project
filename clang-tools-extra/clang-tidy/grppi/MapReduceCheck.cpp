@@ -84,18 +84,52 @@ namespace clang {
 			const Expr *IntegerForLoopExplorer::getOutput(Expr *write) {
 				return write;
 			}
-			int IntegerForLoopExplorer::getArrayBeginOffset() const {
-				return start;
+			std::string IntegerForLoopExplorer::getArrayBeginOffset() const {
+				std::string result = Lexer::getSourceText(CharSourceRange::getTokenRange(start_expr->getSourceRange()), Context->getSourceManager(),
+														  LangOptions()).str();
+				if(result == "0") return "";
+				return result;
 			}
 			std::string IntegerForLoopExplorer::getArrayEndString() const {
 				return "std::begin(";
 			}
-			int IntegerForLoopExplorer::getArrayEndOffset() const {
-				return end + 1;
+			std::string IntegerForLoopExplorer::getArrayEndOffset() const {
+				std::string result = Lexer::getSourceText(CharSourceRange::getTokenRange(end_expr->getSourceRange()), Context->getSourceManager(),
+														  LangOptions()).str();
+				if(result == "0") return "";
+				return result;
 			}
 			std::string IntegerForLoopExplorer::getEndInputAsString(const DeclRefExpr* inputName){
-				return std::to_string(getArrayEndOffset()-getArrayBeginOffset());
+				//returns size
+				std::unique_ptr<int> startP = getStartValue(), endP = getEndValue();
+				if(startP != nullptr && endP != nullptr){
+					return std::to_string(*endP - *startP);
+				}
+				std::string end = getArrayEndOffset(), start = getArrayBeginOffset();
+				if (end == "" && start == "") return "0";
+				if (end != "" && start != "") return end + " - " + start;
+
+				return  end + start;
 			}
+
+			std::unique_ptr<int> IntegerForLoopExplorer::getStartValue(){
+				if (auto *start = dyn_cast<IntegerLiteral>(
+						start_expr->IgnoreParenImpCasts())) {
+					return std::make_unique<int>(start->getValue().getZExtValue());
+				}
+				return nullptr;
+			}
+			/*
+			 * Returns end value of loop, where iterator_variable < end
+			 * */
+			std::unique_ptr<int> IntegerForLoopExplorer::getEndValue(){
+				if (auto *end = dyn_cast<IntegerLiteral>(
+						end_expr->IgnoreParenImpCasts())) {
+					return std::make_unique<int>(end->getValue().getZExtValue());
+				}
+				return nullptr;
+			}
+
 			bool IntegerForLoopExplorer::VisitArray(CustomArray array) {
 				const DeclRefExpr *base = getPointer(array.getOriginal());
 				if (isa<ArraySubscriptExpr>(array.getOriginal())) {
@@ -162,13 +196,27 @@ namespace clang {
 			 * Returns 3 for subscript where index is integer literal less than the start value or larger than the end value of the for loop
 			 * Returns 2 for subscript where index is integer literal within bounds
 			 * Returns 1 for subscript where index is iterator variable
+			 * Returns -1 if index cannot be studied due to start_expr or end_expr of loop
 			 * Returns 0 for anything else
 			 * */
 			int IntegerForLoopExplorer::isValidArraySubscript(CustomArray array) {
+				std::unique_ptr<int> startP = getStartValue();
+				if(startP == nullptr){
+					return -1;
+				}
+				int start =  *startP;
+
+				std::unique_ptr<int> endP = getEndValue();
+				if(endP == nullptr){
+					return -1;
+				}
+				int end =  *endP;
+
+
 				if (auto *index = dyn_cast<IntegerLiteral>(
 						array.getIndex()->IgnoreParenImpCasts())) {
 					int indexValue = index->getValue().getZExtValue();
-					if (indexValue < start || indexValue > end) return 3;
+					if (indexValue < start || indexValue >= end) return 3;
 					return 2;
 				}
 				if (auto *dre = dyn_cast<DeclRefExpr>(
@@ -254,6 +302,11 @@ namespace clang {
 						ArraySubscriptPointer->getDecl()->getDeclName())) {
 					addToWriteArraySubscriptList(array, Context);
 					if (isValidArraySubscript(array) == 1) return true;
+					if (isValidArraySubscript(array) == -1) {
+						Check.diag(array.getOriginal()->getBeginLoc(),
+								   "Index cannot be analysed properly. Parallelization may still be possible");
+						return true;
+					}
 				}
 				return false;
 			}
@@ -441,14 +494,14 @@ namespace clang {
 						forStmt(
 								hasLoopInit(
 										declStmt(hasSingleDecl(
-												varDecl(hasInitializer(integerLiteral().bind("start"))).bind(
+												varDecl(hasInitializer( expr(hasType(isInteger())).bind("start_expr"))).bind(
 														"initVar")))
 												.bind("initFor")),
 								hasCondition(binaryOperator(hasOperatorName("<"),
 															hasLHS(ignoringParenImpCasts(declRefExpr(
 																	to(varDecl(hasType(isInteger())).bind(
 																			"condVar"))))),
-															hasRHS(expr(integerLiteral().bind("end"))))
+															hasRHS(expr( expr(hasType(isInteger())).bind("end_expr"))))
 													 .bind("condFor")),
 								hasIncrement(unaryOperator(hasOperatorName("++"),
 														   hasUnaryOperand(declRefExpr(
@@ -510,10 +563,13 @@ namespace clang {
 				const auto *IncVar = Result.Nodes.getNodeAs<VarDecl>("incVar");
 				const auto *CondVar = Result.Nodes.getNodeAs<VarDecl>("condVar");
 				const auto *InitVar = Result.Nodes.getNodeAs<VarDecl>("initVar");
-				const auto *start = Result.Nodes.getNodeAs<IntegerLiteral>("start");
-				int startValue = start->getValue().getZExtValue();
-				const auto *end = Result.Nodes.getNodeAs<IntegerLiteral>("end");
-				int endValue = end->getValue().getZExtValue() - 1;
+
+				const auto *start_expr = Result.Nodes.getNodeAs<Expr>("start_expr");
+				if (start_expr == nullptr)
+					return;
+				const auto *end_expr = Result.Nodes.getNodeAs<Expr>("end_expr");
+				if(end_expr == nullptr )
+					return;
 
 				if (!Functions::isSameVariable(IncVar, CondVar) || !Functions::isSameVariable(IncVar, InitVar))
 					return;
@@ -524,8 +580,8 @@ namespace clang {
 				forLoopList.push_back(IntegerForLoop);
 				IntegerForLoop->dump();
 				IntegerForLoopExplorer currentMap(Result.Context, *this,
-												  std::vector<const Stmt *>(), IntegerForLoop->getBody(), startValue,
-												  endValue,
+												  std::vector<const Stmt *>(), IntegerForLoop->getBody(), start_expr,
+												  end_expr,
 												  InitVar);
 				currentMap.TraverseStmt(const_cast<Stmt *>(IntegerForLoop->getBody()));
 				currentMap.appendForLoopList();

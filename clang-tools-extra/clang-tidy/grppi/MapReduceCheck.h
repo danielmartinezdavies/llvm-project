@@ -703,16 +703,16 @@ namespace clang {
 				}
 
 				//Transformation
-				virtual int getArrayBeginOffset() const {
-					return 0;
+				virtual std::string getArrayBeginOffset() const {
+					return "";
+				}
+
+				virtual std::string getArrayEndOffset() const {
+					return "";
 				}
 
 				virtual std::string getArrayEndString() const {
 					return "std::end(";
-				}
-
-				virtual int getArrayEndOffset() const {
-					return 0;
 				}
 
 				virtual bool isVariableUsedInArraySubscript(DeclRefExpr *dre) {
@@ -780,18 +780,18 @@ namespace clang {
 					}
 					return "";
 				}
-
+				/*
+				 * Gets the beginning offset as a string in order to obtain the correct iterator as the starting point
+				 */
 				std::string getStartOffsetString(){
-					std::string startOffsetString = "";
-					if (getArrayBeginOffset() != 0)
-						startOffsetString = " + " + std::to_string(getArrayBeginOffset());
-					return startOffsetString;
+					std::string result = getArrayBeginOffset();
+					if(result == "") return "";
+					return " + " + result;
 				}
 				std::string getEndOffsetString(){
-					std::string endOffsetString = "";
-					if (getArrayEndOffset() != 0)
-						endOffsetString = " + " + std::to_string(getArrayEndOffset());
-					return endOffsetString;
+					std::string result = getArrayEndOffset();
+					if(result == "") return "";
+					return " + " + result;
 				}
 
 
@@ -1059,13 +1059,15 @@ namespace clang {
 				std::vector<CustomArray> readArraySubscriptList;
 				std::vector<CustomArray> writeArraySubscriptList;
 
-				int start = 0, end = 0;
+				const Expr* start_expr;
+				const Expr *end_expr;
+
 				public:
 				IntegerForLoopExplorer(ASTContext *Context, ClangTidyCheck &Check,
 									   std::vector<const Stmt *> visitedForLoopList,
-									   const Stmt *visitingForStmtBody, int start, int end, const VarDecl *iterator)
-						: LoopExplorer(Context, Check, visitedForLoopList, visitingForStmtBody, iterator), start(start),
-						  end(end) {}
+									   const Stmt *visitingForStmtBody, const Expr* start_expr, const Expr* end_expr, const VarDecl *iterator)
+						: LoopExplorer(Context, Check, visitedForLoopList, visitingForStmtBody, iterator), start_expr(start_expr),
+						  end_expr(end_expr) {}
 
 				IntegerForLoopExplorer(
 						ASTContext *Context, ClangTidyCheck &Check,
@@ -1083,13 +1085,16 @@ namespace clang {
 
 				bool isVariableUsedInArraySubscript(DeclRefExpr *dre) override;
 
-				int getArrayBeginOffset() const override;
+				std::string getArrayBeginOffset() const override;
+
+				std::string getArrayEndOffset() const override;
 
 				std::string getArrayEndString() const override;
 
-				int getArrayEndOffset() const override;
-
 				std::string getEndInputAsString(const DeclRefExpr *inputName) override;
+
+				std::unique_ptr<int> getStartValue();
+				std::unique_ptr<int> getEndValue();
 
 				bool VisitArray(CustomArray);
 
