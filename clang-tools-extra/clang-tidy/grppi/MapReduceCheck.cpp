@@ -231,7 +231,7 @@ namespace clang {
 				return 0;
 			}
 			bool IntegerForLoopExplorer::addToReadArraySubscriptList(CustomArray array, ASTContext *context) {
-				if (isValidArraySubscript(array) == 3) return false;
+				if (isValidArraySubscript(array) == 3 || isValidArraySubscript(array) == -1) return false;
 				const Expr *base = array.getBase();
 				const Expr *index = array.getIndex();
 				for (CustomArray write_array : writeArraySubscriptList) {
