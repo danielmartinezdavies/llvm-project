@@ -130,6 +130,20 @@ namespace clang {
 				return nullptr;
 			}
 
+
+			bool IntegerForLoopExplorer::isRequiredMinSize(){
+				std::unique_ptr<int> start, end;
+				start = getStartValue();
+				end = getEndValue();
+
+				if(start != nullptr && end != nullptr){
+					if(*end - *start < LoopSizeMin){
+						return false;
+					}
+				}
+				return true;
+			}
+
 			bool IntegerForLoopExplorer::VisitArray(CustomArray array) {
 				const DeclRefExpr *base = getPointer(array.getOriginal());
 				if (isa<ArraySubscriptExpr>(array.getOriginal())) {
@@ -463,6 +477,11 @@ namespace clang {
 				return output->getNameInfo().getName().getAsString();
 			}
 
+
+
+			//MapReduceCheck
+
+
 //
 // Matcher
 //
@@ -582,7 +601,7 @@ namespace clang {
 				IntegerForLoopExplorer currentMap(Result.Context, *this,
 												  std::vector<const Stmt *>(), IntegerForLoop->getBody(), start_expr,
 												  end_expr,
-												  InitVar);
+												  InitVar, IntegerForLoopSizeMin);
 				currentMap.TraverseStmt(const_cast<Stmt *>(IntegerForLoop->getBody()));
 				currentMap.appendForLoopList();
 				addDiagnostic(currentMap, IntegerForLoop);
@@ -630,6 +649,8 @@ namespace clang {
 					addDiagnostic(currentMap, rangeForLoop);
 				}
 			}
+
+
 			void MapReduceCheck::check(const MatchFinder::MatchResult &Result) {
 				// FIXME: Add callback implementation.
 
@@ -647,6 +668,11 @@ namespace clang {
 				if (rangeForLoop != nullptr) {
 					ProcessRangeForLoop(rangeForLoop, Result);
 				}
+			}
+
+			void MapReduceCheck::storeOptions(
+					ClangTidyOptions::OptionMap &Opts) {
+				Options.store(Opts, "IntegerForLoopSizeMin", IntegerForLoopSizeMin);
 			}
 
 

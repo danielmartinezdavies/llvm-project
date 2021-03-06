@@ -118,7 +118,7 @@ namespace clang {
 			class MapReduceCheck : public ClangTidyCheck {
 				public:
 				MapReduceCheck(StringRef name, ClangTidyContext *context)
-						: ClangTidyCheck(name, context) {}
+						: ClangTidyCheck(name, context), IntegerForLoopSizeMin(Options.get("IntegerForLoopSizeMin", 0)) {}
 
 				void registerMatchers(ast_matchers::MatchFinder *Finder) override;
 
@@ -127,6 +127,8 @@ namespace clang {
 					std::unique_ptr<Prep> prep_callback(new Prep(SM));
 					PP->addPPCallbacks(std::move(prep_callback));
 				}
+
+				void storeOptions(ClangTidyOptions::OptionMap &Opts) override;
 
 				void check(const ast_matchers::MatchFinder::MatchResult &Result) override;
 
@@ -155,6 +157,8 @@ namespace clang {
 						diag(loop->getBeginLoc(), "No parallelization possible.");
 					}
 				}
+				private:
+				const uint64_t IntegerForLoopSizeMin;
 			};
 
 			class Pattern {
@@ -1062,12 +1066,16 @@ namespace clang {
 				const Expr* start_expr;
 				const Expr *end_expr;
 
+				const uint64_t LoopSizeMin = 0;
+
 				public:
 				IntegerForLoopExplorer(ASTContext *Context, ClangTidyCheck &Check,
 									   std::vector<const Stmt *> visitedForLoopList,
-									   const Stmt *visitingForStmtBody, const Expr* start_expr, const Expr* end_expr, const VarDecl *iterator)
+									   const Stmt *visitingForStmtBody, const Expr* start_expr, const Expr* end_expr, const VarDecl *iterator, const uint64_t LoopSizeMin)
 						: LoopExplorer(Context, Check, visitedForLoopList, visitingForStmtBody, iterator), start_expr(start_expr),
-						  end_expr(end_expr) {}
+						  end_expr(end_expr), LoopSizeMin(LoopSizeMin) {
+					if(!isRequiredMinSize()) parallelizable = false;
+				}
 
 				IntegerForLoopExplorer(
 						ASTContext *Context, ClangTidyCheck &Check,
@@ -1084,6 +1092,8 @@ namespace clang {
 				bool HandleArrayMapAssignment(CustomArray);
 
 				bool isVariableUsedInArraySubscript(DeclRefExpr *dre) override;
+
+				bool isRequiredMinSize();
 
 				std::string getArrayBeginOffset() const override;
 
