@@ -21,9 +21,8 @@ namespace clang {
 
 			template<typename... CheckTypes>
 			std::string
-			runCheckOnFile(const Twine &File, const Twine &Path, std::vector <ClangTidyError> *Errors = nullptr,
-						   ArrayRef <std::string> ExtraArgs = None,
-						   const ClangTidyOptions &ExtraOptions = ClangTidyOptions()) {
+			runCheckOnFile(const Twine &File, const Twine &Path, const ClangTidyOptions &ExtraOptions = ClangTidyOptions(),
+				  std::vector <ClangTidyError> *Errors = nullptr, ArrayRef <std::string> ExtraArgs = None) {
 				static_assert(sizeof...(CheckTypes) > 0, "No checks specified");
 				const Twine &Filename = Path + File;
 				ClangTidyOptions Options = ExtraOptions;
