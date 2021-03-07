@@ -27,11 +27,20 @@ namespace clang {
 	namespace tidy {
 		namespace test {
 
-
 			//
 			//Map
 			//
 			//Integer for loop
+
+			// Write to variable declared outside the for loop.
+			TEST(MapCheckTest, IntegerLoopWriteGlobalVariable) {
+				std::string Expected = "";
+
+				std::string Code = runCheckOnFile<MapReduceCheck>("MapIntegerLoopWriteGlobalVariable.cpp", test_path);
+				removeSpaces(Code, Expected);
+				EXPECT_EQ(Code, Expected);
+			}
+
 			TEST(MapCheckTest, IntegerLoopArrayOutput) {
 				std::string Expected = "grppi::map(grppi::dynamic_execution(), array, 10, array, [=](auto grppi_array){return  0;});\n";
 
