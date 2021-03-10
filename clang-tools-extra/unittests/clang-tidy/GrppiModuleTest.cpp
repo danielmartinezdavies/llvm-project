@@ -301,6 +301,53 @@ namespace clang {
 			}
 
 
+			//Range
+			TEST(ReduceCheckTest, RangeLoopVectorInputCompoundAddition) {
+				std::string Expected = "k += grppi::reduce(grppi::dynamic_execution(), elem, 0L, [=](auto x, auto y){return x+y;});\n";
+
+				std::string Code = runCheckOnFile<MapReduceCheck>("ReduceRangeLoopVectorInputCompoundAddition.cpp",
+																  test_path);
+				removeSpaces(Code, Expected);
+				EXPECT_EQ(Code, Expected);
+			}
+
+			TEST(ReduceCheckTest, RangeLoopVectorInputAdditionLeft) {
+				std::string Expected = "k += grppi::reduce(grppi::dynamic_execution(), elem, 0L, [=](auto x, auto y){return x+y;});\n";
+
+				std::string Code = runCheckOnFile<MapReduceCheck>("ReduceRangeLoopVectorInputAdditionLeft.cpp",
+																  test_path);
+				removeSpaces(Code, Expected);
+				EXPECT_EQ(Code, Expected);
+			}
+
+			TEST(ReduceCheckTest, RangeLoopVectorInputAdditionRight) {
+				std::string Expected = "k += grppi::reduce(grppi::dynamic_execution(), elem, 0L, [=](auto x, auto y){return x+y;});\n";
+
+				std::string Code = runCheckOnFile<MapReduceCheck>("ReduceRangeLoopVectorInputAdditionRight.cpp",
+																  test_path);
+				removeSpaces(Code, Expected);
+				EXPECT_EQ(Code, Expected);
+			}
+
+			TEST(ReduceCheckTest, RangeLoopVectorInputCompoundAdditionFloat) {
+				std::string Expected = "";
+
+				std::string Code = runCheckOnFile<MapReduceCheck>(
+						"ReduceRangeLoopVectorInputCompoundAdditionFloat.cpp", test_path);
+				removeSpaces(Code, Expected);
+				EXPECT_EQ(Code, Expected);
+			}
+
+			TEST(ReduceCheckTest, RangeLoopVectorInputCompoundMultiplication) {
+				std::string Expected = "k *= grppi::reduce(grppi::dynamic_execution(), elem, 1L, [=](auto x, auto y){return x*y;});\n";
+
+				std::string Code = runCheckOnFile<MapReduceCheck>(
+						"ReduceRangeLoopVectorInputCompoundMultiplication.cpp", test_path);
+				removeSpaces(Code, Expected);
+				EXPECT_EQ(Code, Expected);
+			}
+
+
 		} // namespace test
 	} // namespace tidy
 } // namespace clang

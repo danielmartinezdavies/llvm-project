@@ -639,22 +639,24 @@ namespace clang {
 										RHS_BO->getOpcode() == BO_Mul) {
 
 										// invariant = invariant + i;
-										if (auto *read = dyn_cast<DeclRefExpr>(
-												RHS_BO->getLHS()->IgnoreParenImpCasts())) {
-											if (Functions::isSameVariable(write->getFoundDecl()->getDeclName(),
-																		  read->getFoundDecl()->getDeclName())) {
-												if (isLoopElem(RHS_BO->getRHS()))
-													return new Reduce({RHS_BO->getRHS()}, write, RHS_BO, BO);
+										if (isLoopElem(RHS_BO->getRHS())) {
+											if (auto *read = dyn_cast<DeclRefExpr>(
+													RHS_BO->getLHS()->IgnoreParenImpCasts())) {
+												if (Functions::isSameVariable(write->getFoundDecl()->getDeclName(),
+																			  read->getFoundDecl()->getDeclName())) {
+														return new Reduce({RHS_BO->getRHS()}, write, RHS_BO, BO);
+												}
 											}
 										}
-											// invariant = i + invariant;
-										else if (auto *read = dyn_cast<DeclRefExpr>(
-												RHS_BO->getRHS()->IgnoreParenImpCasts())) {
-											if (Functions::isSameVariable(write->getFoundDecl()->getDeclName(),
-																		  read->getFoundDecl()->getDeclName())) {
+										// invariant = i + invariant;
+										else if (isLoopElem(RHS_BO->getLHS())){
+											if (auto *read = dyn_cast<DeclRefExpr>(
+													RHS_BO->getRHS()->IgnoreParenImpCasts())) {
+												if (Functions::isSameVariable(write->getFoundDecl()->getDeclName(),
+																			  read->getFoundDecl()->getDeclName())) {
+														return new Reduce({RHS_BO->getLHS()}, write, RHS_BO, BO);
 
-												if (isLoopElem(RHS_BO->getLHS()))
-													return new Reduce({RHS_BO->getLHS()}, write, RHS_BO, BO);
+												}
 											}
 										}
 									}
