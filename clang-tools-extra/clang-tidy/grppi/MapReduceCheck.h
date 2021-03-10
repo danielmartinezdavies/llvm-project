@@ -37,7 +37,7 @@ namespace clang {
 
 			static std::vector<const Stmt *> forLoopList;
 
-			namespace LoopConstant{
+			namespace LoopConstant {
 				static std::string startElement = "grppi_";
 			}
 			namespace Functions {
@@ -104,7 +104,7 @@ namespace clang {
 												bool IsAngled, CharSourceRange FilenameRange, const FileEntry *File,
 												StringRef SearchPath,
 												StringRef RelativePath, const Module *Imported,
-												SrcMgr::CharacteristicKind FileType) override{
+												SrcMgr::CharacteristicKind FileType) override {
 
 					std::string include_text = Lexer::getSourceText(FilenameRange, SM,
 																	LangOptions()).str();
@@ -118,7 +118,8 @@ namespace clang {
 			class MapReduceCheck : public ClangTidyCheck {
 				public:
 				MapReduceCheck(StringRef name, ClangTidyContext *context)
-						: ClangTidyCheck(name, context), IntegerForLoopSizeMin(Options.get("IntegerForLoopSizeMin", 0)) {}
+						: ClangTidyCheck(name, context),
+						  IntegerForLoopSizeMin(Options.get("IntegerForLoopSizeMin", 0)) {}
 
 				void registerMatchers(ast_matchers::MatchFinder *Finder) override;
 
@@ -157,14 +158,16 @@ namespace clang {
 						diag(loop->getBeginLoc(), "No parallelization possible.");
 					}
 				}
+
 				private:
 				const uint64_t IntegerForLoopSizeMin;
 			};
 
 			class Pattern {
 				public:
-				Pattern( std::vector<const Expr *> Input, const Expr *Output)
-				:  Input(Input), Output(Output) {}
+				Pattern(std::vector<const Expr *> Input, const Expr *Output)
+						: Input(Input), Output(Output) {}
+
 				std::vector<const Expr *> Input;
 				const Expr *Output;
 			};
@@ -173,30 +176,31 @@ namespace clang {
 				public:
 				Map(std::vector<const Expr *> Element, std::vector<const Expr *> Input, const Expr *Output,
 					Expr *mapFunction)
-						:  Pattern(Input, Output) ,Element(Element), mapFunction(mapFunction){}
+						: Pattern(Input, Output), Element(Element), mapFunction(mapFunction) {}
 
 				bool addElement(const Expr *expr, ASTContext *Context);
 
 				bool isWithin(const Expr *expr, ASTContext *Context) const;
 
-				BinaryOperator* getBinaryOperator() const;
+				BinaryOperator *getBinaryOperator() const;
 
 				bool isCompoundAssignmentBO() const;
 
-				std::string getOperatorAsString(SourceManager&) const;
+				std::string getOperatorAsString(SourceManager &) const;
 
 				std::vector<const Expr *> Element;
 
 				Expr *mapFunction;
 			};
 
-			class Reduce : public Pattern{
+			class Reduce : public Pattern {
 				public:
-				Reduce(std::vector<const Expr *> Input, const Expr* Output, const BinaryOperator* binary_operator, const Expr* original_expr)
-					:   Pattern(Input, Output),binary_operator(binary_operator), original_expr(original_expr){}
+				Reduce(std::vector<const Expr *> Input, const Expr *Output, const BinaryOperator *binary_operator,
+					   const Expr *original_expr)
+						: Pattern(Input, Output), binary_operator(binary_operator), original_expr(original_expr) {}
 
-				const BinaryOperator* binary_operator;
-				const Expr* original_expr;
+				const BinaryOperator *binary_operator;
+				const Expr *original_expr;
 
 				std::string getOperatorAsString() const;
 
@@ -399,7 +403,7 @@ namespace clang {
 						isValidWrite(UO->getSubExpr());
 						return true;
 					} else if (UO->getOpcode() == UO_Deref) {
-						if(!isMapAssignment(UO->IgnoreParenImpCasts())){parallelizable = false;}
+						if (!isMapAssignment(UO->IgnoreParenImpCasts())) { parallelizable = false; }
 
 
 					}
@@ -411,7 +415,6 @@ namespace clang {
 					//'=' assign operator
 					//'+=', etc
 					// BO->getOverloadedOperator(BO->getOpcode());getBeginLoc()
-
 					if (BO->isAssignmentOp()) {
 						// write variables
 						Expr *LHS = BO->getLHS();
@@ -510,6 +513,7 @@ namespace clang {
 
 				const DeclRefExpr *getPointer(const Expr *S) {
 					if (const auto *DRE = dyn_cast<DeclRefExpr>(S->IgnoreParenImpCasts())) {
+
 						if (DRE->getDecl() != nullptr) {
 							return DRE;
 						}
@@ -518,10 +522,12 @@ namespace clang {
 						return getPointer(ase->getBase());
 					} else if (const auto *UO =
 							dyn_cast<UnaryOperator>(S->IgnoreParenImpCasts())) {
+
 						return getPointer(UO->getSubExpr());
 					} else if (const auto *OO =
 							dyn_cast<CXXOperatorCallExpr>(S->IgnoreParenImpCasts())) {
-						if (OO->getOperator() == OO_Subscript) {
+						if (OO->getOperator() == OO_Subscript || OO->getOperator() == OO_Star) {
+
 							return getPointer(OO->getArg(0));
 						}
 					}
@@ -608,7 +614,7 @@ namespace clang {
 
 				virtual bool isLoopElem(Expr *write) = 0;
 
-				Reduce* isReduceAssignment(const BinaryOperator *BO) {
+				Reduce *isReduceAssignment(const BinaryOperator *BO) {
 					Expr *LHS = BO->getLHS();
 					if (auto *write =
 							dyn_cast<DeclRefExpr>(LHS->IgnoreParenImpCasts())) {
@@ -618,6 +624,7 @@ namespace clang {
 							if (BO->isCompoundAssignmentOp()) {
 								if (BO->getOpcode() == BO_AddAssign ||
 									BO->getOpcode() == BO_MulAssign) {
+
 									if (isLoopElem(BO->getRHS()))
 										return new Reduce({BO->getRHS()}, write, BO, BO);
 								}
@@ -640,7 +647,7 @@ namespace clang {
 													return new Reduce({RHS_BO->getRHS()}, write, RHS_BO, BO);
 											}
 										}
-										// invariant = i + invariant;
+											// invariant = i + invariant;
 										else if (auto *read = dyn_cast<DeclRefExpr>(
 												RHS_BO->getRHS()->IgnoreParenImpCasts())) {
 											if (Functions::isSameVariable(write->getFoundDecl()->getDeclName(),
@@ -723,26 +730,28 @@ namespace clang {
 					return true;
 				}
 
-				virtual std::string getMultipleInputTransformation(){
+				virtual std::string getMultipleInputTransformation() {
 					return "std::make_tuple( ";
 				}
+
 				virtual std::string getBeginInputAsString(const DeclRefExpr *inputName) {
-					return  getBeginInputTransformation(inputName) +
+					return getBeginInputTransformation(inputName) +
 						   inputName->getNameInfo().getName().getAsString()
 						   + getCloseBeginInputTransformation(inputName) + getStartOffsetString();
 				}
 
 				virtual std::string getEndInputAsString(const DeclRefExpr *inputName) {
-					return  getEndInputTransformation(inputName) +
+					return getEndInputTransformation(inputName) +
 						   inputName->getNameInfo().getName().getAsString()
 						   + getCloseEndInputTransformation(inputName) + getEndOffsetString();
 				}
 
-				virtual std::string getOutputAsString(const DeclRefExpr *output){
+				virtual std::string getOutputAsString(const DeclRefExpr *output) {
 					return getBeginInputTransformation(output) +
 						   output->getNameInfo().getName().getAsString()
 						   + getCloseBeginInputTransformation(output) + getStartOffsetString();;
 				}
+
 				/*
 				 * Gets beginning iterator for inputs that are not pointers
 				 *
@@ -769,7 +778,8 @@ namespace clang {
 				 * Integer for loops have their own ending
 				 **/
 				std::string getEndInputTransformation(const DeclRefExpr *expr) {
-					if (!expr->getType()->isPointerType()) {
+
+					if (expr != nullptr && !expr->getType()->isPointerType()) {
 						return getArrayEndString();
 					}
 					return "";
@@ -784,17 +794,19 @@ namespace clang {
 					}
 					return "";
 				}
+
 				/*
 				 * Gets the beginning offset as a string in order to obtain the correct iterator as the starting point
 				 */
-				std::string getStartOffsetString(){
+				std::string getStartOffsetString() {
 					std::string result = getArrayBeginOffset();
-					if(result == "") return "";
+					if (result == "") return "";
 					return " + " + result;
 				}
-				std::string getEndOffsetString(){
+
+				std::string getEndOffsetString() {
 					std::string result = getArrayEndOffset();
-					if(result == "") return "";
+					if (result == "") return "";
 					return " + " + result;
 				}
 
@@ -824,12 +836,18 @@ namespace clang {
 					}
 					return transformation;
 				}
+
 				std::string getPatternTransformationInputEnd(const Pattern &pattern) {
+					if(pattern.Input.empty()) return "no input";
 					const Expr *input = pattern.Input[0];
+					if(input == nullptr) return "no input";
+
 					const DeclRefExpr *inputName = getPointer(input);
+					if(inputName == nullptr) return "no input";
+
 					std::string transformation = "";
 					std::string endInput = getEndInputAsString(inputName);
-					if(endInput != ""){
+					if (endInput != "") {
 						transformation += ", " + endInput;
 					}
 
@@ -851,8 +869,8 @@ namespace clang {
 				std::string getMapTransformationLambdaParameters(const std::vector<Map>::iterator &map) {
 					std::string transformation = ", [=](";
 
-					if(map->isCompoundAssignmentBO()) {
-						if(!Functions::hasElement(map->Input, map->Output)){
+					if (map->isCompoundAssignmentBO()) {
+						if (!Functions::hasElement(map->Input, map->Output)) {
 							map->Input.push_back(map->Output);
 						}
 					}
@@ -916,23 +934,23 @@ namespace clang {
 					}
 
 
-					if(map->isCompoundAssignmentBO()) {
+					if (map->isCompoundAssignmentBO()) {
 						const DeclRefExpr *output = getPointer(map->Output);
 						if (output == nullptr)
 							return "output null";
 						std::string end_lambda = " ) " + map->getOperatorAsString(SM) + " " +
-												 LoopConstant::startElement + output->getNameInfo().getName().getAsString();
+												 LoopConstant::startElement +
+												 output->getNameInfo().getName().getAsString();
 						rewriter.InsertTextAfter(Lexer::getLocForEndOfToken(map->mapFunction->getEndLoc(),
-																			offset, SM, LangOptions()),  end_lambda);
+																			offset, SM, LangOptions()), end_lambda);
 					}
 
 					std::string to_insert = "return ";
-					if(map->isCompoundAssignmentBO()) {
+					if (map->isCompoundAssignmentBO()) {
 						to_insert += "(";
 					}
 					rewriter.InsertTextBefore(
 							map->mapFunction->getBeginLoc().getLocWithOffset(offset), to_insert);
-
 
 
 					mapLambda = rewriter.getRewrittenText(
@@ -946,7 +964,8 @@ namespace clang {
 					return transformation;
 				}
 
-				std::string getReduceTransformationLambdaBody(const std::vector<Reduce>::iterator &reduce, SourceManager &SM) {
+				std::string
+				getReduceTransformationLambdaBody(const std::vector<Reduce>::iterator &reduce, SourceManager &SM) {
 					std::string mapLambda = "";
 
 					Rewriter rewriter(SM, LangOptions());
@@ -1003,7 +1022,7 @@ namespace clang {
 
 						//Lambda body
 						std::string mapLambda = getMapTransformationLambdaBody(map, SM);
-						transformation +=  mapLambda + ");\n";
+						transformation += mapLambda + ");\n";
 
 						//End of current map translation
 						PastMapList.push_back(*map);
@@ -1017,15 +1036,16 @@ namespace clang {
 				}
 
 				//TODO: test
-				std::string getReduceTransformation(){
+				std::string getReduceTransformation() {
 					std::string transformation;
 					SourceManager &SM = Context->getSourceManager();
 					std::vector<Reduce> PastReduceList;
-					for (std::vector<Reduce>::iterator reduce = ReduceList.begin(); reduce != ReduceList.end(); reduce++) {
+					for (std::vector<Reduce>::iterator reduce = ReduceList.begin();
+						 reduce != ReduceList.end(); reduce++) {
 						std::string variable = "";
 						const DeclRefExpr *dre = getPointer(reduce->Output);
 						if (dre != nullptr) {
-							 variable = dre->getNameInfo().getAsString();
+							variable = dre->getNameInfo().getAsString();
 						}
 						transformation += variable + " " + reduce->getOperatorAsString() + "= ";
 						transformation += "grppi::reduce(grppi::dynamic_execution()";
@@ -1044,7 +1064,7 @@ namespace clang {
 
 						//Lambda body
 						std::string reduceLambda = getReduceTransformationLambdaBody(reduce, SM);
-						transformation +=  reduceLambda + ");\n";
+						transformation += reduceLambda + ");\n";
 
 						//End of current map translation
 						PastReduceList.push_back(*reduce);
@@ -1063,7 +1083,7 @@ namespace clang {
 				std::vector<CustomArray> readArraySubscriptList;
 				std::vector<CustomArray> writeArraySubscriptList;
 
-				const Expr* start_expr;
+				const Expr *start_expr;
 				const Expr *end_expr;
 
 				const uint64_t LoopSizeMin = 0;
@@ -1071,10 +1091,12 @@ namespace clang {
 				public:
 				IntegerForLoopExplorer(ASTContext *Context, ClangTidyCheck &Check,
 									   std::vector<const Stmt *> visitedForLoopList,
-									   const Stmt *visitingForStmtBody, const Expr* start_expr, const Expr* end_expr, const VarDecl *iterator, const uint64_t LoopSizeMin)
-						: LoopExplorer(Context, Check, visitedForLoopList, visitingForStmtBody, iterator), start_expr(start_expr),
+									   const Stmt *visitingForStmtBody, const Expr *start_expr, const Expr *end_expr,
+									   const VarDecl *iterator, const uint64_t LoopSizeMin)
+						: LoopExplorer(Context, Check, visitedForLoopList, visitingForStmtBody, iterator),
+						  start_expr(start_expr),
 						  end_expr(end_expr), LoopSizeMin(LoopSizeMin) {
-					if(!isRequiredMinSize()) parallelizable = false;
+					if (!isRequiredMinSize()) parallelizable = false;
 				}
 
 				IntegerForLoopExplorer(
@@ -1104,6 +1126,7 @@ namespace clang {
 				std::string getEndInputAsString(const DeclRefExpr *inputName) override;
 
 				std::unique_ptr<int> getStartValue();
+
 				std::unique_ptr<int> getEndValue();
 
 				bool VisitArray(CustomArray);
@@ -1144,6 +1167,7 @@ namespace clang {
 										 const DeclRefExpr *traversalArray)
 						: LoopExplorer(Context, Check, visitedForLoopList, visitingForStmtBody, iterator),
 						  Output(traversalArray) {
+
 				}
 
 				ContainerForLoopExplorer(
@@ -1173,8 +1197,11 @@ namespace clang {
 				const Expr *getOutput(Expr *write) override;
 
 				std::string getMultipleInputTransformation() override;
+
 				std::string getBeginInputAsString(const DeclRefExpr *inputName) override;
+
 				std::string getEndInputAsString(const DeclRefExpr *inputName) override;
+
 				std::string getOutputAsString(const DeclRefExpr *output) override;
 
 				public:

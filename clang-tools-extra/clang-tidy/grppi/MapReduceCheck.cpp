@@ -80,6 +80,8 @@ namespace clang {
 				return "No identity";
 			}
 
+
+
 			//IntegerForLoop
 			const Expr *IntegerForLoopExplorer::getOutput(Expr *write) {
 				return write;
@@ -419,6 +421,9 @@ namespace clang {
 			const Expr *ContainerForLoopExplorer::getOutput(Expr *write) {
 				return Output;
 			}
+
+
+
 			//Range For Loop
 			bool RangeForLoopExplorer::VisitDeclRefExpr(DeclRefExpr *DRE) {
 				bool continueExploring = LoopExplorer::VisitDeclRefExpr(DRE);

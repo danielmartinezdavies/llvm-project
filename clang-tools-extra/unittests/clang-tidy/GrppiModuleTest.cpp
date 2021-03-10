@@ -254,6 +254,52 @@ namespace clang {
 				EXPECT_EQ(Code, Expected);
 			}
 
+			//Container
+			TEST(ReduceCheckTest, ContainerLoopVectorInputCompoundAddition) {
+				std::string Expected = "k += grppi::reduce(grppi::dynamic_execution(), std::begin(i), std::end(i), 0L, [=](auto x, auto y){return x+y;});\n";
+
+				std::string Code = runCheckOnFile<MapReduceCheck>("ReduceContainerLoopVectorInputCompoundAddition.cpp",
+																  test_path);
+				removeSpaces(Code, Expected);
+				EXPECT_EQ(Code, Expected);
+			}
+
+			TEST(ReduceCheckTest, ContainerLoopVectorInputAdditionLeft) {
+				std::string Expected = "k += grppi::reduce(grppi::dynamic_execution(), std::begin(i), std::end(i), 0L, [=](auto x, auto y){return x+y;});\n";
+
+				std::string Code = runCheckOnFile<MapReduceCheck>("ReduceContainerLoopVectorInputAdditionLeft.cpp",
+																  test_path);
+				removeSpaces(Code, Expected);
+				EXPECT_EQ(Code, Expected);
+			}
+
+			TEST(ReduceCheckTest, ContainerLoopVectorInputAdditionRight) {
+				std::string Expected = "k += grppi::reduce(grppi::dynamic_execution(), std::begin(i), std::end(i), 0L, [=](auto x, auto y){return x+y;});\n";
+
+				std::string Code = runCheckOnFile<MapReduceCheck>("ReduceContainerLoopVectorInputAdditionRight.cpp",
+																  test_path);
+				removeSpaces(Code, Expected);
+				EXPECT_EQ(Code, Expected);
+			}
+
+			TEST(ReduceCheckTest, ContainerLoopVectorInputCompoundAdditionFloat) {
+				std::string Expected = "";
+
+				std::string Code = runCheckOnFile<MapReduceCheck>(
+						"ReduceContainerLoopVectorInputCompoundAdditionFloat.cpp", test_path);
+				removeSpaces(Code, Expected);
+				EXPECT_EQ(Code, Expected);
+			}
+
+			TEST(ReduceCheckTest, ContainerLoopVectorInputCompoundMultiplication) {
+				std::string Expected = "k *= grppi::reduce(grppi::dynamic_execution(), std::begin(i), std::end(i), 1L, [=](auto x, auto y){return x*y;});\n";
+
+				std::string Code = runCheckOnFile<MapReduceCheck>(
+						"ReduceContainerLoopVectorInputCompoundMultiplication.cpp", test_path);
+				removeSpaces(Code, Expected);
+				EXPECT_EQ(Code, Expected);
+			}
+
 
 		} // namespace test
 	} // namespace tidy
