@@ -83,7 +83,7 @@ namespace clang {
 
 
 			//IntegerForLoop
-			const Expr *IntegerForLoopExplorer::getOutput(Expr *write) {
+			const Expr *IntegerForLoopExplorer::getLoopContainer(Expr *write) {
 				return write;
 			}
 			std::string IntegerForLoopExplorer::getArrayBeginOffset() const {
@@ -419,10 +419,9 @@ namespace clang {
 				}
 				return false;
 			}
-			const Expr *ContainerForLoopExplorer::getOutput(Expr *write) {
-				return Output;
+			const Expr *ContainerForLoopExplorer::getLoopContainer(Expr *write) {
+				return LoopContainer;
 			}
-
 
 
 			//Range For Loop
@@ -464,8 +463,8 @@ namespace clang {
 				}
 				return false;
 			}
-			const Expr *RangeForLoopExplorer::getOutput(Expr *write) {
-				return Output;
+			const Expr *RangeForLoopExplorer::getLoopContainer(Expr *write) {
+				return LoopContainer;
 			}
 
 			std::string RangeForLoopExplorer::getMultipleInputTransformation(){

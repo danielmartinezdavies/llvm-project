@@ -247,7 +247,7 @@ namespace clang {
 
 				virtual ~LoopExplorer() = default;
 
-				const virtual Expr *getOutput(Expr *write) = 0;
+				const virtual Expr *getLoopContainer(Expr *write) = 0;
 
 				public:
 				LoopExplorer(ASTContext *Context, ClangTidyCheck &Check,
@@ -422,7 +422,7 @@ namespace clang {
 						if (r != nullptr) {
 							ReduceList.push_back(*r);
 						} else if (isMapAssignment(LHS)) {
-							Map m(placeHolderMap.Element, placeHolderMap.Input, getOutput(LHS), BO);
+							Map m(placeHolderMap.Element, placeHolderMap.Input, getLoopContainer(LHS), BO);
 							MapList.push_back(m);
 						} else {
 							isValidWrite(LHS);
@@ -626,7 +626,7 @@ namespace clang {
 									BO->getOpcode() == BO_MulAssign) {
 
 									if (isLoopElem(BO->getRHS()))
-										return new Reduce({getOutput(BO->getRHS())}, write, BO, BO);
+										return new Reduce({getLoopContainer(BO->getRHS())}, write, BO, BO);
 								}
 							}
 								// invariant = invariant + i;
@@ -644,7 +644,7 @@ namespace clang {
 													RHS_BO->getLHS()->IgnoreParenImpCasts())) {
 												if (Functions::isSameVariable(write->getFoundDecl()->getDeclName(),
 																			  read->getFoundDecl()->getDeclName())) {
-														return new Reduce({getOutput(RHS_BO->getRHS())}, write, RHS_BO, BO);
+														return new Reduce({getLoopContainer(RHS_BO->getRHS())}, write, RHS_BO, BO);
 												}
 											}
 										}
@@ -654,7 +654,7 @@ namespace clang {
 													RHS_BO->getRHS()->IgnoreParenImpCasts())) {
 												if (Functions::isSameVariable(write->getFoundDecl()->getDeclName(),
 																			  read->getFoundDecl()->getDeclName())) {
-														return new Reduce({getOutput(RHS_BO->getLHS())}, write, RHS_BO, BO);
+														return new Reduce({getLoopContainer(RHS_BO->getLHS())}, write, RHS_BO, BO);
 												}
 											}
 										}
@@ -1110,7 +1110,7 @@ namespace clang {
 									   visitedFunctionDeclarationList, localVariables,
 									   isThisExprValid, visitingForStmtBody, iterator) {}
 
-				const Expr *getOutput(Expr *write) override;
+				const Expr *getLoopContainer(Expr *write) override;
 
 				bool HandleArrayMapAssignment(CustomArray);
 
@@ -1154,12 +1154,12 @@ namespace clang {
 
 			class ContainerForLoopExplorer : public LoopExplorer<ContainerForLoopExplorer> {
 				protected:
-				const DeclRefExpr *Output = nullptr;
+				const DeclRefExpr *LoopContainer = nullptr;
 				std::vector<DeclRefExpr *> writeList;
 
 				bool isLoopElem(Expr *write) override;
 
-				const Expr *getOutput(Expr *write) override;
+				const Expr *getLoopContainer(Expr *write) override;
 
 				public:
 				ContainerForLoopExplorer(ASTContext *Context, ClangTidyCheck &Check,
@@ -1167,7 +1167,7 @@ namespace clang {
 										 const Stmt *visitingForStmtBody, const VarDecl *iterator,
 										 const DeclRefExpr *traversalArray)
 						: LoopExplorer(Context, Check, visitedForLoopList, visitingForStmtBody, iterator),
-						  Output(traversalArray) {
+						  LoopContainer(traversalArray) {
 
 				}
 
@@ -1188,14 +1188,14 @@ namespace clang {
 
 			class RangeForLoopExplorer : public LoopExplorer<RangeForLoopExplorer> {
 				protected:
-				const DeclRefExpr *Output = nullptr;
+				const DeclRefExpr *LoopContainer = nullptr;
 				std::vector<DeclRefExpr *> writeList;
 
 				DeclRefExpr *isElemDeclRefExpr(Expr *expr);
 
 				bool isLoopElem(Expr *write) override;
 
-				const Expr *getOutput(Expr *write) override;
+				const Expr *getLoopContainer(Expr *write) override;
 
 				std::string getMultipleInputTransformation() override;
 
@@ -1211,7 +1211,7 @@ namespace clang {
 									 const Stmt *visitingForStmtBody, const VarDecl *iterator,
 									 const DeclRefExpr *traversalArray)
 						: LoopExplorer(Context, Check, visitedForLoopList, visitingForStmtBody, iterator),
-						  Output(traversalArray) {
+						  LoopContainer(traversalArray) {
 				}
 
 				RangeForLoopExplorer(
