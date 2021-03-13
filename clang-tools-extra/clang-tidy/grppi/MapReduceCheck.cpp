@@ -339,6 +339,7 @@ namespace clang {
 				}
 				return false;
 			}
+
 			/*
 			 * Checks to see if variable instance was used as index in either readArraySubscriptList and writeArraySubscriptList
 			 * Does not modify parallelizable boolean

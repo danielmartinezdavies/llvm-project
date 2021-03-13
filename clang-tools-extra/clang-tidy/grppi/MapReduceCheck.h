@@ -626,7 +626,7 @@ namespace clang {
 									BO->getOpcode() == BO_MulAssign) {
 
 									if (isLoopElem(BO->getRHS()))
-										return new Reduce({BO->getRHS()}, write, BO, BO);
+										return new Reduce({getOutput(BO->getRHS())}, write, BO, BO);
 								}
 							}
 								// invariant = invariant + i;
@@ -639,23 +639,22 @@ namespace clang {
 										RHS_BO->getOpcode() == BO_Mul) {
 
 										// invariant = invariant + i;
-										if (isLoopElem(RHS_BO->getRHS())) {
+										if (isLoopElem(RHS_BO->getRHS())){
 											if (auto *read = dyn_cast<DeclRefExpr>(
 													RHS_BO->getLHS()->IgnoreParenImpCasts())) {
 												if (Functions::isSameVariable(write->getFoundDecl()->getDeclName(),
 																			  read->getFoundDecl()->getDeclName())) {
-														return new Reduce({RHS_BO->getRHS()}, write, RHS_BO, BO);
+														return new Reduce({getOutput(RHS_BO->getRHS())}, write, RHS_BO, BO);
 												}
 											}
 										}
 										// invariant = i + invariant;
 										else if (isLoopElem(RHS_BO->getLHS())){
-											if (auto *read = dyn_cast<DeclRefExpr>(
+											 if (auto *read = dyn_cast<DeclRefExpr>(
 													RHS_BO->getRHS()->IgnoreParenImpCasts())) {
 												if (Functions::isSameVariable(write->getFoundDecl()->getDeclName(),
 																			  read->getFoundDecl()->getDeclName())) {
-														return new Reduce({RHS_BO->getLHS()}, write, RHS_BO, BO);
-
+														return new Reduce({getOutput(RHS_BO->getLHS())}, write, RHS_BO, BO);
 												}
 											}
 										}
@@ -962,7 +961,7 @@ namespace clang {
 				}
 
 				std::string getReduceTransformationLambdaParameters() {
-					std::string transformation = ", [=](auto x, auto y)";
+					std::string transformation = ", [=](auto "+LoopConstant::startElement+"x, auto " + LoopConstant::startElement + "y)";
 					return transformation;
 				}
 
@@ -994,7 +993,7 @@ namespace clang {
 					rewriter.RemoveText(currentRange);
 					offset -= rewriter.getRangeSize(currentRange);
 
-					std::string to_insert = "return x" + reduce->getOperatorAsString() + "y";
+					std::string to_insert = "return " +LoopConstant::startElement + "x" + reduce->getOperatorAsString() + LoopConstant::startElement+"y";
 
 					rewriter.InsertTextBefore(
 							reduce->original_expr->getBeginLoc().getLocWithOffset(offset), to_insert);

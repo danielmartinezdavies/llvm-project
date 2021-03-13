@@ -210,7 +210,7 @@ namespace clang {
 			//Reduce
 			//
 			TEST(ReduceCheckTest, IntegerLoopArrayInputCompoundAddition) {
-				std::string Expected = "k += grppi::reduce(grppi::dynamic_execution(), array, 10, 0L, [=](auto x, auto y){return x+y;});\n";
+				std::string Expected = "k += grppi::reduce(grppi::dynamic_execution(), array, 10, 0L, [=](auto grppi_x, auto grppi_y){return grppi_x+grppi_y;});\n";
 
 				std::string Code = runCheckOnFile<MapReduceCheck>("ReduceIntegerLoopArrayInputCompoundAddition.cpp",
 																  test_path);
@@ -219,7 +219,7 @@ namespace clang {
 			}
 
 			TEST(ReduceCheckTest, IntegerLoopArrayInputAdditionLeft) {
-				std::string Expected = "k += grppi::reduce(grppi::dynamic_execution(), array, 10, 0L, [=](auto x, auto y){return x+y;});\n";
+				std::string Expected = "k += grppi::reduce(grppi::dynamic_execution(), array, 10, 0L, [=](auto grppi_x, auto grppi_y){return grppi_x+grppi_y;});\n";
 
 				std::string Code = runCheckOnFile<MapReduceCheck>("ReduceIntegerLoopArrayInputAdditionLeft.cpp",
 																  test_path);
@@ -228,7 +228,7 @@ namespace clang {
 			}
 
 			TEST(ReduceCheckTest, IntegerLoopArrayInputAdditionRight) {
-				std::string Expected = "k += grppi::reduce(grppi::dynamic_execution(), array, 10, 0L, [=](auto x, auto y){return x+y;});\n";
+				std::string Expected = "k += grppi::reduce(grppi::dynamic_execution(), array, 10, 0L, [=](auto grppi_x, auto grppi_y){return grppi_x+grppi_y;});\n";
 
 				std::string Code = runCheckOnFile<MapReduceCheck>("ReduceIntegerLoopArrayInputAdditionRight.cpp",
 																  test_path);
@@ -246,7 +246,7 @@ namespace clang {
 			}
 
 			TEST(ReduceCheckTest, IntegerLoopArrayInputCompoundMultiplication) {
-				std::string Expected = "k *= grppi::reduce(grppi::dynamic_execution(), array, 10, 1L, [=](auto x, auto y){return x*y;});\n";
+				std::string Expected = "k *= grppi::reduce(grppi::dynamic_execution(), array, 10, 1L, [=](auto grppi_x, auto grppi_y){return grppi_x*grppi_y;});\n";
 
 				std::string Code = runCheckOnFile<MapReduceCheck>(
 						"ReduceIntegerLoopArrayInputCompoundMultiplication.cpp", test_path);
@@ -256,7 +256,7 @@ namespace clang {
 
 			//Container
 			TEST(ReduceCheckTest, ContainerLoopVectorInputCompoundAddition) {
-				std::string Expected = "k += grppi::reduce(grppi::dynamic_execution(), std::begin(i), std::end(i), 0L, [=](auto x, auto y){return x+y;});\n";
+				std::string Expected = "k += grppi::reduce(grppi::dynamic_execution(), std::begin(a), std::end(a), 0L, [=](auto grppi_x, auto grppi_y){return grppi_x+grppi_y;});\n";
 
 				std::string Code = runCheckOnFile<MapReduceCheck>("ReduceContainerLoopVectorInputCompoundAddition.cpp",
 																  test_path);
@@ -265,7 +265,7 @@ namespace clang {
 			}
 
 			TEST(ReduceCheckTest, ContainerLoopVectorInputAdditionLeft) {
-				std::string Expected = "k += grppi::reduce(grppi::dynamic_execution(), std::begin(i), std::end(i), 0L, [=](auto x, auto y){return x+y;});\n";
+				std::string Expected = "k += grppi::reduce(grppi::dynamic_execution(), std::begin(a), std::end(a), 0L, [=](auto grppi_x, auto grppi_y){return grppi_x+grppi_y;});\n";
 
 				std::string Code = runCheckOnFile<MapReduceCheck>("ReduceContainerLoopVectorInputAdditionLeft.cpp",
 																  test_path);
@@ -274,7 +274,7 @@ namespace clang {
 			}
 
 			TEST(ReduceCheckTest, ContainerLoopVectorInputAdditionRight) {
-				std::string Expected = "k += grppi::reduce(grppi::dynamic_execution(), std::begin(i), std::end(i), 0L, [=](auto x, auto y){return x+y;});\n";
+				std::string Expected = "k += grppi::reduce(grppi::dynamic_execution(), std::begin(a), std::end(a), 0L, [=](auto grppi_x, auto grppi_y){return grppi_x+grppi_y;});\n";
 
 				std::string Code = runCheckOnFile<MapReduceCheck>("ReduceContainerLoopVectorInputAdditionRight.cpp",
 																  test_path);
@@ -292,7 +292,7 @@ namespace clang {
 			}
 
 			TEST(ReduceCheckTest, ContainerLoopVectorInputCompoundMultiplication) {
-				std::string Expected = "k *= grppi::reduce(grppi::dynamic_execution(), std::begin(i), std::end(i), 1L, [=](auto x, auto y){return x*y;});\n";
+				std::string Expected = "k *= grppi::reduce(grppi::dynamic_execution(), std::begin(a), std::end(a), 1L, [=](auto grppi_x, auto grppi_y){return grppi_x*grppi_y;});\n";
 
 				std::string Code = runCheckOnFile<MapReduceCheck>(
 						"ReduceContainerLoopVectorInputCompoundMultiplication.cpp", test_path);
@@ -303,7 +303,7 @@ namespace clang {
 
 			//Range
 			TEST(ReduceCheckTest, RangeLoopVectorInputCompoundAddition) {
-				std::string Expected = "k += grppi::reduce(grppi::dynamic_execution(), elem, 0L, [=](auto x, auto y){return x+y;});\n";
+				std::string Expected = "k += grppi::reduce(grppi::dynamic_execution(), a, 0L, [=](auto grppi_x, auto grppi_y){return grppi_x+grppi_y;});\n";
 
 				std::string Code = runCheckOnFile<MapReduceCheck>("ReduceRangeLoopVectorInputCompoundAddition.cpp",
 																  test_path);
@@ -312,7 +312,7 @@ namespace clang {
 			}
 
 			TEST(ReduceCheckTest, RangeLoopVectorInputAdditionLeft) {
-				std::string Expected = "k += grppi::reduce(grppi::dynamic_execution(), elem, 0L, [=](auto x, auto y){return x+y;});\n";
+				std::string Expected = "k += grppi::reduce(grppi::dynamic_execution(), a, 0L, [=](auto grppi_x, auto grppi_y){return grppi_x+grppi_y;});\n";
 
 				std::string Code = runCheckOnFile<MapReduceCheck>("ReduceRangeLoopVectorInputAdditionLeft.cpp",
 																  test_path);
@@ -321,7 +321,7 @@ namespace clang {
 			}
 
 			TEST(ReduceCheckTest, RangeLoopVectorInputAdditionRight) {
-				std::string Expected = "k += grppi::reduce(grppi::dynamic_execution(), elem, 0L, [=](auto x, auto y){return x+y;});\n";
+				std::string Expected = "k += grppi::reduce(grppi::dynamic_execution(), a, 0L, [=](auto grppi_x, auto grppi_y){return grppi_x+grppi_y;});\n";
 
 				std::string Code = runCheckOnFile<MapReduceCheck>("ReduceRangeLoopVectorInputAdditionRight.cpp",
 																  test_path);
@@ -339,7 +339,7 @@ namespace clang {
 			}
 
 			TEST(ReduceCheckTest, RangeLoopVectorInputCompoundMultiplication) {
-				std::string Expected = "k *= grppi::reduce(grppi::dynamic_execution(), elem, 1L, [=](auto x, auto y){return x*y;});\n";
+				std::string Expected = "k *= grppi::reduce(grppi::dynamic_execution(), a, 1L, [=](auto grppi_x, auto grppi_y){return grppi_x*grppi_y;});\n";
 
 				std::string Code = runCheckOnFile<MapReduceCheck>(
 						"ReduceRangeLoopVectorInputCompoundMultiplication.cpp", test_path);
