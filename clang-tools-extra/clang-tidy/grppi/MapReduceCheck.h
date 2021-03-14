@@ -195,12 +195,16 @@ namespace clang {
 
 			class Reduce : public Pattern {
 				public:
-				Reduce(std::vector<const Expr *> Input, const Expr *Output, const BinaryOperator *binary_operator,
+				Reduce(std::vector<const Expr *> Input, const Expr *Output, std::vector<const Expr *> Element,
+					   const BinaryOperator *binary_operator,
 					   const Expr *original_expr)
-						: Pattern(Input, Output), binary_operator(binary_operator), original_expr(original_expr) {}
+						: Pattern(Input, Output), Element(Element), binary_operator(binary_operator),
+						  original_expr(original_expr) {}
 
+				std::vector<const Expr *> Element;
 				const BinaryOperator *binary_operator;
 				const Expr *original_expr;
+
 
 				std::string getOperatorAsString() const;
 
@@ -612,6 +616,31 @@ namespace clang {
 					return isLoopElem(write);
 				};
 
+				Expr *isReduceCallExpr(const Expr *expr) {
+					if (auto *callexpr =
+							dyn_cast<CallExpr>(expr->IgnoreParenImpCasts())) {
+						if (callexpr->getNumArgs() > 0 && callexpr->getNumArgs() <= 2) {
+							for (auto arg:callexpr->arguments()) {
+								if (isLoopElem(const_cast<Expr *> (arg))) {
+									return const_cast<Expr *>(arg);
+								}
+							}
+						}
+					}
+					return nullptr;
+				}
+
+				std::vector<const Expr *> getReduceElementsFromCallExpr(const Expr *expr) {
+					std::vector<const Expr *> elements{};
+					if (auto *callexpr =
+							dyn_cast<CallExpr>(expr->IgnoreParenImpCasts())) {
+						for (auto arg:callexpr->arguments()) {
+							elements.emplace_back(arg);
+						}
+					}
+					return elements;
+				}
+
 				virtual bool isLoopElem(Expr *write) = 0;
 
 				Reduce *isReduceAssignment(const BinaryOperator *BO) {
@@ -620,13 +649,24 @@ namespace clang {
 							dyn_cast<DeclRefExpr>(LHS->IgnoreParenImpCasts())) {
 						if (write->getType()->isIntegerType() &&
 							!isLocalVariable(write->getFoundDecl()->getDeclName())) {
+
+							//callexpr
+							if (BO->isAssignmentOp() && !BO->isCompoundAssignmentOp()) {
+								Expr *loopElem = isReduceCallExpr(BO->getRHS());
+								if (loopElem != nullptr) {
+									std::vector<const Expr *> elements = getReduceElementsFromCallExpr(BO->getRHS());
+									return new Reduce({getLoopContainer(loopElem)}, write, elements, nullptr, BO);
+								}
+							}
+
+
 							// invariant += i;
 							if (BO->isCompoundAssignmentOp()) {
 								if (BO->getOpcode() == BO_AddAssign ||
 									BO->getOpcode() == BO_MulAssign) {
 
 									if (isLoopElem(BO->getRHS()))
-										return new Reduce({getLoopContainer(BO->getRHS())}, write, BO, BO);
+										return new Reduce({getLoopContainer(BO->getRHS())}, write, {}, BO, BO);
 								}
 							}
 								// invariant = invariant + i;
@@ -639,22 +679,24 @@ namespace clang {
 										RHS_BO->getOpcode() == BO_Mul) {
 
 										// invariant = invariant + i;
-										if (isLoopElem(RHS_BO->getRHS())){
+										if (isLoopElem(RHS_BO->getRHS())) {
 											if (auto *read = dyn_cast<DeclRefExpr>(
 													RHS_BO->getLHS()->IgnoreParenImpCasts())) {
 												if (Functions::isSameVariable(write->getFoundDecl()->getDeclName(),
 																			  read->getFoundDecl()->getDeclName())) {
-														return new Reduce({getLoopContainer(RHS_BO->getRHS())}, write, RHS_BO, BO);
+													return new Reduce({getLoopContainer(RHS_BO->getRHS())}, write, {},
+																	  RHS_BO, BO);
 												}
 											}
 										}
-										// invariant = i + invariant;
-										else if (isLoopElem(RHS_BO->getLHS())){
-											 if (auto *read = dyn_cast<DeclRefExpr>(
+											// invariant = i + invariant;
+										else if (isLoopElem(RHS_BO->getLHS())) {
+											if (auto *read = dyn_cast<DeclRefExpr>(
 													RHS_BO->getRHS()->IgnoreParenImpCasts())) {
 												if (Functions::isSameVariable(write->getFoundDecl()->getDeclName(),
 																			  read->getFoundDecl()->getDeclName())) {
-														return new Reduce({getLoopContainer(RHS_BO->getLHS())}, write, RHS_BO, BO);
+													return new Reduce({getLoopContainer(RHS_BO->getLHS())}, write, {},
+																	  RHS_BO, BO);
 												}
 											}
 										}
@@ -839,12 +881,12 @@ namespace clang {
 				}
 
 				std::string getPatternTransformationInputEnd(const Pattern &pattern) {
-					if(pattern.Input.empty()) return "no input";
+					if (pattern.Input.empty()) return "no input";
 					const Expr *input = pattern.Input[0];
-					if(input == nullptr) return "no input";
+					if (input == nullptr) return "no input";
 
 					const DeclRefExpr *inputName = getPointer(input);
-					if(inputName == nullptr) return "no input";
+					if (inputName == nullptr) return "no input";
 
 					std::string transformation = "";
 					std::string endInput = getEndInputAsString(inputName);
@@ -925,7 +967,6 @@ namespace clang {
 					}
 
 					for (const auto *read:map->Element) {
-
 						const DeclRefExpr *elem = getPointer(read);
 						if (elem != nullptr) {
 							currentRange = SourceRange(read->getSourceRange());
@@ -960,13 +1001,26 @@ namespace clang {
 					return mapLambda;
 				}
 
-				std::string getReduceTransformationLambdaParameters() {
-					std::string transformation = ", [=](auto "+LoopConstant::startElement+"x, auto " + LoopConstant::startElement + "y)";
+				std::string getReduceTransformationLambdaParameters(const std::vector<Reduce>::iterator &reduce) {
+					std::string transformation = ", [=](";
+					int numElem = 0;
+					if (reduce->Element.size() == 2) {
+						for (auto elem : reduce->Element) {
+							if (numElem != 0) transformation += ", ";
+							const DeclRefExpr *name = getPointer(elem);
+							if (name == nullptr) parallelizable = false;
+							else
+								transformation += "auto " + LoopConstant::startElement +
+												  name->getNameInfo().getName().getAsString();
+							numElem++;
+						}
+						transformation += ")";
+					} else
+						transformation += "auto " + LoopConstant::startElement + "x, auto " + LoopConstant::startElement + "y)";
 					return transformation;
 				}
 
-				std::string
-				getReduceTransformationLambdaBody(const std::vector<Reduce>::iterator &reduce, SourceManager &SM) {
+				std::string getReduceTransformationLambdaBody(const std::vector<Reduce>::iterator &reduce, SourceManager &SM) {
 					std::string mapLambda = "";
 
 					Rewriter rewriter(SM, LangOptions());
@@ -986,17 +1040,42 @@ namespace clang {
 						}
 					}
 
-					//remove original reduce expression to be replaced
-					currentRange = SourceRange(
-							reduce->original_expr->getBeginLoc().getLocWithOffset(offset),
-							reduce->original_expr->getEndLoc().getLocWithOffset(offset));
-					rewriter.RemoveText(currentRange);
-					offset -= rewriter.getRangeSize(currentRange);
+					std::string to_insert = "return ";
+					if(reduce->Element.size() == 2){
+						if (auto *BO = dyn_cast<BinaryOperator>(reduce->original_expr->IgnoreParenImpCasts())) {
+							currentRange = SourceRange(
+									BO->getBeginLoc().getLocWithOffset(offset),
+									BO->getOperatorLoc().getLocWithOffset(offset));
+							rewriter.RemoveText(currentRange);
+							offset -= rewriter.getRangeSize(currentRange);
+						}
 
-					std::string to_insert = "return " +LoopConstant::startElement + "x" + reduce->getOperatorAsString() + LoopConstant::startElement+"y";
+						for (const auto *read:reduce->Element) {
+							const DeclRefExpr *elem = getPointer(read);
+							if (elem != nullptr) {
+								currentRange = SourceRange(read->getSourceRange());
+								rewriter.ReplaceText(currentRange,
+													 LoopConstant::startElement + elem->getNameInfo().getAsString());
+							}
+						}
+					}
+					else {
+						//remove original reduce expression to be replaced
+						currentRange = SourceRange(
+								reduce->original_expr->getBeginLoc().getLocWithOffset(offset),
+								reduce->original_expr->getEndLoc().getLocWithOffset(offset));
+						rewriter.RemoveText(currentRange);
+						offset -= rewriter.getRangeSize(currentRange);
+
+
+						to_insert += LoopConstant::startElement + "x" + reduce->getOperatorAsString() +
+									 LoopConstant::startElement + "y";
+					}
 
 					rewriter.InsertTextBefore(
 							reduce->original_expr->getBeginLoc().getLocWithOffset(offset), to_insert);
+
+
 					mapLambda = rewriter.getRewrittenText(
 							visitingForStmtBody->getSourceRange());
 
@@ -1061,7 +1140,7 @@ namespace clang {
 						transformation += ", " + reduce->getIdentityAsString();
 
 						//Parameters for lambda expression
-						transformation += getReduceTransformationLambdaParameters();
+						transformation += getReduceTransformationLambdaParameters(reduce);
 
 						//Lambda body
 						std::string reduceLambda = getReduceTransformationLambdaBody(reduce, SM);

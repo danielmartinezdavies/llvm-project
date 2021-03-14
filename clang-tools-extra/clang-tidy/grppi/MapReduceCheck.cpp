@@ -60,6 +60,7 @@ namespace clang {
 			//TODO: consider implementation of Map::getOperatorAsString
 			//Reduce
 			std::string Reduce::getOperatorAsString() const {
+				if(binary_operator == nullptr) return "operator";
 				if(binary_operator->getOpcode() == BO_AddAssign || binary_operator->getOpcode() == BO_Add){
 					return "+";
 				}
@@ -71,6 +72,7 @@ namespace clang {
 			}
 
 			std::string Reduce::getIdentityAsString() const {
+				if(binary_operator == nullptr) return "\"identity\"";
 				if(binary_operator->getOpcode() == BO_AddAssign || binary_operator->getOpcode() == BO_Add){
 					return "0L";
 				}
