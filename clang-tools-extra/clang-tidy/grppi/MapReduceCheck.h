@@ -141,7 +141,14 @@ namespace clang {
 
 				template<class LoopExplorer, class Loop>
 				void addDiagnostic(LoopExplorer currentMap, Loop loop) {
-					if (currentMap.isReducePattern() && currentMap.isParallelizable()) {
+
+					if(currentMap.isMapReducePattern() && currentMap.isParallelizable()){
+						diag(loop->getBeginLoc(),
+							 "MapReduce pattern detected. Loop can be parallelized.",
+							 DiagnosticIDs::Remark) << FixItHint::CreateReplacement(loop->getSourceRange(),
+																					currentMap.getMapReduceTransformation()) ;
+					}
+					else if (currentMap.isReducePattern()  && !currentMap.isMapPattern() && currentMap.isParallelizable()) {
 						diag(loop->getBeginLoc(),
 							 "Reduce pattern detected. Loop can be parallelized.",
 							 DiagnosticIDs::Remark)
@@ -612,9 +619,23 @@ namespace clang {
 
 				bool isReducePattern() { return !ReduceList.empty(); }
 
+				bool isMapReducePattern() {
+					if(MapList.size() != 1 || ReduceList.size() != 1) return false;
+					Map m = MapList[0];
+					Reduce r = ReduceList[0];
+
+					const DeclRefExpr* mapVar = getPointer(m.Output);
+					const DeclRefExpr* reduceVar = getPointer(r.Input[0]);
+
+					if(Functions::isSameVariable(mapVar->getDecl(), reduceVar->getDecl())) return true;
+
+					return false;
+
+				}
+
 				virtual bool isMapAssignment(Expr *write) {
 					return isLoopElem(write);
-				};
+				}
 
 				Expr *isReduceCallExpr(const Expr *expr) {
 					if (auto *callexpr =
@@ -1115,7 +1136,6 @@ namespace clang {
 					return transformation;
 				}
 
-				//TODO: test
 				std::string getReduceTransformation() {
 					std::string transformation;
 					SourceManager &SM = Context->getSourceManager();
@@ -1155,6 +1175,9 @@ namespace clang {
 							transformation.end());
 
 					return transformation;
+				}
+				std::string getMapReduceTransformation() {
+					return "";
 				}
 			};
 
