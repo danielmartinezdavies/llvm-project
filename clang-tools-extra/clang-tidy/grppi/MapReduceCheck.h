@@ -144,7 +144,7 @@ namespace clang {
 
 					if(currentMap.isMapReducePattern() && currentMap.isParallelizable()){
 						diag(loop->getBeginLoc(),
-							 "MapReduce pattern detected. Loop can be parallelized.",
+							 "MapReduce pattern detected. Loop can be parallelized",
 							 DiagnosticIDs::Remark) << FixItHint::CreateReplacement(loop->getSourceRange(),
 																					currentMap.getMapReduceTransformation()) ;
 					}
@@ -930,17 +930,17 @@ namespace clang {
 					return transformation;
 				}
 
-				std::string getMapTransformationLambdaParameters(const std::vector<Map>::iterator &map) {
+				std::string getMapTransformationLambdaParameters(Map &map) {
 					std::string transformation = ", [=](";
 
-					if (map->isCompoundAssignmentBO()) {
-						if (!Functions::hasElement(map->Input, map->Output)) {
-							map->Input.push_back(map->Output);
+					if (map.isCompoundAssignmentBO()) {
+						if (!Functions::hasElement(map.Input, map.Output)) {
+							map.Input.push_back(map.Output);
 						}
 					}
 
 					int numElem = 0;
-					for (auto &element:map->Input) {
+					for (auto &element:map.Input) {
 						if (numElem != 0) {
 							transformation += ", ";
 						}
@@ -958,7 +958,19 @@ namespace clang {
 					return transformation;
 				}
 
-				std::string getMapTransformationLambdaBody(const std::vector<Map>::iterator &map, SourceManager &SM) {
+				void removeMapFromRewriter(SourceRange &currentRange, int &offset, std::vector<Map>::iterator map, SourceManager &SM, Rewriter &rewriter){
+					currentRange = SourceRange(
+							map->mapFunction->getBeginLoc().getLocWithOffset(offset),
+							Lexer::getLocForEndOfToken(map->mapFunction->getEndLoc(),
+													   offset, SM, LangOptions()));
+					rewriter.RemoveText(currentRange);
+					offset -= rewriter.getRangeSize(currentRange);
+				}
+
+
+				std::string getMapTransformationLambdaBody(const std::vector<Map>::iterator &map) {
+					SourceManager &SM = Context->getSourceManager();
+
 					std::string mapLambda = "";
 
 					Rewriter rewriter(SM, LangOptions());
@@ -969,12 +981,7 @@ namespace clang {
 					for (std::vector<Map>::iterator otherMap = MapList.begin();
 						 otherMap != MapList.end(); otherMap++) {
 						if (otherMap != map) {
-							currentRange = SourceRange(
-									otherMap->mapFunction->getBeginLoc().getLocWithOffset(offset),
-									Lexer::getLocForEndOfToken(otherMap->mapFunction->getEndLoc(),
-															   offset, SM, LangOptions()));
-							rewriter.RemoveText(currentRange);
-							offset -= rewriter.getRangeSize(currentRange);
+							removeMapFromRewriter(currentRange, offset, otherMap, SM, rewriter);
 						}
 					}
 
@@ -1022,11 +1029,11 @@ namespace clang {
 					return mapLambda;
 				}
 
-				std::string getReduceTransformationLambdaParameters(const std::vector<Reduce>::iterator &reduce) {
+				std::string getReduceTransformationLambdaParameters(const Reduce &reduce) {
 					std::string transformation = ", [=](";
 					int numElem = 0;
-					if (reduce->Element.size() == 2) {
-						for (auto elem : reduce->Element) {
+					if (reduce.Element.size() == 2) {
+						for (auto elem : reduce.Element) {
 							if (numElem != 0) transformation += ", ";
 							const DeclRefExpr *name = getPointer(elem);
 							if (name == nullptr) parallelizable = false;
@@ -1041,8 +1048,18 @@ namespace clang {
 					return transformation;
 				}
 
-				std::string getReduceTransformationLambdaBody(const std::vector<Reduce>::iterator &reduce, SourceManager &SM) {
-					std::string mapLambda = "";
+				void removeReduceFromRewriter(SourceRange &currentRange, int &offset, std::vector<Reduce>::iterator reduce, SourceManager &SM, Rewriter &rewriter){
+					currentRange = SourceRange(
+							reduce->original_expr->getBeginLoc().getLocWithOffset(offset),
+							Lexer::getLocForEndOfToken(reduce->original_expr->getEndLoc(),
+													   offset, SM, LangOptions()));
+					rewriter.RemoveText(currentRange);
+					offset -= rewriter.getRangeSize(currentRange);
+				}
+
+				std::string getReduceTransformationLambdaBody(const std::vector<Reduce>::iterator &reduce) {
+					SourceManager &SM = Context->getSourceManager();
+					std::string reduceLambda = "";
 
 					Rewriter rewriter(SM, LangOptions());
 					int offset = 0;
@@ -1052,12 +1069,7 @@ namespace clang {
 					for (std::vector<Reduce>::iterator otherReduce = ReduceList.begin();
 						 otherReduce != ReduceList.end(); otherReduce++) {
 						if (otherReduce != reduce) {
-							currentRange = SourceRange(
-									otherReduce->original_expr->getBeginLoc().getLocWithOffset(offset),
-									Lexer::getLocForEndOfToken(otherReduce->original_expr->getEndLoc(),
-															   offset, SM, LangOptions()));
-							rewriter.RemoveText(currentRange);
-							offset -= rewriter.getRangeSize(currentRange);
+							removeReduceFromRewriter(currentRange, offset, otherReduce, SM, rewriter);
 						}
 					}
 
@@ -1082,30 +1094,25 @@ namespace clang {
 					}
 					else {
 						//remove original reduce expression to be replaced
-						currentRange = SourceRange(
-								reduce->original_expr->getBeginLoc().getLocWithOffset(offset),
-								reduce->original_expr->getEndLoc().getLocWithOffset(offset));
-						rewriter.RemoveText(currentRange);
-						offset -= rewriter.getRangeSize(currentRange);
+						removeReduceFromRewriter(currentRange, offset, reduce, SM, rewriter);
 
 
 						to_insert += LoopConstant::startElement + "x" + reduce->getOperatorAsString() +
-									 LoopConstant::startElement + "y";
+									 LoopConstant::startElement + "y;";
 					}
 
 					rewriter.InsertTextBefore(
 							reduce->original_expr->getBeginLoc().getLocWithOffset(offset), to_insert);
 
 
-					mapLambda = rewriter.getRewrittenText(
+					reduceLambda = rewriter.getRewrittenText(
 							visitingForStmtBody->getSourceRange());
 
-					return mapLambda;
+					return reduceLambda;
 				}
 
 				std::string getMapTransformation() {
 					std::string transformation;
-					SourceManager &SM = Context->getSourceManager();
 					std::vector<Map> PastMapList;
 					for (std::vector<Map>::iterator map = MapList.begin(); map != MapList.end(); map++) {
 						transformation += "grppi::map(grppi::dynamic_execution()";
@@ -1119,10 +1126,10 @@ namespace clang {
 						transformation += getMapTransformationOutput(*map);
 
 						//Parameters for lambda expression
-						transformation += getMapTransformationLambdaParameters(map);
+						transformation += getMapTransformationLambdaParameters(*map);
 
 						//Lambda body
-						std::string mapLambda = getMapTransformationLambdaBody(map, SM);
+						std::string mapLambda = getMapTransformationLambdaBody(map);
 						transformation += mapLambda + ");\n";
 
 						//End of current map translation
@@ -1138,7 +1145,6 @@ namespace clang {
 
 				std::string getReduceTransformation() {
 					std::string transformation;
-					SourceManager &SM = Context->getSourceManager();
 					std::vector<Reduce> PastReduceList;
 					for (std::vector<Reduce>::iterator reduce = ReduceList.begin();
 						 reduce != ReduceList.end(); reduce++) {
@@ -1160,10 +1166,10 @@ namespace clang {
 						transformation += ", " + reduce->getIdentityAsString();
 
 						//Parameters for lambda expression
-						transformation += getReduceTransformationLambdaParameters(reduce);
+						transformation += getReduceTransformationLambdaParameters(*reduce);
 
 						//Lambda body
-						std::string reduceLambda = getReduceTransformationLambdaBody(reduce, SM);
+						std::string reduceLambda = getReduceTransformationLambdaBody(reduce);
 						transformation += reduceLambda + ");\n";
 
 						//End of current map translation
@@ -1177,7 +1183,51 @@ namespace clang {
 					return transformation;
 				}
 				std::string getMapReduceTransformation() {
-					return "";
+					if(MapList.size() != 1 || ReduceList.size() != 1) return "";
+					std::vector<Map>::iterator map = MapList.begin();
+					std::vector<Reduce>::iterator reduce = ReduceList.begin();
+
+					std::string transformation = "";
+					
+					std::string variable = "";
+
+					const DeclRefExpr *dre = getPointer(reduce->Output);
+					if (dre != nullptr) {
+						variable = dre->getNameInfo().getAsString();
+					}
+					transformation += variable + " " + reduce->getOperatorAsString() + "= ";
+					transformation += "grppi::map_reduce(grppi::dynamic_execution()";
+
+					//Input of map
+					transformation += getPatternTransformationInput(*map);
+
+					//End iterator of input of map
+					transformation += getPatternTransformationInputEnd(*map);
+
+					//Get reduce identity of reduce
+					transformation += ", " + reduce->getIdentityAsString();
+
+					//
+					//Experimental
+					//
+
+
+					//Parameters for lambda expression
+					transformation += getMapTransformationLambdaParameters(*map);
+
+
+					//Lambda body
+					std::string mapLambda = getMapTransformationLambdaBody(map);
+					transformation += mapLambda + ");\n";
+
+					/*//Parameters for lambda expression
+					transformation += getReduceTransformationLambdaParameters(reduce);
+
+					//Lambda body
+					std::string reduceLambda = getReduceTransformationLambdaBody(reduce, SM);
+					transformation += reduceLambda + ");\n";*/
+
+					return transformation;
 				}
 			};
 
