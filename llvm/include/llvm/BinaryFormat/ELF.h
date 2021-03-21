@@ -107,13 +107,17 @@ struct Elf64_Ehdr {
   unsigned char getDataEncoding() const { return e_ident[EI_DATA]; }
 };
 
-// File types
+// File types.
+// See current registered ELF types at:
+//    http://www.sco.com/developers/gabi/latest/ch4.eheader.html
 enum {
   ET_NONE = 0,        // No file type
   ET_REL = 1,         // Relocatable file
   ET_EXEC = 2,        // Executable file
   ET_DYN = 3,         // Shared object file
   ET_CORE = 4,        // Core file
+  ET_LOOS = 0xfe00,   // Beginning of operating system-specific codes
+  ET_HIOS = 0xfeff,   // Operating system-specific
   ET_LOPROC = 0xff00, // Beginning of processor-specific codes
   ET_HIPROC = 0xffff  // Processor-specific
 };
@@ -360,6 +364,14 @@ enum {
   ELFOSABI_LAST_ARCH = 255     // Last Architecture-specific OS ABI
 };
 
+// AMDGPU OS ABI Version identification.
+enum {
+  // ELFABIVERSION_AMDGPU_HSA_V1 does not exist because OS ABI identification
+  // was never defined for V1.
+  ELFABIVERSION_AMDGPU_HSA_V2 = 0,
+  ELFABIVERSION_AMDGPU_HSA_V3 = 1,
+};
+
 #define ELF_RELOC(name, value) name = value,
 
 // X86_64 relocations.
@@ -404,6 +416,12 @@ enum {
 // ELF Relocation types for AArch64
 enum {
 #include "ELFRelocs/AArch64.def"
+};
+
+// Special values for the st_other field in the symbol table entry for AArch64.
+enum {
+  // Symbol may follow different calling convention than base PCS.
+  STO_AARCH64_VARIANT_PCS = 0x80
 };
 
 // ARM Specific e_flags
@@ -580,6 +598,7 @@ enum {
   EF_HEXAGON_MACH_V66 = 0x00000066,  // Hexagon V66
   EF_HEXAGON_MACH_V67 = 0x00000067,  // Hexagon V67
   EF_HEXAGON_MACH_V67T = 0x00008067, // Hexagon V67T
+  EF_HEXAGON_MACH_V68 = 0x00000068,  // Hexagon V68
 
   // Highest ISA version flags
   EF_HEXAGON_ISA_MACH = 0x00000000, // Same as specified in bits[11:0]
@@ -594,6 +613,7 @@ enum {
   EF_HEXAGON_ISA_V65 = 0x00000065,  // Hexagon V65 ISA
   EF_HEXAGON_ISA_V66 = 0x00000066,  // Hexagon V66 ISA
   EF_HEXAGON_ISA_V67 = 0x00000067,  // Hexagon V67 ISA
+  EF_HEXAGON_ISA_V68 = 0x00000068,  // Hexagon V68 ISA
 };
 
 // Hexagon-specific section indexes for common small data
@@ -681,45 +701,42 @@ enum : unsigned {
   EF_AMDGPU_MACH_R600_LAST = EF_AMDGPU_MACH_R600_TURKS,
 
   // AMDGCN-based processors.
-
-  // AMDGCN GFX6.
-  EF_AMDGPU_MACH_AMDGCN_GFX600 = 0x020,
-  EF_AMDGPU_MACH_AMDGCN_GFX601 = 0x021,
-  EF_AMDGPU_MACH_AMDGCN_GFX602 = 0x03a,
-  // AMDGCN GFX7.
-  EF_AMDGPU_MACH_AMDGCN_GFX700 = 0x022,
-  EF_AMDGPU_MACH_AMDGCN_GFX701 = 0x023,
-  EF_AMDGPU_MACH_AMDGCN_GFX702 = 0x024,
-  EF_AMDGPU_MACH_AMDGCN_GFX703 = 0x025,
-  EF_AMDGPU_MACH_AMDGCN_GFX704 = 0x026,
-  EF_AMDGPU_MACH_AMDGCN_GFX705 = 0x03b,
-  // AMDGCN GFX8.
-  EF_AMDGPU_MACH_AMDGCN_GFX801 = 0x028,
-  EF_AMDGPU_MACH_AMDGCN_GFX802 = 0x029,
-  EF_AMDGPU_MACH_AMDGCN_GFX803 = 0x02a,
-  EF_AMDGPU_MACH_AMDGCN_GFX805 = 0x03c,
-  EF_AMDGPU_MACH_AMDGCN_GFX810 = 0x02b,
-  // AMDGCN GFX9.
-  EF_AMDGPU_MACH_AMDGCN_GFX900 = 0x02c,
-  EF_AMDGPU_MACH_AMDGCN_GFX902 = 0x02d,
-  EF_AMDGPU_MACH_AMDGCN_GFX904 = 0x02e,
-  EF_AMDGPU_MACH_AMDGCN_GFX906 = 0x02f,
-  EF_AMDGPU_MACH_AMDGCN_GFX908 = 0x030,
-  EF_AMDGPU_MACH_AMDGCN_GFX909 = 0x031,
-  // AMDGCN GFX10.
-  EF_AMDGPU_MACH_AMDGCN_GFX1010 = 0x033,
-  EF_AMDGPU_MACH_AMDGCN_GFX1011 = 0x034,
-  EF_AMDGPU_MACH_AMDGCN_GFX1012 = 0x035,
-  EF_AMDGPU_MACH_AMDGCN_GFX1030 = 0x036,
-  EF_AMDGPU_MACH_AMDGCN_GFX1031 = 0x037,
-
-  // Reserved for AMDGCN-based processors.
-  EF_AMDGPU_MACH_AMDGCN_RESERVED0 = 0x027,
-  EF_AMDGPU_MACH_AMDGCN_RESERVED1 = 0x032,
+  EF_AMDGPU_MACH_AMDGCN_GFX600        = 0x020,
+  EF_AMDGPU_MACH_AMDGCN_GFX601        = 0x021,
+  EF_AMDGPU_MACH_AMDGCN_GFX700        = 0x022,
+  EF_AMDGPU_MACH_AMDGCN_GFX701        = 0x023,
+  EF_AMDGPU_MACH_AMDGCN_GFX702        = 0x024,
+  EF_AMDGPU_MACH_AMDGCN_GFX703        = 0x025,
+  EF_AMDGPU_MACH_AMDGCN_GFX704        = 0x026,
+  EF_AMDGPU_MACH_AMDGCN_RESERVED_0X27 = 0x027,
+  EF_AMDGPU_MACH_AMDGCN_GFX801        = 0x028,
+  EF_AMDGPU_MACH_AMDGCN_GFX802        = 0x029,
+  EF_AMDGPU_MACH_AMDGCN_GFX803        = 0x02a,
+  EF_AMDGPU_MACH_AMDGCN_GFX810        = 0x02b,
+  EF_AMDGPU_MACH_AMDGCN_GFX900        = 0x02c,
+  EF_AMDGPU_MACH_AMDGCN_GFX902        = 0x02d,
+  EF_AMDGPU_MACH_AMDGCN_GFX904        = 0x02e,
+  EF_AMDGPU_MACH_AMDGCN_GFX906        = 0x02f,
+  EF_AMDGPU_MACH_AMDGCN_GFX908        = 0x030,
+  EF_AMDGPU_MACH_AMDGCN_GFX909        = 0x031,
+  EF_AMDGPU_MACH_AMDGCN_GFX90C        = 0x032,
+  EF_AMDGPU_MACH_AMDGCN_GFX1010       = 0x033,
+  EF_AMDGPU_MACH_AMDGCN_GFX1011       = 0x034,
+  EF_AMDGPU_MACH_AMDGCN_GFX1012       = 0x035,
+  EF_AMDGPU_MACH_AMDGCN_GFX1030       = 0x036,
+  EF_AMDGPU_MACH_AMDGCN_GFX1031       = 0x037,
+  EF_AMDGPU_MACH_AMDGCN_GFX1032       = 0x038,
+  EF_AMDGPU_MACH_AMDGCN_GFX1033       = 0x039,
+  EF_AMDGPU_MACH_AMDGCN_GFX602        = 0x03a,
+  EF_AMDGPU_MACH_AMDGCN_GFX705        = 0x03b,
+  EF_AMDGPU_MACH_AMDGCN_GFX805        = 0x03c,
+  EF_AMDGPU_MACH_AMDGCN_RESERVED_0X3D = 0x03d,
+  EF_AMDGPU_MACH_AMDGCN_RESERVED_0X3E = 0x03e,
+  EF_AMDGPU_MACH_AMDGCN_GFX90A        = 0x03f,
 
   // First/last AMDGCN-based processors.
   EF_AMDGPU_MACH_AMDGCN_FIRST = EF_AMDGPU_MACH_AMDGCN_GFX600,
-  EF_AMDGPU_MACH_AMDGCN_LAST = EF_AMDGPU_MACH_AMDGCN_GFX805,
+  EF_AMDGPU_MACH_AMDGCN_LAST = EF_AMDGPU_MACH_AMDGCN_GFX90A,
 
   // Indicates if the "xnack" target feature is enabled for all code contained
   // in the object.
@@ -737,6 +754,11 @@ enum {
 // ELF Relocation types for BPF
 enum {
 #include "ELFRelocs/BPF.def"
+};
+
+// ELF Relocation types for M68k
+enum {
+#include "ELFRelocs/M68k.def"
 };
 
 // MSP430 specific e_flags
@@ -936,6 +958,9 @@ enum : unsigned {
 
   // Identifies a section containing compressed data.
   SHF_COMPRESSED = 0x800U,
+
+  // This section should not be garbage collected by the linker.
+  SHF_GNU_RETAIN = 0x200000,
 
   // This section is excluded from the final executable or shared library.
   SHF_EXCLUDE = 0x80000000U,
@@ -1355,21 +1380,9 @@ enum {
 // ElfXX_VerNeed structure version (GNU versioning)
 enum { VER_NEED_NONE = 0, VER_NEED_CURRENT = 1 };
 
-// SHT_NOTE section types
-enum {
-  NT_FREEBSD_THRMISC = 7,
-  NT_FREEBSD_PROCSTAT_PROC = 8,
-  NT_FREEBSD_PROCSTAT_FILES = 9,
-  NT_FREEBSD_PROCSTAT_VMMAP = 10,
-  NT_FREEBSD_PROCSTAT_GROUPS = 11,
-  NT_FREEBSD_PROCSTAT_UMASK = 12,
-  NT_FREEBSD_PROCSTAT_RLIMIT = 13,
-  NT_FREEBSD_PROCSTAT_OSREL = 14,
-  NT_FREEBSD_PROCSTAT_PSSTRINGS = 15,
-  NT_FREEBSD_PROCSTAT_AUXV = 16,
-};
+// SHT_NOTE section types.
 
-// Generic note types
+// Generic note types.
 enum : unsigned {
   NT_VERSION = 1,
   NT_ARCH = 2,
@@ -1377,7 +1390,7 @@ enum : unsigned {
   NT_GNU_BUILD_ATTRIBUTE_FUNC = 0x101,
 };
 
-// Core note types
+// Core note types.
 enum : unsigned {
   NT_PRSTATUS = 1,
   NT_FPREGSET = 2,
@@ -1442,7 +1455,7 @@ enum {
   NT_LLVM_HWASAN_GLOBALS = 3,
 };
 
-// GNU note types
+// GNU note types.
 enum {
   NT_GNU_ABI_TAG = 1,
   NT_GNU_HWCAP = 2,
@@ -1457,10 +1470,14 @@ enum : unsigned {
   GNU_PROPERTY_NO_COPY_ON_PROTECTED = 2,
   GNU_PROPERTY_AARCH64_FEATURE_1_AND = 0xc0000000,
   GNU_PROPERTY_X86_FEATURE_1_AND = 0xc0000002,
-  GNU_PROPERTY_X86_ISA_1_NEEDED = 0xc0008000,
-  GNU_PROPERTY_X86_FEATURE_2_NEEDED = 0xc0008001,
-  GNU_PROPERTY_X86_ISA_1_USED = 0xc0010000,
-  GNU_PROPERTY_X86_FEATURE_2_USED = 0xc0010001,
+
+  GNU_PROPERTY_X86_UINT32_OR_LO = 0xc0008000,
+  GNU_PROPERTY_X86_FEATURE_2_NEEDED = GNU_PROPERTY_X86_UINT32_OR_LO + 1,
+  GNU_PROPERTY_X86_ISA_1_NEEDED = GNU_PROPERTY_X86_UINT32_OR_LO + 2,
+
+  GNU_PROPERTY_X86_UINT32_OR_AND_LO = 0xc0010000,
+  GNU_PROPERTY_X86_FEATURE_2_USED = GNU_PROPERTY_X86_UINT32_OR_AND_LO + 1,
+  GNU_PROPERTY_X86_ISA_1_USED = GNU_PROPERTY_X86_UINT32_OR_AND_LO + 2,
 };
 
 // aarch64 processor feature bits.
@@ -1474,31 +1491,6 @@ enum : unsigned {
   GNU_PROPERTY_X86_FEATURE_1_IBT = 1 << 0,
   GNU_PROPERTY_X86_FEATURE_1_SHSTK = 1 << 1,
 
-  GNU_PROPERTY_X86_ISA_1_CMOV = 1 << 0,
-  GNU_PROPERTY_X86_ISA_1_SSE = 1 << 1,
-  GNU_PROPERTY_X86_ISA_1_SSE2 = 1 << 2,
-  GNU_PROPERTY_X86_ISA_1_SSE3 = 1 << 3,
-  GNU_PROPERTY_X86_ISA_1_SSSE3 = 1 << 4,
-  GNU_PROPERTY_X86_ISA_1_SSE4_1 = 1 << 5,
-  GNU_PROPERTY_X86_ISA_1_SSE4_2 = 1 << 6,
-  GNU_PROPERTY_X86_ISA_1_AVX = 1 << 7,
-  GNU_PROPERTY_X86_ISA_1_AVX2 = 1 << 8,
-  GNU_PROPERTY_X86_ISA_1_FMA = 1 << 9,
-  GNU_PROPERTY_X86_ISA_1_AVX512F = 1 << 10,
-  GNU_PROPERTY_X86_ISA_1_AVX512CD = 1 << 11,
-  GNU_PROPERTY_X86_ISA_1_AVX512ER = 1 << 12,
-  GNU_PROPERTY_X86_ISA_1_AVX512PF = 1 << 13,
-  GNU_PROPERTY_X86_ISA_1_AVX512VL = 1 << 14,
-  GNU_PROPERTY_X86_ISA_1_AVX512DQ = 1 << 15,
-  GNU_PROPERTY_X86_ISA_1_AVX512BW = 1 << 16,
-  GNU_PROPERTY_X86_ISA_1_AVX512_4FMAPS = 1 << 17,
-  GNU_PROPERTY_X86_ISA_1_AVX512_4VNNIW = 1 << 18,
-  GNU_PROPERTY_X86_ISA_1_AVX512_BITALG = 1 << 19,
-  GNU_PROPERTY_X86_ISA_1_AVX512_IFMA = 1 << 20,
-  GNU_PROPERTY_X86_ISA_1_AVX512_VBMI = 1 << 21,
-  GNU_PROPERTY_X86_ISA_1_AVX512_VBMI2 = 1 << 22,
-  GNU_PROPERTY_X86_ISA_1_AVX512_VNNI = 1 << 23,
-
   GNU_PROPERTY_X86_FEATURE_2_X86 = 1 << 0,
   GNU_PROPERTY_X86_FEATURE_2_X87 = 1 << 1,
   GNU_PROPERTY_X86_FEATURE_2_MMX = 1 << 2,
@@ -1509,6 +1501,43 @@ enum : unsigned {
   GNU_PROPERTY_X86_FEATURE_2_XSAVE = 1 << 7,
   GNU_PROPERTY_X86_FEATURE_2_XSAVEOPT = 1 << 8,
   GNU_PROPERTY_X86_FEATURE_2_XSAVEC = 1 << 9,
+
+  GNU_PROPERTY_X86_ISA_1_BASELINE = 1 << 0,
+  GNU_PROPERTY_X86_ISA_1_V2 = 1 << 1,
+  GNU_PROPERTY_X86_ISA_1_V3 = 1 << 2,
+  GNU_PROPERTY_X86_ISA_1_V4 = 1 << 3,
+};
+
+// FreeBSD note types.
+enum {
+  NT_FREEBSD_ABI_TAG = 1,
+  NT_FREEBSD_NOINIT_TAG = 2,
+  NT_FREEBSD_ARCH_TAG = 3,
+  NT_FREEBSD_FEATURE_CTL = 4,
+};
+
+// NT_FREEBSD_FEATURE_CTL values (see FreeBSD's sys/sys/elf_common.h).
+enum {
+  NT_FREEBSD_FCTL_ASLR_DISABLE = 0x00000001,
+  NT_FREEBSD_FCTL_PROTMAX_DISABLE = 0x00000002,
+  NT_FREEBSD_FCTL_STKGAP_DISABLE = 0x00000004,
+  NT_FREEBSD_FCTL_WXNEEDED = 0x00000008,
+  NT_FREEBSD_FCTL_LA48 = 0x00000010,
+  NT_FREEBSD_FCTL_ASG_DISABLE = 0x00000020,
+};
+
+// FreeBSD core note types.
+enum {
+  NT_FREEBSD_THRMISC = 7,
+  NT_FREEBSD_PROCSTAT_PROC = 8,
+  NT_FREEBSD_PROCSTAT_FILES = 9,
+  NT_FREEBSD_PROCSTAT_VMMAP = 10,
+  NT_FREEBSD_PROCSTAT_GROUPS = 11,
+  NT_FREEBSD_PROCSTAT_UMASK = 12,
+  NT_FREEBSD_PROCSTAT_RLIMIT = 13,
+  NT_FREEBSD_PROCSTAT_OSREL = 14,
+  NT_FREEBSD_PROCSTAT_PSSTRINGS = 15,
+  NT_FREEBSD_PROCSTAT_AUXV = 16,
 };
 
 // AMDGPU-specific section indices.

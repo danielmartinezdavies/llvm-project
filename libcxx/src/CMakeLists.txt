@@ -12,6 +12,7 @@ set(LIBCXX_SOURCES
   condition_variable.cpp
   condition_variable_destructor.cpp
   exception.cpp
+  format.cpp
   functional.cpp
   future.cpp
   hash.cpp
@@ -19,21 +20,15 @@ set(LIBCXX_SOURCES
   include/atomic_support.h
   include/config_elast.h
   include/refstring.h
-  ios.cpp
-  iostream.cpp
-  locale.cpp
   memory.cpp
   mutex.cpp
   mutex_destructor.cpp
   new.cpp
   optional.cpp
-  random.cpp
   random_shuffle.cpp
-  regex.cpp
   shared_mutex.cpp
   stdexcept.cpp
   string.cpp
-  strstream.cpp
   support/runtime/exception_fallback.ipp
   support/runtime/exception_glibcxx.ipp
   support/runtime/exception_libcxxabi.ipp
@@ -61,17 +56,45 @@ if (LIBCXX_ENABLE_DEBUG_MODE_SUPPORT)
     )
 endif()
 
+if (LIBCXX_ENABLE_RANDOM_DEVICE)
+  list(APPEND LIBCXX_SOURCES
+    random.cpp
+    )
+endif()
+
+if (LIBCXX_ENABLE_LOCALIZATION)
+  list(APPEND LIBCXX_SOURCES
+    ios.cpp
+    ios.instantiations.cpp
+    iostream.cpp
+    locale.cpp
+    regex.cpp
+    strstream.cpp
+    )
+endif()
+
 if(WIN32)
   list(APPEND LIBCXX_SOURCES
     support/win32/locale_win32.cpp
     support/win32/support.cpp
-    support/win32/thread_win32.cpp
     )
+
+  if (NOT LIBCXX_HAS_PTHREAD_API)
+    list(APPEND LIBCXX_SOURCES
+      support/win32/thread_win32.cpp
+      )
+  endif()
 elseif("${CMAKE_SYSTEM_NAME}" STREQUAL "SunOS")
   list(APPEND LIBCXX_SOURCES
     support/solaris/mbsnrtowcs.inc
     support/solaris/wcsnrtombs.inc
     support/solaris/xlocale.cpp
+    )
+elseif(ZOS)
+  list(APPEND LIBCXX_SOURCES
+    support/ibm/mbsnrtowcs.inc
+    support/ibm/wcsnrtombs.inc
+    support/ibm/xlocale_zos.cpp
     )
 endif()
 
@@ -80,6 +103,7 @@ if (LIBCXX_ENABLE_FILESYSTEM)
     filesystem/filesystem_common.h
     filesystem/operations.cpp
     filesystem/directory_iterator.cpp
+    filesystem/posix_compat.h
     )
   # Filesystem uses __int128_t, which requires a definition of __muloi4 when
   # compiled with UBSAN. This definition is not provided by libgcc_s, but is
@@ -96,7 +120,7 @@ endif()
 if (LIBCXX_CONFIGURE_IDE)
   file(GLOB_RECURSE LIBCXX_HEADERS ${CMAKE_CURRENT_SOURCE_DIR}/../include/*)
   if(WIN32)
-    file( GLOB LIBCXX_WIN32_HEADERS ${CMAKE_CURRENT_SOURCE_DIR}/../include/support/win32/*.h)
+    file( GLOB LIBCXX_WIN32_HEADERS ${CMAKE_CURRENT_SOURCE_DIR}/../include/__support/win32/*.h)
     list(APPEND LIBCXX_HEADERS ${LIBCXX_WIN32_HEADERS})
   endif()
   # Force them all into the headers dir on MSVC, otherwise they end up at
@@ -165,9 +189,6 @@ split_list(LIBCXX_LINK_FLAGS)
 # Build the shared library.
 if (LIBCXX_ENABLE_SHARED)
   add_library(cxx_shared SHARED ${exclude_from_all} ${LIBCXX_SOURCES} ${LIBCXX_HEADERS})
-  if(COMMAND llvm_setup_rpath)
-    llvm_setup_rpath(cxx_shared)
-  endif()
   target_link_libraries(cxx_shared PUBLIC cxx-headers
                                    PRIVATE ${LIBCXX_LIBRARIES})
   set_target_properties(cxx_shared
@@ -205,9 +226,12 @@ if (LIBCXX_ENABLE_SHARED)
   endif()
 
   # Maybe re-export symbols from libc++abi
+  # In particular, we don't re-export the symbols if libc++abi is merged statically
+  # into libc++ because in that case there's no dylib to re-export from.
   if (APPLE AND (LIBCXX_CXX_ABI_LIBNAME STREQUAL "libcxxabi" OR
                  LIBCXX_CXX_ABI_LIBNAME STREQUAL "default")
-            AND NOT DEFINED LIBCXX_OSX_REEXPORT_LIBCXXABI_SYMBOLS)
+            AND NOT DEFINED LIBCXX_OSX_REEXPORT_LIBCXXABI_SYMBOLS
+            AND NOT LIBCXX_STATICALLY_LINK_ABI_IN_SHARED_LIBRARY)
     set(LIBCXX_OSX_REEXPORT_LIBCXXABI_SYMBOLS ON)
   endif()
 
@@ -218,10 +242,7 @@ if (LIBCXX_ENABLE_SHARED)
       "-Wl,-force_symbols_not_weak_list,${CMAKE_CURRENT_SOURCE_DIR}/../lib/notweak.exp"
       "-Wl,-force_symbols_weak_list,${CMAKE_CURRENT_SOURCE_DIR}/../lib/weak.exp")
 
-    if (NOT LIBCXX_ENABLE_NEW_DELETE_DEFINITIONS)
-      target_link_libraries(cxx_shared PRIVATE
-        "-Wl,-reexported_symbols_list,${CMAKE_CURRENT_SOURCE_DIR}/../../libcxxabi/lib/new-delete.exp")
-    endif()
+    target_link_libraries(cxx_shared PRIVATE $<TARGET_NAME_IF_EXISTS:cxxabi-reexports>)
   endif()
 
   # Generate a linker script in place of a libc++.so symlink.
@@ -278,6 +299,9 @@ if (LIBCXX_ENABLE_STATIC)
     else()
       set(MERGE_ARCHIVES_ABI_TARGET
         "${CMAKE_STATIC_LIBRARY_PREFIX}${LIBCXX_CXX_STATIC_ABI_LIBRARY}${CMAKE_STATIC_LIBRARY_SUFFIX}")
+      if (LIBCXX_CXX_ABI_LIBRARY_PATH)
+        set(MERGE_ARCHIVES_ABI_TARGET "${LIBCXX_CXX_ABI_LIBRARY_PATH}/${MERGE_ARCHIVES_ABI_TARGET}")
+      endif ()
     endif()
     if (APPLE)
       set(MERGE_ARCHIVES_LIBTOOL "--use-libtool" "--libtool" "${CMAKE_LIBTOOL}")
@@ -293,6 +317,7 @@ if (LIBCXX_ENABLE_STATIC)
       "${MERGE_ARCHIVES_ABI_TARGET}"
       "${MERGE_ARCHIVES_SEARCH_PATHS}"
     WORKING_DIRECTORY ${LIBCXX_BUILD_DIR}
+    DEPENDS ${MERGE_ARCHIVES_ABI_TARGET}
     )
   endif()
 endif()
@@ -364,9 +389,7 @@ endif()
 # NOTE: This install command must go after the cxx install command otherwise
 # it will not be executed after the library symlinks are installed.
 if (LIBCXX_ENABLE_SHARED AND LIBCXX_ENABLE_ABI_LINKER_SCRIPT)
-  # Replace the libc++ filename with $<TARGET_LINKER_FILE:cxx>
-  # after we required CMake 3.0.
-  install(FILES "${LIBCXX_LIBRARY_DIR}/libc++${CMAKE_SHARED_LIBRARY_SUFFIX}"
+  install(FILES "$<TARGET_LINKER_FILE:cxx_shared>"
     DESTINATION ${LIBCXX_INSTALL_PREFIX}${LIBCXX_INSTALL_LIBRARY_DIR}
     COMPONENT libcxx)
 endif()

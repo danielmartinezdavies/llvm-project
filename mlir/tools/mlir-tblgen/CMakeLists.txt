@@ -5,7 +5,9 @@ set(LLVM_LINK_COMPONENTS
 )
 
 add_tablegen(mlir-tblgen MLIR
+  AttrOrTypeDefGen.cpp
   DialectGen.cpp
+  DirectiveCommonGen.cpp
   EnumsGen.cpp
   LLVMIRConversionGen.cpp
   LLVMIRIntrinsicGen.cpp
@@ -14,9 +16,10 @@ add_tablegen(mlir-tblgen MLIR
   OpDocGen.cpp
   OpFormatGen.cpp
   OpInterfacesGen.cpp
-  OpenMPCommonGen.cpp
-  PassGen.cpp
+  OpPythonBindingGen.cpp
+  PassCAPIGen.cpp
   PassDocGen.cpp
+  PassGen.cpp
   RewriterGen.cpp
   SPIRVUtilsGen.cpp
   StructsGen.cpp

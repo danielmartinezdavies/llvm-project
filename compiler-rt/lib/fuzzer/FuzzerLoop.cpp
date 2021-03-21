@@ -354,8 +354,10 @@ void Fuzzer::PrintStats(const char *Where, const char *End, size_t Units,
 }
 
 void Fuzzer::PrintFinalStats() {
+  if (Options.PrintFullCoverage)
+    TPC.PrintCoverage(/*PrintAllCounters=*/true);
   if (Options.PrintCoverage)
-    TPC.PrintCoverage();
+    TPC.PrintCoverage(/*PrintAllCounters=*/false);
   if (Options.PrintCorpusStats)
     Corpus.PrintStats();
   if (!Options.PrintFinalStats)
@@ -438,8 +440,9 @@ void Fuzzer::PrintPulseAndReportSlowInput(const uint8_t *Data, size_t Size) {
   if (!(TotalNumberOfRuns & (TotalNumberOfRuns - 1)) &&
       secondsSinceProcessStartUp() >= 2)
     PrintStats("pulse ");
-  if (TimeOfUnit > TimeOfLongestUnitInSeconds * 1.1 &&
-      TimeOfUnit >= Options.ReportSlowUnits) {
+  auto Threshhold =
+      static_cast<long>(static_cast<double>(TimeOfLongestUnitInSeconds) * 1.1);
+  if (TimeOfUnit > Threshhold && TimeOfUnit >= Options.ReportSlowUnits) {
     TimeOfLongestUnitInSeconds = TimeOfUnit;
     Printf("Slowest unit: %zd s:\n", TimeOfLongestUnitInSeconds);
     WriteUnitToFileWithPrefix({Data, Data + Size}, "slow-unit-");
@@ -499,6 +502,8 @@ bool Fuzzer::RunOne(const uint8_t *Data, size_t Size, bool MayDeleteFile,
                     bool *FoundUniqFeatures) {
   if (!Size)
     return false;
+  // Largest input length should be INT_MAX.
+  assert(Size < std::numeric_limits<uint32_t>::max());
 
   ExecuteCallback(Data, Size);
   auto TimeOfUnit = duration_cast<microseconds>(UnitStopTime - UnitStartTime);
@@ -506,8 +511,8 @@ bool Fuzzer::RunOne(const uint8_t *Data, size_t Size, bool MayDeleteFile,
   UniqFeatureSetTmp.clear();
   size_t FoundUniqFeaturesOfII = 0;
   size_t NumUpdatesBefore = Corpus.NumFeatureUpdates();
-  TPC.CollectFeatures([&](size_t Feature) {
-    if (Corpus.AddFeature(Feature, Size, Options.Shrink))
+  TPC.CollectFeatures([&](uint32_t Feature) {
+    if (Corpus.AddFeature(Feature, static_cast<uint32_t>(Size), Options.Shrink))
       UniqFeatureSetTmp.push_back(Feature);
     if (Options.Entropic)
       Corpus.UpdateFeatureFrequency(II, Feature);
@@ -545,6 +550,8 @@ bool Fuzzer::RunOne(const uint8_t *Data, size_t Size, bool MayDeleteFile,
   return false;
 }
 
+void Fuzzer::TPCUpdateObservedPCs() { TPC.UpdateObservedPCs(); }
+
 size_t Fuzzer::GetCurrentUnitInFuzzingThead(const uint8_t **Data) const {
   assert(InFuzzingThread());
   *Data = CurrentUnitData;
@@ -571,7 +578,10 @@ static bool LooseMemeq(const uint8_t *A, const uint8_t *B, size_t Size) {
          !memcmp(A + Size - Limit / 2, B + Size - Limit / 2, Limit / 2);
 }
 
-void Fuzzer::ExecuteCallback(const uint8_t *Data, size_t Size) {
+// This method is not inlined because it would cause a test to fail where it
+// is part of the stack unwinding. See D97975 for details.
+ATTRIBUTE_NOINLINE void Fuzzer::ExecuteCallback(const uint8_t *Data,
+                                                size_t Size) {
   TPC.RecordInitialStack();
   TotalNumberOfRuns++;
   assert(InFuzzingThread());

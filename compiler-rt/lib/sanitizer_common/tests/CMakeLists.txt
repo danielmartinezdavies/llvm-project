@@ -13,6 +13,7 @@ set(SANITIZER_UNITTESTS
   sanitizer_atomic_test.cpp
   sanitizer_bitvector_test.cpp
   sanitizer_bvgraph_test.cpp
+  sanitizer_chained_origin_depot_test.cpp
   sanitizer_common_test.cpp
   sanitizer_deadlock_detector_test.cpp
   sanitizer_flags_test.cpp
@@ -59,7 +60,6 @@ set(SANITIZER_TEST_CFLAGS_COMMON
   -fno-rtti
   -O2
   -Werror=sign-compare
-  -Wno-non-virtual-dtor
   -Wno-gnu-zero-variadic-macro-arguments
   )
 
@@ -161,6 +161,7 @@ macro(add_sanitizer_tests_for_arch arch)
     # Test that the libc-independent part of sanitizer_common is indeed
     # independent of libc, by linking this binary without libc (here) and
     # executing it (unit test in sanitizer_nolibc_test.cpp).
+    get_target_flags_for_arch(${arch} TARGET_FLAGS)
     clang_compile(sanitizer_nolibc_test_main.${arch}.o
                   sanitizer_nolibc_test_main.cpp
                   CFLAGS ${SANITIZER_TEST_CFLAGS_COMMON} ${TARGET_FLAGS}
@@ -210,9 +211,7 @@ if(ANDROID)
       $<TARGET_OBJECTS:RTSanitizerCommon.${arch}>
       $<TARGET_OBJECTS:RTSanitizerCommonLibc.${arch}>
       $<TARGET_OBJECTS:RTSanitizerCommonSymbolizer.${arch}>)
-    set_target_compile_flags(SanitizerTest
-      ${SANITIZER_COMMON_CFLAGS}
-      ${SANITIZER_TEST_CFLAGS_COMMON})
+    set_target_compile_flags(SanitizerTest ${SANITIZER_TEST_CFLAGS_COMMON})
     # Setup correct output directory and link flags.
     set_target_properties(SanitizerTest PROPERTIES
       RUNTIME_OUTPUT_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR})

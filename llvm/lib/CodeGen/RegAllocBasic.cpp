@@ -72,8 +72,8 @@ class RABasic : public MachineFunctionPass,
   // selectOrSplit().
   BitVector UsableRegs;
 
-  bool LRE_CanEraseVirtReg(unsigned) override;
-  void LRE_WillShrinkVirtReg(unsigned) override;
+  bool LRE_CanEraseVirtReg(Register) override;
+  void LRE_WillShrinkVirtReg(Register) override;
 
 public:
   RABasic();
@@ -111,10 +111,15 @@ public:
         MachineFunctionProperties::Property::NoPHIs);
   }
 
+  MachineFunctionProperties getClearedProperties() const override {
+    return MachineFunctionProperties().set(
+      MachineFunctionProperties::Property::IsSSA);
+  }
+
   // Helper for spilling all live virtual registers currently unified under preg
   // that interfere with the most recently queried lvr.  Return true if spilling
   // was successful, and append any new spilled/split intervals to splitLVRs.
-  bool spillInterferences(LiveInterval &VirtReg, Register PhysReg,
+  bool spillInterferences(LiveInterval &VirtReg, MCRegister PhysReg,
                           SmallVectorImpl<Register> &SplitVRegs);
 
   static char ID;
@@ -141,7 +146,7 @@ INITIALIZE_PASS_DEPENDENCY(LiveRegMatrix)
 INITIALIZE_PASS_END(RABasic, "regallocbasic", "Basic Register Allocator", false,
                     false)
 
-bool RABasic::LRE_CanEraseVirtReg(unsigned VirtReg) {
+bool RABasic::LRE_CanEraseVirtReg(Register VirtReg) {
   LiveInterval &LI = LIS->getInterval(VirtReg);
   if (VRM->hasPhys(VirtReg)) {
     Matrix->unassign(LI);
@@ -156,7 +161,7 @@ bool RABasic::LRE_CanEraseVirtReg(unsigned VirtReg) {
   return false;
 }
 
-void RABasic::LRE_WillShrinkVirtReg(unsigned VirtReg) {
+void RABasic::LRE_WillShrinkVirtReg(Register VirtReg) {
   if (!VRM->hasPhys(VirtReg))
     return;
 
@@ -201,7 +206,7 @@ void RABasic::releaseMemory() {
 // Spill or split all live virtual registers currently unified under PhysReg
 // that interfere with VirtReg. The newly spilled or split live intervals are
 // returned by appending them to SplitVRegs.
-bool RABasic::spillInterferences(LiveInterval &VirtReg, Register PhysReg,
+bool RABasic::spillInterferences(LiveInterval &VirtReg, MCRegister PhysReg,
                                  SmallVectorImpl<Register> &SplitVRegs) {
   // Record each interference and determine if all are spillable before mutating
   // either the union or live intervals.
@@ -281,16 +286,14 @@ MCRegister RABasic::selectOrSplit(LiveInterval &VirtReg,
   }
 
   // Try to spill another interfering reg with less spill weight.
-  for (auto PhysRegI = PhysRegSpillCands.begin(),
-            PhysRegE = PhysRegSpillCands.end();
-       PhysRegI != PhysRegE; ++PhysRegI) {
-    if (!spillInterferences(VirtReg, *PhysRegI, SplitVRegs))
+  for (MCRegister &PhysReg : PhysRegSpillCands) {
+    if (!spillInterferences(VirtReg, PhysReg, SplitVRegs))
       continue;
 
-    assert(!Matrix->checkInterference(VirtReg, *PhysRegI) &&
+    assert(!Matrix->checkInterference(VirtReg, PhysReg) &&
            "Interference after spill.");
     // Tell the caller to allocate to this newly freed physical register.
-    return *PhysRegI;
+    return PhysReg;
   }
 
   // No other spill candidates were found, so spill the current VirtReg.
@@ -317,7 +320,7 @@ bool RABasic::runOnMachineFunction(MachineFunction &mf) {
                       getAnalysis<MachineBlockFrequencyInfo>());
   VRAI.calculateSpillWeightsAndHints();
 
-  SpillerInstance.reset(createInlineSpiller(*this, *MF, *VRM));
+  SpillerInstance.reset(createInlineSpiller(*this, *MF, *VRM, VRAI));
 
   allocatePhysRegs();
   postOptimization();

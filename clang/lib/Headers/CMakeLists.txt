@@ -35,6 +35,7 @@ set(files
   avx512vnniintrin.h
   avx512vlvnniintrin.h
   avxintrin.h
+  avxvnniintrin.h
   bmi2intrin.h
   bmiintrin.h
   __clang_cuda_builtin_vars.h
@@ -65,6 +66,7 @@ set(files
   fmaintrin.h
   fxsrintrin.h
   gfniintrin.h
+  hresetintrin.h
   htmintrin.h
   htmxlintrin.h
   ia32intrin.h
@@ -112,6 +114,7 @@ set(files
   tgmath.h
   tmmintrin.h
   tsxldtrkintrin.h
+  uintrintrin.h
   unwind.h
   vadefs.h
   vaesintrin.h
@@ -124,6 +127,7 @@ set(files
   wmmintrin.h
   __wmmintrin_aes.h
   __wmmintrin_pclmul.h
+  x86gprintrin.h
   x86intrin.h
   xmmintrin.h
   xopintrin.h
@@ -205,6 +209,10 @@ clang_generate_header(-gen-arm-bf16 arm_bf16.td arm_bf16.h)
 clang_generate_header(-gen-arm-mve-header arm_mve.td arm_mve.h)
 # Generate arm_cde.h
 clang_generate_header(-gen-arm-cde-header arm_cde.td arm_cde.h)
+# Generate riscv_vector.h
+clang_generate_header(-gen-riscv-vector-header riscv_vector.td riscv_vector.h)
+# Generate riscv_vector_generic.h
+clang_generate_header(-gen-riscv-vector-generic-header riscv_vector.td riscv_vector_generic.h)
 
 add_custom_target(clang-resource-headers ALL DEPENDS ${out_files})
 set_target_properties(clang-resource-headers PROPERTIES

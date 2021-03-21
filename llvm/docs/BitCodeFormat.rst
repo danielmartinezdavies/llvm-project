@@ -264,7 +264,7 @@ Abbreviated Record Encoding
 
 ``[<abbrevid>, fields...]``
 
-An abbreviated record is a abbreviation id followed by a set of fields that are
+An abbreviated record is an abbreviation id followed by a set of fields that are
 encoded according to the `abbreviation definition`_.  This allows records to be
 encoded significantly more densely than records encoded with the
 `UNABBREV_RECORD`_ type, and allows the abbreviation types to be specified in
@@ -1068,6 +1068,8 @@ The integer codes are mapped to well-known attributes as follows.
 * code 66: ``no_merge``
 * code 67: ``null_pointer_is_valid``
 * code 68: ``noundef``
+* code 69: ``byref``
+* code 70: ``mustprogress``
 
 .. note::
   The ``allocsize`` attribute has a special encoding for its arguments. Its two

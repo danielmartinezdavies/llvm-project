@@ -156,7 +156,7 @@ OPTIONS
 
 .. option:: --mattr=<a1,+a2,-a3,...>
 
-  Enable/disable target-specific attributes. Specify ``--mcpu=help`` to display
+  Enable/disable target-specific attributes. Specify ``--mattr=help`` to display
   the available attributes.
 
 .. option:: --no-leading-addr
@@ -166,6 +166,11 @@ OPTIONS
 .. option:: --no-show-raw-insn
 
   When disassembling, do not print the raw bytes of each instruction.
+
+.. option:: --prefix=<prefix>
+
+  When disassembling with the :option:`--source` option, prepend ``prefix`` to
+  absolute paths.
 
 .. option:: --print-imm-hex
 
@@ -298,6 +303,10 @@ MACH-O ONLY OPTIONS AND COMMANDS
 .. option:: --exports-trie
 
   Display exported symbols.
+
+.. option:: --function-starts
+
+  Print the function starts table for Mach-O objects.
 
 .. option:: -g
 

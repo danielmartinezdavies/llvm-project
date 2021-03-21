@@ -11,7 +11,6 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/Support/X86TargetParser.h"
-#include "llvm/ADT/StringSwitch.h"
 #include "llvm/ADT/Triple.h"
 
 using namespace llvm;
@@ -137,6 +136,15 @@ constexpr FeatureBitset FeaturesNocona =
 
 // Basic 64-bit capable CPU.
 constexpr FeatureBitset FeaturesX86_64 = FeaturesPentium4 | Feature64BIT;
+constexpr FeatureBitset FeaturesX86_64_V2 = FeaturesX86_64 | FeatureSAHF |
+                                            FeaturePOPCNT | FeatureSSE4_2 |
+                                            FeatureCMPXCHG16B;
+constexpr FeatureBitset FeaturesX86_64_V3 =
+    FeaturesX86_64_V2 | FeatureAVX2 | FeatureBMI | FeatureBMI2 | FeatureF16C |
+    FeatureFMA | FeatureLZCNT | FeatureMOVBE | FeatureXSAVE;
+constexpr FeatureBitset FeaturesX86_64_V4 = FeaturesX86_64_V3 |
+                                            FeatureAVX512BW | FeatureAVX512CD |
+                                            FeatureAVX512DQ | FeatureAVX512VL;
 
 // Intel Core CPUs
 constexpr FeatureBitset FeaturesCore2 =
@@ -195,7 +203,8 @@ constexpr FeatureBitset FeaturesSapphireRapids =
     FeaturesICLServer | FeatureAMX_TILE | FeatureAMX_INT8 | FeatureAMX_BF16 |
     FeatureAVX512BF16 | FeatureAVX512VP2INTERSECT | FeatureCLDEMOTE |
     FeatureENQCMD | FeatureMOVDIR64B | FeatureMOVDIRI | FeaturePTWRITE |
-    FeatureSERIALIZE | FeatureSHSTK | FeatureTSXLDTRK | FeatureWAITPKG;
+    FeatureSERIALIZE | FeatureSHSTK | FeatureTSXLDTRK | FeatureUINTR |
+    FeatureWAITPKG | FeatureAVXVNNI;
 
 // Intel Atom processors.
 // Bonnell has feature parity with Core2 and adds MOVBE.
@@ -211,6 +220,12 @@ constexpr FeatureBitset FeaturesGoldmontPlus =
     FeaturesGoldmont | FeaturePTWRITE | FeatureRDPID | FeatureSGX;
 constexpr FeatureBitset FeaturesTremont =
     FeaturesGoldmontPlus | FeatureCLWB | FeatureGFNI;
+constexpr FeatureBitset FeaturesAlderlake =
+    FeaturesTremont | FeatureADX | FeatureBMI | FeatureBMI2 | FeatureF16C |
+    FeatureFMA | FeatureINVPCID | FeatureLZCNT | FeaturePCONFIG | FeaturePKU |
+    FeatureSERIALIZE | FeatureSHSTK | FeatureVAES | FeatureVPCLMULQDQ |
+    FeatureCLDEMOTE | FeatureMOVDIR64B | FeatureMOVDIRI | FeatureWAITPKG |
+    FeatureAVXVNNI | FeatureHRESET | FeatureWIDEKL;
 
 // Geode Processor.
 constexpr FeatureBitset FeaturesGeode =
@@ -269,6 +284,9 @@ constexpr FeatureBitset FeaturesZNVER1 =
     FeatureXSAVEOPT | FeatureXSAVES;
 constexpr FeatureBitset FeaturesZNVER2 =
     FeaturesZNVER1 | FeatureCLWB | FeatureRDPID | FeatureWBNOINVD;
+static constexpr FeatureBitset FeaturesZNVER3 = FeaturesZNVER2 |
+                                                FeatureINVPCID | FeaturePKU |
+                                                FeatureVAES | FeatureVPCLMULQDQ;
 
 constexpr ProcInfo Processors[] = {
   // Empty processor. Include X87 and CMPXCHG8 for backwards compatibility.
@@ -344,6 +362,8 @@ constexpr ProcInfo Processors[] = {
   { {"tigerlake"}, CK_Tigerlake, FEATURE_AVX512VP2INTERSECT, FeaturesTigerlake },
   // Sapphire Rapids microarchitecture based processors.
   { {"sapphirerapids"}, CK_SapphireRapids, FEATURE_AVX512VP2INTERSECT, FeaturesSapphireRapids },
+  // Alderlake microarchitecture based processors.
+  { {"alderlake"}, CK_Alderlake, FEATURE_AVX2, FeaturesAlderlake },
   // Knights Landing processor.
   { {"knl"}, CK_KNL, FEATURE_AVX512F, FeaturesKNL },
   // Knights Mill processor.
@@ -381,11 +401,17 @@ constexpr ProcInfo Processors[] = {
   // Zen architecture processors.
   { {"znver1"}, CK_ZNVER1, FEATURE_AVX2, FeaturesZNVER1 },
   { {"znver2"}, CK_ZNVER2, FEATURE_AVX2, FeaturesZNVER2 },
+  { {"znver3"}, CK_ZNVER3, FEATURE_AVX2, FeaturesZNVER3 },
   // Generic 64-bit processor.
   { {"x86-64"}, CK_x86_64, ~0U, FeaturesX86_64 },
+  { {"x86-64-v2"}, CK_x86_64_v2, ~0U, FeaturesX86_64_V2 },
+  { {"x86-64-v3"}, CK_x86_64_v3, ~0U, FeaturesX86_64_V3 },
+  { {"x86-64-v4"}, CK_x86_64_v4, ~0U, FeaturesX86_64_V4 },
   // Geode processors.
   { {"geode"}, CK_Geode, ~0U, FeaturesGeode },
 };
+
+constexpr const char *NoTuneList[] = {"x86-64-v2", "x86-64-v3", "x86-64-v4"};
 
 X86::CPUKind llvm::X86::parseArchX86(StringRef CPU, bool Only64Bit) {
   for (const auto &P : Processors)
@@ -395,10 +421,24 @@ X86::CPUKind llvm::X86::parseArchX86(StringRef CPU, bool Only64Bit) {
   return CK_None;
 }
 
+X86::CPUKind llvm::X86::parseTuneCPU(StringRef CPU, bool Only64Bit) {
+  if (llvm::is_contained(NoTuneList, CPU))
+    return CK_None;
+  return parseArchX86(CPU, Only64Bit);
+}
+
 void llvm::X86::fillValidCPUArchList(SmallVectorImpl<StringRef> &Values,
                                      bool Only64Bit) {
   for (const auto &P : Processors)
     if (!P.Name.empty() && (P.Features[FEATURE_64BIT] || !Only64Bit))
+      Values.emplace_back(P.Name);
+}
+
+void llvm::X86::fillValidTuneCPUList(SmallVectorImpl<StringRef> &Values,
+                                     bool Only64Bit) {
+  for (const ProcInfo &P : Processors)
+    if (!P.Name.empty() && (P.Features[FEATURE_64BIT] || !Only64Bit) &&
+        !llvm::is_contained(NoTuneList, P.Name))
       Values.emplace_back(P.Name);
 }
 
@@ -453,6 +493,7 @@ constexpr FeatureBitset ImpliedFeaturesSGX = {};
 constexpr FeatureBitset ImpliedFeaturesSHSTK = {};
 constexpr FeatureBitset ImpliedFeaturesTBM = {};
 constexpr FeatureBitset ImpliedFeaturesTSXLDTRK = {};
+constexpr FeatureBitset ImpliedFeaturesUINTR = {};
 constexpr FeatureBitset ImpliedFeaturesWAITPKG = {};
 constexpr FeatureBitset ImpliedFeaturesWBNOINVD = {};
 constexpr FeatureBitset ImpliedFeaturesVZEROUPPER = {};
@@ -530,10 +571,14 @@ constexpr FeatureBitset ImpliedFeaturesXOP = FeatureFMA4;
 constexpr FeatureBitset ImpliedFeaturesAMX_TILE = {};
 constexpr FeatureBitset ImpliedFeaturesAMX_BF16 = FeatureAMX_TILE;
 constexpr FeatureBitset ImpliedFeaturesAMX_INT8 = FeatureAMX_TILE;
+constexpr FeatureBitset ImpliedFeaturesHRESET = {};
 
 // Key Locker Features
 constexpr FeatureBitset ImpliedFeaturesKL = FeatureSSE2;
 constexpr FeatureBitset ImpliedFeaturesWIDEKL = FeatureKL;
+
+// AVXVNNI Features
+constexpr FeatureBitset ImpliedFeaturesAVXVNNI = FeatureAVX2;
 
 constexpr FeatureInfo FeatureInfos[X86::CPU_FEATURE_MAX] = {
 #define X86_FEATURE(ENUM, STR) {{STR}, ImpliedFeatures##ENUM},

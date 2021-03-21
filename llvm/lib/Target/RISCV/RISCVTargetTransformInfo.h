@@ -47,6 +47,52 @@ public:
                         Instruction *Inst = nullptr);
   int getIntImmCostIntrin(Intrinsic::ID IID, unsigned Idx, const APInt &Imm,
                           Type *Ty, TTI::TargetCostKind CostKind);
+
+  bool shouldExpandReduction(const IntrinsicInst *II) const;
+  bool supportsScalableVectors() const { return ST->hasStdExtV(); }
+  Optional<unsigned> getMaxVScale() const;
+
+  unsigned getRegisterBitWidth(bool Vector) const {
+    if (Vector) {
+      if (ST->hasStdExtV())
+        return ST->getMinRVVVectorSizeInBits();
+      return 0;
+    }
+    return ST->getXLen();
+  }
+
+  bool isLegalMaskedLoadStore(Type *DataType, Align Alignment) {
+    if (!ST->hasStdExtV())
+      return false;
+
+    // Only support fixed vectors if we know the minimum vector size.
+    if (isa<FixedVectorType>(DataType) && ST->getMinRVVVectorSizeInBits() == 0)
+      return false;
+
+    Type *ScalarTy = DataType->getScalarType();
+    if (ScalarTy->isPointerTy())
+      return true;
+
+    if (ScalarTy->isIntegerTy(8) || ScalarTy->isIntegerTy(16) ||
+        ScalarTy->isIntegerTy(32) || ScalarTy->isIntegerTy(64))
+      return true;
+
+    if (ScalarTy->isHalfTy())
+      return ST->hasStdExtZfh();
+    if (ScalarTy->isFloatTy())
+      return ST->hasStdExtF();
+    if (ScalarTy->isDoubleTy())
+      return ST->hasStdExtD();
+
+    return false;
+  }
+
+  bool isLegalMaskedLoad(Type *DataType, Align Alignment) {
+    return isLegalMaskedLoadStore(DataType, Alignment);
+  }
+  bool isLegalMaskedStore(Type *DataType, Align Alignment) {
+    return isLegalMaskedLoadStore(DataType, Alignment);
+  }
 };
 
 } // end namespace llvm

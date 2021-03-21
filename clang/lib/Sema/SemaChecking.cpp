@@ -75,6 +75,7 @@
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/ADT/StringSet.h"
 #include "llvm/ADT/StringSwitch.h"
 #include "llvm/ADT/Triple.h"
 #include "llvm/Support/AtomicOrdering.h"
@@ -836,7 +837,8 @@ static bool checkOpenCLBlockArgs(Sema &S, Expr *BlockArg) {
 }
 
 static bool checkOpenCLSubgroupExt(Sema &S, CallExpr *Call) {
-  if (!S.getOpenCLOptions().isEnabled("cl_khr_subgroups")) {
+  if (!S.getOpenCLOptions().isAvailableOption("cl_khr_subgroups",
+                                              S.getLangOpts())) {
     S.Diag(Call->getBeginLoc(), diag::err_opencl_requires_extension)
         << 1 << Call->getDirectCallee() << "cl_khr_subgroups";
     return true;
@@ -1422,11 +1424,15 @@ bool Sema::CheckTSBuiltinFunctionCall(const TargetInfo &TI, unsigned BuiltinID,
   case llvm::Triple::x86_64:
     return CheckX86BuiltinFunctionCall(TI, BuiltinID, TheCall);
   case llvm::Triple::ppc:
+  case llvm::Triple::ppcle:
   case llvm::Triple::ppc64:
   case llvm::Triple::ppc64le:
     return CheckPPCBuiltinFunctionCall(TI, BuiltinID, TheCall);
   case llvm::Triple::amdgcn:
     return CheckAMDGCNBuiltinFunctionCall(BuiltinID, TheCall);
+  case llvm::Triple::riscv32:
+  case llvm::Triple::riscv64:
+    return CheckRISCVBuiltinFunctionCall(TI, BuiltinID, TheCall);
   }
 }
 
@@ -1814,8 +1820,7 @@ Sema::CheckBuiltinFunctionCall(FunctionDecl *FDecl, unsigned BuiltinID,
     SmallVector<PartialDiagnosticAt, 8> Notes;
     Expr::EvalResult Eval;
     Eval.Diag = &Notes;
-    if ((!ProbArg->EvaluateAsConstantExpr(Eval, Expr::EvaluateForCodeGen,
-                                          Context)) ||
+    if ((!ProbArg->EvaluateAsConstantExpr(Eval, Context)) ||
         !Eval.Val.isFloat()) {
       Diag(ProbArg->getBeginLoc(), diag::err_probability_not_constant_float)
           << ProbArg->getSourceRange();
@@ -1942,7 +1947,8 @@ Sema::CheckBuiltinFunctionCall(FunctionDecl *FDecl, unsigned BuiltinID,
     // -Wframe-address warning if non-zero passed to builtin
     // return/frame address.
     Expr::EvalResult Result;
-    if (TheCall->getArg(0)->EvaluateAsInt(Result, getASTContext()) &&
+    if (!TheCall->getArg(0)->isValueDependent() &&
+        TheCall->getArg(0)->EvaluateAsInt(Result, getASTContext()) &&
         Result.Val.getInt() != 0)
       Diag(TheCall->getBeginLoc(), diag::warn_frame_address)
           << ((BuiltinID == Builtin::BI__builtin_return_address)
@@ -2621,7 +2627,10 @@ static bool isValidBPFPreserveEnumValueArg(Expr *Arg) {
     return false;
 
   const auto *CE = dyn_cast<CStyleCastExpr>(UO->getSubExpr());
-  if (!CE || CE->getCastKind() != CK_IntegralToPointer)
+  if (!CE)
+    return false;
+  if (CE->getCastKind() != CK_IntegralToPointer &&
+      CE->getCastKind() != CK_NullToPointer)
     return false;
 
   // The integer must be from an EnumConstantDecl.
@@ -2696,6 +2705,8 @@ bool Sema::CheckBPFBuiltinFunctionCall(unsigned BuiltinID,
       InvalidArg = true;
       kind = diag::err_preserve_enum_value_invalid;
     }
+    ReturnUnsignedInt = false;
+  } else if (BuiltinID == BPF::BI__builtin_btf_type_id) {
     ReturnUnsignedInt = false;
   }
 
@@ -3168,6 +3179,62 @@ bool Sema::CheckMipsBuiltinArgument(unsigned BuiltinID, CallExpr *TheCall) {
          SemaBuiltinConstantArgMultiple(TheCall, i, m);
 }
 
+/// DecodePPCMMATypeFromStr - This decodes one PPC MMA type descriptor from Str,
+/// advancing the pointer over the consumed characters. The decoded type is
+/// returned. If the decoded type represents a constant integer with a
+/// constraint on its value then Mask is set to that value. The type descriptors
+/// used in Str are specific to PPC MMA builtins and are documented in the file
+/// defining the PPC builtins.
+static QualType DecodePPCMMATypeFromStr(ASTContext &Context, const char *&Str,
+                                        unsigned &Mask) {
+  bool RequireICE = false;
+  ASTContext::GetBuiltinTypeError Error = ASTContext::GE_None;
+  switch (*Str++) {
+  case 'V':
+    return Context.getVectorType(Context.UnsignedCharTy, 16,
+                                 VectorType::VectorKind::AltiVecVector);
+  case 'i': {
+    char *End;
+    unsigned size = strtoul(Str, &End, 10);
+    assert(End != Str && "Missing constant parameter constraint");
+    Str = End;
+    Mask = size;
+    return Context.IntTy;
+  }
+  case 'W': {
+    char *End;
+    unsigned size = strtoul(Str, &End, 10);
+    assert(End != Str && "Missing PowerPC MMA type size");
+    Str = End;
+    QualType Type;
+    switch (size) {
+  #define PPC_VECTOR_TYPE(typeName, Id, size) \
+    case size: Type = Context.Id##Ty; break;
+  #include "clang/Basic/PPCTypes.def"
+    default: llvm_unreachable("Invalid PowerPC MMA vector type");
+    }
+    bool CheckVectorArgs = false;
+    while (!CheckVectorArgs) {
+      switch (*Str++) {
+      case '*':
+        Type = Context.getPointerType(Type);
+        break;
+      case 'C':
+        Type = Type.withConst();
+        break;
+      default:
+        CheckVectorArgs = true;
+        --Str;
+        break;
+      }
+    }
+    return Type;
+  }
+  default:
+    return Context.DecodeTypeStr(--Str, Context, Error, RequireICE, true);
+  }
+}
+
 bool Sema::CheckPPCBuiltinFunctionCall(const TargetInfo &TI, unsigned BuiltinID,
                                        CallExpr *TheCall) {
   unsigned i = 0, l = 0, u = 0;
@@ -3244,8 +3311,29 @@ bool Sema::CheckPPCBuiltinFunctionCall(const TargetInfo &TI, unsigned BuiltinID,
      return SemaBuiltinConstantArgRange(TheCall, 2, 0, 7);
   case PPC::BI__builtin_vsx_xxpermx:
      return SemaBuiltinConstantArgRange(TheCall, 3, 0, 7);
+#define CUSTOM_BUILTIN(Name, Types, Acc) \
+  case PPC::BI__builtin_##Name: \
+    return SemaBuiltinPPCMMACall(TheCall, Types);
+#include "clang/Basic/BuiltinsPPC.def"
   }
   return SemaBuiltinConstantArgRange(TheCall, i, l, u);
+}
+
+// Check if the given type is a non-pointer PPC MMA type. This function is used
+// in Sema to prevent invalid uses of restricted PPC MMA types.
+bool Sema::CheckPPCMMAType(QualType Type, SourceLocation TypeLoc) {
+  if (Type->isPointerType() || Type->isArrayType())
+    return false;
+
+  QualType CoreType = Type.getCanonicalType().getUnqualifiedType();
+#define PPC_VECTOR_TYPE(Name, Id, Size) || CoreType == Context.Id##Ty
+  if (false
+#include "clang/Basic/PPCTypes.def"
+     ) {
+    Diag(TypeLoc, diag::err_ppc_invalid_use_mma_type);
+    return true;
+  }
+  return false;
 }
 
 bool Sema::CheckAMDGCNBuiltinFunctionCall(unsigned BuiltinID,
@@ -3295,10 +3383,23 @@ bool Sema::CheckAMDGCNBuiltinFunctionCall(unsigned BuiltinID,
   ArgExpr = Arg.get();
   Expr::EvalResult ArgResult1;
   // Check that sync scope is a constant literal
-  if (!ArgExpr->EvaluateAsConstantExpr(ArgResult1, Expr::EvaluateForCodeGen,
-                                       Context))
+  if (!ArgExpr->EvaluateAsConstantExpr(ArgResult1, Context))
     return Diag(ArgExpr->getExprLoc(), diag::err_expr_not_string_literal)
            << ArgExpr->getType();
+
+  return false;
+}
+
+bool Sema::CheckRISCVBuiltinFunctionCall(const TargetInfo &TI,
+                                         unsigned BuiltinID,
+                                         CallExpr *TheCall) {
+  // CodeGenFunction can also detect this, but this gives a better error
+  // message.
+  StringRef Features = Context.BuiltinInfo.getRequiredFeatures(BuiltinID);
+  if (Features.find("experimental-v") != StringRef::npos &&
+      !TI.hasFeature("experimental-v"))
+    return Diag(TheCall->getBeginLoc(), diag::err_riscvv_builtin_requires_v)
+           << TheCall->getSourceRange();
 
   return false;
 }
@@ -4368,6 +4469,43 @@ static void CheckNonNullArguments(Sema &S,
   }
 }
 
+/// Warn if a pointer or reference argument passed to a function points to an
+/// object that is less aligned than the parameter. This can happen when
+/// creating a typedef with a lower alignment than the original type and then
+/// calling functions defined in terms of the original type.
+void Sema::CheckArgAlignment(SourceLocation Loc, NamedDecl *FDecl,
+                             StringRef ParamName, QualType ArgTy,
+                             QualType ParamTy) {
+
+  // If a function accepts a pointer or reference type
+  if (!ParamTy->isPointerType() && !ParamTy->isReferenceType())
+    return;
+
+  // If the parameter is a pointer type, get the pointee type for the
+  // argument too. If the parameter is a reference type, don't try to get
+  // the pointee type for the argument.
+  if (ParamTy->isPointerType())
+    ArgTy = ArgTy->getPointeeType();
+
+  // Remove reference or pointer
+  ParamTy = ParamTy->getPointeeType();
+
+  // Find expected alignment, and the actual alignment of the passed object.
+  // getTypeAlignInChars requires complete types
+  if (ParamTy->isIncompleteType() || ArgTy->isIncompleteType())
+    return;
+
+  CharUnits ParamAlign = Context.getTypeAlignInChars(ParamTy);
+  CharUnits ArgAlign = Context.getTypeAlignInChars(ArgTy);
+
+  // If the argument is less aligned than the parameter, there is a
+  // potential alignment issue.
+  if (ArgAlign < ParamAlign)
+    Diag(Loc, diag::warn_param_mismatched_alignment)
+        << (int)ArgAlign.getQuantity() << (int)ParamAlign.getQuantity()
+        << ParamName << FDecl;
+}
+
 /// Handles the checks for format strings, non-POD arguments to vararg
 /// functions, NULL arguments passed to non-NULL parameters, and diagnose_if
 /// attributes.
@@ -4422,6 +4560,28 @@ void Sema::checkCall(NamedDecl *FDecl, const FunctionProtoType *Proto,
     }
   }
 
+  // Check that passed arguments match the alignment of original arguments.
+  // Try to get the missing prototype from the declaration.
+  if (!Proto && FDecl) {
+    const auto *FT = FDecl->getFunctionType();
+    if (isa_and_nonnull<FunctionProtoType>(FT))
+      Proto = cast<FunctionProtoType>(FDecl->getFunctionType());
+  }
+  if (Proto) {
+    // For variadic functions, we may have more args than parameters.
+    // For some K&R functions, we may have less args than parameters.
+    const auto N = std::min<unsigned>(Proto->getNumParams(), Args.size());
+    for (unsigned ArgIdx = 0; ArgIdx < N; ++ArgIdx) {
+      // Args[ArgIdx] can be null in malformed code.
+      if (const Expr *Arg = Args[ArgIdx]) {
+        QualType ParamTy = Proto->getParamType(ArgIdx);
+        QualType ArgTy = Arg->getType();
+        CheckArgAlignment(Arg->getExprLoc(), FDecl, std::to_string(ArgIdx + 1),
+                          ArgTy, ParamTy);
+      }
+    }
+  }
+
   if (FDecl && FDecl->hasAttr<AllocAlignAttr>()) {
     auto *AA = FDecl->getAttr<AllocAlignAttr>();
     const Expr *Arg = Args[AA->getParamIndex().getASTIndex()];
@@ -4446,12 +4606,17 @@ void Sema::checkCall(NamedDecl *FDecl, const FunctionProtoType *Proto,
 
 /// CheckConstructorCall - Check a constructor call for correctness and safety
 /// properties not enforced by the C type system.
-void Sema::CheckConstructorCall(FunctionDecl *FDecl,
+void Sema::CheckConstructorCall(FunctionDecl *FDecl, QualType ThisType,
                                 ArrayRef<const Expr *> Args,
                                 const FunctionProtoType *Proto,
                                 SourceLocation Loc) {
   VariadicCallType CallType =
-    Proto->isVariadic() ? VariadicConstructor : VariadicDoesNotApply;
+      Proto->isVariadic() ? VariadicConstructor : VariadicDoesNotApply;
+
+  auto *Ctor = cast<CXXConstructorDecl>(FDecl);
+  CheckArgAlignment(Loc, FDecl, "'this'", Context.getPointerType(ThisType),
+                    Context.getPointerType(Ctor->getThisObjectType()));
+
   checkCall(FDecl, Proto, /*ThisArg=*/nullptr, Args, /*IsMemberFunction=*/true,
             Loc, SourceRange(), CallType);
 }
@@ -4481,6 +4646,22 @@ bool Sema::CheckFunctionCall(FunctionDecl *FDecl, CallExpr *TheCall,
     ImplicitThis =
         cast<CXXMemberCallExpr>(TheCall)->getImplicitObjectArgument();
 
+  if (ImplicitThis) {
+    // ImplicitThis may or may not be a pointer, depending on whether . or -> is
+    // used.
+    QualType ThisType = ImplicitThis->getType();
+    if (!ThisType->isPointerType()) {
+      assert(!ThisType->isReferenceType());
+      ThisType = Context.getPointerType(ThisType);
+    }
+
+    QualType ThisTypeFromDecl =
+        Context.getPointerType(cast<CXXMethodDecl>(FDecl)->getThisObjectType());
+
+    CheckArgAlignment(TheCall->getRParenLoc(), FDecl, "'this'", ThisType,
+                      ThisTypeFromDecl);
+  }
+
   checkCall(FDecl, Proto, ImplicitThis, llvm::makeArrayRef(Args, NumArgs),
             IsMemberFunction, TheCall->getRParenLoc(),
             TheCall->getCallee()->getSourceRange(), CallType);
@@ -4491,6 +4672,8 @@ bool Sema::CheckFunctionCall(FunctionDecl *FDecl, CallExpr *TheCall,
   if (!FnInfo)
     return false;
 
+  CheckTCBEnforcement(TheCall, FDecl);
+
   CheckAbsoluteValueFunction(TheCall, FDecl);
   CheckMaxUnsignedZero(TheCall, FDecl);
 
@@ -4498,16 +4681,24 @@ bool Sema::CheckFunctionCall(FunctionDecl *FDecl, CallExpr *TheCall,
     DiagnoseCStringFormatDirectiveInCFAPI(*this, FDecl, Args, NumArgs);
 
   unsigned CMId = FDecl->getMemoryFunctionKind();
-  if (CMId == 0)
-    return false;
 
   // Handle memory setting and copying functions.
-  if (CMId == Builtin::BIstrlcpy || CMId == Builtin::BIstrlcat)
+  switch (CMId) {
+  case 0:
+    return false;
+  case Builtin::BIstrlcpy: // fallthrough
+  case Builtin::BIstrlcat:
     CheckStrlcpycatArguments(TheCall, FnInfo);
-  else if (CMId == Builtin::BIstrncat)
+    break;
+  case Builtin::BIstrncat:
     CheckStrncatArguments(TheCall, FnInfo);
-  else
+    break;
+  case Builtin::BIfree:
+    CheckFreeArguments(TheCall);
+    break;
+  default:
     CheckMemaccessArguments(TheCall, CMId, FnInfo);
+  }
 
   return false;
 }
@@ -6722,6 +6913,64 @@ bool Sema::SemaBuiltinARMSpecialReg(unsigned BuiltinID, CallExpr *TheCall,
   return false;
 }
 
+/// SemaBuiltinPPCMMACall - Check the call to a PPC MMA builtin for validity.
+/// Emit an error and return true on failure; return false on success.
+/// TypeStr is a string containing the type descriptor of the value returned by
+/// the builtin and the descriptors of the expected type of the arguments.
+bool Sema::SemaBuiltinPPCMMACall(CallExpr *TheCall, const char *TypeStr) {
+
+  assert((TypeStr[0] != '\0') &&
+         "Invalid types in PPC MMA builtin declaration");
+
+  unsigned Mask = 0;
+  unsigned ArgNum = 0;
+
+  // The first type in TypeStr is the type of the value returned by the
+  // builtin. So we first read that type and change the type of TheCall.
+  QualType type = DecodePPCMMATypeFromStr(Context, TypeStr, Mask);
+  TheCall->setType(type);
+
+  while (*TypeStr != '\0') {
+    Mask = 0;
+    QualType ExpectedType = DecodePPCMMATypeFromStr(Context, TypeStr, Mask);
+    if (ArgNum >= TheCall->getNumArgs()) {
+      ArgNum++;
+      break;
+    }
+
+    Expr *Arg = TheCall->getArg(ArgNum);
+    QualType ArgType = Arg->getType();
+
+    if ((ExpectedType->isVoidPointerType() && !ArgType->isPointerType()) ||
+        (!ExpectedType->isVoidPointerType() &&
+           ArgType.getCanonicalType() != ExpectedType))
+      return Diag(Arg->getBeginLoc(), diag::err_typecheck_convert_incompatible)
+             << ArgType << ExpectedType << 1 << 0 << 0;
+
+    // If the value of the Mask is not 0, we have a constraint in the size of
+    // the integer argument so here we ensure the argument is a constant that
+    // is in the valid range.
+    if (Mask != 0 &&
+        SemaBuiltinConstantArgRange(TheCall, ArgNum, 0, Mask, true))
+      return true;
+
+    ArgNum++;
+  }
+
+  // In case we exited early from the previous loop, there are other types to
+  // read from TypeStr. So we need to read them all to ensure we have the right
+  // number of arguments in TheCall and if it is not the case, to display a
+  // better error message.
+  while (*TypeStr != '\0') {
+    (void) DecodePPCMMATypeFromStr(Context, TypeStr, Mask);
+    ArgNum++;
+  }
+  if (checkArgCount(*this, TheCall, ArgNum))
+    return true;
+
+  return false;
+}
+
 /// SemaBuiltinLongjmp - Handle __builtin_longjmp(void *env[5], int val).
 /// This checks that the target supports __builtin_longjmp and
 /// that val is a constant 1.
@@ -8482,8 +8731,11 @@ CheckPrintfHandler::checkFormatExpr(const analyze_printf::PrintfSpecifier &FS,
   } else if (const CharacterLiteral *CL = dyn_cast<CharacterLiteral>(E)) {
     // Special case for 'a', which has type 'int' in C.
     // Note, however, that we do /not/ want to treat multibyte constants like
-    // 'MooV' as characters! This form is deprecated but still exists.
-    if (ExprTy == S.Context.IntTy)
+    // 'MooV' as characters! This form is deprecated but still exists. In
+    // addition, don't treat expressions as of type 'char' if one byte length
+    // modifier is provided.
+    if (ExprTy == S.Context.IntTy &&
+        FS.getLengthModifier().getKind() != LengthModifier::AsChar)
       if (llvm::isUIntN(S.Context.getCharWidth(), CL->getValue()))
         ExprTy = S.Context.CharTy;
   }
@@ -10100,6 +10352,119 @@ void Sema::CheckStrncatArguments(const CallExpr *CE,
     << FixItHint::CreateReplacement(SR, OS.str());
 }
 
+namespace {
+void CheckFreeArgumentsOnLvalue(Sema &S, const std::string &CalleeName,
+                                const UnaryOperator *UnaryExpr, const Decl *D) {
+  if (isa<FieldDecl, FunctionDecl, VarDecl>(D)) {
+    S.Diag(UnaryExpr->getBeginLoc(), diag::warn_free_nonheap_object)
+        << CalleeName << 0 /*object: */ << cast<NamedDecl>(D);
+    return;
+  }
+}
+
+void CheckFreeArgumentsAddressof(Sema &S, const std::string &CalleeName,
+                                 const UnaryOperator *UnaryExpr) {
+  if (const auto *Lvalue = dyn_cast<DeclRefExpr>(UnaryExpr->getSubExpr())) {
+    const Decl *D = Lvalue->getDecl();
+    if (isa<VarDecl, FunctionDecl>(D))
+      return CheckFreeArgumentsOnLvalue(S, CalleeName, UnaryExpr, D);
+  }
+
+  if (const auto *Lvalue = dyn_cast<MemberExpr>(UnaryExpr->getSubExpr()))
+    return CheckFreeArgumentsOnLvalue(S, CalleeName, UnaryExpr,
+                                      Lvalue->getMemberDecl());
+}
+
+void CheckFreeArgumentsPlus(Sema &S, const std::string &CalleeName,
+                            const UnaryOperator *UnaryExpr) {
+  const auto *Lambda = dyn_cast<LambdaExpr>(
+      UnaryExpr->getSubExpr()->IgnoreImplicitAsWritten()->IgnoreParens());
+  if (!Lambda)
+    return;
+
+  S.Diag(Lambda->getBeginLoc(), diag::warn_free_nonheap_object)
+      << CalleeName << 2 /*object: lambda expression*/;
+}
+
+void CheckFreeArgumentsStackArray(Sema &S, const std::string &CalleeName,
+                                  const DeclRefExpr *Lvalue) {
+  const auto *Var = dyn_cast<VarDecl>(Lvalue->getDecl());
+  if (Var == nullptr)
+    return;
+
+  S.Diag(Lvalue->getBeginLoc(), diag::warn_free_nonheap_object)
+      << CalleeName << 0 /*object: */ << Var;
+}
+
+void CheckFreeArgumentsCast(Sema &S, const std::string &CalleeName,
+                            const CastExpr *Cast) {
+  SmallString<128> SizeString;
+  llvm::raw_svector_ostream OS(SizeString);
+
+  clang::CastKind Kind = Cast->getCastKind();
+  if (Kind == clang::CK_BitCast &&
+      !Cast->getSubExpr()->getType()->isFunctionPointerType())
+    return;
+  if (Kind == clang::CK_IntegralToPointer &&
+      !isa<IntegerLiteral>(
+          Cast->getSubExpr()->IgnoreParenImpCasts()->IgnoreParens()))
+    return;
+
+  switch (Cast->getCastKind()) {
+  case clang::CK_BitCast:
+  case clang::CK_IntegralToPointer:
+  case clang::CK_FunctionToPointerDecay:
+    OS << '\'';
+    Cast->printPretty(OS, nullptr, S.getPrintingPolicy());
+    OS << '\'';
+    break;
+  default:
+    return;
+  }
+
+  S.Diag(Cast->getBeginLoc(), diag::warn_free_nonheap_object)
+      << CalleeName << 0 /*object: */ << OS.str();
+}
+} // namespace
+
+/// Alerts the user that they are attempting to free a non-malloc'd object.
+void Sema::CheckFreeArguments(const CallExpr *E) {
+  const std::string CalleeName =
+      dyn_cast<FunctionDecl>(E->getCalleeDecl())->getQualifiedNameAsString();
+
+  { // Prefer something that doesn't involve a cast to make things simpler.
+    const Expr *Arg = E->getArg(0)->IgnoreParenCasts();
+    if (const auto *UnaryExpr = dyn_cast<UnaryOperator>(Arg))
+      switch (UnaryExpr->getOpcode()) {
+      case UnaryOperator::Opcode::UO_AddrOf:
+        return CheckFreeArgumentsAddressof(*this, CalleeName, UnaryExpr);
+      case UnaryOperator::Opcode::UO_Plus:
+        return CheckFreeArgumentsPlus(*this, CalleeName, UnaryExpr);
+      default:
+        break;
+      }
+
+    if (const auto *Lvalue = dyn_cast<DeclRefExpr>(Arg))
+      if (Lvalue->getType()->isArrayType())
+        return CheckFreeArgumentsStackArray(*this, CalleeName, Lvalue);
+
+    if (const auto *Label = dyn_cast<AddrLabelExpr>(Arg)) {
+      Diag(Label->getBeginLoc(), diag::warn_free_nonheap_object)
+          << CalleeName << 0 /*object: */ << Label->getLabel()->getIdentifier();
+      return;
+    }
+
+    if (isa<BlockExpr>(Arg)) {
+      Diag(Arg->getBeginLoc(), diag::warn_free_nonheap_object)
+          << CalleeName << 1 /*object: block*/;
+      return;
+    }
+  }
+  // Maybe the cast was important, check after the other cases.
+  if (const auto *Cast = dyn_cast<CastExpr>(E->getArg(0)))
+    return CheckFreeArgumentsCast(*this, CalleeName, Cast);
+}
+
 void
 Sema::CheckReturnValExpr(Expr *RetValExp, QualType lhsType,
                          SourceLocation ReturnLoc,
@@ -10129,6 +10494,11 @@ Sema::CheckReturnValExpr(Expr *RetValExp, QualType lhsType,
           << FD << getLangOpts().CPlusPlus11;
     }
   }
+
+  // PPC MMA non-pointer types are not allowed as return type. Checking the type
+  // here prevent the user from using a PPC MMA type as trailing return type.
+  if (Context.getTargetInfo().getTriple().isPPC64())
+    CheckPPCMMAType(RetValExp->getType(), ReturnLoc);
 }
 
 //===--- CHECK: Floating-Point comparisons (-Wfloat-equal) ---------------===//
@@ -11836,7 +12206,16 @@ static void CheckImplicitConversion(Sema &S, Expr *E, QualType T,
     checkObjCDictionaryLiteral(S, QualType(Target, 0), DictionaryLiteral);
 
   // Strip vector types.
-  if (isa<VectorType>(Source)) {
+  if (const auto *SourceVT = dyn_cast<VectorType>(Source)) {
+    if (Target->isVLSTBuiltinType()) {
+      auto SourceVectorKind = SourceVT->getVectorKind();
+      if (SourceVectorKind == VectorType::SveFixedLengthDataVector ||
+          SourceVectorKind == VectorType::SveFixedLengthPredicateVector ||
+          (SourceVectorKind == VectorType::GenericVector &&
+           S.Context.getTypeSize(Source) == S.getLangOpts().ArmSveVectorBits))
+        return;
+    }
+
     if (!isa<VectorType>(Target)) {
       if (S.SourceMgr.isInSystemMacro(CC))
         return;
@@ -15847,4 +16226,39 @@ ExprResult Sema::SemaBuiltinMatrixColumnMajorStore(CallExpr *TheCall,
     return ExprError();
 
   return CallResult;
+}
+
+/// \brief Enforce the bounds of a TCB
+/// CheckTCBEnforcement - Enforces that every function in a named TCB only
+/// directly calls other functions in the same TCB as marked by the enforce_tcb
+/// and enforce_tcb_leaf attributes.
+void Sema::CheckTCBEnforcement(const CallExpr *TheCall,
+                               const FunctionDecl *Callee) {
+  const FunctionDecl *Caller = getCurFunctionDecl();
+
+  // Calls to builtins are not enforced.
+  if (!Caller || !Caller->hasAttr<EnforceTCBAttr>() ||
+      Callee->getBuiltinID() != 0)
+    return;
+
+  // Search through the enforce_tcb and enforce_tcb_leaf attributes to find
+  // all TCBs the callee is a part of.
+  llvm::StringSet<> CalleeTCBs;
+  for_each(Callee->specific_attrs<EnforceTCBAttr>(),
+           [&](const auto *A) { CalleeTCBs.insert(A->getTCBName()); });
+  for_each(Callee->specific_attrs<EnforceTCBLeafAttr>(),
+           [&](const auto *A) { CalleeTCBs.insert(A->getTCBName()); });
+
+  // Go through the TCBs the caller is a part of and emit warnings if Caller
+  // is in a TCB that the Callee is not.
+  for_each(
+      Caller->specific_attrs<EnforceTCBAttr>(),
+      [&](const auto *A) {
+        StringRef CallerTCB = A->getTCBName();
+        if (CalleeTCBs.count(CallerTCB) == 0) {
+          this->Diag(TheCall->getExprLoc(),
+                     diag::warn_tcb_enforcement_violation) << Callee
+                                                           << CallerTCB;
+        }
+      });
 }

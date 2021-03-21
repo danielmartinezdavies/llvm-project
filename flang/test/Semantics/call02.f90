@@ -19,6 +19,10 @@ subroutine s01(elem, subr)
   call subr(cos) ! not an error
   !ERROR: Non-intrinsic ELEMENTAL procedure 'elem' may not be passed as an actual argument
   call subr(elem) ! C1533
+  !ERROR: Actual argument associated with procedure dummy argument 'dummy=' is a null pointer
+  call subr(null())
+  !ERROR: Actual argument associated with procedure dummy argument 'dummy=' is typeless
+  call subr(B"1010")
 end subroutine
 
 module m01

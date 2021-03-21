@@ -82,14 +82,11 @@ define i8 @test10a(i8 %A) {
   ret i8 %C
 }
 
-;; This transformation is deferred to DAGCombine:
 ;; (A >> 3) << 4 === (A & 0x1F) << 1
-;; The shl may be valuable to scalar evolution.
 define i8 @test11(i8 %x) {
 ; CHECK-LABEL: @test11(
-; CHECK-NEXT:    [[A:%.*]] = mul i8 [[X:%.*]], 3
-; CHECK-NEXT:    [[B:%.*]] = lshr i8 [[A]], 3
-; CHECK-NEXT:    [[C:%.*]] = shl i8 [[B]], 4
+; CHECK-NEXT:    [[TMP1:%.*]] = mul i8 [[X:%.*]], 6
+; CHECK-NEXT:    [[C:%.*]] = and i8 [[TMP1]], -16
 ; CHECK-NEXT:    ret i8 [[C]]
 ;
   %a = mul i8 %x, 3
@@ -110,7 +107,6 @@ define i8 @test11a(i8 %A) {
   ret i8 %C
 }
 
-;; This is deferred to DAGCombine unless %B is single-use.
 ;; (A >> 8) << 8 === A & -256
 define i32 @test12(i32 %A) {
 ; CHECK-LABEL: @test12(
@@ -138,14 +134,11 @@ define i8 @shishi(i8 %x) {
   ret i8 %r
 }
 
-;; This transformation is deferred to DAGCombine:
 ;; (A >> 3) << 4 === (A & -8) * 2
-;; The shl may be valuable to scalar evolution.
 define i8 @test13(i8 %x) {
 ; CHECK-LABEL: @test13(
-; CHECK-NEXT:    [[A:%.*]] = mul i8 [[X:%.*]], 3
-; CHECK-NEXT:    [[TMP1:%.*]] = lshr i8 [[A]], 3
-; CHECK-NEXT:    [[C:%.*]] = shl i8 [[TMP1]], 4
+; CHECK-NEXT:    [[TMP1:%.*]] = mul i8 [[X:%.*]], 6
+; CHECK-NEXT:    [[C:%.*]] = and i8 [[TMP1]], -16
 ; CHECK-NEXT:    ret i8 [[C]]
 ;
   %a = mul i8 %x, 3
@@ -669,7 +662,7 @@ define <3 x i32> @test38_nonuniform(<3 x i32> %x) nounwind readnone {
 
 define <2 x i32> @test38_undef(<2 x i32> %x) nounwind readnone {
 ; CHECK-LABEL: @test38_undef(
-; CHECK-NEXT:    ret <2 x i32> undef
+; CHECK-NEXT:    ret <2 x i32> poison
 ;
   %rem = srem <2 x i32> %x, <i32 32, i32 undef>
   %shl = shl <2 x i32> <i32 1, i32 1>, %rem
@@ -1089,8 +1082,8 @@ define i32 @test55(i32 %x) {
 
 define i32 @test56(i32 %x) {
 ; CHECK-LABEL: @test56(
-; CHECK-NEXT:    [[SHR2:%.*]] = lshr i32 [[X:%.*]], 1
-; CHECK-NEXT:    [[SHL:%.*]] = shl i32 [[SHR2]], 4
+; CHECK-NEXT:    [[TMP1:%.*]] = shl i32 [[X:%.*]], 3
+; CHECK-NEXT:    [[SHL:%.*]] = and i32 [[TMP1]], -16
 ; CHECK-NEXT:    [[OR:%.*]] = or i32 [[SHL]], 7
 ; CHECK-NEXT:    ret i32 [[OR]]
 ;
@@ -1102,8 +1095,8 @@ define i32 @test56(i32 %x) {
 
 define i32 @test57(i32 %x) {
 ; CHECK-LABEL: @test57(
-; CHECK-NEXT:    [[TMP1:%.*]] = lshr i32 [[X:%.*]], 1
-; CHECK-NEXT:    [[SHL:%.*]] = shl i32 [[TMP1]], 4
+; CHECK-NEXT:    [[TMP1:%.*]] = shl i32 [[X:%.*]], 3
+; CHECK-NEXT:    [[SHL:%.*]] = and i32 [[TMP1]], -16
 ; CHECK-NEXT:    [[OR:%.*]] = or i32 [[SHL]], 7
 ; CHECK-NEXT:    ret i32 [[OR]]
 ;
@@ -1139,8 +1132,8 @@ define <2 x i32> @test58_splat_vec(<2 x i32> %x) {
 
 define i32 @test59(i32 %x) {
 ; CHECK-LABEL: @test59(
-; CHECK-NEXT:    [[SHR:%.*]] = ashr i32 [[X:%.*]], 4
-; CHECK-NEXT:    [[SHL:%.*]] = shl nsw i32 [[SHR]], 1
+; CHECK-NEXT:    [[TMP1:%.*]] = ashr i32 [[X:%.*]], 3
+; CHECK-NEXT:    [[SHL:%.*]] = and i32 [[TMP1]], -4
 ; CHECK-NEXT:    [[OR:%.*]] = or i32 [[SHL]], 2
 ; CHECK-NEXT:    ret i32 [[OR]]
 ;
@@ -1216,7 +1209,7 @@ bb12:                                             ; preds = %bb11, %bb8, %bb
 
 define i32 @test62(i32 %a) {
 ; CHECK-LABEL: @test62(
-; CHECK-NEXT:    ret i32 undef
+; CHECK-NEXT:    ret i32 poison
 ;
   %b = ashr i32 %a, 32  ; shift all bits out
   ret i32 %b
@@ -1224,7 +1217,7 @@ define i32 @test62(i32 %a) {
 
 define <4 x i32> @test62_splat_vector(<4 x i32> %a) {
 ; CHECK-LABEL: @test62_splat_vector(
-; CHECK-NEXT:    ret <4 x i32> undef
+; CHECK-NEXT:    ret <4 x i32> poison
 ;
   %b = ashr <4 x i32> %a, <i32 32, i32 32, i32 32, i32 32>  ; shift all bits out
   ret <4 x i32> %b
@@ -1723,6 +1716,25 @@ define i177 @lshr_out_of_range(i177 %Y, i177** %A2) {
   ret i177 %B1
 }
 
+; OSS Fuzz #26716
+; https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=26716
+define i177 @lshr_out_of_range2(i177 %Y, i177** %A2) {
+; CHECK-LABEL: @lshr_out_of_range2(
+; CHECK-NEXT:    ret i177 0
+;
+  %B5 = udiv i177 %Y, -1
+  %B = sdiv i177 %B5, -1
+  %B4 = add i177 %B5, %B
+  %B2 = add i177 %B4, -1
+  %B6 = mul i177 %B5, %B2
+  %B12 = lshr i177 %Y, %B6
+  %C8 = icmp ugt i177 %B12, %B4
+  %G18 = getelementptr i177*, i177** %A2, i1 %C8
+  store i177** %G18, i177*** undef, align 8
+  %B1 = udiv i177 %B5, %B6
+  ret i177 %B1
+}
+
 ; OSS Fuzz #5032
 ; https://bugs.chromium.org/p/oss-fuzz/issues/detail?id=5032
 define void @ashr_out_of_range(i177* %A) {
@@ -1782,4 +1794,26 @@ define void @ashr_out_of_range_1(i177* %A) {
   %B28 = urem i177 %B24, %B6
   store i177 %B28, i177* %G62, align 4
   ret void
+}
+
+define i8 @lshr_mask_demand(i8 %x) {
+; CHECK-LABEL: @lshr_mask_demand(
+; CHECK-NEXT:    [[S:%.*]] = lshr i8 63, [[X:%.*]]
+; CHECK-NEXT:    [[R:%.*]] = and i8 [[S]], 32
+; CHECK-NEXT:    ret i8 [[R]]
+;
+  %s = lshr i8 63, %x ; 0b00111111
+  %r = and i8 %s, 224 ; 0b11100000
+  ret i8 %r
+}
+
+define i8 @shl_mask_demand(i8 %x) {
+; CHECK-LABEL: @shl_mask_demand(
+; CHECK-NEXT:    [[S:%.*]] = shl i8 12, [[X:%.*]]
+; CHECK-NEXT:    [[R:%.*]] = and i8 [[S]], 4
+; CHECK-NEXT:    ret i8 [[R]]
+;
+  %s = shl i8 12, %x ; 0b00001100
+  %r = and i8 %s, 7  ; 0b00000111
+  ret i8 %r
 }

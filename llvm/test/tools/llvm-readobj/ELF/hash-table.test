@@ -38,10 +38,9 @@ Sections:
       - Tag:   DT_NULL
         Value: 0x0
 ProgramHeaders:
-  - Type: PT_LOAD
-    Sections:
-      - Section: .hash
-      - Section: .dynamic
+  - Type:     PT_LOAD
+    FirstSec: .hash
+    LastSec:  .dynamic
 
 ## Document that we ignore the sh_entsize value when dumping the hash section.
 ## Implementation assumes that the size of entries is 4, matching the ELF specification.
@@ -73,12 +72,10 @@ ProgramHeaders:
 ## We don't report warnings about the unsupported hash table on EM_S390 and EM_ALPHA platforms
 ## when --hash-table is not requested.
 
-# RUN: llvm-readobj %t.s390 2>&1 | FileCheck %s -DFILE=%t.s390 --implicit-check-not="warning:"  --check-prefix=NOWARN
-# RUN: llvm-readelf %t.s390 2>&1 | FileCheck %s -DFILE=%t.s390 --implicit-check-not="warning:"  --check-prefix=NOWARN
-# RUN: llvm-readobj %t.alpha 2>&1 | FileCheck %s -DFILE=%t.alpha --implicit-check-not="warning:" --check-prefix=NOWARN
-# RUN: llvm-readelf %t.alpha 2>&1 | FileCheck %s -DFILE=%t.alpha --implicit-check-not="warning:" --check-prefix=NOWARN
-
-# NOWARN: warning: '[[FILE]]': string table was not found
+# RUN: llvm-readobj %t.s390 2>&1 | FileCheck %s -DFILE=%t.s390 --allow-empty --implicit-check-not="warning:"
+# RUN: llvm-readelf %t.s390 2>&1 | FileCheck %s -DFILE=%t.s390 --allow-empty --implicit-check-not="warning:"
+# RUN: llvm-readobj %t.alpha 2>&1 | FileCheck %s -DFILE=%t.alpha --allow-empty --implicit-check-not="warning:"
+# RUN: llvm-readelf %t.alpha 2>&1 | FileCheck %s -DFILE=%t.alpha --allow-empty --implicit-check-not="warning:"
 
 ## Check we can dump the SHT_HASH section even when an object
 ## does not have the section header table.
@@ -88,8 +85,6 @@ ProgramHeaders:
 # RUN:   FileCheck %s -DFILE=%t.noshdr --check-prefix=NOSHDR --implicit-check-not=warning:
 # RUN: llvm-readelf --hash-table %t.noshdr 2>&1 | \
 # RUN:   FileCheck %s -DFILE=%t.noshdr --check-prefix=NOSHDR --implicit-check-not=warning:
-
-# NOSHDR: warning: '[[FILE]]': string table was not found
 
 # NOSHDR:      HashTable {
 # NOSHDR-NEXT:   Num Buckets: 1
@@ -118,17 +113,16 @@ Sections:
         Value: 0x0
       - Tag:   DT_NULL
         Value: 0x0
-SectionHeaderTable:
-  NoHeaders: [[NOHEADERS=false]]
+  - Type: SectionHeaderTable
+    NoHeaders: [[NOHEADERS=false]]
 ProgramHeaders:
-  - Type: PT_LOAD
-    Sections:
-      - Section: .hash
-      - Section: .dynamic
-  - Type: PT_DYNAMIC
-    VAddr: 0x10
-    Sections:
-      - Section: .dynamic
+  - Type:     PT_LOAD
+    FirstSec: .hash
+    LastSec:  .dynamic
+  - Type:     PT_DYNAMIC
+    VAddr:    0x10
+    FirstSec: .dynamic
+    LastSec:  .dynamic
 
 ## Document we don't report a warning when the value of the sh_entsize field of the SHT_HASH section is not 4.
 
@@ -145,8 +139,6 @@ ProgramHeaders:
 # RUN:   FileCheck %s -DFILE=%t.no.dyntag --check-prefix=NODYNTAG --implicit-check-not=warning:
 # RUN: llvm-readelf --hash-table %t.no.dyntag 2>&1 | \
 # RUN:   FileCheck %s -DFILE=%t.no.dyntag --check-prefix=NODYNTAG --implicit-check-not=warning:
-
-# NODYNTAG: warning: '[[FILE]]': string table was not found
 
 # NODYNTAG:      HashTable {
 # NODYNTAG-NEXT: }
@@ -185,9 +177,8 @@ DynamicSymbols: []
 ProgramHeaders:
   - Type:     PT_LOAD
     FileSize: 0x23a
-    Sections:
-      - Section: .hash
-      - Section: .dynamic
+    FirstSec: .hash
+    LastSec:  .dynamic
 
 ## Check we report a warning when the hash table goes past the end of the file.
 
@@ -280,10 +271,9 @@ Sections:
         Value: 0x0
 DynamicSymbols: []
 ProgramHeaders:
-  - Type: PT_LOAD
-    Sections:
-      - Section: .hash
-      - Section: .dynamic
+  - Type:     PT_LOAD
+    FirstSec: .hash
+    LastSec: .dynamic
 
 ## Show we do not duplicate warnings when printing both the hash table and the hash histogram.
 ## Note that --elf-hash-histogram is only implemented for llvm-readelf currently.

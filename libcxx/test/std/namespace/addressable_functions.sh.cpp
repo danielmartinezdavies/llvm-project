@@ -17,9 +17,14 @@
 // RUN: %{cxx} %t.tu1.o %t.tu2.o %{flags} %{link_flags} -o %t.exe
 // RUN: %{exec} %t.exe
 
+// The functions checked below come from <iostream> & friends
+// UNSUPPORTED: libcpp-has-no-localization
+
 #include <cassert>
-#include <iostream>
+#include <ios>
+#include <istream>
 #include <map>
+#include <ostream>
 #include <string>
 #include <utility>
 

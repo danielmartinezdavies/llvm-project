@@ -197,6 +197,14 @@ private:
                                   ///< Format: (arch)(sub)-(vendor)-(sys0-(abi)
   NamedMDSymTabType NamedMDSymTab;  ///< NamedMDNode names.
   DataLayout DL;                  ///< DataLayout associated with the module
+  StringMap<unsigned>
+      CurrentIntrinsicIds; ///< Keep track of the current unique id count for
+                           ///< the specified intrinsic basename.
+  DenseMap<std::pair<Intrinsic::ID, const FunctionType *>, unsigned>
+      UniquedIntrinsicNames; ///< Keep track of uniqued names of intrinsics
+                             ///< based on unnamed types. The combination of
+                             ///< ID and FunctionType maps to the extension that
+                             ///< is used to make the intrinsic name unique.
 
   friend class Constant;
 
@@ -329,11 +337,12 @@ public:
   /// \see LLVMContext::getOperandBundleTagID
   void getOperandBundleTags(SmallVectorImpl<StringRef> &Result) const;
 
-  /// Return the type with the specified name, or null if there is none by that
-  /// name.
-  StructType *getTypeByName(StringRef Name) const;
-
   std::vector<StructType *> getIdentifiedStructTypes() const;
+
+  /// Return a unique name for an intrinsic whose mangling is based on an
+  /// unnamed type. The Proto represents the function prototype.
+  std::string getUniqueIntrinsicName(StringRef BaseName, Intrinsic::ID Id,
+                                     const FunctionType *Proto);
 
 /// @}
 /// @name Function Accessors
@@ -809,6 +818,9 @@ public:
   /// Returns the Dwarf Version by checking module flags.
   unsigned getDwarfVersion() const;
 
+  /// Returns the DWARF format by checking module flags.
+  bool isDwarf64() const;
+
   /// Returns the CodeView Version by checking module flags.
   /// Returns zero if not present in module.
   unsigned getCodeViewFlag() const;
@@ -854,12 +866,11 @@ public:
 
   /// Returns profile summary metadata. When IsCS is true, use the context
   /// sensitive profile summary.
-  Metadata *getProfileSummary(bool IsCS);
+  Metadata *getProfileSummary(bool IsCS) const;
   /// @}
 
   /// Returns whether semantic interposition is to be respected.
   bool getSemanticInterposition() const;
-  bool noSemanticInterposition() const;
 
   /// Set whether semantic interposition is to be respected.
   void setSemanticInterposition(bool);
@@ -890,10 +901,11 @@ public:
   void setPartialSampleProfileRatio(const ModuleSummaryIndex &Index);
 };
 
-/// Given "llvm.used" or "llvm.compiler.used" as a global name, collect
-/// the initializer elements of that global in Set and return the global itself.
+/// Given "llvm.used" or "llvm.compiler.used" as a global name, collect the
+/// initializer elements of that global in a SmallVector and return the global
+/// itself.
 GlobalVariable *collectUsedGlobalVariables(const Module &M,
-                                           SmallPtrSetImpl<GlobalValue *> &Set,
+                                           SmallVectorImpl<GlobalValue *> &Vec,
                                            bool CompilerUsed);
 
 /// An raw_ostream inserter for modules.

@@ -12,6 +12,7 @@
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Linalg/IR/LinalgOps.h"
 #include "mlir/Dialect/Linalg/Transforms/Transforms.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/SCF.h"
 #include "mlir/Dialect/StandardOps/IR/Ops.h"
 
@@ -65,7 +66,7 @@ static FlatSymbolRefAttr getLibraryCallSymbolRef(Operation *op,
   assert(op->getNumResults() == 0 &&
          "Library call for linalg operation can be generated only for ops that "
          "have void return types");
-  auto libFnType = FunctionType::get(inputTypes, {}, rewriter.getContext());
+  auto libFnType = rewriter.getFunctionType(inputTypes, {});
 
   OpBuilder::InsertionGuard guard(rewriter);
   // Insert before module terminator.
@@ -76,7 +77,8 @@ static FlatSymbolRefAttr getLibraryCallSymbolRef(Operation *op,
   // Insert a function attribute that will trigger the emission of the
   // corresponding `_mlir_ciface_xxx` interface so that external libraries see
   // a normalized ABI. This interface is added during std to llvm conversion.
-  funcOp.setAttr("llvm.emit_c_interface", UnitAttr::get(op->getContext()));
+  funcOp->setAttr("llvm.emit_c_interface", UnitAttr::get(op->getContext()));
+  funcOp.setPrivate();
   return fnNameAttr;
 }
 
@@ -92,7 +94,7 @@ createTypeCanonicalizedMemRefOperands(OpBuilder &b, Location loc,
       continue;
     }
     Value cast =
-        b.create<MemRefCastOp>(loc, eraseStridedLayout(memrefType), op);
+        b.create<memref::CastOp>(loc, eraseStridedLayout(memrefType), op);
     res.push_back(cast);
   }
   return res;
@@ -142,18 +144,24 @@ LogicalResult mlir::linalg::CopyTransposeRewrite::matchAndRewrite(
   // If either inputPerm or outputPerm are non-identities, insert transposes.
   auto inputPerm = op.inputPermutation();
   if (inputPerm.hasValue() && !inputPerm->isIdentity())
-    in = rewriter.create<TransposeOp>(op.getLoc(), in,
-                                      AffineMapAttr::get(*inputPerm));
+    in = rewriter.create<memref::TransposeOp>(op.getLoc(), in,
+                                              AffineMapAttr::get(*inputPerm));
   auto outputPerm = op.outputPermutation();
   if (outputPerm.hasValue() && !outputPerm->isIdentity())
-    out = rewriter.create<TransposeOp>(op.getLoc(), out,
-                                       AffineMapAttr::get(*outputPerm));
+    out = rewriter.create<memref::TransposeOp>(op.getLoc(), out,
+                                               AffineMapAttr::get(*outputPerm));
 
   // If nothing was transposed, fail and let the conversion kick in.
   if (in == op.input() && out == op.output())
     return failure();
 
-  rewriter.replaceOpWithNewOp<CopyOp>(op, in, out);
+  auto libraryCallName = getLibraryCallSymbolRef(op, rewriter);
+  if (!libraryCallName)
+    return failure();
+
+  rewriter.replaceOpWithNewOp<mlir::CallOp>(
+      op, libraryCallName.getValue(), TypeRange(),
+      createTypeCanonicalizedMemRefOperands(rewriter, op.getLoc(), {in, out}));
   return success();
 }
 
@@ -184,14 +192,14 @@ mlir::linalg::IndexedGenericOpToLibraryCallRewrite::matchAndRewrite(
 
 /// Populate the given list with patterns that convert from Linalg to Standard.
 void mlir::linalg::populateLinalgToStandardConversionPatterns(
-    OwningRewritePatternList &patterns, MLIRContext *ctx) {
+    OwningRewritePatternList &patterns) {
   // TODO: ConvOp conversion needs to export a descriptor with relevant
   // attribute values such as kernel striding and dilation.
   // clang-format off
   patterns.insert<
       CopyOpToLibraryCallRewrite,
       CopyTransposeRewrite,
-      IndexedGenericOpToLibraryCallRewrite>(ctx);
+      IndexedGenericOpToLibraryCallRewrite>(patterns.getContext());
   patterns.insert<LinalgOpToLibraryCallRewrite>();
   // clang-format on
 }
@@ -206,12 +214,13 @@ struct ConvertLinalgToStandardPass
 void ConvertLinalgToStandardPass::runOnOperation() {
   auto module = getOperation();
   ConversionTarget target(getContext());
-  target.addLegalDialect<AffineDialect, scf::SCFDialect, StandardOpsDialect>();
+  target.addLegalDialect<AffineDialect, memref::MemRefDialect, scf::SCFDialect,
+                         StandardOpsDialect>();
   target.addLegalOp<ModuleOp, FuncOp, ModuleTerminatorOp, ReturnOp>();
   target.addLegalOp<linalg::ReshapeOp, linalg::RangeOp>();
-  OwningRewritePatternList patterns;
-  populateLinalgToStandardConversionPatterns(patterns, &getContext());
-  if (failed(applyFullConversion(module, target, patterns)))
+  OwningRewritePatternList patterns(&getContext());
+  populateLinalgToStandardConversionPatterns(patterns);
+  if (failed(applyFullConversion(module, target, std::move(patterns))))
     signalPassFailure();
 }
 

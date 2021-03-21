@@ -336,18 +336,6 @@ define i8 @test15(i8 %A) {
   ret i8 %C
 }
 
-; Only one bit set
-define i8 @test16(i8 %A) {
-; CHECK-LABEL: @test16(
-; CHECK-NEXT:    [[B:%.*]] = and i8 [[A:%.*]], 16
-; CHECK-NEXT:    [[C:%.*]] = xor i8 [[B]], 16
-; CHECK-NEXT:    ret i8 [[C]]
-;
-  %B = add i8 %A, 16
-  %C = and i8 %B, 16
-  ret i8 %C
-}
-
 define i32 @test17(i32 %A) {
 ; CHECK-LABEL: @test17(
 ; CHECK-NEXT:    [[C:%.*]] = sub i32 0, [[A:%.*]]

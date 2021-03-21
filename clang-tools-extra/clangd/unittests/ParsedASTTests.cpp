@@ -24,6 +24,7 @@
 #include "SourceCode.h"
 #include "TestFS.h"
 #include "TestTU.h"
+#include "TidyProvider.h"
 #include "clang/AST/DeclTemplate.h"
 #include "clang/Basic/SourceLocation.h"
 #include "clang/Basic/SourceManager.h"
@@ -59,7 +60,7 @@ MATCHER_P(DeclNamed, Name, "") {
 
 MATCHER_P(DeclKind, Kind, "") {
   if (NamedDecl *ND = dyn_cast<NamedDecl>(arg))
-    if (ND->getDeclKindName() == Kind)
+    if (ND->getDeclKindName() == llvm::StringRef(Kind))
       return true;
   if (auto *Stream = result_listener->stream()) {
     llvm::raw_os_ostream OS(*Stream);
@@ -104,8 +105,7 @@ MATCHER(EqInc, "") {
          std::tie(Expected.HashLine, Expected.Written);
 }
 
-// FIXME: figure out why it fails on clang-ppc64le-rhel buildbot.
-TEST(ParsedASTTest, DISABLED_TopLevelDecls) {
+TEST(ParsedASTTest, TopLevelDecls) {
   TestTU TU;
   TU.HeaderCode = R"(
     int header1();
@@ -184,9 +184,6 @@ TEST(ParsedASTTest,
     template <>
     int foo<bool> = 0;
   )cpp";
-  // FIXME: Auto-completion in a template requires disabling delayed template
-  // parsing.
-  TU.ExtraArgs.push_back("-fno-delayed-template-parsing");
 
   auto AST = TU.build();
   EXPECT_THAT(
@@ -251,7 +248,7 @@ TEST(ParsedASTTest, NoCrashOnTokensWithTidyCheck) {
   TestTU TU;
   // this check runs the preprocessor, we need to make sure it does not break
   // our recording logic.
-  TU.ClangTidyChecks = "modernize-use-trailing-return-type";
+  TU.ClangTidyProvider = addTidyChecks("modernize-use-trailing-return-type");
   TU.Code = "inline int foo() {}";
 
   auto AST = TU.build();
@@ -341,10 +338,10 @@ TEST(ParsedASTTest, CollectsMainFileMacroExpansions) {
   std::vector<Position> MacroExpansionPositions;
   for (const auto &SIDToRefs : AST.getMacros().MacroRefs) {
     for (const auto &R : SIDToRefs.second)
-      MacroExpansionPositions.push_back(R.start);
+      MacroExpansionPositions.push_back(R.Rng.start);
   }
   for (const auto &R : AST.getMacros().UnknownMacros)
-    MacroExpansionPositions.push_back(R.start);
+    MacroExpansionPositions.push_back(R.Rng.start);
   EXPECT_THAT(MacroExpansionPositions,
               testing::UnorderedElementsAreArray(TestCase.points()));
 }
@@ -376,7 +373,7 @@ TEST(ParsedASTTest, ReplayPreambleForTidyCheckers) {
     void InclusionDirective(SourceLocation HashLoc, const Token &IncludeTok,
                             StringRef FileName, bool IsAngled,
                             CharSourceRange FilenameRange, const FileEntry *,
-                            StringRef, StringRef, const Module *,
+                            StringRef, StringRef, const clang::Module *,
                             SrcMgr::CharacteristicKind) override {
       Includes.emplace_back(SM, HashLoc, IncludeTok, FileName, IsAngled,
                             FilenameRange);
@@ -407,7 +404,7 @@ TEST(ParsedASTTest, ReplayPreambleForTidyCheckers) {
       "replay-preamble-module", "");
   TestTU TU;
   // This check records inclusion directives replayed by clangd.
-  TU.ClangTidyChecks = "replay-preamble-check";
+  TU.ClangTidyProvider = addTidyChecks("replay-preamble-check");
   llvm::Annotations Test(R"cpp(
     $hash^#$include[[import]] $filebegin^"$filerange[[bar.h]]"
     $hash^#$include[[include_next]] $filebegin^"$filerange[[baz.h]]"
@@ -514,7 +511,7 @@ TEST(ParsedASTTest, ReplayPreambleForTidyCheckers) {
     auto PatchedAST = ParsedAST::build(testPath(TU.Filename), TU.inputs(FS),
                                        std::move(CI), {}, BaselinePreamble);
     ASSERT_TRUE(PatchedAST);
-    EXPECT_TRUE(PatchedAST->getDiagnostics().empty());
+    EXPECT_FALSE(PatchedAST->getDiagnostics());
   }
 
   // Then ensure correctness by making sure includes were seen only once.
@@ -529,7 +526,7 @@ TEST(ParsedASTTest, ReplayPreambleForTidyCheckers) {
   auto PatchedAST = ParsedAST::build(testPath(TU.Filename), TU.inputs(FS),
                                      std::move(CI), {}, BaselinePreamble);
   ASSERT_TRUE(PatchedAST);
-  EXPECT_TRUE(PatchedAST->getDiagnostics().empty());
+  EXPECT_FALSE(PatchedAST->getDiagnostics());
   EXPECT_THAT(Includes,
               ElementsAre(WithFileName(testPath("__preamble_patch__.h")),
                           WithFileName("b.h"), WithFileName("a.h")));
@@ -572,7 +569,7 @@ TEST(ParsedASTTest, PatchesAdditionalIncludes) {
   auto PatchedAST = ParsedAST::build(testPath("foo.cpp"), Inputs, std::move(CI),
                                      {}, EmptyPreamble);
   ASSERT_TRUE(PatchedAST);
-  ASSERT_TRUE(PatchedAST->getDiagnostics().empty());
+  ASSERT_FALSE(PatchedAST->getDiagnostics());
 
   // Ensure source location information is correct, including resolved paths.
   EXPECT_THAT(PatchedAST->getIncludeStructure().MainFileIncludes,

@@ -53,6 +53,7 @@ struct Limits {
 struct Table {
   TableType ElemType;
   Limits TableLimits;
+  uint32_t Index;
 };
 
 struct Export {
@@ -62,7 +63,9 @@ struct Export {
 };
 
 struct ElemSegment {
-  uint32_t TableIndex;
+  uint32_t Flags;
+  uint32_t TableNumber;
+  ValueType ElemKind;
   wasm::WasmInitExpr Offset;
   std::vector<uint32_t> Functions;
 };
@@ -220,6 +223,8 @@ struct NameSection : CustomSection {
   }
 
   std::vector<NameEntry> FunctionNames;
+  std::vector<NameEntry> GlobalNames;
+  std::vector<NameEntry> DataSegmentNames;
 };
 
 struct LinkingSection : CustomSection {

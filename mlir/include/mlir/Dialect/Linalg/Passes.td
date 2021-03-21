@@ -11,21 +11,26 @@
 
 include "mlir/Pass/PassBase.td"
 
+def ConvertElementwiseToLinalg : FunctionPass<"convert-elementwise-to-linalg"> {
+  let summary = "Convert ElementwiseMappable ops to linalg";
+  let description = [{
+    Convert ops with the `ElementwiseMappable` trait to linalg parallel loops.
+
+    This pass only converts ops that operate on ranked tensors.
+  }];
+  let constructor = "mlir::createConvertElementwiseToLinalgPass()";
+  let dependentDialects = ["linalg::LinalgDialect", "memref::MemRefDialect"];
+}
+
 def LinalgFoldUnitExtentDims : FunctionPass<"linalg-fold-unit-extent-dims"> {
   let summary = "Remove unit-extent dimension in Linalg ops on tensors";
   let constructor = "mlir::createLinalgFoldUnitExtentDimsPass()";
   let options = [
     Option<"foldOneTripLoopsOnly", "fold-one-trip-loops-only", "bool",
             /*default=*/"false",
-	    "Only folds the one-trip loops from Linalg ops on tensors "
-	    "(for testing purposes only)">
+           "Only folds the one-trip loops from Linalg ops on tensors "
+           "(for testing purposes only)">
   ];
-  let dependentDialects = ["linalg::LinalgDialect"];
-}
-
-def LinalgFusion : FunctionPass<"linalg-fusion"> {
-  let summary = "Fuse operations in the linalg dialect";
-  let constructor = "mlir::createLinalgFusionPass()";
   let dependentDialects = ["linalg::LinalgDialect"];
 }
 
@@ -35,24 +40,51 @@ def LinalgFusionOfTensorOps : Pass<"linalg-fusion-for-tensor-ops"> {
   let dependentDialects = ["linalg::LinalgDialect", "AffineDialect"];
 }
 
+def LinalgFoldReshapeOpsByLinearization :
+  Pass<"linalg-fold-reshape-ops-by-linearization"> {
+  let summary = "Fold TensorReshapeOps with generic/indexed generic ops by "
+                "linearization";
+  let constructor = "mlir::createFoldReshapeOpsByLinearizationPass()";
+  let dependentDialects = ["AffineDialect"];
+}
+
 def LinalgLowerToAffineLoops : FunctionPass<"convert-linalg-to-affine-loops"> {
   let summary = "Lower the operations from the linalg dialect into affine "
                 "loops";
   let constructor = "mlir::createConvertLinalgToAffineLoopsPass()";
+  let options = [
+    ListOption<"interchangeVector", "interchange-vector", "unsigned",
+               "Permute the loops in the nest following the given "
+               "interchange vector",
+               "llvm::cl::ZeroOrMore, llvm::cl::MiscFlags::CommaSeparated">
+  ];
   let dependentDialects = ["linalg::LinalgDialect", "AffineDialect"];
 }
 
 def LinalgLowerToLoops : FunctionPass<"convert-linalg-to-loops"> {
   let summary = "Lower the operations from the linalg dialect into loops";
   let constructor = "mlir::createConvertLinalgToLoopsPass()";
-  let dependentDialects = ["linalg::LinalgDialect", "scf::SCFDialect", "AffineDialect"];
+  let options = [
+    ListOption<"interchangeVector", "interchange-vector", "unsigned",
+               "Permute the loops in the nest following the given "
+               "interchange vector",
+               "llvm::cl::ZeroOrMore, llvm::cl::MiscFlags::CommaSeparated">
+  ];
+  let dependentDialects = [
+    "linalg::LinalgDialect",
+    "scf::SCFDialect",
+    "AffineDialect"
+  ];
 }
 
-def LinalgOnTensorsToBuffers : Pass<"convert-linalg-on-tensors-to-buffers", "ModuleOp"> {
-  let summary = "Convert the Linalg operations which work on tensor-type "
-                "operands or results to use buffers instead";
-  let constructor = "mlir::createConvertLinalgOnTensorsToBuffersPass()";
-  let dependentDialects = ["linalg::LinalgDialect", "vector::VectorDialect"];
+def LinalgBufferize : Pass<"linalg-bufferize", "FuncOp"> {
+  let summary = "Bufferize the linalg dialect";
+  let constructor = "mlir::createLinalgBufferizePass()";
+  let dependentDialects = [
+    "linalg::LinalgDialect",
+    "AffineDialect",
+    "memref::MemRefDialect"
+  ];
 }
 
 def LinalgLowerToParallelLoops
@@ -60,7 +92,18 @@ def LinalgLowerToParallelLoops
   let summary = "Lower the operations from the linalg dialect into parallel "
                 "loops";
   let constructor = "mlir::createConvertLinalgToParallelLoopsPass()";
-  let dependentDialects = ["AffineDialect", "linalg::LinalgDialect", "scf::SCFDialect"];
+  let options = [
+    ListOption<"interchangeVector", "interchange-vector", "unsigned",
+               "Permute the loops in the nest following the given "
+               "interchange vector",
+               "llvm::cl::ZeroOrMore, llvm::cl::MiscFlags::CommaSeparated">
+  ];
+  let dependentDialects = [
+    "AffineDialect",
+    "linalg::LinalgDialect",
+    "memref::MemRefDialect",
+    "scf::SCFDialect"
+  ];
 }
 
 def LinalgPromotion : FunctionPass<"linalg-promote-subviews"> {
@@ -79,7 +122,10 @@ def LinalgTiling : FunctionPass<"linalg-tile"> {
   let summary = "Tile operations in the linalg dialect";
   let constructor = "mlir::createLinalgTilingPass()";
   let dependentDialects = [
-    "AffineDialect", "linalg::LinalgDialect", "scf::SCFDialect"
+    "AffineDialect",
+    "linalg::LinalgDialect",
+    "memref::MemRefDialect",
+    "scf::SCFDialect"
   ];
   let options = [
     ListOption<"tileSizes", "linalg-tile-sizes", "int64_t",
@@ -97,7 +143,46 @@ def LinalgTilingToParallelLoops
                "Test generation of dynamic promoted buffers",
                "llvm::cl::ZeroOrMore, llvm::cl::MiscFlags::CommaSeparated">
   ];
-  let dependentDialects = ["AffineDialect", "linalg::LinalgDialect", "scf::SCFDialect"];
+  let dependentDialects = [
+    "AffineDialect",
+    "linalg::LinalgDialect",
+    "memref::MemRefDialect",
+    "scf::SCFDialect"
+  ];
+}
+
+def LinalgGeneralization : FunctionPass<"linalg-generalize-named-ops"> {
+  let summary = "Convert named ops into generic ops";
+  let constructor = "mlir::createLinalgGeneralizationPass()";
+  let dependentDialects = ["linalg::LinalgDialect"];
+}
+
+def LinalgDetensorize : FunctionPass<"linalg-detensorize"> {
+  let summary = "Detensorize linalg ops";
+  let constructor = "mlir::createLinalgDetensorizePass()";
+  let dependentDialects = [];
+
+  let description = [{
+    Detensoring is the process through which a tensor value is convereted to one
+    or potentially more primitive value(s). During this process, operations with
+    such detensored operands are also converted to an equivalent form that works
+    on primitives.
+
+    The detensoring process is driven by linalg-on-tensor ops. In particular, a
+    linalg-on-tensor op is checked to see whether *all* its operands can be
+    detensored. If so, those operands are converted to their primitive
+    counterparts and the linalg op is replaced by an equivalent op that takes
+    those new primitive values as operands. Therefore, detensoring an op can be
+    divided into 2 main logical phases:
+
+    1. Detect/match an op that can be detensored.
+    2. Detensor the operands of the op and replace it with a primitive
+       equivalent.
+
+    In addition to detensoring individual ops, this pass detensors internal
+    control flow inside a function. All blocks except for the entry block are
+    detensored by converting their arguments whenever possible.
+  }];
 }
 
 #endif // MLIR_DIALECT_LINALG_PASSES

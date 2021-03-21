@@ -18,36 +18,20 @@
 
 #include "llvm/ADT/PointerUnion.h"
 #include "llvm/ADT/SetVector.h"
+#include "llvm/Support/MathExtras.h"
 #include "llvm/Support/raw_ostream.h"
+
+namespace llvm {
+class DWARFUnit;
+} // namespace llvm
 
 namespace lld {
 namespace macho {
 
-namespace section_names {
-
-constexpr const char pageZero[] = "__pagezero";
-constexpr const char common[] = "__common";
-constexpr const char header[] = "__mach_header";
-constexpr const char rebase[] = "__rebase";
-constexpr const char binding[] = "__binding";
-constexpr const char weakBinding[] = "__weak_binding";
-constexpr const char lazyBinding[] = "__lazy_binding";
-constexpr const char export_[] = "__export";
-constexpr const char symbolTable[] = "__symbol_table";
-constexpr const char indirectSymbolTable[] = "__ind_sym_tab";
-constexpr const char stringTable[] = "__string_table";
-constexpr const char got[] = "__got";
-constexpr const char threadPtrs[] = "__thread_ptrs";
-constexpr const char unwindInfo[] = "__unwind_info";
-// these are not synthetic, but in service of synthetic __unwind_info
-constexpr const char compactUnwind[] = "__compact_unwind";
-constexpr const char ehFrame[] = "__eh_frame";
-
-} // namespace section_names
-
 class Defined;
 class DylibSymbol;
 class LoadCommand;
+class ObjFile;
 
 class SyntheticSection : public OutputSection {
 public:
@@ -59,6 +43,9 @@ public:
   }
 
   const StringRef segname;
+  // This fake InputSection makes it easier for us to write code that applies
+  // generically to both user inputs and synthetics.
+  InputSection *isec;
 };
 
 // All sections in __LINKEDIT should inherit from this.
@@ -66,7 +53,7 @@ class LinkEditSection : public SyntheticSection {
 public:
   LinkEditSection(const char *segname, const char *name)
       : SyntheticSection(segname, name) {
-    align = WordSize;
+    align = WordSize; // mimic ld64
   }
 
   // Sections in __LINKEDIT are special: their offsets are recorded in the
@@ -83,7 +70,7 @@ public:
   // NOTE: This assumes that the extra bytes required for alignment can be
   // zero-valued bytes.
   uint64_t getSize() const override final {
-    return llvm::alignTo(getRawSize(), WordSize);
+    return llvm::alignTo(getRawSize(), align);
   }
 };
 
@@ -151,16 +138,13 @@ public:
                                   section_names::threadPtrs) {}
 };
 
-using SectionPointerUnion =
-    llvm::PointerUnion<const InputSection *, const OutputSection *>;
-
 struct Location {
-  SectionPointerUnion section = nullptr;
-  uint64_t offset = 0;
+  const InputSection *isec;
+  uint64_t offset;
 
-  Location(SectionPointerUnion section, uint64_t offset)
-      : section(section), offset(offset) {}
-  uint64_t getVA() const;
+  Location(const InputSection *isec, uint64_t offset)
+      : isec(isec), offset(offset) {}
+  uint64_t getVA() const { return isec->getVA() + offset; }
 };
 
 // Stores rebase opcodes, which tell dyld where absolute addresses have been
@@ -174,9 +158,9 @@ public:
   bool isNeeded() const override { return !locations.empty(); }
   void writeTo(uint8_t *buf) const override;
 
-  void addEntry(SectionPointerUnion section, uint64_t offset) {
+  void addEntry(const InputSection *isec, uint64_t offset) {
     if (config->isPic)
-      locations.push_back({section, offset});
+      locations.push_back({isec, offset});
   }
 
 private:
@@ -201,9 +185,9 @@ public:
   bool isNeeded() const override { return !bindings.empty(); }
   void writeTo(uint8_t *buf) const override;
 
-  void addEntry(const DylibSymbol *dysym, SectionPointerUnion section,
+  void addEntry(const DylibSymbol *dysym, const InputSection *isec,
                 uint64_t offset, int64_t addend = 0) {
-    bindings.emplace_back(dysym, addend, Location(section, offset));
+    bindings.emplace_back(dysym, addend, Location(isec, offset));
   }
 
 private:
@@ -240,9 +224,9 @@ public:
 
   void writeTo(uint8_t *buf) const override;
 
-  void addEntry(const Symbol *symbol, SectionPointerUnion section,
-                uint64_t offset, int64_t addend = 0) {
-    bindings.emplace_back(symbol, addend, Location(section, offset));
+  void addEntry(const Symbol *symbol, const InputSection *isec, uint64_t offset,
+                int64_t addend = 0) {
+    bindings.emplace_back(symbol, addend, Location(isec, offset));
   }
 
   bool hasEntry() const { return !bindings.empty(); }
@@ -258,13 +242,6 @@ private:
   std::vector<const Defined *> definitions;
   SmallVector<char, 128> contents;
 };
-
-// Whether a given symbol's address can only be resolved at runtime.
-bool needsBinding(const Symbol *);
-
-// Add bindings for symbols that need weak or non-lazy bindings.
-void addNonLazyBindingEntries(const Symbol *, SectionPointerUnion,
-                              uint64_t offset, int64_t addend = 0);
 
 // The following sections implement lazy symbol binding -- very similar to the
 // PLT mechanism in ELF.
@@ -322,6 +299,7 @@ public:
   void setup();
 
   DylibSymbol *stubBinder = nullptr;
+  Defined *dyldPrivate = nullptr;
 };
 
 // This section contains space for just a single word, and will be used by dyld
@@ -364,10 +342,6 @@ private:
   llvm::raw_svector_ostream os{contents};
 };
 
-// Adds stubs and bindings where necessary (e.g. if the symbol is a
-// DylibSymbol.)
-void prepareBranchTarget(Symbol *);
-
 // Stores a trie that describes the set of exported symbols.
 class ExportSection : public LinkEditSection {
 public:
@@ -383,6 +357,17 @@ private:
   size_t size = 0;
 };
 
+class FunctionStartsSection : public LinkEditSection {
+public:
+  FunctionStartsSection();
+  void finalizeContents();
+  uint64_t getRawSize() const override { return contents.size(); }
+  void writeTo(uint8_t *buf) const override;
+
+private:
+  SmallVector<char, 128> contents;
+};
+
 // Stores the strings referenced by the symbol table.
 class StringTableSection : public LinkEditSection {
 public:
@@ -393,11 +378,10 @@ public:
   void writeTo(uint8_t *buf) const override;
 
 private:
-  // An n_strx value of 0 always indicates the empty string, so we must locate
-  // our non-empty string values at positive offsets in the string table.
-  // Therefore we insert a dummy value at position zero.
-  std::vector<StringRef> strings{"\0"};
-  size_t size = 1;
+  // ld64 emits string tables which start with a space and a zero byte. We
+  // match its behavior here since some tools depend on it.
+  std::vector<StringRef> strings{" "};
+  size_t size = 2;
 };
 
 struct SymtabEntry {
@@ -405,22 +389,53 @@ struct SymtabEntry {
   size_t strx;
 };
 
+struct StabsEntry {
+  uint8_t type = 0;
+  uint32_t strx = 0;
+  uint8_t sect = 0;
+  uint16_t desc = 0;
+  uint64_t value = 0;
+
+  StabsEntry() = default;
+  explicit StabsEntry(uint8_t type) : type(type) {}
+};
+
+// Symbols of the same type must be laid out contiguously: we choose to emit
+// all local symbols first, then external symbols, and finally undefined
+// symbols. For each symbol type, the LC_DYSYMTAB load command will record the
+// range (start index and total number) of those symbols in the symbol table.
 class SymtabSection : public LinkEditSection {
 public:
   SymtabSection(StringTableSection &);
   void finalizeContents();
-  size_t getNumSymbols() const { return symbols.size(); }
+  uint32_t getNumSymbols() const;
+  uint32_t getNumLocalSymbols() const {
+    return stabs.size() + localSymbols.size();
+  }
+  uint32_t getNumExternalSymbols() const { return externalSymbols.size(); }
+  uint32_t getNumUndefinedSymbols() const { return undefinedSymbols.size(); }
   uint64_t getRawSize() const override;
   void writeTo(uint8_t *buf) const override;
 
 private:
+  void emitBeginSourceStab(llvm::DWARFUnit *compileUnit);
+  void emitEndSourceStab();
+  void emitObjectFileStab(ObjFile *);
+  void emitEndFunStab(Defined *);
+  void emitStabs();
+
   StringTableSection &stringTableSection;
-  std::vector<SymtabEntry> symbols;
+  // STABS symbols are always local symbols, but we represent them with special
+  // entries because they may use fields like n_sect and n_desc differently.
+  std::vector<StabsEntry> stabs;
+  std::vector<SymtabEntry> localSymbols;
+  std::vector<SymtabEntry> externalSymbols;
+  std::vector<SymtabEntry> undefinedSymbols;
 };
 
 // The indirect symbol table is a list of 32-bit integers that serve as indices
 // into the (actual) symbol table. The indirect symbol table is a
-// concatentation of several sub-arrays of indices, each sub-array belonging to
+// concatenation of several sub-arrays of indices, each sub-array belonging to
 // a separate section. The starting offset of each sub-array is stored in the
 // reserved1 header field of the respective section.
 //
@@ -440,6 +455,32 @@ public:
   void writeTo(uint8_t *buf) const override;
 };
 
+// The code signature comes at the very end of the linked output file.
+class CodeSignatureSection : public LinkEditSection {
+public:
+  static constexpr uint8_t blockSizeShift = 12;
+  static constexpr size_t blockSize = (1 << blockSizeShift); // 4 KiB
+  static constexpr size_t hashSize = 256 / 8;
+  static constexpr size_t blobHeadersSize = llvm::alignTo<8>(
+      sizeof(llvm::MachO::CS_SuperBlob) + sizeof(llvm::MachO::CS_BlobIndex));
+  static constexpr uint32_t fixedHeadersSize =
+      blobHeadersSize + sizeof(llvm::MachO::CS_CodeDirectory);
+
+  uint32_t fileNamePad = 0;
+  uint32_t allHeadersSize = 0;
+  StringRef fileName;
+
+  CodeSignatureSection();
+  uint64_t getRawSize() const override;
+  bool isNeeded() const override { return true; }
+  void writeTo(uint8_t *buf) const override;
+  uint32_t getBlockCount() const;
+  void writeHashes(uint8_t *buf) const;
+};
+
+static_assert((CodeSignatureSection::blobHeadersSize % 8) == 0, "");
+static_assert((CodeSignatureSection::fixedHeadersSize % 8) == 0, "");
+
 struct InStruct {
   MachHeaderSection *header = nullptr;
   RebaseSection *rebase = nullptr;
@@ -447,6 +488,7 @@ struct InStruct {
   WeakBindingSection *weakBinding = nullptr;
   LazyBindingSection *lazyBinding = nullptr;
   ExportSection *exports = nullptr;
+  FunctionStartsSection *functionStarts = nullptr;
   GotSection *got = nullptr;
   TlvPointerSection *tlvPointers = nullptr;
   LazyPointerSection *lazyPointers = nullptr;
@@ -457,6 +499,8 @@ struct InStruct {
 
 extern InStruct in;
 extern std::vector<SyntheticSection *> syntheticSections;
+
+void createSyntheticSymbols();
 
 } // namespace macho
 } // namespace lld

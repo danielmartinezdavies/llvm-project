@@ -1,15 +1,21 @@
 set(files
+  __availability
   __bit_reference
+  __bits
   __bsd_locale_defaults.h
   __bsd_locale_fallbacks.h
-  __errc
   __debug
+  __errc
   __functional_03
   __functional_base
   __functional_base_03
   __hash_table
   __libcpp_version
   __locale
+  __memory/allocator_traits.h
+  __memory/base.h
+  __memory/pointer_traits.h
+  __memory/utilities.h
   __mutex_base
   __node_handle
   __nullptr
@@ -93,6 +99,7 @@ set(files
   fenv.h
   filesystem
   float.h
+  format
   forward_list
   fstream
   functional
@@ -144,6 +151,27 @@ set(files
   string.h
   string_view
   strstream
+  __support/android/locale_bionic.h
+  __support/fuchsia/xlocale.h
+  __support/ibm/gettod_zos.h
+  __support/ibm/limits.h
+  __support/ibm/locale_mgmt_aix.h
+  __support/ibm/locale_mgmt_zos.h
+  __support/ibm/nanosleep.h
+  __support/ibm/support.h
+  __support/ibm/xlocale.h
+  __support/musl/xlocale.h
+  __support/newlib/xlocale.h
+  __support/nuttx/xlocale.h
+  __support/openbsd/xlocale.h
+  __support/solaris/floatingpoint.h
+  __support/solaris/wchar.h
+  __support/solaris/xlocale.h
+  __support/win32/limits_msvc_win32.h
+  __support/win32/locale_win32.h
+  __support/xlocale/__nop_locale_mgmt.h
+  __support/xlocale/__posix_l_fallback.h
+  __support/xlocale/__strtonum_fallback.h
   system_error
   tgmath.h
   thread
@@ -161,28 +189,6 @@ set(files
   wchar.h
   wctype.h
   )
-
-if(LIBCXX_INSTALL_SUPPORT_HEADERS)
-  set(files
-    ${files}
-    support/android/locale_bionic.h
-    support/fuchsia/xlocale.h
-    support/ibm/limits.h
-    support/ibm/locale_mgmt_aix.h
-    support/ibm/support.h
-    support/ibm/xlocale.h
-    support/musl/xlocale.h
-    support/newlib/xlocale.h
-    support/solaris/floatingpoint.h
-    support/solaris/wchar.h
-    support/solaris/xlocale.h
-    support/win32/limits_msvc_win32.h
-    support/win32/locale_win32.h
-    support/xlocale/__nop_locale_mgmt.h
-    support/xlocale/__posix_l_fallback.h
-    support/xlocale/__strtonum_fallback.h
-    )
-endif()
 
 configure_file("__config_site.in"
                "${LIBCXX_BINARY_DIR}/__config_site"
@@ -224,7 +230,7 @@ if(LIBCXX_HEADER_DIR)
       COMMAND ${CMAKE_COMMAND} -E copy_if_different ${src} ${dst}
       COMMENT "Copying CXX __config")
   list(APPEND out_files ${dst})
-  add_custom_target(generate-cxx-headers DEPENDS ${out_files})
+  add_custom_target(generate-cxx-headers ALL DEPENDS ${out_files})
 
   add_library(cxx-headers INTERFACE)
   add_dependencies(cxx-headers generate-cxx-headers ${LIBCXX_CXX_ABI_HEADER_TARGET})

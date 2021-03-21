@@ -30,8 +30,6 @@ ScriptInterpreter::ScriptInterpreter(Debugger &debugger,
                                      lldb::ScriptLanguage script_lang)
     : m_debugger(debugger), m_script_lang(script_lang) {}
 
-ScriptInterpreter::~ScriptInterpreter() {}
-
 void ScriptInterpreter::CollectDataForBreakpointCommandCallback(
     std::vector<BreakpointOptions *> &bp_options_vec,
     CommandReturnObject &result) {
@@ -47,9 +45,11 @@ void ScriptInterpreter::CollectDataForWatchpointCommandCallback(
       "This script interpreter does not support watchpoint callbacks.");
 }
 
-bool ScriptInterpreter::LoadScriptingModule(
-    const char *filename, bool init_session, lldb_private::Status &error,
-    StructuredData::ObjectSP *module_sp) {
+bool ScriptInterpreter::LoadScriptingModule(const char *filename,
+                                            bool init_session,
+                                            lldb_private::Status &error,
+                                            StructuredData::ObjectSP *module_sp,
+                                            FileSpec extra_search_dir) {
   error.SetErrorString(
       "This script interpreter does not support importing modules.");
   return false;

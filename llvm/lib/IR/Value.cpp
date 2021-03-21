@@ -38,6 +38,11 @@
 
 using namespace llvm;
 
+static cl::opt<unsigned> UseDerefAtPointSemantics(
+    "use-dereferenceable-at-point-semantics", cl::Hidden, cl::init(false),
+    cl::desc("Deref attributes and metadata infer facts at definition only"));
+
+
 static cl::opt<unsigned> NonGlobalValueMaxNameSize(
     "non-global-value-max-name-size", cl::Hidden, cl::init(1024),
     cl::desc("Maximum size for the name of non-global values."));
@@ -51,9 +56,9 @@ static inline Type *checkType(Type *Ty) {
 }
 
 Value::Value(Type *ty, unsigned scid)
-    : VTy(checkType(ty)), UseList(nullptr), SubclassID(scid),
-      HasValueHandle(0), SubclassOptionalData(0), SubclassData(0),
-      NumUserOperands(0), IsUsedByMD(false), HasName(false) {
+    : VTy(checkType(ty)), UseList(nullptr), SubclassID(scid), HasValueHandle(0),
+      SubclassOptionalData(0), SubclassData(0), NumUserOperands(0),
+      IsUsedByMD(false), HasName(false), HasMetadata(false) {
   static_assert(ConstantFirstVal == 0, "!(SubclassID < ConstantFirstVal)");
   // FIXME: Why isn't this in the subclass gunk??
   // Note, we cannot call isa<CallInst> before the CallInst has been
@@ -76,6 +81,10 @@ Value::~Value() {
     ValueHandleBase::ValueIsDeleted(this);
   if (isUsedByMetadata())
     ValueAsMetadata::handleDeletion(this);
+
+  // Remove associated metadata from context.
+  if (HasMetadata)
+    clearMetadata();
 
 #ifndef NDEBUG      // Only in -g mode...
   // Check to make sure that there are no uses of this value that are still
@@ -426,6 +435,18 @@ void Value::takeName(Value *V) {
     ST->reinsertValue(this);
 }
 
+#ifndef NDEBUG
+std::string Value::getNameOrAsOperand() const {
+  if (!getName().empty())
+    return std::string(getName());
+
+  std::string BBName;
+  raw_string_ostream OS(BBName);
+  printAsOperand(OS, false);
+  return OS.str();
+}
+#endif
+
 void Value::assertModuleIsMaterializedImpl() const {
 #ifndef NDEBUG
   const GlobalValue *GV = dyn_cast<GlobalValue>(this);
@@ -535,7 +556,7 @@ enum PointerStripKind {
   PSK_ZeroIndices,
   PSK_ZeroIndicesAndAliases,
   PSK_ZeroIndicesSameRepresentation,
-  PSK_ZeroIndicesAndInvariantGroups,
+  PSK_ForAliasAnalysis,
   PSK_InBoundsConstantIndices,
   PSK_InBounds
 };
@@ -561,7 +582,7 @@ static const Value *stripPointerCastsAndOffsets(
       case PSK_ZeroIndices:
       case PSK_ZeroIndicesAndAliases:
       case PSK_ZeroIndicesSameRepresentation:
-      case PSK_ZeroIndicesAndInvariantGroups:
+      case PSK_ForAliasAnalysis:
         if (!GEP->hasAllZeroIndices())
           return V;
         break;
@@ -586,6 +607,9 @@ static const Value *stripPointerCastsAndOffsets(
       V = cast<Operator>(V)->getOperand(0);
     } else if (StripKind == PSK_ZeroIndicesAndAliases && isa<GlobalAlias>(V)) {
       V = cast<GlobalAlias>(V)->getAliasee();
+    } else if (StripKind == PSK_ForAliasAnalysis && isa<PHINode>(V) &&
+               cast<PHINode>(V)->getNumIncomingValues() == 1) {
+      V = cast<PHINode>(V)->getIncomingValue(0);
     } else {
       if (const auto *Call = dyn_cast<CallBase>(V)) {
         if (const Value *RV = Call->getReturnedArgOperand()) {
@@ -595,7 +619,7 @@ static const Value *stripPointerCastsAndOffsets(
         // The result of launder.invariant.group must alias it's argument,
         // but it can't be marked with returned attribute, that's why it needs
         // special case.
-        if (StripKind == PSK_ZeroIndicesAndInvariantGroups &&
+        if (StripKind == PSK_ForAliasAnalysis &&
             (Call->getIntrinsicID() == Intrinsic::launder_invariant_group ||
              Call->getIntrinsicID() == Intrinsic::strip_invariant_group)) {
           V = Call->getArgOperand(0);
@@ -627,8 +651,8 @@ const Value *Value::stripInBoundsConstantOffsets() const {
   return stripPointerCastsAndOffsets<PSK_InBoundsConstantIndices>(this);
 }
 
-const Value *Value::stripPointerCastsAndInvariantGroups() const {
-  return stripPointerCastsAndOffsets<PSK_ZeroIndicesAndInvariantGroups>(this);
+const Value *Value::stripPointerCastsForAliasAnalysis() const {
+  return stripPointerCastsAndOffsets<PSK_ForAliasAnalysis>(this);
 }
 
 const Value *Value::stripAndAccumulateConstantOffsets(
@@ -705,11 +729,13 @@ Value::stripInBoundsOffsets(function_ref<void(const Value *)> Func) const {
 }
 
 uint64_t Value::getPointerDereferenceableBytes(const DataLayout &DL,
-                                               bool &CanBeNull) const {
+                                               bool &CanBeNull,
+                                               bool &CanBeFreed) const {
   assert(getType()->isPointerTy() && "must be pointer");
 
   uint64_t DerefBytes = 0;
   CanBeNull = false;
+  CanBeFreed = UseDerefAtPointSemantics;
   if (const Argument *A = dyn_cast<Argument>(this)) {
     DerefBytes = A->getDereferenceableBytes();
     if (DerefBytes == 0) {
@@ -764,6 +790,7 @@ uint64_t Value::getPointerDereferenceableBytes(const DataLayout &DL,
       DerefBytes =
           DL.getTypeStoreSize(AI->getAllocatedType()).getKnownMinSize();
       CanBeNull = false;
+      CanBeFreed = false;
     }
   } else if (auto *GV = dyn_cast<GlobalVariable>(this)) {
     if (GV->getValueType()->isSized() && !GV->hasExternalWeakLinkage()) {
@@ -771,6 +798,7 @@ uint64_t Value::getPointerDereferenceableBytes(const DataLayout &DL,
       // CanBeNull flag.
       DerefBytes = DL.getTypeStoreSize(GV->getValueType()).getFixedSize();
       CanBeNull = false;
+      CanBeFreed = false;
     }
   }
   return DerefBytes;

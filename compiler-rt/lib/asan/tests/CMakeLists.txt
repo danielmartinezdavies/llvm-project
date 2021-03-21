@@ -31,9 +31,7 @@ set(ASAN_UNITTEST_COMMON_CFLAGS
   -fno-rtti
   -O2
   -Wno-format
-  -Werror=sign-compare
-  -Wno-non-virtual-dtor
-  )
+  -Werror=sign-compare)
 append_list_if(COMPILER_RT_HAS_WVARIADIC_MACROS_FLAG -Wno-variadic-macros ASAN_UNITTEST_COMMON_CFLAGS)
 
 # This will ensure the target linker is used
@@ -91,7 +89,6 @@ if(APPLE)
 endif()
 if(ANDROID)
   list(APPEND ASAN_UNITTEST_COMMON_LINK_FLAGS -pie)
-  list(APPEND ASAN_UNITTEST_COMMON_LINK_FLAGS -fuse-ld=lld)
 endif()
 
 set(ASAN_UNITTEST_INSTRUMENTED_LINK_FLAGS

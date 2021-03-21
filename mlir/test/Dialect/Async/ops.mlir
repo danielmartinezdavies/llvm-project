@@ -106,3 +106,31 @@ func @empty_tokens_or_values_operands() {
   %token4 = async.execute [] { async.yield }
   return
 }
+
+// CHECK-LABEL: @await_token
+func @await_token(%arg0: !async.token) {
+  // CHECK: async.await %arg0
+  async.await %arg0 : !async.token
+  return
+}
+
+// CHECK-LABEL: @await_value
+func @await_value(%arg0: !async.value<f32>) -> f32 {
+  // CHECK: async.await %arg0
+  %0 = async.await %arg0 : !async.value<f32>
+  return %0 : f32
+}
+
+// CHECK-LABEL: @create_group_and_await_all
+func @create_group_and_await_all(%arg0: !async.token, %arg1: !async.value<f32>) -> index {
+  %0 = async.create_group
+
+  // CHECK: async.add_to_group %arg0
+  // CHECK: async.add_to_group %arg1
+  %1 = async.add_to_group %arg0, %0 : !async.token
+  %2 = async.add_to_group %arg1, %0 : !async.value<f32>
+  async.await_all %0
+
+  %3 = addi %1, %2 : index
+  return %3 : index
+}

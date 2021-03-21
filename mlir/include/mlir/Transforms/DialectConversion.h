@@ -13,9 +13,7 @@
 #ifndef MLIR_TRANSFORMS_DIALECTCONVERSION_H_
 #define MLIR_TRANSFORMS_DIALECTCONVERSION_H_
 
-#include "mlir/IR/PatternMatch.h"
-#include "mlir/Support/LLVM.h"
-#include "mlir/Support/LogicalResult.h"
+#include "mlir/Rewrite/FrozenRewritePatternList.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/StringMap.h"
 
@@ -105,8 +103,8 @@ public:
   ///       conversion function to perform the conversion.
   /// Note: When attempting to convert a type, e.g. via 'convertType', the
   ///       mostly recently added conversions will be invoked first.
-  template <typename FnT,
-            typename T = typename llvm::function_traits<FnT>::template arg_t<0>>
+  template <typename FnT, typename T = typename llvm::function_traits<
+                              std::decay_t<FnT>>::template arg_t<0>>
   void addConversion(FnT &&callback) {
     registerConversion(wrapCallback<T>(std::forward<FnT>(callback)));
   }
@@ -126,8 +124,8 @@ public:
   ///
   /// This method registers a materialization that will be called when
   /// converting an illegal block argument type, to a legal type.
-  template <typename FnT,
-            typename T = typename llvm::function_traits<FnT>::template arg_t<1>>
+  template <typename FnT, typename T = typename llvm::function_traits<
+                              std::decay_t<FnT>>::template arg_t<1>>
   void addArgumentMaterialization(FnT &&callback) {
     argumentMaterializations.emplace_back(
         wrapMaterialization<T>(std::forward<FnT>(callback)));
@@ -135,16 +133,16 @@ public:
   /// This method registers a materialization that will be called when
   /// converting a legal type to an illegal source type. This is used when
   /// conversions to an illegal type must persist beyond the main conversion.
-  template <typename FnT,
-            typename T = typename llvm::function_traits<FnT>::template arg_t<1>>
+  template <typename FnT, typename T = typename llvm::function_traits<
+                              std::decay_t<FnT>>::template arg_t<1>>
   void addSourceMaterialization(FnT &&callback) {
     sourceMaterializations.emplace_back(
         wrapMaterialization<T>(std::forward<FnT>(callback)));
   }
   /// This method registers a materialization that will be called when
   /// converting type from an illegal, or source, type to a legal type.
-  template <typename FnT,
-            typename T = typename llvm::function_traits<FnT>::template arg_t<1>>
+  template <typename FnT, typename T = typename llvm::function_traits<
+                              std::decay_t<FnT>>::template arg_t<1>>
   void addTargetMaterialization(FnT &&callback) {
     targetMaterializations.emplace_back(
         wrapMaterialization<T>(std::forward<FnT>(callback)));
@@ -163,8 +161,7 @@ public:
   /// Convert the given set of types, filling 'results' as necessary. This
   /// returns failure if the conversion of any of the types fails, success
   /// otherwise.
-  LogicalResult convertTypes(ArrayRef<Type> types,
-                             SmallVectorImpl<Type> &results);
+  LogicalResult convertTypes(TypeRange types, SmallVectorImpl<Type> &results);
 
   /// Return true if the given type is legal for this type converter, i.e. the
   /// type converts to itself.
@@ -343,6 +340,13 @@ public:
   /// does not require type conversion.
   TypeConverter *getTypeConverter() const { return typeConverter; }
 
+  template <typename ConverterTy>
+  std::enable_if_t<std::is_base_of<TypeConverter, ConverterTy>::value,
+                   ConverterTy *>
+  getTypeConverter() const {
+    return static_cast<ConverterTy *>(typeConverter);
+  }
+
 protected:
   /// See `RewritePattern::RewritePattern` for information on the other
   /// available constructors.
@@ -416,10 +420,23 @@ private:
   using ConversionPattern::matchAndRewrite;
 };
 
+/// Add a pattern to the given pattern list to convert the signature of a
+/// FunctionLike op with the given type converter. This only supports
+/// FunctionLike ops which use FunctionType to represent their type.
+void populateFunctionLikeTypeConversionPattern(
+    StringRef functionLikeOpName, OwningRewritePatternList &patterns,
+    TypeConverter &converter);
+
+template <typename FuncOpT>
+void populateFunctionLikeTypeConversionPattern(
+    OwningRewritePatternList &patterns, TypeConverter &converter) {
+  populateFunctionLikeTypeConversionPattern(FuncOpT::getOperationName(),
+                                            patterns, converter);
+}
+
 /// Add a pattern to the given pattern list to convert the signature of a FuncOp
 /// with the given type converter.
 void populateFuncOpTypeConversionPattern(OwningRewritePatternList &patterns,
-                                         MLIRContext *ctx,
                                          TypeConverter &converter);
 
 //===----------------------------------------------------------------------===//
@@ -454,6 +471,12 @@ public:
       Region *region, TypeConverter &converter,
       TypeConverter::SignatureConversion *entryConversion = nullptr);
 
+  /// Convert the types of block arguments within the given region except for
+  /// the entry region. This replaces each non-entry block with a new block
+  /// containing the updated signature.
+  LogicalResult convertNonEntryRegionTypes(Region *region,
+                                           TypeConverter &converter);
+
   /// Replace all the uses of the block argument `from` with value `to`.
   void replaceUsesOfBlockArgument(BlockArgument from, Value to);
 
@@ -464,6 +487,12 @@ public:
   //===--------------------------------------------------------------------===//
   // PatternRewriter Hooks
   //===--------------------------------------------------------------------===//
+
+  /// PatternRewriter hook for replacing the results of an operation when the
+  /// given functor returns true.
+  void replaceOpWithIf(
+      Operation *op, ValueRange newValues, bool *allUsesReplaced,
+      llvm::unique_function<bool(OpOperand &) const> functor) override;
 
   /// PatternRewriter hook for replacing the results of an operation.
   void replaceOp(Operation *op, ValueRange newValues) override;
@@ -573,22 +602,26 @@ public:
 
   /// Register a legality action for the given operation.
   void setOpAction(OperationName op, LegalizationAction action);
-  template <typename OpT> void setOpAction(LegalizationAction action) {
+  template <typename OpT>
+  void setOpAction(LegalizationAction action) {
     setOpAction(OperationName(OpT::getOperationName(), &ctx), action);
   }
 
   /// Register the given operations as legal.
-  template <typename OpT> void addLegalOp() {
+  template <typename OpT>
+  void addLegalOp() {
     setOpAction<OpT>(LegalizationAction::Legal);
   }
-  template <typename OpT, typename OpT2, typename... OpTs> void addLegalOp() {
+  template <typename OpT, typename OpT2, typename... OpTs>
+  void addLegalOp() {
     addLegalOp<OpT>();
     addLegalOp<OpT2, OpTs...>();
   }
 
   /// Register the given operation as dynamically legal, i.e. requiring custom
   /// handling by the target via 'isDynamicallyLegal'.
-  template <typename OpT> void addDynamicallyLegalOp() {
+  template <typename OpT>
+  void addDynamicallyLegalOp() {
     setOpAction<OpT>(LegalizationAction::Dynamic);
   }
   template <typename OpT, typename OpT2, typename... OpTs>
@@ -620,10 +653,12 @@ public:
 
   /// Register the given operation as illegal, i.e. this operation is known to
   /// not be supported by this target.
-  template <typename OpT> void addIllegalOp() {
+  template <typename OpT>
+  void addIllegalOp() {
     setOpAction<OpT>(LegalizationAction::Illegal);
   }
-  template <typename OpT, typename OpT2, typename... OpTs> void addIllegalOp() {
+  template <typename OpT, typename OpT2, typename... OpTs>
+  void addIllegalOp() {
     addIllegalOp<OpT>();
     addIllegalOp<OpT2, OpTs...>();
   }
@@ -661,7 +696,8 @@ public:
     SmallVector<StringRef, 2> dialectNames({name, names...});
     setDialectAction(dialectNames, LegalizationAction::Legal);
   }
-  template <typename... Args> void addLegalDialect() {
+  template <typename... Args>
+  void addLegalDialect() {
     SmallVector<StringRef, 2> dialectNames({Args::getDialectNamespace()...});
     setDialectAction(dialectNames, LegalizationAction::Legal);
   }
@@ -705,7 +741,8 @@ public:
     SmallVector<StringRef, 2> dialectNames({name, names...});
     setDialectAction(dialectNames, LegalizationAction::Illegal);
   }
-  template <typename... Args> void addIllegalDialect() {
+  template <typename... Args>
+  void addIllegalDialect() {
     SmallVector<StringRef, 2> dialectNames({Args::getDialectNamespace()...});
     setDialectAction(dialectNames, LegalizationAction::Illegal);
   }
@@ -803,25 +840,24 @@ private:
 /// legalizable to the given `target` are placed within that set. (Note that if
 /// there is an op explicitly marked as illegal, the conversion terminates and
 /// the `unconvertedOps` set will not necessarily be complete.)
-LLVM_NODISCARD LogicalResult
+LogicalResult
 applyPartialConversion(ArrayRef<Operation *> ops, ConversionTarget &target,
-                       const OwningRewritePatternList &patterns,
+                       const FrozenRewritePatternList &patterns,
                        DenseSet<Operation *> *unconvertedOps = nullptr);
-LLVM_NODISCARD LogicalResult
+LogicalResult
 applyPartialConversion(Operation *op, ConversionTarget &target,
-                       const OwningRewritePatternList &patterns,
+                       const FrozenRewritePatternList &patterns,
                        DenseSet<Operation *> *unconvertedOps = nullptr);
 
 /// Apply a complete conversion on the given operations, and all nested
 /// operations. This method returns failure if the conversion of any operation
 /// fails, or if there are unreachable blocks in any of the regions nested
 /// within 'ops'.
-LLVM_NODISCARD LogicalResult
-applyFullConversion(ArrayRef<Operation *> ops, ConversionTarget &target,
-                    const OwningRewritePatternList &patterns);
-LLVM_NODISCARD LogicalResult
-applyFullConversion(Operation *op, ConversionTarget &target,
-                    const OwningRewritePatternList &patterns);
+LogicalResult applyFullConversion(ArrayRef<Operation *> ops,
+                                  ConversionTarget &target,
+                                  const FrozenRewritePatternList &patterns);
+LogicalResult applyFullConversion(Operation *op, ConversionTarget &target,
+                                  const FrozenRewritePatternList &patterns);
 
 /// Apply an analysis conversion on the given operations, and all nested
 /// operations. This method analyzes which operations would be successfully
@@ -831,14 +867,13 @@ applyFullConversion(Operation *op, ConversionTarget &target,
 /// operations on success and only pre-existing operations are added to the set.
 /// This method only returns failure if there are unreachable blocks in any of
 /// the regions nested within 'ops'.
-LLVM_NODISCARD LogicalResult
-applyAnalysisConversion(ArrayRef<Operation *> ops, ConversionTarget &target,
-                        const OwningRewritePatternList &patterns,
-                        DenseSet<Operation *> &convertedOps);
-LLVM_NODISCARD LogicalResult
-applyAnalysisConversion(Operation *op, ConversionTarget &target,
-                        const OwningRewritePatternList &patterns,
-                        DenseSet<Operation *> &convertedOps);
+LogicalResult applyAnalysisConversion(ArrayRef<Operation *> ops,
+                                      ConversionTarget &target,
+                                      const FrozenRewritePatternList &patterns,
+                                      DenseSet<Operation *> &convertedOps);
+LogicalResult applyAnalysisConversion(Operation *op, ConversionTarget &target,
+                                      const FrozenRewritePatternList &patterns,
+                                      DenseSet<Operation *> &convertedOps);
 } // end namespace mlir
 
 #endif // MLIR_TRANSFORMS_DIALECTCONVERSION_H_

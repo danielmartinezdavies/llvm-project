@@ -78,6 +78,16 @@ struct OrderMap {
 
 } // end anonymous namespace
 
+/// Look for a value that might be wrapped as metadata, e.g. a value in a
+/// metadata operand. Returns nullptr for a non-wrapped input value if
+/// OnlyWrapped is true, or it returns the input value as-is if false.
+static const Value *skipMetadataWrapper(const Value *V, bool OnlyWrapped) {
+  if (const auto *MAV = dyn_cast<MetadataAsValue>(V))
+    if (const auto *VAM = dyn_cast<ValueAsMetadata>(MAV->getMetadata()))
+      return VAM->getValue();
+  return OnlyWrapped ? nullptr : V;
+}
+
 static void orderValue(const Value *V, OrderMap &OM) {
   if (OM.lookup(V).first)
     return;
@@ -122,6 +132,25 @@ static OrderMap orderModule(const Module &M) {
     for (const Use &U : F.operands())
       if (!isa<GlobalValue>(U.get()))
         orderValue(U.get(), OM);
+  }
+
+  // As constants used in metadata operands are emitted as module-level
+  // constants, we must order them before other operands. Also, we must order
+  // these before global values, as these will be read before setting the
+  // global values' initializers. The latter matters for constants which have
+  // uses towards other constants that are used as initializers.
+  for (const Function &F : M) {
+    if (F.isDeclaration())
+      continue;
+    for (const BasicBlock &BB : F)
+      for (const Instruction &I : BB)
+        for (const Value *V : I.operands()) {
+          if (const Value *Op = skipMetadataWrapper(V, true)) {
+            if ((isa<Constant>(*Op) && !isa<GlobalValue>(*Op)) ||
+                isa<InlineAsm>(*Op))
+              orderValue(Op, OM);
+          }
+        }
   }
   OM.LastGlobalConstantID = OM.size();
 
@@ -420,7 +449,8 @@ ValueEnumerator::ValueEnumerator(const Module &M,
           }
 
           // Local metadata is enumerated during function-incorporation.
-          if (isa<LocalAsMetadata>(MD->getMetadata()))
+          if (isa<LocalAsMetadata>(MD->getMetadata()) ||
+              isa<DIArgList>(MD->getMetadata()))
             continue;
 
           EnumerateMetadata(&F, MD->getMetadata());
@@ -973,6 +1003,10 @@ void ValueEnumerator::incorporateFunction(const Function &F) {
     EnumerateValue(&I);
     if (I.hasAttribute(Attribute::ByVal))
       EnumerateType(I.getParamByValType());
+    else if (I.hasAttribute(Attribute::StructRet))
+      EnumerateType(I.getParamStructRetType());
+    else if (I.hasAttribute(Attribute::ByRef))
+      EnumerateType(I.getParamByRefType());
   }
   FirstFuncConstantID = Values.size();
 
@@ -1000,14 +1034,26 @@ void ValueEnumerator::incorporateFunction(const Function &F) {
   FirstInstID = Values.size();
 
   SmallVector<LocalAsMetadata *, 8> FnLocalMDVector;
+  SmallVector<DIArgList *, 8> ArgListMDVector;
   // Add all of the instructions.
   for (const BasicBlock &BB : F) {
     for (const Instruction &I : BB) {
       for (const Use &OI : I.operands()) {
-        if (auto *MD = dyn_cast<MetadataAsValue>(&OI))
-          if (auto *Local = dyn_cast<LocalAsMetadata>(MD->getMetadata()))
+        if (auto *MD = dyn_cast<MetadataAsValue>(&OI)) {
+          if (auto *Local = dyn_cast<LocalAsMetadata>(MD->getMetadata())) {
             // Enumerate metadata after the instructions they might refer to.
             FnLocalMDVector.push_back(Local);
+          } else if (auto *ArgList = dyn_cast<DIArgList>(MD->getMetadata())) {
+            ArgListMDVector.push_back(ArgList);
+            for (ValueAsMetadata *VMD : ArgList->getArgs()) {
+              if (auto *Local = dyn_cast<LocalAsMetadata>(VMD)) {
+                // Enumerate metadata after the instructions they might refer
+                // to.
+                FnLocalMDVector.push_back(Local);
+              }
+            }
+          }
+        }
       }
 
       if (!I.getType()->isVoidTy())
@@ -1023,6 +1069,10 @@ void ValueEnumerator::incorporateFunction(const Function &F) {
            "Missing value for metadata operand");
     EnumerateFunctionLocalMetadata(F, FnLocalMDVector[i]);
   }
+  // DIArgList entries must come after function-local metadata, as it is not
+  // possible to forward-reference them.
+  for (const DIArgList *ArgList : ArgListMDVector)
+    EnumerateMetadata(&F, ArgList);
 }
 
 void ValueEnumerator::purgeFunction() {

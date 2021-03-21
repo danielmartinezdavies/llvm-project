@@ -85,12 +85,21 @@ static bool BPFPreserveDITypeImpl(Function &F) {
     } else {
       Reloc = BPFCoreSharedInfo::BTF_TYPE_ID_REMOTE;
       DIType *Ty = cast<DIType>(MD);
+      while (auto *DTy = dyn_cast<DIDerivedType>(Ty)) {
+        unsigned Tag = DTy->getTag();
+        if (Tag != dwarf::DW_TAG_const_type &&
+            Tag != dwarf::DW_TAG_volatile_type)
+          break;
+        Ty = DTy->getBaseType();
+      }
+
       if (Ty->getName().empty())
         report_fatal_error("Empty type name for BTF_TYPE_ID_REMOTE reloc");
+      MD = Ty;
     }
 
     BasicBlock *BB = Call->getParent();
-    IntegerType *VarType = Type::getInt32Ty(BB->getContext());
+    IntegerType *VarType = Type::getInt64Ty(BB->getContext());
     std::string GVName = BaseName + std::to_string(Count) + "$" +
         std::to_string(Reloc);
     GlobalVariable *GV = new GlobalVariable(
@@ -99,8 +108,8 @@ static bool BPFPreserveDITypeImpl(Function &F) {
     GV->setMetadata(LLVMContext::MD_preserve_access_index, MD);
 
     // Load the global variable which represents the type info.
-    auto *LDInst = new LoadInst(Type::getInt32Ty(BB->getContext()), GV, "",
-                                Call);
+    auto *LDInst =
+        new LoadInst(Type::getInt64Ty(BB->getContext()), GV, "", Call);
     Instruction *PassThroughInst =
         BPFCoreSharedInfo::insertPassThrough(M, BB, LDInst, Call);
     Call->replaceAllUsesWith(PassThroughInst);

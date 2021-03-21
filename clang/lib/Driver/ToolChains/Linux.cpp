@@ -102,6 +102,12 @@ std::string Linux::getMultiarchTriple(const Driver &D,
     if (D.getVFS().exists(SysRoot + "/lib/aarch64_be-linux-gnu"))
       return "aarch64_be-linux-gnu";
     break;
+
+  case llvm::Triple::m68k:
+    if (D.getVFS().exists(SysRoot + "/lib/m68k-linux-gnu"))
+      return "m68k-linux-gnu";
+    break;
+
   case llvm::Triple::mips: {
     std::string MT = IsMipsR6 ? "mipsisa32r6-linux-gnu" : "mips-linux-gnu";
     if (D.getVFS().exists(SysRoot + "/lib/" + MT))
@@ -141,6 +147,10 @@ std::string Linux::getMultiarchTriple(const Driver &D,
       return "powerpc-linux-gnuspe";
     if (D.getVFS().exists(SysRoot + "/lib/powerpc-linux-gnu"))
       return "powerpc-linux-gnu";
+    break;
+  case llvm::Triple::ppcle:
+    if (D.getVFS().exists(SysRoot + "/lib/powerpcle-linux-gnu"))
+      return "powerpcle-linux-gnu";
     break;
   case llvm::Triple::ppc64:
     if (D.getVFS().exists(SysRoot + "/lib/powerpc64-linux-gnu"))
@@ -185,17 +195,17 @@ static StringRef getOSLibDir(const llvm::Triple &Triple, const ArgList &Args) {
     return Triple.isArch32Bit() ? "lib" : "lib64";
   }
 
-  // It happens that only x86 and PPC use the 'lib32' variant of oslibdir, and
-  // using that variant while targeting other architectures causes problems
-  // because the libraries are laid out in shared system roots that can't cope
-  // with a 'lib32' library search path being considered. So we only enable
-  // them when we know we may need it.
+  // It happens that only x86, PPC and SPARC use the 'lib32' variant of
+  // oslibdir, and using that variant while targeting other architectures causes
+  // problems because the libraries are laid out in shared system roots that
+  // can't cope with a 'lib32' library search path being considered. So we only
+  // enable them when we know we may need it.
   //
   // FIXME: This is a bit of a hack. We should really unify this code for
   // reasoning about oslibdir spellings with the lib dir spellings in the
   // GCCInstallationDetector, but that is a more significant refactoring.
-  if (Triple.getArch() == llvm::Triple::x86 ||
-      Triple.getArch() == llvm::Triple::ppc)
+  if (Triple.getArch() == llvm::Triple::x86 || Triple.isPPC32() ||
+      Triple.getArch() == llvm::Triple::sparc)
     return "lib32";
 
   if (Triple.getArch() == llvm::Triple::x86_64 &&
@@ -297,16 +307,6 @@ Linux::Linux(const Driver &D, const llvm::Triple &Triple, const ArgList &Args)
 
   Generic_GCC::AddMultilibPaths(D, SysRoot, OSLibDir, MultiarchTriple, Paths);
 
-  // Similar to the logic for GCC above, if we currently running Clang inside
-  // of the requested system root, add its parent library paths to
-  // those searched.
-  // FIXME: It's not clear whether we should use the driver's installed
-  // directory ('Dir' below) or the ResourceDir.
-  if (StringRef(D.Dir).startswith(SysRoot)) {
-    addPathIfExists(D, D.Dir + "/../lib/" + MultiarchTriple, Paths);
-    addPathIfExists(D, D.Dir + "/../" + OSLibDir, Paths);
-  }
-
   addPathIfExists(D, SysRoot + "/lib/" + MultiarchTriple, Paths);
   addPathIfExists(D, SysRoot + "/lib/../" + OSLibDir, Paths);
 
@@ -351,6 +351,12 @@ Linux::Linux(const Driver &D, const llvm::Triple &Triple, const ArgList &Args)
 
   addPathIfExists(D, SysRoot + "/lib", Paths);
   addPathIfExists(D, SysRoot + "/usr/lib", Paths);
+}
+
+ToolChain::RuntimeLibType Linux::GetDefaultRuntimeLibType() const {
+  if (getTriple().isAndroid())
+    return ToolChain::RLT_CompilerRT;
+  return Generic_ELF::GetDefaultRuntimeLibType();
 }
 
 ToolChain::CXXStdlibType Linux::GetDefaultCXXStdlibType() const {
@@ -472,6 +478,10 @@ std::string Linux::getDynamicLinker(const ArgList &Args) const {
     Loader = HF ? "ld-linux-armhf.so.3" : "ld-linux.so.3";
     break;
   }
+  case llvm::Triple::m68k:
+    LibDir = "lib";
+    Loader = "ld.so.1";
+    break;
   case llvm::Triple::mips:
   case llvm::Triple::mipsel:
   case llvm::Triple::mips64:
@@ -492,6 +502,10 @@ std::string Linux::getDynamicLinker(const ArgList &Args) const {
     break;
   }
   case llvm::Triple::ppc:
+    LibDir = "lib";
+    Loader = "ld.so.1";
+    break;
+  case llvm::Triple::ppcle:
     LibDir = "lib";
     Loader = "ld.so.1";
     break;
@@ -560,9 +574,14 @@ void Linux::AddClangSystemIncludeArgs(const ArgList &DriverArgs,
   if (DriverArgs.hasArg(clang::driver::options::OPT_nostdinc))
     return;
 
-  if (!DriverArgs.hasArg(options::OPT_nostdlibinc))
+  if (!DriverArgs.hasArg(options::OPT_nostdlibinc)) {
+    // LOCAL_INCLUDE_DIR
     addSystemInclude(DriverArgs, CC1Args, SysRoot + "/usr/local/include");
+    // TOOL_INCLUDE_DIR
+    AddMultilibIncludeArgs(DriverArgs, CC1Args);
+  }
 
+  // Note: in gcc, GCC_INCLUDE_DIR (private headers) precedes LOCAL_INCLUDE_DIR.
   SmallString<128> ResourceDirInclude(D.ResourceDir);
   llvm::sys::path::append(ResourceDirInclude, "include");
   if (!DriverArgs.hasArg(options::OPT_nobuiltininc) &&
@@ -584,11 +603,6 @@ void Linux::AddClangSystemIncludeArgs(const ArgList &DriverArgs,
     }
     return;
   }
-
-  // Lacking those, try to detect the correct set of system includes for the
-  // target triple.
-
-  AddMultilibIncludeArgs(DriverArgs, CC1Args);
 
   // Implement generic Debian multiarch support.
   const StringRef X86_64MultiarchIncludeDirs[] = {
@@ -616,6 +630,7 @@ void Linux::AddClangSystemIncludeArgs(const ArgList &DriverArgs,
       "/usr/include/armeb-linux-gnueabi"};
   const StringRef ARMEBHFMultiarchIncludeDirs[] = {
       "/usr/include/armeb-linux-gnueabihf"};
+  const StringRef M68kMultiarchIncludeDirs[] = {"/usr/include/m68k-linux-gnu"};
   const StringRef MIPSMultiarchIncludeDirs[] = {"/usr/include/mips-linux-gnu"};
   const StringRef MIPSELMultiarchIncludeDirs[] = {
       "/usr/include/mipsel-linux-gnu"};
@@ -642,6 +657,8 @@ void Linux::AddClangSystemIncludeArgs(const ArgList &DriverArgs,
   const StringRef PPCMultiarchIncludeDirs[] = {
       "/usr/include/powerpc-linux-gnu",
       "/usr/include/powerpc-linux-gnuspe"};
+  const StringRef PPCLEMultiarchIncludeDirs[] = {
+      "/usr/include/powerpcle-linux-gnu"};
   const StringRef PPC64MultiarchIncludeDirs[] = {
       "/usr/include/powerpc64-linux-gnu"};
   const StringRef PPC64LEMultiarchIncludeDirs[] = {
@@ -677,6 +694,9 @@ void Linux::AddClangSystemIncludeArgs(const ArgList &DriverArgs,
       MultiarchIncludeDirs = ARMEBHFMultiarchIncludeDirs;
     else
       MultiarchIncludeDirs = ARMEBMultiarchIncludeDirs;
+    break;
+  case llvm::Triple::m68k:
+    MultiarchIncludeDirs = M68kMultiarchIncludeDirs;
     break;
   case llvm::Triple::mips:
     if (getTriple().getSubArch() == llvm::Triple::MipsSubArch_r6)
@@ -714,6 +734,9 @@ void Linux::AddClangSystemIncludeArgs(const ArgList &DriverArgs,
     break;
   case llvm::Triple::ppc:
     MultiarchIncludeDirs = PPCMultiarchIncludeDirs;
+    break;
+  case llvm::Triple::ppcle:
+    MultiarchIncludeDirs = PPCLEMultiarchIncludeDirs;
     break;
   case llvm::Triple::ppc64:
     MultiarchIncludeDirs = PPC64MultiarchIncludeDirs;
@@ -823,6 +846,19 @@ bool Linux::isPIEDefault() const {
           getTriple().isMusl() || getSanitizerArgs().requiresPIE();
 }
 
+bool Linux::IsAArch64OutlineAtomicsDefault(const ArgList &Args) const {
+  // Outline atomics for AArch64 are supported by compiler-rt
+  // and libgcc since 9.3.1
+  assert(getTriple().isAArch64() && "expected AArch64 target!");
+  ToolChain::RuntimeLibType RtLib = GetRuntimeLibType(Args);
+  if (RtLib == ToolChain::RLT_CompilerRT)
+    return true;
+  assert(RtLib == ToolChain::RLT_Libgcc && "unexpected runtime library type!");
+  if (GCCInstallation.getVersion().isOlderThan(9, 3, 1))
+    return false;
+  return true;
+}
+
 bool Linux::isNoExecStackDefault() const {
     return getTriple().isAndroid();
 }
@@ -846,6 +882,7 @@ SanitizerMask Linux::getSupportedSanitizers() const {
                          getTriple().getArch() == llvm::Triple::thumb ||
                          getTriple().getArch() == llvm::Triple::armeb ||
                          getTriple().getArch() == llvm::Triple::thumbeb;
+  const bool IsRISCV64 = getTriple().getArch() == llvm::Triple::riscv64;
   const bool IsSystemZ = getTriple().getArch() == llvm::Triple::systemz;
   SanitizerMask Res = ToolChain::getSupportedSanitizers();
   Res |= SanitizerKind::Address;
@@ -860,7 +897,7 @@ SanitizerMask Linux::getSupportedSanitizers() const {
   if (IsX86_64 || IsMIPS64 || IsAArch64)
     Res |= SanitizerKind::DataFlow;
   if (IsX86_64 || IsMIPS64 || IsAArch64 || IsX86 || IsArmArch || IsPowerPC64 ||
-      IsSystemZ)
+      IsRISCV64 || IsSystemZ)
     Res |= SanitizerKind::Leak;
   if (IsX86_64 || IsMIPS64 || IsAArch64 || IsPowerPC64)
     Res |= SanitizerKind::Thread;

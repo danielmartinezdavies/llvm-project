@@ -1102,7 +1102,7 @@ void CGOpenMPRuntimeGPU::emitNonSPMDKernel(const OMPExecutableDirective &D,
     KernelStaticGlobalized = new llvm::GlobalVariable(
         CGM.getModule(), CGM.VoidPtrTy, /*isConstant=*/false,
         llvm::GlobalValue::InternalLinkage,
-        llvm::ConstantPointerNull::get(CGM.VoidPtrTy),
+        llvm::UndefValue::get(CGM.VoidPtrTy),
         "_openmp_kernel_static_glob_rd$ptr", /*InsertBefore=*/nullptr,
         llvm::GlobalValue::NotThreadLocal,
         CGM.getContext().getTargetAddressSpace(LangAS::cuda_shared));
@@ -1234,7 +1234,7 @@ void CGOpenMPRuntimeGPU::emitSPMDKernel(const OMPExecutableDirective &D,
     KernelStaticGlobalized = new llvm::GlobalVariable(
         CGM.getModule(), CGM.VoidPtrTy, /*isConstant=*/false,
         llvm::GlobalValue::InternalLinkage,
-        llvm::ConstantPointerNull::get(CGM.VoidPtrTy),
+        llvm::UndefValue::get(CGM.VoidPtrTy),
         "_openmp_kernel_static_glob_rd$ptr", /*InsertBefore=*/nullptr,
         llvm::GlobalValue::NotThreadLocal,
         CGM.getContext().getTargetAddressSpace(LangAS::cuda_shared));
@@ -1576,11 +1576,6 @@ llvm::Function *CGOpenMPRuntimeGPU::emitParallelOutlinedFunction(
   auto *OutlinedFun =
       cast<llvm::Function>(CGOpenMPRuntime::emitParallelOutlinedFunction(
           D, ThreadIDVar, InnermostKind, CodeGen));
-  if (CGM.getLangOpts().Optimize) {
-    OutlinedFun->removeFnAttr(llvm::Attribute::NoInline);
-    OutlinedFun->removeFnAttr(llvm::Attribute::OptimizeNone);
-    OutlinedFun->addFnAttr(llvm::Attribute::AlwaysInline);
-  }
   IsInTargetMasterThreadRegion = PrevIsInTargetMasterThreadRegion;
   IsInTTDRegion = PrevIsInTTDRegion;
   if (getExecutionMode() != CGOpenMPRuntimeGPU::EM_SPMD &&
@@ -1698,11 +1693,6 @@ llvm::Function *CGOpenMPRuntimeGPU::emitTeamsOutlinedFunction(
   CodeGen.setAction(Action);
   llvm::Function *OutlinedFun = CGOpenMPRuntime::emitTeamsOutlinedFunction(
       D, ThreadIDVar, InnermostKind, CodeGen);
-  if (CGM.getLangOpts().Optimize) {
-    OutlinedFun->removeFnAttr(llvm::Attribute::NoInline);
-    OutlinedFun->removeFnAttr(llvm::Attribute::OptimizeNone);
-    OutlinedFun->addFnAttr(llvm::Attribute::AlwaysInline);
-  }
 
   return OutlinedFun;
 }
@@ -1922,8 +1912,9 @@ void CGOpenMPRuntimeGPU::emitGenericVarsProlog(CodeGenFunction &CGF,
       if (Rec.second.IsOnePerTeam) {
         VarTy = Rec.second.FD->getType();
       } else {
+        Address Addr = VarAddr.getAddress(CGF);
         llvm::Value *Ptr = CGF.Builder.CreateInBoundsGEP(
-            VarAddr.getAddress(CGF).getPointer(),
+            Addr.getElementType(), Addr.getPointer(),
             {Bld.getInt32(0), getNVPTXLaneID(CGF)});
         VarTy =
             Rec.second.FD->getType()->castAsArrayTypeUnsafe()->getElementType();
@@ -2101,6 +2092,14 @@ void CGOpenMPRuntimeGPU::emitNonSPMDParallelCall(
 
   // Force inline this outlined function at its call site.
   Fn->setLinkage(llvm::GlobalValue::InternalLinkage);
+
+  // Ensure we do not inline the function. This is trivially true for the ones
+  // passed to __kmpc_fork_call but the ones calles in serialized regions
+  // could be inlined. This is not a perfect but it is closer to the invariant
+  // we want, namely, every data environment starts with a new function.
+  // TODO: We should pass the if condition to the runtime function and do the
+  //       handling there. Much cleaner code.
+  cast<llvm::Function>(OutlinedFn)->addFnAttr(llvm::Attribute::NoInline);
 
   Address ZeroAddr = CGF.CreateDefaultAlignTempAlloca(CGF.Int32Ty,
                                                       /*Name=*/".zero.addr");
@@ -2855,8 +2854,8 @@ static llvm::Value *emitInterWarpCopyFunction(CodeGenModule &CGM,
     auto *Ty = llvm::ArrayType::get(CGM.Int32Ty, WarpSize);
     unsigned SharedAddressSpace = C.getTargetAddressSpace(LangAS::cuda_shared);
     TransferMedium = new llvm::GlobalVariable(
-        M, Ty, /*isConstant=*/false, llvm::GlobalVariable::CommonLinkage,
-        llvm::Constant::getNullValue(Ty), TransferMediumName,
+        M, Ty, /*isConstant=*/false, llvm::GlobalVariable::WeakAnyLinkage,
+        llvm::UndefValue::get(Ty), TransferMediumName,
         /*InsertBefore=*/nullptr, llvm::GlobalVariable::NotThreadLocal,
         SharedAddressSpace);
     CGM.addCompilerUsedGlobal(TransferMedium);
@@ -2945,7 +2944,8 @@ static llvm::Value *emitInterWarpCopyFunction(CodeGenModule &CGM,
       // Get pointer to location in transfer medium.
       // MediumPtr = &medium[warp_id]
       llvm::Value *MediumPtrVal = Bld.CreateInBoundsGEP(
-          TransferMedium, {llvm::Constant::getNullValue(CGM.Int64Ty), WarpID});
+          TransferMedium->getValueType(), TransferMedium,
+          {llvm::Constant::getNullValue(CGM.Int64Ty), WarpID});
       Address MediumPtr(MediumPtrVal, Align);
       // Casting to actual data type.
       // MediumPtr = (CopyType*)MediumPtrAddr;
@@ -2993,7 +2993,7 @@ static llvm::Value *emitInterWarpCopyFunction(CodeGenModule &CGM,
 
       // SrcMediumPtr = &medium[tid]
       llvm::Value *SrcMediumPtrVal = Bld.CreateInBoundsGEP(
-          TransferMedium,
+          TransferMedium->getValueType(), TransferMedium,
           {llvm::Constant::getNullValue(CGM.Int64Ty), ThreadID});
       Address SrcMediumPtr(SrcMediumPtrVal, Align);
       // SrcMediumVal = *SrcMediumPtr;
@@ -3134,11 +3134,6 @@ static llvm::Function *emitShuffleAndReduceFunction(
       "_omp_reduction_shuffle_and_reduce_func", &CGM.getModule());
   CGM.SetInternalFunctionAttributes(GlobalDecl(), Fn, CGFI);
   Fn->setDoesNotRecurse();
-  if (CGM.getLangOpts().Optimize) {
-    Fn->removeFnAttr(llvm::Attribute::NoInline);
-    Fn->removeFnAttr(llvm::Attribute::OptimizeNone);
-    Fn->addFnAttr(llvm::Attribute::AlwaysInline);
-  }
 
   CodeGenFunction CGF(CGM);
   CGF.StartFunction(GlobalDecl(), C.VoidTy, Fn, CGFI, Args, Loc, Loc);
@@ -3334,9 +3329,10 @@ static llvm::Value *emitListToGlobalCopyFunction(
     const FieldDecl *FD = VarFieldMap.lookup(VD);
     LValue GlobLVal = CGF.EmitLValueForField(
         CGF.MakeNaturalAlignAddrLValue(BufferArrPtr, StaticTy), FD);
-    llvm::Value *BufferPtr =
-        Bld.CreateInBoundsGEP(GlobLVal.getPointer(CGF), Idxs);
-    GlobLVal.setAddress(Address(BufferPtr, GlobLVal.getAlignment()));
+    Address GlobAddr = GlobLVal.getAddress(CGF);
+    llvm::Value *BufferPtr = Bld.CreateInBoundsGEP(
+        GlobAddr.getElementType(), GlobAddr.getPointer(), Idxs);
+    GlobLVal.setAddress(Address(BufferPtr, GlobAddr.getAlignment()));
     switch (CGF.getEvaluationKind(Private->getType())) {
     case TEK_Scalar: {
       llvm::Value *V = CGF.EmitLoadOfScalar(
@@ -3433,8 +3429,9 @@ static llvm::Value *emitListToGlobalReduceFunction(
     const FieldDecl *FD = VarFieldMap.lookup(VD);
     LValue GlobLVal = CGF.EmitLValueForField(
         CGF.MakeNaturalAlignAddrLValue(BufferArrPtr, StaticTy), FD);
-    llvm::Value *BufferPtr =
-        Bld.CreateInBoundsGEP(GlobLVal.getPointer(CGF), Idxs);
+    Address GlobAddr = GlobLVal.getAddress(CGF);
+    llvm::Value *BufferPtr = Bld.CreateInBoundsGEP(
+        GlobAddr.getElementType(), GlobAddr.getPointer(), Idxs);
     llvm::Value *Ptr = CGF.EmitCastToVoidPtr(BufferPtr);
     CGF.EmitStoreOfScalar(Ptr, Elem, /*Volatile=*/false, C.VoidPtrTy);
     if ((*IPriv)->getType()->isVariablyModifiedType()) {
@@ -3538,9 +3535,10 @@ static llvm::Value *emitGlobalToListCopyFunction(
     const FieldDecl *FD = VarFieldMap.lookup(VD);
     LValue GlobLVal = CGF.EmitLValueForField(
         CGF.MakeNaturalAlignAddrLValue(BufferArrPtr, StaticTy), FD);
-    llvm::Value *BufferPtr =
-        Bld.CreateInBoundsGEP(GlobLVal.getPointer(CGF), Idxs);
-    GlobLVal.setAddress(Address(BufferPtr, GlobLVal.getAlignment()));
+    Address GlobAddr = GlobLVal.getAddress(CGF);
+    llvm::Value *BufferPtr = Bld.CreateInBoundsGEP(
+        GlobAddr.getElementType(), GlobAddr.getPointer(), Idxs);
+    GlobLVal.setAddress(Address(BufferPtr, GlobAddr.getAlignment()));
     switch (CGF.getEvaluationKind(Private->getType())) {
     case TEK_Scalar: {
       llvm::Value *V = CGF.EmitLoadOfScalar(GlobLVal, Loc);
@@ -3637,8 +3635,9 @@ static llvm::Value *emitGlobalToListReduceFunction(
     const FieldDecl *FD = VarFieldMap.lookup(VD);
     LValue GlobLVal = CGF.EmitLValueForField(
         CGF.MakeNaturalAlignAddrLValue(BufferArrPtr, StaticTy), FD);
-    llvm::Value *BufferPtr =
-        Bld.CreateInBoundsGEP(GlobLVal.getPointer(CGF), Idxs);
+    Address GlobAddr = GlobLVal.getAddress(CGF);
+    llvm::Value *BufferPtr = Bld.CreateInBoundsGEP(
+        GlobAddr.getElementType(), GlobAddr.getPointer(), Idxs);
     llvm::Value *Ptr = CGF.EmitCastToVoidPtr(BufferPtr);
     CGF.EmitStoreOfScalar(Ptr, Elem, /*Volatile=*/false, C.VoidPtrTy);
     if ((*IPriv)->getType()->isVariablyModifiedType()) {
@@ -4620,6 +4619,7 @@ void CGOpenMPRuntimeGPU::processRequiresDirective(
       case CudaArch::SM_72:
       case CudaArch::SM_75:
       case CudaArch::SM_80:
+      case CudaArch::SM_86:
       case CudaArch::GFX600:
       case CudaArch::GFX601:
       case CudaArch::GFX602:
@@ -4640,11 +4640,15 @@ void CGOpenMPRuntimeGPU::processRequiresDirective(
       case CudaArch::GFX906:
       case CudaArch::GFX908:
       case CudaArch::GFX909:
+      case CudaArch::GFX90a:
+      case CudaArch::GFX90c:
       case CudaArch::GFX1010:
       case CudaArch::GFX1011:
       case CudaArch::GFX1012:
       case CudaArch::GFX1030:
       case CudaArch::GFX1031:
+      case CudaArch::GFX1032:
+      case CudaArch::GFX1033:
       case CudaArch::UNUSED:
       case CudaArch::UNKNOWN:
         break;
@@ -4684,6 +4688,7 @@ static std::pair<unsigned, unsigned> getSMsBlocksPerSM(CodeGenModule &CGM) {
   case CudaArch::SM_72:
   case CudaArch::SM_75:
   case CudaArch::SM_80:
+  case CudaArch::SM_86:
     return {84, 32};
   case CudaArch::GFX600:
   case CudaArch::GFX601:
@@ -4705,11 +4710,15 @@ static std::pair<unsigned, unsigned> getSMsBlocksPerSM(CodeGenModule &CGM) {
   case CudaArch::GFX906:
   case CudaArch::GFX908:
   case CudaArch::GFX909:
+  case CudaArch::GFX90a:
+  case CudaArch::GFX90c:
   case CudaArch::GFX1010:
   case CudaArch::GFX1011:
   case CudaArch::GFX1012:
   case CudaArch::GFX1030:
   case CudaArch::GFX1031:
+  case CudaArch::GFX1032:
+  case CudaArch::GFX1033:
   case CudaArch::UNUSED:
   case CudaArch::UNKNOWN:
     break;
@@ -4789,8 +4798,8 @@ void CGOpenMPRuntimeGPU::clear() {
       llvm::Type *LLVMStaticTy = CGM.getTypes().ConvertTypeForMem(StaticTy);
       auto *GV = new llvm::GlobalVariable(
           CGM.getModule(), LLVMStaticTy,
-          /*isConstant=*/false, llvm::GlobalValue::CommonLinkage,
-          llvm::Constant::getNullValue(LLVMStaticTy),
+          /*isConstant=*/false, llvm::GlobalValue::WeakAnyLinkage,
+          llvm::UndefValue::get(LLVMStaticTy),
           "_openmp_shared_static_glob_rd_$_", /*InsertBefore=*/nullptr,
           llvm::GlobalValue::NotThreadLocal,
           C.getTargetAddressSpace(LangAS::cuda_shared));
