@@ -1245,6 +1245,7 @@ namespace clang {
 				}
 			};
 
+
 			class IntegerForLoopExplorer : public LoopExplorer<IntegerForLoopExplorer> {
 				private:
 				std::vector<CustomArray> readArraySubscriptList;
