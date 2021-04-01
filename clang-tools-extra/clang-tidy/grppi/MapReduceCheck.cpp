@@ -57,7 +57,6 @@ namespace clang {
 
 			}
 
-			//TODO: consider implementation of Map::getOperatorAsString
 			//Reduce
 			std::string Reduce::getOperatorAsString() const {
 				if(binary_operator == nullptr) return "operator";
