@@ -57,6 +57,8 @@ namespace clang {
 
 			}
 
+
+
 			//Reduce
 			std::string Reduce::getOperatorAsString() const {
 				if(binary_operator == nullptr) return "operator";
