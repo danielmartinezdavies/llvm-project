@@ -621,6 +621,48 @@ namespace clang {
 				EXPECT_EQ(Code, Expected);
 			}
 
+			TEST(MapReduceCheckTest, IntegerLoopVectorInputVectorOutputCompoundAddition) {
+				std::string Expected = "k += grppi::map_reduce(grppi::dynamic_execution(), std::begin(b), 10, 0L, [=](auto grppi_b){return  grppi_b;}, [=](auto grppi_x, auto grppi_y){return grppi_x+grppi_y;});";
+
+				std::string Code = runCheckOnFile<MapReduceCheck>(
+						"#include <vector>\n"
+						"\n"
+						"int main() {\n"
+						"\tint k = 0;\n"
+						"\n"
+						"\tstd::vector<int> a(10);\n"
+						"\tstd::vector<int> b(10);\n"
+						"\n"
+						"\tfor (int i = 0; i < 10; i++) {\n"
+						"\t\ta[i] = b[i];\n"
+						"\t\tk += a[i];\n"
+						"\t}\n"
+						"}", PathToVector);
+				removeSpaces(Code, Expected);
+				EXPECT_EQ(Code, Expected);
+			}
+
+			TEST(MapReduceCheckTest, IntegerLoopArrayInputArrayOutputCompoundAddition) {
+				std::string Expected = "k += grppi::map_reduce(grppi::dynamic_execution(), b, 10, 0L, [=](auto grppi_b){return  grppi_b;}, [=](auto grppi_x, auto grppi_y){return grppi_x+grppi_y;});\n";
+				std::string Code = runCheckOnFile<MapReduceCheck>(
+						"#include <vector>\n"
+						"\n"
+						"int main() {\n"
+						"\tint k = 0;\n"
+						"\n"
+						"\tint a[10];\n"
+						"\tint b[10];\n"
+						"\n"
+						"\tfor (int i = 0; i < 10; i++) {\n"
+						"\t\ta[i] = b[i];\n"
+						"\t\tk += a[i];\n"
+						"\t}\n"
+						"}", PathToVector);
+				removeSpaces(Code, Expected);
+				EXPECT_EQ(Code, Expected);
+			}
+
+
 
 
 		} // namespace test
