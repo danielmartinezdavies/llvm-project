@@ -605,7 +605,7 @@ namespace clang {
 					return;
 
 				forLoopList.push_back(IntegerForLoop);
-				IntegerForLoop->dump();
+				//IntegerForLoop->dump();
 				IntegerForLoopExplorer currentMap(Result.Context, *this,
 												  std::vector<const Stmt *>(), IntegerForLoop->getBody(), start_expr,
 												  end_expr,
@@ -635,7 +635,7 @@ namespace clang {
 					}
 				}
 				if (matchedArray == nullptr) return;
-				iteratorForLoop->dump();
+				//iteratorForLoop->dump();
 				if (!Functions::isSameVariable(IncVar, CondVar) || !Functions::isSameVariable(IncVar, InitVar))
 					return;
 				std::cout << "Processing Iterator loop" << std::endl;

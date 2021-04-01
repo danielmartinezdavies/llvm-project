@@ -154,7 +154,7 @@ namespace clang {
 							 DiagnosticIDs::Remark)
 								<< FixItHint::CreateReplacement(loop->getSourceRange(),
 																currentMap.getReduceTransformation());
-					} else if (currentMap.isMapPattern() && currentMap.isParallelizable()) {
+					} else if (currentMap.isMapPattern() && !currentMap.isReducePattern() && currentMap.isParallelizable()) {
 						diag(loop->getBeginLoc(),
 							 "Map pattern detected. Loop can be parallelized.",
 							 DiagnosticIDs::Remark)

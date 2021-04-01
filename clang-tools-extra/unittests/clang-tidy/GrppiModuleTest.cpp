@@ -621,6 +621,11 @@ namespace clang {
 				EXPECT_EQ(Code, Expected);
 			}
 
+
+			/*
+			 * Map Reduce
+			 *
+			 * */
 			TEST(MapReduceCheckTest, IntegerLoopVectorInputVectorOutputCompoundAddition) {
 				std::string Expected = "k += grppi::map_reduce(grppi::dynamic_execution(), std::begin(b), 10, 0L, [=](auto grppi_b){return  grppi_b;}, [=](auto grppi_x, auto grppi_y){return grppi_x+grppi_y;});";
 
@@ -646,16 +651,110 @@ namespace clang {
 				std::string Expected = "k += grppi::map_reduce(grppi::dynamic_execution(), b, 10, 0L, [=](auto grppi_b){return  grppi_b;}, [=](auto grppi_x, auto grppi_y){return grppi_x+grppi_y;});\n";
 				std::string Code = runCheckOnFile<MapReduceCheck>(
 						"#include <vector>\n"
+						"int main() {\n"
+						"\tint k = 0;\n"
+						"\tint a[10];\n"
+						"\tint b[10];\n"
+						"\tfor (int i = 0; i < 10; i++) {\n"
+						"\t\ta[i] = b[i];\n"
+						"\t\tk += a[i];\n"
+						"\t}\n"
+						"}", PathToVector);
+				removeSpaces(Code, Expected);
+				EXPECT_EQ(Code, Expected);
+			}
+
+			TEST(MapReduceCheckTest, IntegerLoopPointerInputPointerOutputCompoundAddition) {
+				std::string Expected = "k += grppi::map_reduce(grppi::dynamic_execution(), b, 10, 0L, [=](auto grppi_b){return  grppi_b;}, [=](auto grppi_x, auto grppi_y){return grppi_x+grppi_y;});";
+				std::string Code = runCheckOnFile<MapReduceCheck>(
+						"#include <vector>\n"
+						"\n"
+						"int main() {\n"
+						"\tint k = 0;\n"
+						"\tint *a = new int[10];\n"
+						"\tint *b = new int[10];\n"
+						"\tfor (int i = 0; i < 10; i++) {\n"
+						"\t\ta[i] = b[i];\n"
+						"\t\tk += a[i];\n"
+						"\t}\n"
+						"}", PathToVector);
+				removeSpaces(Code, Expected);
+				EXPECT_EQ(Code, Expected);
+			}
+
+			TEST(MapReduceCheckTest, IntegerLoopVectorInputVectorOutputAdditionLeft) {
+				std::string Expected = "k += grppi::map_reduce(grppi::dynamic_execution(), std::begin(b), 10, 0L, [=](auto grppi_b){return  grppi_b;}, [=](auto grppi_x, auto grppi_y){return grppi_x+grppi_y;});";
+
+				std::string Code = runCheckOnFile<MapReduceCheck>(
+						"#include <vector>\n"
+						"int main() {\n"
+						"\tint k = 0;\n"
+						"\tstd::vector<int> a(10);\n"
+						"\tstd::vector<int> b(10);\n"
+						"\tfor (int i = 0; i < 10; i++) {\n"
+						"\t\ta[i] = b[i];\n"
+						"\t\tk = k + a[i];\n"
+						"\t}\n"
+						"}", PathToVector);
+				removeSpaces(Code, Expected);
+				EXPECT_EQ(Code, Expected);
+			}
+
+			TEST(MapReduceCheckTest, IntegerLoopVectorInputVectorOutputAdditionRight) {
+				std::string Expected = "k += grppi::map_reduce(grppi::dynamic_execution(), std::begin(b), 10, 0L, [=](auto grppi_b){return  grppi_b;}, [=](auto grppi_x, auto grppi_y){return grppi_x+grppi_y;});";
+
+				std::string Code = runCheckOnFile<MapReduceCheck>(
+						"#include <vector>\n"
+						"\n"
+						"int main() {\n"
+						"\tint k = 0;\n"
+						"\tstd::vector<int> a(10);\n"
+						"\tstd::vector<int> b(10);\n"
+						"\tfor (int i = 0; i < 10; i++) {\n"
+						"\t\ta[i] = b[i];\n"
+						"\t\tk =  a[i] + k;\n"
+						"\t}\n"
+						"}", PathToVector);
+				removeSpaces(Code, Expected);
+				EXPECT_EQ(Code, Expected);
+			}
+
+			TEST(MapReduceCheckTest, IntegerLoopVectorInputVectorOutputCompundMultiplication) {
+				std::string Expected = "k *= grppi::map_reduce(grppi::dynamic_execution(), std::begin(b), 10, 1L, [=](auto grppi_b){return  grppi_b;}, [=](auto grppi_x, auto grppi_y){return grppi_x*grppi_y;});";
+
+				std::string Code = runCheckOnFile<MapReduceCheck>(
+						"#include <vector>\n"
+						"int main() {\n"
+						"\tint k = 0;\n"
+						"\tstd::vector<int> a(10);\n"
+						"\tstd::vector<int> b(10);\n"
+						"\tfor (int i = 0; i < 10; i++) {\n"
+						"\t\ta[i] = b[i];\n"
+						"\t\tk *=  a[i];\n"
+						"\t}\n"
+						"}", PathToVector);
+				removeSpaces(Code, Expected);
+				EXPECT_EQ(Code, Expected);
+			}
+
+			TEST(MapReduceCheckTest, IntegerLoopMultipleMapReduce) {
+				std::string Expected = "";
+
+				std::string Code = runCheckOnFile<MapReduceCheck>(
+						"#include <vector>\n"
 						"\n"
 						"int main() {\n"
 						"\tint k = 0;\n"
 						"\n"
-						"\tint a[10];\n"
-						"\tint b[10];\n"
+						"\tstd::vector<int> a(10);\n"
+						"\tstd::vector<int> b(10);\n"
 						"\n"
 						"\tfor (int i = 0; i < 10; i++) {\n"
 						"\t\ta[i] = b[i];\n"
-						"\t\tk += a[i];\n"
+						"\t\tk +=  a[i];\n"
+						"\t\t\n"
+						"\t\tb[i] = b[i]*2;\n"
+						"\t\tk += b[i];\n"
 						"\t}\n"
 						"}", PathToVector);
 				removeSpaces(Code, Expected);
