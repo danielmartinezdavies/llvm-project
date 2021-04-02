@@ -761,9 +761,6 @@ namespace clang {
 				EXPECT_EQ(Code, Expected);
 			}
 
-
-
-
 		} // namespace test
 	} // namespace tidy
 } // namespace clang

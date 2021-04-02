@@ -591,27 +591,38 @@ namespace clang {
 				const auto *CondVar = Result.Nodes.getNodeAs<VarDecl>("condVar");
 				const auto *InitVar = Result.Nodes.getNodeAs<VarDecl>("initVar");
 
+
 				const auto *start_expr = Result.Nodes.getNodeAs<Expr>("start_expr");
 				if (start_expr == nullptr)
 					return;
+
 				const auto *end_expr = Result.Nodes.getNodeAs<Expr>("end_expr");
 				if(end_expr == nullptr )
 					return;
 
+
 				if (!Functions::isSameVariable(IncVar, CondVar) || !Functions::isSameVariable(IncVar, InitVar))
 					return;
 
-				if (Functions::alreadyExploredForLoop(IntegerForLoop))
-					return;
+				//Contains bug
+				/*if (Functions::alreadyExploredForLoop(IntegerForLoop, Result.Context))
+					return;*/
+
 
 				forLoopList.push_back(IntegerForLoop);
 				//IntegerForLoop->dump();
+
+
 				IntegerForLoopExplorer currentMap(Result.Context, *this,
 												  std::vector<const Stmt *>(), IntegerForLoop->getBody(), start_expr,
 												  end_expr,
 												  InitVar, IntegerForLoopSizeMin);
+
 				currentMap.TraverseStmt(const_cast<Stmt *>(IntegerForLoop->getBody()));
+
 				currentMap.appendForLoopList();
+
+
 				addDiagnostic(currentMap, IntegerForLoop);
 			}
 

@@ -50,11 +50,14 @@ namespace clang {
 					return FirstID == SecondID;
 				}
 
-				static bool alreadyExploredForLoop(const Stmt *FS) {
+				static bool alreadyExploredForLoop(const Stmt *FS, const ASTContext *Context) {
+					std::cout << forLoopList.size() << std::endl;
 					for (const Stmt *currentFS : forLoopList) {
-						if (currentFS == FS)
+						if (currentFS == FS) {
 							return true;
+						}
 					}
+
 					return false;
 				}
 
