@@ -50,7 +50,8 @@ namespace clang {
 					return FirstID == SecondID;
 				}
 
-				static bool alreadyExploredForLoop(const Stmt *FS, const ASTContext *Context) {
+				//Condider removing
+				/*static bool alreadyExploredForLoop(const Stmt *FS, const ASTContext *Context) {
 					std::cout << forLoopList.size() << std::endl;
 					for (const Stmt *currentFS : forLoopList) {
 						if (currentFS == FS) {
@@ -59,7 +60,7 @@ namespace clang {
 					}
 
 					return false;
-				}
+				}*/
 
 				static bool isSameVariable(const DeclarationName DN, const DeclarationName DN2) {
 					if (!DN.isEmpty() && !DN2.isEmpty() && DN == DN2) {
@@ -1296,9 +1297,9 @@ namespace clang {
 
 				std::string getEndInputAsString(const DeclRefExpr *inputName) override;
 
-				std::unique_ptr<int> getStartValue();
+				std::unique_ptr<const uint64_t> getStartValue();
 
-				std::unique_ptr<int> getEndValue();
+				std::unique_ptr<const uint64_t> getEndValue();
 
 				bool VisitArray(CustomArray);
 

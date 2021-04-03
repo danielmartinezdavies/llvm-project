@@ -106,7 +106,7 @@ namespace clang {
 			}
 			std::string IntegerForLoopExplorer::getEndInputAsString(const DeclRefExpr* inputName){
 				//returns size
-				std::unique_ptr<int> startP = getStartValue(), endP = getEndValue();
+				std::unique_ptr<const uint64_t> startP = getStartValue(), endP = getEndValue();
 				if(startP != nullptr && endP != nullptr){
 					return std::to_string(*endP - *startP);
 				}
@@ -117,27 +117,27 @@ namespace clang {
 				return  end + start;
 			}
 
-			std::unique_ptr<int> IntegerForLoopExplorer::getStartValue(){
+			std::unique_ptr<const uint64_t> IntegerForLoopExplorer::getStartValue(){
 				if (auto *start = dyn_cast<IntegerLiteral>(
 						start_expr->IgnoreParenImpCasts())) {
-					return std::make_unique<int>(start->getValue().getZExtValue());
+					return std::make_unique<const uint64_t>(start->getValue().getZExtValue());
 				}
 				return nullptr;
 			}
 			/*
 			 * Returns end value of loop, where iterator_variable < end
 			 * */
-			std::unique_ptr<int> IntegerForLoopExplorer::getEndValue(){
+			std::unique_ptr<const uint64_t> IntegerForLoopExplorer::getEndValue(){
 				if (auto *end = dyn_cast<IntegerLiteral>(
 						end_expr->IgnoreParenImpCasts())) {
-					return std::make_unique<int>(end->getValue().getZExtValue());
+					return std::make_unique<const uint64_t>(end->getValue().getZExtValue());
 				}
 				return nullptr;
 			}
 
 
 			bool IntegerForLoopExplorer::isRequiredMinSize(){
-				std::unique_ptr<int> start, end;
+				std::unique_ptr<const uint64_t> start, end;
 				start = getStartValue();
 				end = getEndValue();
 
@@ -219,13 +219,13 @@ namespace clang {
 			 * Returns 0 for anything else
 			 * */
 			int IntegerForLoopExplorer::isValidArraySubscript(CustomArray array) {
-				std::unique_ptr<int> startP = getStartValue();
+				std::unique_ptr<const uint64_t> startP = getStartValue();
 				if(startP == nullptr){
 					return -1;
 				}
 				int start =  *startP;
 
-				std::unique_ptr<int> endP = getEndValue();
+				std::unique_ptr<const uint64_t> endP = getEndValue();
 				if(endP == nullptr){
 					return -1;
 				}
