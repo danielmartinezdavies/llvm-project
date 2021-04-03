@@ -49,7 +49,6 @@ namespace clang {
 			}
 
 			std::string Map::getOperatorAsString(SourceManager &SM) const {
-				SourceRange currentRange;
 				auto BO = this->getBinaryOperator();
 				return Lexer::getSourceText(CharSourceRange::getTokenRange(BO->getOperatorLoc(), BO->getOperatorLoc()), SM,
 									 LangOptions()).str().substr(0,1);
@@ -152,7 +151,7 @@ namespace clang {
 			bool IntegerForLoopExplorer::VisitArray(CustomArray array) {
 				const DeclRefExpr *base = getPointer(array.getOriginal());
 				if (isa<ArraySubscriptExpr>(array.getOriginal())) {
-					//if regular arraysubsript expression, check for valid pointer
+					//if regular arraysubscript expression, check for valid pointer
 					if (base == nullptr) {
 						Check.diag(array.getOriginal()->getBeginLoc(),
 								   "Pointer is invalid");
@@ -160,7 +159,7 @@ namespace clang {
 						return true;
 					}
 					if (!base->getType()->isArrayType()) {
-						PointerHasValidLastValue((VarDecl *) base->getDecl(), array.getOriginal());
+						PointerHasValidLastValue((const VarDecl *) base->getDecl(), array.getOriginal());
 					}
 				}
 				bool isInput = addToReadArraySubscriptList(array, Context);

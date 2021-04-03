@@ -50,7 +50,8 @@ namespace clang {
 					return FirstID == SecondID;
 				}
 
-				//Condider removing
+
+				//Consider removing
 				/*static bool alreadyExploredForLoop(const Stmt *FS, const ASTContext *Context) {
 					std::cout << forLoopList.size() << std::endl;
 					for (const Stmt *currentFS : forLoopList) {
@@ -69,7 +70,7 @@ namespace clang {
 					return false;
 				}
 
-				static bool isSameVariable(const ValueDecl *First, const ValueDecl *Second) {
+				static inline bool isSameVariable(const ValueDecl *First, const ValueDecl *Second) {
 					return First && Second &&
 						   First->getCanonicalDecl() == Second->getCanonicalDecl();
 				}
@@ -398,7 +399,7 @@ namespace clang {
 				bool VisitCallExpr(CallExpr *CE) {
 					// visit
 					bool isLocCallee = false;
-					if (auto *callee = dyn_cast<MemberExpr>(CE->getCallee())) {
+					if (const auto *callee = dyn_cast<MemberExpr>(CE->getCallee())) {
 						isLocCallee = isLocalCallee(callee);
 					}
 
@@ -527,7 +528,7 @@ namespace clang {
 					}
 				}
 
-				bool isLocalCallee(Expr *callee) {
+				bool isLocalCallee(const Expr *callee) {
 					callee = callee->IgnoreParenImpCasts();
 					if (auto *BO_LHS = dyn_cast<DeclRefExpr>(callee)) {
 						if (!isLocalVariable(BO_LHS->getDecl()->getDeclName())) {
@@ -575,7 +576,7 @@ namespace clang {
 				 * Takes as first parameter the declaration of the pointer
 				 * Takes as second parameter the expression where the pointer is used for outputting error message
 				 * */
-				bool PointerHasValidLastValue(VarDecl *pointerVarDecl, const Expr *expr) {
+				bool PointerHasValidLastValue(const VarDecl *pointerVarDecl, const Expr *expr) {
 
 					if (!Functions::hasElement<DeclarationName>(exploredPointers,
 																pointerVarDecl->getDeclName())) {
@@ -601,7 +602,7 @@ namespace clang {
 									pointerVarDecl->getParentFunctionOrMethod())) {
 								//
 
-								const auto isVariable = [](VarDecl *VD) {
+								const auto isVariable = [](const VarDecl *VD) {
 									return ignoringImpCasts(declRefExpr(to(varDecl(equalsNode(VD)))));
 								};
 								const auto invalidAssignments =
