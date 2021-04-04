@@ -40,6 +40,7 @@ namespace clang {
 			namespace LoopConstant {
 				static std::string startElement = "grppi_";
 			}
+
 			namespace Functions {
 				static bool areSameExpr(const ASTContext *Context, const Expr *First, const Expr *Second) {
 					if (!First || !Second)
@@ -49,7 +50,6 @@ namespace clang {
 					Second->Profile(SecondID, *Context, true);
 					return FirstID == SecondID;
 				}
-
 
 				//Consider removing
 				/*static bool alreadyExploredForLoop(const Stmt *FS, const ASTContext *Context) {
@@ -147,19 +147,20 @@ namespace clang {
 				template<class LoopExplorer, class Loop>
 				void addDiagnostic(LoopExplorer currentMap, Loop loop) {
 
-					if(currentMap.isMapReducePattern() && currentMap.isParallelizable()){
+					if (currentMap.isMapReducePattern() && currentMap.isParallelizable()) {
 						diag(loop->getBeginLoc(),
 							 "MapReduce pattern detected. Loop can be parallelized.",
 							 DiagnosticIDs::Remark) << FixItHint::CreateReplacement(loop->getSourceRange(),
-																					currentMap.getMapReduceTransformation()) ;
-					}
-					else if (currentMap.isReducePattern()  && !currentMap.isMapPattern() && currentMap.isParallelizable()) {
+																					currentMap.getMapReduceTransformation());
+					} else if (currentMap.isReducePattern() && !currentMap.isMapPattern() &&
+							   currentMap.isParallelizable()) {
 						diag(loop->getBeginLoc(),
 							 "Reduce pattern detected. Loop can be parallelized.",
 							 DiagnosticIDs::Remark)
 								<< FixItHint::CreateReplacement(loop->getSourceRange(),
 																currentMap.getReduceTransformation());
-					} else if (currentMap.isMapPattern() && !currentMap.isReducePattern() && currentMap.isParallelizable()) {
+					} else if (currentMap.isMapPattern() && !currentMap.isReducePattern() &&
+							   currentMap.isParallelizable()) {
 						diag(loop->getBeginLoc(),
 							 "Map pattern detected. Loop can be parallelized.",
 							 DiagnosticIDs::Remark)
@@ -183,7 +184,8 @@ namespace clang {
 				std::vector<const Expr *> Input;
 				const Expr *Output;
 
-				void removeFromRewriter(SourceRange &, int &, std::vector<Pattern>::iterator, SourceManager &, Rewriter &);
+				void
+				removeFromRewriter(SourceRange &, int &, std::vector<Pattern>::iterator, SourceManager &, Rewriter &);
 
 			};
 
@@ -207,7 +209,7 @@ namespace clang {
 
 				Expr *mapFunction;
 
-				void removeFromRewriter(SourceRange &currentRange, int &offset,  SourceManager &SM, Rewriter &rewriter){
+				void removeFromRewriter(SourceRange &currentRange, int &offset, SourceManager &SM, Rewriter &rewriter) {
 					currentRange = SourceRange(
 							this->mapFunction->getBeginLoc().getLocWithOffset(offset),
 							Lexer::getLocForEndOfToken(this->mapFunction->getEndLoc(),
@@ -234,7 +236,7 @@ namespace clang {
 
 				std::string getIdentityAsString() const;
 
-				void removeFromRewriter(SourceRange &currentRange, int &offset,  SourceManager &SM, Rewriter &rewriter){
+				void removeFromRewriter(SourceRange &currentRange, int &offset, SourceManager &SM, Rewriter &rewriter) {
 					currentRange = SourceRange(
 							this->original_expr->getBeginLoc().getLocWithOffset(offset),
 							Lexer::getLocForEndOfToken(this->original_expr->getEndLoc(),
@@ -258,7 +260,6 @@ namespace clang {
 				std::vector<Map> MapList;
 				std::vector<Reduce> ReduceList;
 				Map placeHolderMap = {{}, {}, nullptr, nullptr};
-
 
 				std::vector<const Stmt *> visitedForLoopList;
 				std::vector<const FunctionDecl *> visitedFunctionDeclarationList;
@@ -645,14 +646,14 @@ namespace clang {
 				bool isReducePattern() { return !ReduceList.empty(); }
 
 				bool isMapReducePattern() {
-					if(MapList.size() != 1 || ReduceList.size() != 1) return false;
+					if (MapList.size() != 1 || ReduceList.size() != 1) return false;
 					Map m = MapList[0];
 					Reduce r = ReduceList[0];
 
-					const DeclRefExpr* mapVar = getPointer(m.Output);
-					const DeclRefExpr* reduceVar = getPointer(r.Input[0]);
+					const DeclRefExpr *mapVar = getPointer(m.Output);
+					const DeclRefExpr *reduceVar = getPointer(r.Input[0]);
 
-					if(Functions::isSameVariable(mapVar->getDecl(), reduceVar->getDecl())) return true;
+					if (Functions::isSameVariable(mapVar->getDecl(), reduceVar->getDecl())) return true;
 
 					return false;
 
@@ -755,7 +756,7 @@ namespace clang {
 					return nullptr;
 				}
 
-				bool isRepeatedForStmt(Stmt *FS) {
+				bool isRepeatedForStmt(const Stmt *FS) {
 					for (const Stmt *currentFor : visitedForLoopList) {
 						if (currentFor == FS) {
 							parallelizable = false;
@@ -815,7 +816,7 @@ namespace clang {
 					return "std::end(";
 				}
 
-				virtual bool isVariableUsedInArraySubscript(DeclRefExpr *dre) {
+				virtual bool isVariableUsedInArraySubscript(const DeclRefExpr *dre) {
 					return true;
 				}
 
@@ -854,7 +855,7 @@ namespace clang {
 
 				/*
 				 * Closes parenthesis for inputs that require it
-				 * */
+				 */
 				std::string getCloseBeginInputTransformation(const DeclRefExpr *expr) {
 					if (!expr->getType()->isPointerType() && !expr->getType()->isArrayType()) {
 						return ")";
@@ -865,7 +866,7 @@ namespace clang {
 				/*
 				 * Gets back iterator for input
 				 * Integer for loops have their own ending
-				 **/
+				 */
 				std::string getEndInputTransformation(const DeclRefExpr *expr) {
 
 					if (expr != nullptr && !expr->getType()->isPointerType()) {
@@ -876,7 +877,8 @@ namespace clang {
 
 				/*
 				 * Closes parenthesis for inputs that require it
-				 * */
+				 *
+				 */
 				std::string getCloseEndInputTransformation(const DeclRefExpr *expr) {
 					if (!expr->getType()->isPointerType()) {
 						return ")";
@@ -983,8 +985,10 @@ namespace clang {
 					return transformation;
 				}
 
-				template <typename Pattern>
-				void removePatternFromRewriter(SourceRange &currentRange, int &offset, std::vector<Pattern> PatterList, typename std::vector<Pattern>::iterator pattern, SourceManager &SM, Rewriter &rewriter){
+				template<typename Pattern>
+				void removePatternFromRewriter(SourceRange &currentRange, int &offset, std::vector<Pattern> PatterList,
+											   typename std::vector<Pattern>::iterator pattern, SourceManager &SM,
+											   Rewriter &rewriter) {
 					for (typename std::vector<Pattern>::iterator otherPattern = PatterList.begin();
 						 otherPattern != PatterList.end(); otherPattern++) {
 						if (otherPattern != pattern) {
@@ -992,8 +996,10 @@ namespace clang {
 						}
 					}
 				}
-				template <typename Pattern>
-				void removePatternFromRewriter(SourceRange &currentRange, int &offset, std::vector<Pattern> PatterList,  SourceManager &SM, Rewriter &rewriter){
+
+				template<typename Pattern>
+				void removePatternFromRewriter(SourceRange &currentRange, int &offset, std::vector<Pattern> PatterList,
+											   SourceManager &SM, Rewriter &rewriter) {
 					for (typename std::vector<Pattern>::iterator otherPattern = PatterList.begin();
 						 otherPattern != PatterList.end(); otherPattern++) {
 						otherPattern->removeFromRewriter(currentRange, offset, SM, rewriter);
@@ -1074,10 +1080,10 @@ namespace clang {
 						}
 						transformation += ")";
 					} else
-						transformation += "auto " + LoopConstant::startElement + "x, auto " + LoopConstant::startElement + "y)";
+						transformation +=
+								"auto " + LoopConstant::startElement + "x, auto " + LoopConstant::startElement + "y)";
 					return transformation;
 				}
-
 
 				std::string getReduceTransformationLambdaBody(const std::vector<Reduce>::iterator &reduce) {
 					SourceManager &SM = Context->getSourceManager();
@@ -1094,7 +1100,7 @@ namespace clang {
 					removePatternFromRewriter(currentRange, offset, MapList, SM, rewriter);
 
 					std::string to_insert = "return ";
-					if(reduce->Element.size() == 2){
+					if (reduce->Element.size() == 2) {
 						if (auto *BO = dyn_cast<BinaryOperator>(reduce->original_expr->IgnoreParenImpCasts())) {
 							currentRange = SourceRange(
 									BO->getBeginLoc().getLocWithOffset(offset),
@@ -1111,8 +1117,7 @@ namespace clang {
 													 LoopConstant::startElement + elem->getNameInfo().getAsString());
 							}
 						}
-					}
-					else {
+					} else {
 						//remove original reduce expression to be replaced
 						reduce->removeFromRewriter(currentRange, offset, SM, rewriter);
 
@@ -1202,13 +1207,14 @@ namespace clang {
 
 					return transformation;
 				}
+
 				std::string getMapReduceTransformation() {
-					if(MapList.size() != 1 || ReduceList.size() != 1) return "";
+					if (MapList.size() != 1 || ReduceList.size() != 1) return "";
 					std::vector<Map>::iterator map = MapList.begin();
 					std::vector<Reduce>::iterator reduce = ReduceList.begin();
 
 					std::string transformation = "";
-					
+
 					std::string variable = "";
 
 					const DeclRefExpr *dre = getPointer(reduce->Output);
@@ -1245,7 +1251,7 @@ namespace clang {
 					transformation.erase(
 							std::remove(transformation.begin(), transformation.end(), '\n'),
 							transformation.end());
-					
+
 					return transformation;
 				}
 			};
@@ -1286,7 +1292,7 @@ namespace clang {
 
 				bool HandleArrayMapAssignment(CustomArray);
 
-				bool isVariableUsedInArraySubscript(DeclRefExpr *dre) override;
+				bool isVariableUsedInArraySubscript(const DeclRefExpr *dre) override;
 
 				bool isRequiredMinSize();
 

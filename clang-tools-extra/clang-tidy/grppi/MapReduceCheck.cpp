@@ -21,6 +21,7 @@ namespace clang {
 				}
 				return false;
 			}
+
 			bool Map::isWithin(const Expr *expr, ASTContext *Context) const {
 				BeforeThanCompare<SourceLocation> isBefore(Context->getSourceManager());
 				if (!isBefore(Lexer::getLocForEndOfToken(mapFunction->getEndLoc(), 0, Context->getSourceManager(),
@@ -32,16 +33,17 @@ namespace clang {
 				return false;
 			}
 
-			BinaryOperator* Map::getBinaryOperator() const{
-				if(auto *BO = dyn_cast<BinaryOperator>(this->mapFunction)) {
+			BinaryOperator *Map::getBinaryOperator() const {
+				if (auto *BO = dyn_cast<BinaryOperator>(this->mapFunction)) {
 					return BO;
 				}
 				return nullptr;
 			}
-			bool Map::isCompoundAssignmentBO() const{
-				BinaryOperator* BO = this->getBinaryOperator();
-				if(BO != nullptr) {
-					if(BO->isCompoundAssignmentOp()){
+
+			bool Map::isCompoundAssignmentBO() const {
+				BinaryOperator *BO = this->getBinaryOperator();
+				if (BO != nullptr) {
+					if (BO->isCompoundAssignmentOp()) {
 						return true;
 					}
 				}
@@ -50,21 +52,19 @@ namespace clang {
 
 			std::string Map::getOperatorAsString(SourceManager &SM) const {
 				auto BO = this->getBinaryOperator();
-				return Lexer::getSourceText(CharSourceRange::getTokenRange(BO->getOperatorLoc(), BO->getOperatorLoc()), SM,
-									 LangOptions()).str().substr(0,1);
-
-
+				return Lexer::getSourceText(CharSourceRange::getTokenRange(BO->getOperatorLoc(), BO->getOperatorLoc()),
+											SM,
+											LangOptions()).str().substr(0, 1);
 			}
-
 
 
 			//Reduce
 			std::string Reduce::getOperatorAsString() const {
-				if(binary_operator == nullptr) return "operator";
-				if(binary_operator->getOpcode() == BO_AddAssign || binary_operator->getOpcode() == BO_Add){
+				if (binary_operator == nullptr) return "operator";
+				if (binary_operator->getOpcode() == BO_AddAssign || binary_operator->getOpcode() == BO_Add) {
 					return "+";
 				}
-				if(binary_operator->getOpcode() == BO_MulAssign || binary_operator->getOpcode() == BO_Mul){
+				if (binary_operator->getOpcode() == BO_MulAssign || binary_operator->getOpcode() == BO_Mul) {
 					return "*";
 				}
 
@@ -72,61 +72,66 @@ namespace clang {
 			}
 
 			std::string Reduce::getIdentityAsString() const {
-				if(binary_operator == nullptr) return "\"identity\"";
-				if(binary_operator->getOpcode() == BO_AddAssign || binary_operator->getOpcode() == BO_Add){
+				if (binary_operator == nullptr) return "\"identity\"";
+				if (binary_operator->getOpcode() == BO_AddAssign || binary_operator->getOpcode() == BO_Add) {
 					return "0L";
 				}
-				if(binary_operator->getOpcode() == BO_MulAssign || binary_operator->getOpcode() == BO_Mul){
+				if (binary_operator->getOpcode() == BO_MulAssign || binary_operator->getOpcode() == BO_Mul) {
 					return "1L";
 				}
 				return "No identity";
 			}
 
-
-
 			//IntegerForLoop
 			const Expr *IntegerForLoopExplorer::getLoopContainer(Expr *write) {
 				return write;
 			}
+
 			std::string IntegerForLoopExplorer::getArrayBeginOffset() const {
-				std::string result = Lexer::getSourceText(CharSourceRange::getTokenRange(start_expr->getSourceRange()), Context->getSourceManager(),
+				std::string result = Lexer::getSourceText(CharSourceRange::getTokenRange(start_expr->getSourceRange()),
+														  Context->getSourceManager(),
 														  LangOptions()).str();
-				if(result == "0") return "";
+				if (result == "0") return "";
 				return result;
 			}
+
 			std::string IntegerForLoopExplorer::getArrayEndString() const {
 				return "std::begin(";
 			}
+
 			std::string IntegerForLoopExplorer::getArrayEndOffset() const {
-				std::string result = Lexer::getSourceText(CharSourceRange::getTokenRange(end_expr->getSourceRange()), Context->getSourceManager(),
+				std::string result = Lexer::getSourceText(CharSourceRange::getTokenRange(end_expr->getSourceRange()),
+														  Context->getSourceManager(),
 														  LangOptions()).str();
-				if(result == "0") return "";
+				if (result == "0") return "";
 				return result;
 			}
-			std::string IntegerForLoopExplorer::getEndInputAsString(const DeclRefExpr* inputName){
+
+			std::string IntegerForLoopExplorer::getEndInputAsString(const DeclRefExpr *inputName) {
 				//returns size
 				std::unique_ptr<const uint64_t> startP = getStartValue(), endP = getEndValue();
-				if(startP != nullptr && endP != nullptr){
+				if (startP != nullptr && endP != nullptr) {
 					return std::to_string(*endP - *startP);
 				}
 				std::string end = getArrayEndOffset(), start = getArrayBeginOffset();
 				if (end == "" && start == "") return "0";
 				if (end != "" && start != "") return end + " - " + start;
 
-				return  end + start;
+				return end + start;
 			}
 
-			std::unique_ptr<const uint64_t> IntegerForLoopExplorer::getStartValue(){
+			std::unique_ptr<const uint64_t> IntegerForLoopExplorer::getStartValue() {
 				if (auto *start = dyn_cast<IntegerLiteral>(
 						start_expr->IgnoreParenImpCasts())) {
 					return std::make_unique<const uint64_t>(start->getValue().getZExtValue());
 				}
 				return nullptr;
 			}
+
 			/*
 			 * Returns end value of loop, where iterator_variable < end
 			 * */
-			std::unique_ptr<const uint64_t> IntegerForLoopExplorer::getEndValue(){
+			std::unique_ptr<const uint64_t> IntegerForLoopExplorer::getEndValue() {
 				if (auto *end = dyn_cast<IntegerLiteral>(
 						end_expr->IgnoreParenImpCasts())) {
 					return std::make_unique<const uint64_t>(end->getValue().getZExtValue());
@@ -135,13 +140,13 @@ namespace clang {
 			}
 
 
-			bool IntegerForLoopExplorer::isRequiredMinSize(){
+			bool IntegerForLoopExplorer::isRequiredMinSize() {
 				std::unique_ptr<const uint64_t> start, end;
 				start = getStartValue();
 				end = getEndValue();
 
-				if(start != nullptr && end != nullptr){
-					if(*end - *start < LoopSizeMin){
+				if (start != nullptr && end != nullptr) {
+					if (*end - *start < LoopSizeMin) {
 						return false;
 					}
 				}
@@ -184,10 +189,12 @@ namespace clang {
 				}
 				return true;
 			}
+
 			bool IntegerForLoopExplorer::VisitArraySubscriptExpr(ArraySubscriptExpr *ase) {
 				CustomArray array(ase->getBase(), ase->getIdx(), ase);
 				return VisitArray(array);
 			}
+
 			bool IntegerForLoopExplorer::VisitCXXOperatorCallExpr(CXXOperatorCallExpr *OO) {
 				if (OO->getOperator() == OO_Subscript) {
 					CustomArray array(OO->getArg(0), OO->getArg(1), OO);
@@ -195,7 +202,8 @@ namespace clang {
 				}
 				return true;
 			}
-			bool IntegerForLoopExplorer::addInput(Map &map, const  Expr *expr) {
+
+			bool IntegerForLoopExplorer::addInput(Map &map, const Expr *expr) {
 				bool isRepeated = false;
 				for (auto &currentInput:map.Input) {
 					const auto *inputPointer = getPointer(currentInput);
@@ -210,6 +218,7 @@ namespace clang {
 				}
 				return false;
 			}
+
 			/*
 			 * Returns 3 for subscript where index is integer literal less than the start value or larger than the end value of the for loop
 			 * Returns 2 for subscript where index is integer literal within bounds
@@ -219,16 +228,16 @@ namespace clang {
 			 * */
 			int IntegerForLoopExplorer::isValidArraySubscript(CustomArray array) {
 				std::unique_ptr<const uint64_t> startP = getStartValue();
-				if(startP == nullptr){
+				if (startP == nullptr) {
 					return -1;
 				}
-				int start =  *startP;
+				int start = *startP;
 
 				std::unique_ptr<const uint64_t> endP = getEndValue();
-				if(endP == nullptr){
+				if (endP == nullptr) {
 					return -1;
 				}
-				int end =  *endP;
+				int end = *endP;
 
 
 				if (auto *index = dyn_cast<IntegerLiteral>(
@@ -248,13 +257,14 @@ namespace clang {
 						   "Pointer has invalid subscript");
 				return 0;
 			}
+
 			bool IntegerForLoopExplorer::addToReadArraySubscriptList(CustomArray array, ASTContext *context) {
-				if (isValidArraySubscript(array) == 3 || isValidArraySubscript(array) == -1) return false;
+				if (isValidArraySubscript(array) == 3) return false;
 				const Expr *base = array.getBase();
 				const Expr *index = array.getIndex();
 				for (CustomArray write_array : writeArraySubscriptList) {
 					if (Functions::areSameExpr(context, write_array.getBase(), base)) {
-						if (!Functions::areSameExpr(context, write_array.getIndex(), index)) {
+						if (!Functions::areSameExpr(context, write_array.getIndex(), index) && isValidArraySubscript(array) != -1) {
 							Check.diag(
 									write_array.getIndex()->getBeginLoc(),
 									"Inconsistent array subscription makes for loop "
@@ -272,13 +282,14 @@ namespace clang {
 				readArraySubscriptList.push_back(array);
 				return true;
 			}
+
 			bool IntegerForLoopExplorer::addToWriteArraySubscriptList(CustomArray array, ASTContext *context) {
 				if (isValidArraySubscript(array) == 2) return false;
 				const Expr *base = array.getBase();
 				const Expr *index = array.getIndex();
 				for (CustomArray read_array : readArraySubscriptList) {
 					if (Functions::areSameExpr(context, read_array.getBase(), base)) {
-						if (!Functions::areSameExpr(context, read_array.getIndex(), index)) {
+						if (!Functions::areSameExpr(context, read_array.getIndex(), index) && isValidArraySubscript(array) != -1) {
 							Check.diag(
 									array.getOriginal()->getBeginLoc(),
 									"Inconsistent array subscription makes for loop "
@@ -307,6 +318,7 @@ namespace clang {
 				writeArraySubscriptList.push_back(array);
 				return true;
 			}
+
 			bool IntegerForLoopExplorer::HandleArrayMapAssignment(CustomArray array) {
 				// if not a local subscript to local array, make sure it is a valid write
 				const DeclRefExpr *ArraySubscriptPointer = getPointer(array.getOriginal());
@@ -328,6 +340,7 @@ namespace clang {
 				}
 				return false;
 			}
+
 			bool IntegerForLoopExplorer::isLoopElem(Expr *write) {
 				if (auto *BO_LHS = dyn_cast<ArraySubscriptExpr>(write->IgnoreParenImpCasts())) {
 					CustomArray a(BO_LHS->getBase(), BO_LHS->getIdx(), BO_LHS);
@@ -344,23 +357,23 @@ namespace clang {
 
 			/*
 			 * Checks to see if variable instance was used as index in either readArraySubscriptList and writeArraySubscriptList
-			 * Does not modify parallelizable boolean
+			 * Does not modify boolean member variable "parallelizable"
 			 * */
-			bool IntegerForLoopExplorer::isVariableUsedInArraySubscript(DeclRefExpr* dre){
+			bool IntegerForLoopExplorer::isVariableUsedInArraySubscript(const DeclRefExpr *dre) {
 				bool found = false;
-				for(auto readElem: readArraySubscriptList){
-					const Expr* index = readElem.getIndex();
-					if(auto *var = dyn_cast<DeclRefExpr>(index->IgnoreParenImpCasts())){
-						if(dre == var){
-							found = true; 
+				for (auto readElem: readArraySubscriptList) {
+					const Expr *index = readElem.getIndex();
+					if (auto *var = dyn_cast<DeclRefExpr>(index->IgnoreParenImpCasts())) {
+						if (dre == var) {
+							found = true;
 							break;
 						}
 					}
 				}
-				for(auto writeElem: writeArraySubscriptList){
-					const Expr* index = writeElem.getIndex();
-					if(auto *var = dyn_cast<DeclRefExpr>(index->IgnoreParenImpCasts())){
-						if(dre == var){
+				for (auto writeElem: writeArraySubscriptList) {
+					const Expr *index = writeElem.getIndex();
+					if (auto *var = dyn_cast<DeclRefExpr>(index->IgnoreParenImpCasts())) {
+						if (dre == var) {
 							found = true;
 							break;
 						}
@@ -369,6 +382,7 @@ namespace clang {
 
 				return found;
 			}
+
 			//ContainerForLoop
 			bool ContainerForLoopExplorer::VisitCXXOperatorCallExpr(CXXOperatorCallExpr *OO) {
 				DeclRefExpr *DRE = isValidDereference(OO);
@@ -392,6 +406,7 @@ namespace clang {
 				}
 				return true;
 			}
+
 			DeclRefExpr *ContainerForLoopExplorer::isValidDereference(Expr *expr) {
 				if (auto *OO = dyn_cast<CXXOperatorCallExpr>(expr->IgnoreParenImpCasts())) {
 					if (OO->getOperator() == OO_Star) {
@@ -413,6 +428,7 @@ namespace clang {
 				}
 				return nullptr;
 			}
+
 			bool ContainerForLoopExplorer::isLoopElem(Expr *write) {
 				DeclRefExpr *elem = isValidDereference(write);
 				if (elem != nullptr) {
@@ -421,10 +437,10 @@ namespace clang {
 				}
 				return false;
 			}
+
 			const Expr *ContainerForLoopExplorer::getLoopContainer(Expr *write) {
 				return LoopContainer;
 			}
-
 
 			//Range For Loop
 			bool RangeForLoopExplorer::VisitDeclRefExpr(DeclRefExpr *DRE) {
@@ -445,11 +461,12 @@ namespace clang {
 				}
 				return continueExploring;
 			}
+
 			DeclRefExpr *RangeForLoopExplorer::isElemDeclRefExpr(Expr *expr) {
 				if (auto *dre = dyn_cast<DeclRefExpr>(
 						expr->IgnoreParenImpCasts())) {
 					if (dre->getDecl() == iterator_variable) {
-						if(iterator_variable->getType()->isReferenceType()){
+						if (iterator_variable->getType()->isReferenceType()) {
 							return dre;
 						}
 
@@ -457,6 +474,7 @@ namespace clang {
 				}
 				return nullptr;
 			}
+
 			bool RangeForLoopExplorer::isLoopElem(Expr *write) {
 				DeclRefExpr *elem = isElemDeclRefExpr(write);
 				if (elem != nullptr) {
@@ -465,30 +483,28 @@ namespace clang {
 				}
 				return false;
 			}
+
 			const Expr *RangeForLoopExplorer::getLoopContainer(Expr *write) {
 				return LoopContainer;
 			}
 
-			std::string RangeForLoopExplorer::getMultipleInputTransformation(){
+			std::string RangeForLoopExplorer::getMultipleInputTransformation() {
 				return "grppi::zip( ";
 			}
 
 			std::string RangeForLoopExplorer::getBeginInputAsString(const DeclRefExpr *inputName) {
 				return inputName->getNameInfo().getName().getAsString();
 			}
+
 			std::string RangeForLoopExplorer::getEndInputAsString(const DeclRefExpr *inputName) {
 				return "";
 			}
 
-			std::string RangeForLoopExplorer::getOutputAsString(const DeclRefExpr *output){
+			std::string RangeForLoopExplorer::getOutputAsString(const DeclRefExpr *output) {
 				return output->getNameInfo().getName().getAsString();
 			}
 
-
-
 			//MapReduceCheck
-
-
 //
 // Matcher
 //
@@ -497,12 +513,13 @@ namespace clang {
 											hasDescendant(breakStmt()),
 											hasDescendant(returnStmt()),
 											hasDescendant(unaryOperator(hasOperatorName("*"),
-																hasDescendant(binaryOperator()))),
+																		hasDescendant(binaryOperator()))),
 											hasDescendant(binaryOperator(isAssignmentOperator(),
-											anyOf(hasDescendant(binaryOperator(isAssignmentOperator())),
-												hasDescendant(unaryOperator(
-														anyOf(hasOperatorName("++"),
-														hasOperatorName("--")))))))
+																		 anyOf(hasDescendant(binaryOperator(
+																				 isAssignmentOperator())),
+																			   hasDescendant(unaryOperator(
+																					   anyOf(hasOperatorName("++"),
+																							 hasOperatorName("--")))))))
 				)));
 			};
 			const auto getIteratorForType = [] {
@@ -520,14 +537,15 @@ namespace clang {
 						forStmt(
 								hasLoopInit(
 										declStmt(hasSingleDecl(
-												varDecl(hasInitializer( expr(hasType(isInteger())).bind("start_expr"))).bind(
+												varDecl(hasInitializer(
+														expr(hasType(isInteger())).bind("start_expr"))).bind(
 														"initVar")))
 												.bind("initFor")),
 								hasCondition(binaryOperator(hasOperatorName("<"),
 															hasLHS(ignoringParenImpCasts(declRefExpr(
 																	to(varDecl(hasType(isInteger())).bind(
 																			"condVar"))))),
-															hasRHS(expr( expr(hasType(isInteger())).bind("end_expr"))))
+															hasRHS(expr(expr(hasType(isInteger())).bind("end_expr"))))
 													 .bind("condFor")),
 								hasIncrement(unaryOperator(hasOperatorName("++"),
 														   hasUnaryOperand(declRefExpr(
@@ -577,9 +595,6 @@ namespace clang {
 				//RangeForLoop
 				Finder->addMatcher(cxxForRangeStmt(getForRestrictions()).bind("rangeForLoop"),
 								   this);
-				/*Finder->addMatcher(
-						forStmt().bind("dummy"),
-						this);*/
 			}
 
 			void MapReduceCheck::ProcessIntegerForLoop(const ForStmt *IntegerForLoop,
@@ -596,7 +611,7 @@ namespace clang {
 					return;
 
 				const auto *end_expr = Result.Nodes.getNodeAs<Expr>("end_expr");
-				if(end_expr == nullptr )
+				if (end_expr == nullptr)
 					return;
 
 
@@ -610,7 +625,6 @@ namespace clang {
 
 				forLoopList.push_back(IntegerForLoop);
 				//IntegerForLoop->dump();
-
 
 				IntegerForLoopExplorer currentMap(Result.Context, *this,
 												  std::vector<const Stmt *>(), IntegerForLoop->getBody(), start_expr,
@@ -705,8 +719,8 @@ namespace clang {
 					return;
 				}*/
 
-				/*
-				StringRef init_expr =
-				Lexer::getSourceText(CharSourceRange::getTokenRange(init_range), sm,
-														   LangOptions());
-				*/
+/*
+StringRef init_expr =
+Lexer::getSourceText(CharSourceRange::getTokenRange(init_range), sm,
+										   LangOptions());
+*/
