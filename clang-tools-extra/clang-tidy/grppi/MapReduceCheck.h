@@ -663,9 +663,7 @@ namespace clang {
 
 				}
 
-				virtual bool isMapAssignment(Expr *write) {
-					return isLoopElem(write);
-				}
+				virtual bool isMapAssignment(Expr *write) = 0;
 
 				Expr *isReduceCallExpr(const Expr *expr) {
 					if (auto *callexpr =
@@ -844,6 +842,9 @@ namespace clang {
 					return getBeginInputTransformation(output) +
 						   output->getNameInfo().getName().getAsString()
 						   + getCloseBeginInputTransformation(output) + getStartOffsetString();;
+				}
+				virtual std::string getElementAsString(const DeclRefExpr *elem) const{
+					return elem->getNameInfo().getAsString();
 				}
 
 				/*
@@ -1034,18 +1035,19 @@ namespace clang {
 						offset -= rewriter.getRangeSize(currentRange);
 					}
 
-					//std::cout << "H1" << std::endl;
+
 					for (const auto *read:map->Element) {
+						std::cout << "H0: " << std::endl;
 						const DeclRefExpr *elem = getPointer(read);
 						if (elem != nullptr) {
+							std::cout << "H1: " << getElementAsString(elem) << std::endl;
 							currentRange = SourceRange(read->getSourceRange());
 							rewriter.ReplaceText(currentRange,
-												 LoopConstant::startElement + elem->getNameInfo().getAsString());
+												 LoopConstant::startElement + getElementAsString(elem));
 						}
 					}
 
 					if (map->isCompoundAssignmentBO()) {
-						//std::cout << "H3" << std::endl;
 						const DeclRefExpr *output = getPointer(map->Output);
 						if (output == nullptr)
 							return "output null";
@@ -1295,7 +1297,8 @@ namespace clang {
 
 				const Expr *getLoopContainer(Expr *write) override;
 
-				bool HandleArrayMapAssignment(CustomArray);
+
+				bool isArrayLoopElem(CustomArray);
 
 				bool isVariableUsedInArraySubscript(const DeclRefExpr *dre) override;
 
@@ -1309,9 +1312,9 @@ namespace clang {
 
 				std::string getEndInputAsString(const DeclRefExpr *inputName) override;
 
-				std::unique_ptr<const uint64_t> getStartValue();
+				std::unique_ptr<const uint64_t> getStartValue() const;
 
-				std::unique_ptr<const uint64_t> getEndValue();
+				std::unique_ptr<const uint64_t> getEndValue() const;
 
 				bool VisitArray(CustomArray);
 
@@ -1331,18 +1334,21 @@ namespace clang {
 				bool addToWriteArraySubscriptList(CustomArray, ASTContext *context);
 
 				bool isLoopElem(Expr *write) override;
-
+				bool isMapAssignment(Expr *write) override;
 
 			};
 
 			class ContainerForLoopExplorer : public LoopExplorer<ContainerForLoopExplorer> {
 				protected:
 				const DeclRefExpr *LoopContainer = nullptr;
-				std::vector<DeclRefExpr *> writeList;
+				std::vector<Expr *> writeList;
 
 				bool isLoopElem(Expr *write) override;
+				bool isMapAssignment(Expr *write) override;
 
 				const Expr *getLoopContainer(Expr *write) override;
+
+				std::string getElementAsString(const DeclRefExpr *elem) const override;
 
 				public:
 				ContainerForLoopExplorer(ASTContext *Context, ClangTidyCheck &Check,
@@ -1365,8 +1371,13 @@ namespace clang {
 									   isThisExprValid, visitingForStmtBody, iterator) {}
 
 				bool VisitCXXOperatorCallExpr(CXXOperatorCallExpr *OO);
+				bool VisitUnaryOperator(UnaryOperator *UO);
 
 				DeclRefExpr *isValidDereference(Expr *expr);
+
+				bool ExploreDereference(Expr *expr);
+
+
 			};
 
 			class RangeForLoopExplorer : public LoopExplorer<RangeForLoopExplorer> {
@@ -1377,6 +1388,7 @@ namespace clang {
 				DeclRefExpr *isElemDeclRefExpr(Expr *expr);
 
 				bool isLoopElem(Expr *write) override;
+				bool isMapAssignment(Expr *write) override;
 
 				const Expr *getLoopContainer(Expr *write) override;
 
@@ -1387,6 +1399,8 @@ namespace clang {
 				std::string getEndInputAsString(const DeclRefExpr *inputName) override;
 
 				std::string getOutputAsString(const DeclRefExpr *output) override;
+
+				std::string getElementAsString(const DeclRefExpr *elem) const override;
 
 				public:
 				RangeForLoopExplorer(ASTContext *Context, ClangTidyCheck &Check,

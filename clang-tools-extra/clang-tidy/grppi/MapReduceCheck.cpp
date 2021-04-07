@@ -120,7 +120,7 @@ namespace clang {
 				return end + start;
 			}
 
-			std::unique_ptr<const uint64_t> IntegerForLoopExplorer::getStartValue() {
+			std::unique_ptr<const uint64_t> IntegerForLoopExplorer::getStartValue() const{
 				if (auto *start = dyn_cast<IntegerLiteral>(
 						start_expr->IgnoreParenImpCasts())) {
 					return std::make_unique<const uint64_t>(start->getValue().getZExtValue());
@@ -131,7 +131,7 @@ namespace clang {
 			/*
 			 * Returns end value of loop, where iterator_variable < end
 			 * */
-			std::unique_ptr<const uint64_t> IntegerForLoopExplorer::getEndValue() {
+			std::unique_ptr<const uint64_t> IntegerForLoopExplorer::getEndValue() const{
 				if (auto *end = dyn_cast<IntegerLiteral>(
 						end_expr->IgnoreParenImpCasts())) {
 					return std::make_unique<const uint64_t>(end->getValue().getZExtValue());
@@ -319,7 +319,7 @@ namespace clang {
 				return true;
 			}
 
-			bool IntegerForLoopExplorer::HandleArrayMapAssignment(CustomArray array) {
+			bool IntegerForLoopExplorer::isArrayLoopElem(CustomArray array) {
 				// if not a local subscript to local array, make sure it is a valid write
 				const DeclRefExpr *ArraySubscriptPointer = getPointer(array.getOriginal());
 				if (ArraySubscriptPointer == nullptr) {
@@ -330,7 +330,6 @@ namespace clang {
 					return false;
 				} else if (!isLocalVariable(
 						ArraySubscriptPointer->getDecl()->getDeclName())) {
-					addToWriteArraySubscriptList(array, Context);
 					if (isValidArraySubscript(array) == 1) return true;
 					if (isValidArraySubscript(array) == -1) {
 						Check.diag(array.getOriginal()->getBeginLoc(),
@@ -341,15 +340,40 @@ namespace clang {
 				return false;
 			}
 
+			bool IntegerForLoopExplorer::isMapAssignment(Expr *write){
+				if (auto *BO_LHS = dyn_cast<ArraySubscriptExpr>(write->IgnoreParenImpCasts())) {
+					if(isLoopElem(write)){
+						CustomArray a(BO_LHS->getBase(), BO_LHS->getIdx(), BO_LHS);
+						addToWriteArraySubscriptList(a, Context);
+						return true;
+					}
+				}
+				if (auto *OO = dyn_cast<CXXOperatorCallExpr>(write->IgnoreParenImpCasts())) {
+					if (OO->getOperator() == OO_Subscript) {
+						if(isLoopElem(write)){
+							CustomArray a(OO->getArg(0), OO->getArg(1), OO);
+							addToWriteArraySubscriptList(a, Context);
+							return true;
+						}
+					}
+				}
+				return false;
+			}
+
+
 			bool IntegerForLoopExplorer::isLoopElem(Expr *write) {
 				if (auto *BO_LHS = dyn_cast<ArraySubscriptExpr>(write->IgnoreParenImpCasts())) {
 					CustomArray a(BO_LHS->getBase(), BO_LHS->getIdx(), BO_LHS);
-					return HandleArrayMapAssignment(a);
+					if(isArrayLoopElem(a)){
+						return true;
+					}
 				}
 				if (auto *OO = dyn_cast<CXXOperatorCallExpr>(write->IgnoreParenImpCasts())) {
 					if (OO->getOperator() == OO_Subscript) {
 						CustomArray a(OO->getArg(0), OO->getArg(1), OO);
-						return HandleArrayMapAssignment(a);
+						if(isArrayLoopElem(a)){
+							return true;
+						}
 					}
 				}
 				return false;
@@ -385,23 +409,31 @@ namespace clang {
 
 			//ContainerForLoop
 			bool ContainerForLoopExplorer::VisitCXXOperatorCallExpr(CXXOperatorCallExpr *OO) {
-				DeclRefExpr *DRE = isValidDereference(OO);
+				return ExploreDereference(OO);
+			}
+
+			bool ContainerForLoopExplorer::VisitUnaryOperator(UnaryOperator * UO) {
+				return ExploreDereference(UO);
+			}
+
+			bool ContainerForLoopExplorer::ExploreDereference(Expr* expr){
+				DeclRefExpr *DRE = isValidDereference(expr);
 				if (DRE != nullptr) {
-					if (!Functions::hasElement(writeList, DRE)) {
+					if (!Functions::hasElement(writeList, expr)) {
 						if (!MapList.empty()) {
 							Map &currentMap = MapList[MapList.size() - 1];
 							//Dont add element to placeholder if it is inside of current map
 							if (!currentMap.isWithin(DRE, Context)) {
-								placeHolderMap.Element.push_back(DRE);
+								placeHolderMap.Element.push_back(expr);
 							}
-							currentMap.addElement(DRE, Context);
+							currentMap.addElement(expr, Context);
 						} else {
-							placeHolderMap.Element.push_back(DRE);
+							placeHolderMap.Element.push_back(expr);
 						}
 					}
 				} else {
 					parallelizable = false;
-					Check.diag(OO->getBeginLoc(),
+					Check.diag(expr->getBeginLoc(),
 							   Diag::label + "Invalid dereference");
 				}
 				return true;
@@ -429,10 +461,18 @@ namespace clang {
 				return nullptr;
 			}
 
+
+			bool ContainerForLoopExplorer::isMapAssignment(Expr *write) {
+				if(isLoopElem(write)) {
+					writeList.push_back(write);
+					return true;
+				}
+				return false;
+			}
+
 			bool ContainerForLoopExplorer::isLoopElem(Expr *write) {
 				DeclRefExpr *elem = isValidDereference(write);
 				if (elem != nullptr) {
-					writeList.push_back(elem);
 					return true;
 				}
 				return false;
@@ -442,25 +482,18 @@ namespace clang {
 				return LoopContainer;
 			}
 
+			std::string  ContainerForLoopExplorer::getElementAsString(const DeclRefExpr *elem) const{
+				return LoopContainer->getNameInfo().getAsString();
+			}
+
 			//Range For Loop
 			bool RangeForLoopExplorer::VisitDeclRefExpr(DeclRefExpr *DRE) {
-				/*std::cout <<  Lexer::getSourceText(CharSourceRange::getTokenRange(DRE->getSourceRange()), Context->getSourceManager(),
-												   LangOptions()).str() << std::endl;*/
-				//std::cout << "L1" << std::endl;
+
 				bool continueExploring = LoopExplorer::VisitDeclRefExpr(DRE);
 				if (DRE->getFoundDecl() == iterator_variable) {
-					//std::cout << "L:" << DRE << std::endl;
-					/*std::cout <<  Lexer::getSourceText(CharSourceRange::getTokenRange(DRE->getSourceRange()), Context->getSourceManager(),
-													   LangOptions()).str() << std::endl;*/
-					for(auto &elem : writeList){
-						//std::cout << "K:" << elem;
-						/*std::cout <<  Lexer::getSourceText(CharSourceRange::getTokenRange(elem->getSourceRange()), Context->getSourceManager(),
-														   LangOptions()).str() << std::endl;*/
-					}
+
 					if (!Functions::hasElement(writeList, DRE)) {
-						//std::cout << "L3" << std::endl;
 						if (!MapList.empty()) {
-							//std::cout << "L4" << std::endl;
 							Map &currentMap = MapList[MapList.size() - 1];
 							//Dont add element to placeholder if it is inside of current map
 							if (!currentMap.isWithin(DRE, Context)) {
@@ -488,10 +521,20 @@ namespace clang {
 				return nullptr;
 			}
 
+			bool RangeForLoopExplorer::isMapAssignment(Expr *write) {
+				DeclRefExpr *elem = isElemDeclRefExpr(write);
+				if (elem != nullptr) {
+					if(isLoopElem(write)){
+						writeList.push_back(elem);
+						return true;
+					}
+				}
+				return false;
+			}
+
 			bool RangeForLoopExplorer::isLoopElem(Expr *write) {
 				DeclRefExpr *elem = isElemDeclRefExpr(write);
 				if (elem != nullptr) {
-					writeList.push_back(elem);
 					return true;
 				}
 				return false;
@@ -517,6 +560,9 @@ namespace clang {
 				return output->getNameInfo().getName().getAsString();
 			}
 
+			std::string  RangeForLoopExplorer::getElementAsString(const DeclRefExpr *elem) const{
+				return LoopContainer->getNameInfo().getAsString();
+			}
 			//MapReduceCheck
 //
 // Matcher
@@ -672,7 +718,7 @@ namespace clang {
 					}
 				}
 				if (matchedArray == nullptr) return;
-				//iteratorForLoop->dump();
+				iteratorForLoop->dump();
 				if (!Functions::isSameVariable(IncVar, CondVar) || !Functions::isSameVariable(IncVar, InitVar))
 					return;
 				std::cout << "Processing Iterator loop" << std::endl;
