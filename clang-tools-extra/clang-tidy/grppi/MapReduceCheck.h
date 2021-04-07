@@ -699,7 +699,7 @@ namespace clang {
 					if (auto *write =
 							dyn_cast<DeclRefExpr>(LHS->IgnoreParenImpCasts())) {
 						if (write->getType()->isIntegerType() &&
-							!isLocalVariable(write->getFoundDecl()->getDeclName())) {
+							!isLocalVariable(write->getFoundDecl()->getDeclName()) && !isLoopElem(write)) {
 
 							//callexpr
 							if (BO->isAssignmentOp() && !BO->isCompoundAssignmentOp()) {
@@ -1034,6 +1034,7 @@ namespace clang {
 						offset -= rewriter.getRangeSize(currentRange);
 					}
 
+					//std::cout << "H1" << std::endl;
 					for (const auto *read:map->Element) {
 						const DeclRefExpr *elem = getPointer(read);
 						if (elem != nullptr) {
@@ -1043,8 +1044,8 @@ namespace clang {
 						}
 					}
 
-
 					if (map->isCompoundAssignmentBO()) {
+						//std::cout << "H3" << std::endl;
 						const DeclRefExpr *output = getPointer(map->Output);
 						if (output == nullptr)
 							return "output null";

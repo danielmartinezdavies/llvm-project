@@ -444,10 +444,23 @@ namespace clang {
 
 			//Range For Loop
 			bool RangeForLoopExplorer::VisitDeclRefExpr(DeclRefExpr *DRE) {
+				/*std::cout <<  Lexer::getSourceText(CharSourceRange::getTokenRange(DRE->getSourceRange()), Context->getSourceManager(),
+												   LangOptions()).str() << std::endl;*/
+				//std::cout << "L1" << std::endl;
 				bool continueExploring = LoopExplorer::VisitDeclRefExpr(DRE);
 				if (DRE->getFoundDecl() == iterator_variable) {
+					//std::cout << "L:" << DRE << std::endl;
+					/*std::cout <<  Lexer::getSourceText(CharSourceRange::getTokenRange(DRE->getSourceRange()), Context->getSourceManager(),
+													   LangOptions()).str() << std::endl;*/
+					for(auto &elem : writeList){
+						//std::cout << "K:" << elem;
+						/*std::cout <<  Lexer::getSourceText(CharSourceRange::getTokenRange(elem->getSourceRange()), Context->getSourceManager(),
+														   LangOptions()).str() << std::endl;*/
+					}
 					if (!Functions::hasElement(writeList, DRE)) {
+						//std::cout << "L3" << std::endl;
 						if (!MapList.empty()) {
+							//std::cout << "L4" << std::endl;
 							Map &currentMap = MapList[MapList.size() - 1];
 							//Dont add element to placeholder if it is inside of current map
 							if (!currentMap.isWithin(DRE, Context)) {
