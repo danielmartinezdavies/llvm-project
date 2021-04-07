@@ -41,6 +41,10 @@ namespace clang {
 				static std::string startElement = "grppi_";
 			}
 
+			namespace Diag {
+				static std::string label = "GrPPI: ";
+			}
+
 			namespace Functions {
 				static bool areSameExpr(const ASTContext *Context, const Expr *First, const Expr *Second) {
 					if (!First || !Second)
@@ -149,26 +153,26 @@ namespace clang {
 
 					if (currentMap.isMapReducePattern() && currentMap.isParallelizable()) {
 						diag(loop->getBeginLoc(),
-							 "MapReduce pattern detected. Loop can be parallelized.",
+							 Diag::label + "MapReduce pattern detected. Loop can be parallelized.",
 							 DiagnosticIDs::Remark) << FixItHint::CreateReplacement(loop->getSourceRange(),
 																					currentMap.getMapReduceTransformation());
 					} else if (currentMap.isReducePattern() && !currentMap.isMapPattern() &&
 							   currentMap.isParallelizable()) {
 						diag(loop->getBeginLoc(),
-							 "Reduce pattern detected. Loop can be parallelized.",
+							 Diag::label + "Reduce pattern detected. Loop can be parallelized.",
 							 DiagnosticIDs::Remark)
 								<< FixItHint::CreateReplacement(loop->getSourceRange(),
 																currentMap.getReduceTransformation());
 					} else if (currentMap.isMapPattern() && !currentMap.isReducePattern() &&
 							   currentMap.isParallelizable()) {
 						diag(loop->getBeginLoc(),
-							 "Map pattern detected. Loop can be parallelized.",
+							 Diag::label + "Map pattern detected. Loop can be parallelized.",
 							 DiagnosticIDs::Remark)
 								<< FixItHint::CreateReplacement(loop->getSourceRange(),
 																currentMap.getMapTransformation());
 
 					} else {
-						diag(loop->getBeginLoc(), "No parallelization possible.");
+						diag(loop->getBeginLoc(), Diag::label + "No parallelization possible.");
 					}
 				}
 
@@ -303,14 +307,14 @@ namespace clang {
 				bool VisitCXXThrowExpr(CXXThrowExpr *CXXTE) {
 					parallelizable = false;
 					Check.diag(CXXTE->getBeginLoc(),
-							   "Throw exception makes loop parallelization unsafe");
+							   Diag::label + "Throw exception makes loop parallelization unsafe");
 					return true;
 				}
 
 				bool VisitGotoStmt(GotoStmt *GS) {
 					parallelizable = false;
 					Check.diag(GS->getBeginLoc(),
-							   "Goto statement makes loop parallelization unsafe");
+							   Diag::label + "Goto statement makes loop parallelization unsafe");
 					return true;
 				}
 
@@ -342,7 +346,7 @@ namespace clang {
 						if (!isVariableUsedInArraySubscript(DRE)) {
 							parallelizable = false;
 							Check.diag(DRE->getBeginLoc(),
-									   "Loop variable used outside of array subscript making loop parallelization impossible");
+									   Diag::label + "Loop variable used outside of array subscript making loop parallelization impossible");
 						}
 					}
 					return true;
@@ -393,7 +397,7 @@ namespace clang {
 
 				bool VisitCXXOperatorCallExpr(CXXOperatorCallExpr *OO) {
 					Check.diag(OO->getBeginLoc(),
-							   "Overloaded operator may be unsafe");
+							   Diag::label + "Overloaded operator may be unsafe");
 					return true;
 				}
 
@@ -419,13 +423,13 @@ namespace clang {
 							callExpr.TraverseStmt(functionDeclaration->getBody());
 							if (!callExpr.isParallelizable()) {
 								Check.diag(CE->getBeginLoc(),
-										   "Call expression unsafe");
+										   Diag::label + "Call expression unsafe");
 							}
 							callExpr.appendForLoopList();
 						}
 					} else {
 						Check.diag(CE->getBeginLoc(),
-								   "Call expression unexplorable, could be unsafe");
+								   Diag::label + "Call expression unexplorable, could be unsafe");
 					}
 					return true;
 				}
@@ -486,7 +490,7 @@ namespace clang {
 					if (auto *BO_LHS = dyn_cast<DeclRefExpr>(write)) {
 						if (!isLocalVariable(BO_LHS->getDecl()->getDeclName())) {
 							Check.diag(write->getBeginLoc(),
-									   "Write to variable declared outside for loop statement "
+									   Diag::label + "Write to variable declared outside for loop statement "
 									   "makes loop parallelization unsafe");
 							parallelizable = false;
 							return false;
@@ -497,7 +501,7 @@ namespace clang {
 						if (auto *memberDecl = dyn_cast<VarDecl>(BO_LHS->getMemberDecl())) {
 							if (memberDecl->hasGlobalStorage()) {
 								Check.diag(BO_LHS->getBeginLoc(),
-										   "Write to variable stored globally makes loop "
+										   Diag::label + "Write to variable stored globally makes loop "
 										   "parallelization unsafe");
 								parallelizable = false;
 								isValidMember = false;
@@ -509,7 +513,7 @@ namespace clang {
 						return isValidBase;
 					} else if (auto *BO_LHS = dyn_cast<CXXThisExpr>(write)) {
 						if (!isThisExprValid) {
-							Check.diag(BO_LHS->getBeginLoc(), "Write to variable stored globally "
+							Check.diag(BO_LHS->getBeginLoc(), Diag::label + "Write to variable stored globally "
 															  "makes loop parallelization unsafe");
 							parallelizable = false;
 							return false;
@@ -518,11 +522,11 @@ namespace clang {
 					} else if (auto *BO_LHS =
 							dyn_cast<CXXOperatorCallExpr>(write)) {
 						Check.diag(BO_LHS->getBeginLoc(),
-								   "Write to overloaded operator could be unsafe");
+								   Diag::label + "Write to overloaded operator could be unsafe");
 						return true;
 					} else {
 						Check.diag(write->getBeginLoc(),
-								   "Write to type that is not variable or array subscript of loop variable makes "
+								   Diag::label + "Write to type that is not variable or array subscript of loop variable makes "
 								   "for loop parallelization unsafe");
 						parallelizable = false;
 						return false;
@@ -596,7 +600,7 @@ namespace clang {
 							}
 							if (!hasValidInit) {
 								Check.diag(expr->getBeginLoc(),
-										   "Pointer has invalid initialization");
+										   Diag::label + "Pointer has invalid initialization");
 								parallelizable = false;
 							}
 							if (auto *functionDecl = dyn_cast<FunctionDecl>(
@@ -623,14 +627,14 @@ namespace clang {
 
 								if (invalidAssignments.size() > 0) {
 									Check.diag(expr->getBeginLoc(),
-											   "Pointer points to potentially unsafe memory space");
+											   Diag::label + "Pointer points to potentially unsafe memory space");
 									parallelizable = false;
 									return false;
 								}
 							}
 						} else {
 							Check.diag(expr->getBeginLoc(),
-									   "Global pointer makes parallelization unsafe");
+									   Diag::label + "Global pointer makes parallelization unsafe");
 							parallelizable = false;
 							return false;
 						}
@@ -761,7 +765,7 @@ namespace clang {
 						if (currentFor == FS) {
 							parallelizable = false;
 							Check.diag(FS->getBeginLoc(),
-									   "Recursion makes for loop parallelization unsafe");
+									   Diag::label + "Recursion makes for loop parallelization unsafe");
 							return true;
 						}
 					}

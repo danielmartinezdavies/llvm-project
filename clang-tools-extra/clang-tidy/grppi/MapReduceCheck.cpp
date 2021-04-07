@@ -159,7 +159,7 @@ namespace clang {
 					//if regular arraysubscript expression, check for valid pointer
 					if (base == nullptr) {
 						Check.diag(array.getOriginal()->getBeginLoc(),
-								   "Pointer is invalid");
+								   Diag::label + "Pointer is invalid");
 						parallelizable = false;
 						return true;
 					}
@@ -254,7 +254,7 @@ namespace clang {
 				}
 				parallelizable = false;
 				Check.diag(array.getOriginal()->getBeginLoc(),
-						   "Pointer has invalid subscript");
+						   Diag::label + "Pointer has invalid subscript");
 				return 0;
 			}
 
@@ -267,7 +267,7 @@ namespace clang {
 						if (!Functions::areSameExpr(context, write_array.getIndex(), index) && isValidArraySubscript(array) != -1) {
 							Check.diag(
 									write_array.getIndex()->getBeginLoc(),
-									"Inconsistent array subscription makes for loop "
+									Diag::label + "Inconsistent array subscription makes for loop "
 									"parallelization unsafe");
 							parallelizable = false;
 							return false;
@@ -292,7 +292,7 @@ namespace clang {
 						if (!Functions::areSameExpr(context, read_array.getIndex(), index) && isValidArraySubscript(array) != -1) {
 							Check.diag(
 									array.getOriginal()->getBeginLoc(),
-									"Inconsistent array subscription makes for loop "
+									Diag::label + "Inconsistent array subscription makes for loop "
 									"parallelization unsafe");
 							parallelizable = false;
 							return false;
@@ -304,7 +304,7 @@ namespace clang {
 						if (!Functions::areSameExpr(context, write_array.getIndex(), index)) {
 							Check.diag(
 									write_array.getOriginal()->getBeginLoc(),
-									"Inconsistent array subscription makes for loop "
+									Diag::label + "Inconsistent array subscription makes for loop "
 									"parallelization unsafe");
 							parallelizable = false;
 							return false;
@@ -324,7 +324,7 @@ namespace clang {
 				const DeclRefExpr *ArraySubscriptPointer = getPointer(array.getOriginal());
 				if (ArraySubscriptPointer == nullptr) {
 					Check.diag(array.getOriginal()->getBeginLoc(),
-							   "Write to pointer subscript too complex to analyze makes "
+							   Diag::label + "Write to pointer subscript too complex to analyze makes "
 							   "loop parallelization unsafe");
 					parallelizable = false;
 					return false;
@@ -334,7 +334,7 @@ namespace clang {
 					if (isValidArraySubscript(array) == 1) return true;
 					if (isValidArraySubscript(array) == -1) {
 						Check.diag(array.getOriginal()->getBeginLoc(),
-								   "Index cannot be analysed properly. Parallelization may still be possible");
+								   Diag::label + "Index cannot be analysed properly. Parallelization may still be possible");
 						return true;
 					}
 				}
@@ -402,7 +402,7 @@ namespace clang {
 				} else {
 					parallelizable = false;
 					Check.diag(OO->getBeginLoc(),
-							   "Invalid dereference");
+							   Diag::label + "Invalid dereference");
 				}
 				return true;
 			}
