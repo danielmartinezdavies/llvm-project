@@ -158,8 +158,10 @@ namespace clang {
 				if (isa<ArraySubscriptExpr>(array.getOriginal())) {
 					//if regular arraysubscript expression, check for valid pointer
 					if (base == nullptr) {
-						Check.diag(array.getOriginal()->getBeginLoc(),
-								   Diag::label + "Pointer is invalid");
+						if (verbose) {
+							Check.diag(array.getOriginal()->getBeginLoc(),
+									   Diag::label + "Pointer is invalid");
+						}
 						parallelizable = false;
 						return true;
 					}
@@ -253,8 +255,10 @@ namespace clang {
 					}
 				}
 				parallelizable = false;
-				Check.diag(array.getOriginal()->getBeginLoc(),
-						   Diag::label + "Pointer has invalid subscript");
+				if (verbose) {
+					Check.diag(array.getOriginal()->getBeginLoc(),
+							   Diag::label + "Pointer has invalid subscript");
+				}
 				return 0;
 			}
 
@@ -265,10 +269,12 @@ namespace clang {
 				for (CustomArray write_array : writeArraySubscriptList) {
 					if (Functions::areSameExpr(context, write_array.getBase(), base)) {
 						if (!Functions::areSameExpr(context, write_array.getIndex(), index) && isValidArraySubscript(array) != -1) {
-							Check.diag(
-									write_array.getIndex()->getBeginLoc(),
-									Diag::label + "Inconsistent array subscription makes for loop "
-									"parallelization unsafe");
+							if (verbose) {
+								Check.diag(
+										write_array.getIndex()->getBeginLoc(),
+										Diag::label + "Inconsistent array subscription makes for loop "
+													  "parallelization unsafe");
+							}
 							parallelizable = false;
 							return false;
 						} else {
@@ -290,10 +296,12 @@ namespace clang {
 				for (CustomArray read_array : readArraySubscriptList) {
 					if (Functions::areSameExpr(context, read_array.getBase(), base)) {
 						if (!Functions::areSameExpr(context, read_array.getIndex(), index) && isValidArraySubscript(array) != -1) {
-							Check.diag(
-									array.getOriginal()->getBeginLoc(),
-									Diag::label + "Inconsistent array subscription makes for loop "
-									"parallelization unsafe");
+							if (verbose) {
+								Check.diag(
+										array.getOriginal()->getBeginLoc(),
+										Diag::label + "Inconsistent array subscription makes for loop "
+													  "parallelization unsafe");
+							}
 							parallelizable = false;
 							return false;
 						}
@@ -302,10 +310,12 @@ namespace clang {
 				for (CustomArray write_array : writeArraySubscriptList) {
 					if (Functions::areSameExpr(context, write_array.getBase(), base)) {
 						if (!Functions::areSameExpr(context, write_array.getIndex(), index)) {
-							Check.diag(
-									write_array.getOriginal()->getBeginLoc(),
-									Diag::label + "Inconsistent array subscription makes for loop "
-									"parallelization unsafe");
+							if (verbose) {
+								Check.diag(
+										write_array.getOriginal()->getBeginLoc(),
+										Diag::label + "Inconsistent array subscription makes for loop "
+													  "parallelization unsafe");
+							}
 							parallelizable = false;
 							return false;
 						}
@@ -323,17 +333,22 @@ namespace clang {
 				// if not a local subscript to local array, make sure it is a valid write
 				const DeclRefExpr *ArraySubscriptPointer = getPointer(array.getOriginal());
 				if (ArraySubscriptPointer == nullptr) {
-					Check.diag(array.getOriginal()->getBeginLoc(),
-							   Diag::label + "Write to pointer subscript too complex to analyze makes "
-							   "loop parallelization unsafe");
+					if (verbose) {
+						Check.diag(array.getOriginal()->getBeginLoc(),
+								   Diag::label + "Write to pointer subscript too complex to analyze makes "
+												 "loop parallelization unsafe");
+					}
 					parallelizable = false;
 					return false;
 				} else if (!isLocalVariable(
 						ArraySubscriptPointer->getDecl()->getDeclName())) {
 					if (isValidArraySubscript(array) == 1) return true;
 					if (isValidArraySubscript(array) == -1) {
-						Check.diag(array.getOriginal()->getBeginLoc(),
-								   Diag::label + "Index cannot be analysed properly. Parallelization may still be possible");
+						if (verbose) {
+							Check.diag(array.getOriginal()->getBeginLoc(),
+									   Diag::label +
+									   "Index cannot be analysed properly. Parallelization may still be possible");
+						}
 						return true;
 					}
 				}
@@ -433,8 +448,10 @@ namespace clang {
 					}
 				} else {
 					parallelizable = false;
-					Check.diag(expr->getBeginLoc(),
-							   Diag::label + "Invalid dereference");
+					if (verbose) {
+						Check.diag(expr->getBeginLoc(),
+								   Diag::label + "Invalid dereference");
+					}
 				}
 				return true;
 			}
@@ -688,7 +705,7 @@ namespace clang {
 				IntegerForLoopExplorer currentMap(Result.Context, *this,
 												  std::vector<const Stmt *>(), IntegerForLoop->getBody(), start_expr,
 												  end_expr,
-												  InitVar, IntegerForLoopSizeMin);
+												  InitVar, IntegerForLoopSizeMin, Verbose);
 
 				currentMap.TraverseStmt(const_cast<Stmt *>(IntegerForLoop->getBody()));
 
@@ -723,7 +740,7 @@ namespace clang {
 					return;
 				std::cout << "Processing Iterator loop" << std::endl;
 				ContainerForLoopExplorer currentMap(Result.Context, *this, {}, iteratorForLoop->getBody(), IncVar,
-													matchedArray);
+													matchedArray, Verbose);
 				currentMap.TraverseStmt(const_cast<Stmt *>(iteratorForLoop->getBody()));
 				addDiagnostic(currentMap, iteratorForLoop);
 			}
@@ -735,7 +752,7 @@ namespace clang {
 				if (const auto *input = dyn_cast<DeclRefExpr>(
 						rangeForLoop->getRangeInit()->IgnoreParenImpCasts())) {
 					RangeForLoopExplorer currentMap(Result.Context, *this, {}, rangeForLoop->getBody(), iterator,
-													input);
+													input, Verbose);
 					currentMap.TraverseStmt(const_cast<Stmt *>( rangeForLoop->getBody()));
 					addDiagnostic(currentMap, rangeForLoop);
 				}
@@ -764,6 +781,7 @@ namespace clang {
 			void MapReduceCheck::storeOptions(
 					ClangTidyOptions::OptionMap &Opts) {
 				Options.store(Opts, "IntegerForLoopSizeMin", IntegerForLoopSizeMin);
+				Options.store(Opts, "Verbose", Verbose);
 			}
 
 

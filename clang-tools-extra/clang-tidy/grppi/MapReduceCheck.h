@@ -128,7 +128,8 @@ namespace clang {
 				public:
 				MapReduceCheck(StringRef name, ClangTidyContext *context)
 						: ClangTidyCheck(name, context),
-						  IntegerForLoopSizeMin(Options.get("IntegerForLoopSizeMin", 0)) {}
+						  IntegerForLoopSizeMin(Options.get("IntegerForLoopSizeMin", 0)),
+						  Verbose(Options.get("Verbose", false)) {}
 
 				void registerMatchers(ast_matchers::MatchFinder *Finder) override;
 
@@ -178,6 +179,8 @@ namespace clang {
 
 				private:
 				const uint64_t IntegerForLoopSizeMin;
+				const bool Verbose = false;
+
 			};
 
 			class Pattern {
@@ -274,17 +277,19 @@ namespace clang {
 
 				bool isThisExprValid = false;
 
+				const bool verbose;
+
 
 				LoopExplorer(ASTContext *Context, ClangTidyCheck &Check,
 							 std::vector<const Stmt *> visitedForLoopList,
 							 std::vector<const FunctionDecl *> visitedFunctionDeclarationList,
 							 std::vector<DeclarationName> localVariables, bool isThisExprValid,
-							 const Stmt *visitingForStmtBody, const VarDecl *iterator)
+							 const Stmt *visitingForStmtBody, const VarDecl *iterator, const bool verbose)
 						: Context(Context), Check(Check), visitingForStmtBody(visitingForStmtBody),
 						  visitedForLoopList(visitedForLoopList),
 						  visitedFunctionDeclarationList(visitedFunctionDeclarationList),
 						  localVariables(localVariables), iterator_variable(iterator),
-						  isThisExprValid(isThisExprValid) {}
+						  isThisExprValid(isThisExprValid), verbose(verbose) {}
 
 				virtual ~LoopExplorer() = default;
 
@@ -293,9 +298,9 @@ namespace clang {
 				public:
 				LoopExplorer(ASTContext *Context, ClangTidyCheck &Check,
 							 std::vector<const Stmt *> visitedForLoopList,
-							 const Stmt *visitingForStmtBody, const VarDecl *iterator)
+							 const Stmt *visitingForStmtBody, const VarDecl *iterator, const bool verbose)
 						: Context(Context), Check(Check), visitingForStmtBody(visitingForStmtBody),
-						  visitedForLoopList(visitedForLoopList), iterator_variable(iterator) {
+						  visitedForLoopList(visitedForLoopList), iterator_variable(iterator), verbose(verbose)  {
 				}
 
 				// Traverse Function
@@ -306,15 +311,19 @@ namespace clang {
 
 				bool VisitCXXThrowExpr(CXXThrowExpr *CXXTE) {
 					parallelizable = false;
-					Check.diag(CXXTE->getBeginLoc(),
-							   Diag::label + "Throw exception makes loop parallelization unsafe");
+					if(verbose) {
+						Check.diag(CXXTE->getBeginLoc(),
+								   Diag::label + "Throw exception makes loop parallelization unsafe");
+					}
 					return true;
 				}
 
 				bool VisitGotoStmt(GotoStmt *GS) {
 					parallelizable = false;
-					Check.diag(GS->getBeginLoc(),
-							   Diag::label + "Goto statement makes loop parallelization unsafe");
+					if (verbose) {
+						Check.diag(GS->getBeginLoc(),
+								   Diag::label + "Goto statement makes loop parallelization unsafe");
+					}
 					return true;
 				}
 
@@ -345,8 +354,11 @@ namespace clang {
 					if (Functions::isSameVariable(DRE->getDecl(), iterator_variable)) {
 						if (!isVariableUsedInArraySubscript(DRE)) {
 							parallelizable = false;
-							Check.diag(DRE->getBeginLoc(),
-									   Diag::label + "Loop variable used outside of array subscript making loop parallelization impossible");
+							if (verbose) {
+								Check.diag(DRE->getBeginLoc(),
+										   Diag::label +
+										   "Loop variable used outside of array subscript making loop parallelization impossible");
+							}
 						}
 					}
 					return true;
@@ -363,7 +375,7 @@ namespace clang {
 							std::vector<DeclarationName> functionVariables;
 							LoopType constructorExpr(Context, Check, visitedForLoopList,
 													 visitedFunctionDeclarationList,
-													 functionVariables, true, visitingForStmtBody, iterator_variable);
+													 functionVariables, true, visitingForStmtBody, iterator_variable, verbose);
 							constructorExpr.TraverseStmt(CXXCE->getConstructor()->getBody());
 							if (!constructorExpr.isParallelizable()) {
 								parallelizable = false;
@@ -382,7 +394,7 @@ namespace clang {
 								LoopType destructorExpr(Context, Check, visitedForLoopList,
 														visitedFunctionDeclarationList,
 														functionVariables, true, visitingForStmtBody,
-														iterator_variable);
+														iterator_variable, verbose);
 								destructorExpr.TraverseStmt(destructor->getBody());
 								if (!destructorExpr.isParallelizable()) {
 									parallelizable = false;
@@ -396,8 +408,10 @@ namespace clang {
 				}
 
 				bool VisitCXXOperatorCallExpr(CXXOperatorCallExpr *OO) {
-					Check.diag(OO->getBeginLoc(),
-							   Diag::label + "Overloaded operator may be unsafe");
+					if (verbose) {
+						Check.diag(OO->getBeginLoc(),
+								   Diag::label + "Overloaded operator may be unsafe");
+					}
 					return true;
 				}
 
@@ -419,17 +433,21 @@ namespace clang {
 
 							LoopType callExpr(Context, Check, visitedForLoopList,
 											  visitedFunctionDeclarationList, validParameterList,
-											  isLocCallee, visitingForStmtBody, iterator_variable);
+											  isLocCallee, visitingForStmtBody, iterator_variable, verbose);
 							callExpr.TraverseStmt(functionDeclaration->getBody());
 							if (!callExpr.isParallelizable()) {
-								Check.diag(CE->getBeginLoc(),
-										   Diag::label + "Call expression unsafe");
+								if (verbose) {
+									Check.diag(CE->getBeginLoc(),
+											   Diag::label + "Call expression unsafe");
+								}
 							}
 							callExpr.appendForLoopList();
 						}
 					} else {
-						Check.diag(CE->getBeginLoc(),
-								   Diag::label + "Call expression unexplorable, could be unsafe");
+						if (verbose) {
+							Check.diag(CE->getBeginLoc(),
+									   Diag::label + "Call expression unexplorable, could be unsafe");
+						}
 					}
 					return true;
 				}
@@ -489,9 +507,11 @@ namespace clang {
 						return true;
 					if (auto *BO_LHS = dyn_cast<DeclRefExpr>(write)) {
 						if (!isLocalVariable(BO_LHS->getDecl()->getDeclName())) {
-							Check.diag(write->getBeginLoc(),
-									   Diag::label + "Write to variable declared outside for loop statement "
-									   "makes loop parallelization unsafe");
+							if (verbose) {
+								Check.diag(write->getBeginLoc(),
+										   Diag::label + "Write to variable declared outside for loop statement "
+														 "makes loop parallelization unsafe");
+							}
 							parallelizable = false;
 							return false;
 						}
@@ -500,9 +520,11 @@ namespace clang {
 						bool isValidMember = true;
 						if (auto *memberDecl = dyn_cast<VarDecl>(BO_LHS->getMemberDecl())) {
 							if (memberDecl->hasGlobalStorage()) {
-								Check.diag(BO_LHS->getBeginLoc(),
-										   Diag::label + "Write to variable stored globally makes loop "
-										   "parallelization unsafe");
+								if (verbose) {
+									Check.diag(BO_LHS->getBeginLoc(),
+											   Diag::label + "Write to variable stored globally makes loop "
+															 "parallelization unsafe");
+								}
 								parallelizable = false;
 								isValidMember = false;
 							}
@@ -513,21 +535,28 @@ namespace clang {
 						return isValidBase;
 					} else if (auto *BO_LHS = dyn_cast<CXXThisExpr>(write)) {
 						if (!isThisExprValid) {
-							Check.diag(BO_LHS->getBeginLoc(), Diag::label + "Write to variable stored globally "
-															  "makes loop parallelization unsafe");
+							if (verbose) {
+								Check.diag(BO_LHS->getBeginLoc(), Diag::label + "Write to variable stored globally "
+																				"makes loop parallelization unsafe");
+							}
 							parallelizable = false;
 							return false;
 						}
 						return true;
 					} else if (auto *BO_LHS =
 							dyn_cast<CXXOperatorCallExpr>(write)) {
-						Check.diag(BO_LHS->getBeginLoc(),
-								   Diag::label + "Write to overloaded operator could be unsafe");
+						if (verbose) {
+							Check.diag(BO_LHS->getBeginLoc(),
+									   Diag::label + "Write to overloaded operator could be unsafe");
+						}
 						return true;
 					} else {
-						Check.diag(write->getBeginLoc(),
-								   Diag::label + "Write to type that is not variable or array subscript of loop variable makes "
-								   "for loop parallelization unsafe");
+						if (verbose) {
+							Check.diag(write->getBeginLoc(),
+									   Diag::label +
+									   "Write to type that is not variable or array subscript of loop variable makes "
+									   "for loop parallelization unsafe");
+						}
 						parallelizable = false;
 						return false;
 					}
@@ -537,8 +566,8 @@ namespace clang {
 					callee = callee->IgnoreParenImpCasts();
 					if (auto *BO_LHS = dyn_cast<DeclRefExpr>(callee)) {
 						if (!isLocalVariable(BO_LHS->getDecl()->getDeclName())) {
-							std::cout << BO_LHS->getDecl()->getDeclName().getAsString()
-									  << std::endl;
+							/*std::cout << BO_LHS->getDecl()->getDeclName().getAsString()
+									  << std::endl;*/
 							return false;
 						}
 						return true;
@@ -599,8 +628,10 @@ namespace clang {
 								if (validInit.size() == 0) hasValidInit = false;
 							}
 							if (!hasValidInit) {
-								Check.diag(expr->getBeginLoc(),
-										   Diag::label + "Pointer has invalid initialization");
+								if (verbose) {
+									Check.diag(expr->getBeginLoc(),
+											   Diag::label + "Pointer has invalid initialization");
+								}
 								parallelizable = false;
 							}
 							if (auto *functionDecl = dyn_cast<FunctionDecl>(
@@ -626,15 +657,19 @@ namespace clang {
 
 
 								if (invalidAssignments.size() > 0) {
-									Check.diag(expr->getBeginLoc(),
-											   Diag::label + "Pointer points to potentially unsafe memory space");
+									if (verbose) {
+										Check.diag(expr->getBeginLoc(),
+												   Diag::label + "Pointer points to potentially unsafe memory space");
+									}
 									parallelizable = false;
 									return false;
 								}
 							}
 						} else {
-							Check.diag(expr->getBeginLoc(),
-									   Diag::label + "Global pointer makes parallelization unsafe");
+							if (verbose) {
+								Check.diag(expr->getBeginLoc(),
+										   Diag::label + "Global pointer makes parallelization unsafe");
+							}
 							parallelizable = false;
 							return false;
 						}
@@ -762,8 +797,10 @@ namespace clang {
 					for (const Stmt *currentFor : visitedForLoopList) {
 						if (currentFor == FS) {
 							parallelizable = false;
-							Check.diag(FS->getBeginLoc(),
-									   Diag::label + "Recursion makes for loop parallelization unsafe");
+							if (verbose) {
+								Check.diag(FS->getBeginLoc(),
+										   Diag::label + "Recursion makes for loop parallelization unsafe");
+							}
 							return true;
 						}
 					}
@@ -1037,10 +1074,8 @@ namespace clang {
 
 
 					for (const auto *read:map->Element) {
-						std::cout << "H0: " << std::endl;
 						const DeclRefExpr *elem = getPointer(read);
 						if (elem != nullptr) {
-							std::cout << "H1: " << getElementAsString(elem) << std::endl;
 							currentRange = SourceRange(read->getSourceRange());
 							rewriter.ReplaceText(currentRange,
 												 LoopConstant::startElement + getElementAsString(elem));
@@ -1278,10 +1313,10 @@ namespace clang {
 				IntegerForLoopExplorer(ASTContext *Context, ClangTidyCheck &Check,
 									   std::vector<const Stmt *> visitedForLoopList,
 									   const Stmt *visitingForStmtBody, const Expr *start_expr, const Expr *end_expr,
-									   const VarDecl *iterator, const uint64_t LoopSizeMin)
-						: LoopExplorer(Context, Check, visitedForLoopList, visitingForStmtBody, iterator),
+									   const VarDecl *iterator, const uint64_t LoopSizeMin, const bool verbose)
+						: LoopExplorer(Context, Check, visitedForLoopList, visitingForStmtBody, iterator, verbose),
 						  start_expr(start_expr),
-						  end_expr(end_expr), LoopSizeMin(LoopSizeMin) {
+						  end_expr(end_expr), LoopSizeMin(LoopSizeMin)  {
 					if (!isRequiredMinSize()) parallelizable = false;
 				}
 
@@ -1290,10 +1325,10 @@ namespace clang {
 						std::vector<const Stmt *> visitedForLoopList,
 						std::vector<const FunctionDecl *> visitedFunctionDeclarationList,
 						std::vector<DeclarationName> localVariables, bool isThisExprValid,
-						const Stmt *visitingForStmtBody, const VarDecl *iterator)
+						const Stmt *visitingForStmtBody, const VarDecl *iterator, const bool verbose)
 						: LoopExplorer(Context, Check, visitedForLoopList,
 									   visitedFunctionDeclarationList, localVariables,
-									   isThisExprValid, visitingForStmtBody, iterator) {}
+									   isThisExprValid, visitingForStmtBody, iterator, verbose) {}
 
 				const Expr *getLoopContainer(Expr *write) override;
 
@@ -1354,8 +1389,8 @@ namespace clang {
 				ContainerForLoopExplorer(ASTContext *Context, ClangTidyCheck &Check,
 										 std::vector<const Stmt *> visitedForLoopList,
 										 const Stmt *visitingForStmtBody, const VarDecl *iterator,
-										 const DeclRefExpr *traversalArray)
-						: LoopExplorer(Context, Check, visitedForLoopList, visitingForStmtBody, iterator),
+										 const DeclRefExpr *traversalArray, const bool verbose)
+						: LoopExplorer(Context, Check, visitedForLoopList, visitingForStmtBody, iterator, verbose),
 						  LoopContainer(traversalArray) {
 
 				}
@@ -1365,10 +1400,10 @@ namespace clang {
 						std::vector<const Stmt *> visitedForLoopList,
 						std::vector<const FunctionDecl *> visitedFunctionDeclarationList,
 						std::vector<DeclarationName> localVariables, bool isThisExprValid,
-						const Stmt *visitingForStmtBody, const VarDecl *iterator)
+						const Stmt *visitingForStmtBody, const VarDecl *iterator, const bool verbose)
 						: LoopExplorer(Context, Check, visitedForLoopList,
 									   visitedFunctionDeclarationList, localVariables,
-									   isThisExprValid, visitingForStmtBody, iterator) {}
+									   isThisExprValid, visitingForStmtBody, iterator, verbose) {}
 
 				bool VisitCXXOperatorCallExpr(CXXOperatorCallExpr *OO);
 				bool VisitUnaryOperator(UnaryOperator *UO);
@@ -1406,8 +1441,8 @@ namespace clang {
 				RangeForLoopExplorer(ASTContext *Context, ClangTidyCheck &Check,
 									 std::vector<const Stmt *> visitedForLoopList,
 									 const Stmt *visitingForStmtBody, const VarDecl *iterator,
-									 const DeclRefExpr *traversalArray)
-						: LoopExplorer(Context, Check, visitedForLoopList, visitingForStmtBody, iterator),
+									 const DeclRefExpr *traversalArray, const bool verbose)
+						: LoopExplorer(Context, Check, visitedForLoopList, visitingForStmtBody, iterator, verbose),
 						  LoopContainer(traversalArray) {
 				}
 
@@ -1416,10 +1451,10 @@ namespace clang {
 						std::vector<const Stmt *> visitedForLoopList,
 						std::vector<const FunctionDecl *> visitedFunctionDeclarationList,
 						std::vector<DeclarationName> localVariables, bool isThisExprValid,
-						const Stmt *visitingForStmtBody, const VarDecl *iterator)
+						const Stmt *visitingForStmtBody, const VarDecl *iterator, const bool verbose)
 						: LoopExplorer(Context, Check, visitedForLoopList,
 									   visitedFunctionDeclarationList, localVariables,
-									   isThisExprValid, visitingForStmtBody, iterator) {}
+									   isThisExprValid, visitingForStmtBody, iterator, verbose) {}
 
 				bool VisitDeclRefExpr(DeclRefExpr *DRE);
 			};
