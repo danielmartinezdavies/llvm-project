@@ -878,13 +878,12 @@ namespace clang {
 				EXPECT_EQ(Code, Expected);
 			}
 
-			//Container for loop
+			//Range for loop
 			TEST(MapReduceCheckTest, RangeLoopVectorInputVectorOutputCompoundAddition) {
 				std::string Expected = "k += grppi::map_reduce(grppi::dynamic_execution(), a, 0L, [=](auto grppi_a){return  grppi_a * 2;}, [=](auto grppi_x, auto grppi_y){return grppi_x+grppi_y;});\n";
 
 				std::string Code = runCheckOnFile<MapReduceCheck>(
 						"#include <vector>\n"
-						"\n"
 						"int main() {\n"
 						"\tint k = 0;\n"
 						"\tstd::vector<int> a(10);\n"
@@ -896,6 +895,98 @@ namespace clang {
 				removeSpaces(Code, Expected);
 				EXPECT_EQ(Code, Expected);
 			}
+
+			TEST(MapReduceCheckTest, RangeLoopArrayInputArrayOutputCompoundAddition) {
+				std::string Expected = "k += grppi::map_reduce(grppi::dynamic_execution(), a, 0L, [=](auto grppi_a){return  grppi_a * 2;}, [=](auto grppi_x, auto grppi_y){return grppi_x+grppi_y;});";
+				std::string Code = runCheckOnFile<MapReduceCheck>(
+						"#include <vector>\n"
+						"int main() {\n"
+						"\tint k = 0;\n"
+						"\tint a[10];\n"
+						"\tfor (auto &e : a) {\n"
+						"\t\te = e * 2;\n"
+						"\t\tk += e;\n"
+						"\t}\n"
+						"}", PathToVector);
+				removeSpaces(Code, Expected);
+				EXPECT_EQ(Code, Expected);
+			}
+
+
+
+			TEST(MapReduceCheckTest, RangeLoopVectorInputVectorOutputAdditionLeft) {
+				std::string Expected = "k += grppi::map_reduce(grppi::dynamic_execution(), a, 0L, [=](auto grppi_a){return  grppi_a * 2;}, [=](auto grppi_x, auto grppi_y){return grppi_x+grppi_y;});";
+
+				std::string Code = runCheckOnFile<MapReduceCheck>(
+						"#include <vector>\n"
+						"int main() {\n"
+						"\tint k = 0;\n"
+						"\tstd::vector<int> a(10);\n"
+						"\tfor (auto &e : a) {\n"
+						"\t\te = e * 2;\n"
+						"\t\tk = k + e;\n"
+						"\t}\n"
+						"}", PathToVector);
+				removeSpaces(Code, Expected);
+				EXPECT_EQ(Code, Expected);
+			}
+
+			TEST(MapReduceCheckTest, RangeLoopVectorInputVectorOutputAdditionRight) {
+				std::string Expected = "k += grppi::map_reduce(grppi::dynamic_execution(), a, 0L, [=](auto grppi_a){return  grppi_a * 2;}, [=](auto grppi_x, auto grppi_y){return grppi_x+grppi_y;});";
+
+				std::string Code = runCheckOnFile<MapReduceCheck>(
+						"#include <vector>\n"
+						"int main() {\n"
+						"\tint k = 0;\n"
+						"\tstd::vector<int> a(10);\n"
+						"\tfor (auto &e : a) {\n"
+						"\t\te = e * 2;\n"
+						"\t\tk =  e + k;\n"
+						"\t}\n"
+						"}", PathToVector);
+				removeSpaces(Code, Expected);
+				EXPECT_EQ(Code, Expected);
+			}
+
+			TEST(MapReduceCheckTest, RangeLoopVectorInputVectorOutputCompundMultiplication) {
+				std::string Expected = "k *= grppi::map_reduce(grppi::dynamic_execution(), a, 1L, [=](auto grppi_a){return  grppi_a * 2;}, [=](auto grppi_x, auto grppi_y){return grppi_x*grppi_y;});";
+
+				std::string Code = runCheckOnFile<MapReduceCheck>(
+						"#include <vector>\n"
+						"\n"
+						"int main() {\n"
+						"\tint k = 0;\n"
+						"\tstd::vector<int> a(10);\n"
+						"\tfor (auto &e : a) {\n"
+						"\t\te = e * 2;\n"
+						"\t\tk *=  e;\n"
+						"\t}\n"
+						"}", PathToVector);
+				removeSpaces(Code, Expected);
+				EXPECT_EQ(Code, Expected);
+			}
+
+			TEST(MapReduceCheckTest, RangeLoopMultipleMapReduce) {
+				std::string Expected = "";
+
+				std::string Code = runCheckOnFile<MapReduceCheck>(
+						"#include <vector>\n"
+						"\n"
+						"int main() {\n"
+						"\tint k = 0;\n"
+						"\tstd::vector<int> a(10);\n"
+						"\tfor (auto &e : a) {\n"
+						"\t\te = e * 2;\n"
+						"\t\tk +=  e;\n"
+						"\t\t\n"
+						"\t\te = e + e;\n"
+						"\t\tk = e + k;\n"
+						"\t}\n"
+						"}", PathToVector);
+				removeSpaces(Code, Expected);
+				EXPECT_EQ(Code, Expected);
+			}
+
 
 		} // namespace test
 	} // namespace tidy
