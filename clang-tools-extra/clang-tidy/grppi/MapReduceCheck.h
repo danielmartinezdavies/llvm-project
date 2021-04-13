@@ -124,64 +124,6 @@ namespace clang {
 			};
 
 
-			class MapReduceCheck : public ClangTidyCheck {
-				public:
-				MapReduceCheck(StringRef name, ClangTidyContext *context)
-						: ClangTidyCheck(name, context),
-						  IntegerForLoopSizeMin(Options.get("IntegerForLoopSizeMin", 0)),
-						  Verbose(Options.get("Verbose", false)) {}
-
-				void registerMatchers(ast_matchers::MatchFinder *Finder) override;
-
-				void registerPPCallbacks(const SourceManager &SM, Preprocessor *PP,
-										 Preprocessor *ModuleExpanderPP) override {
-					std::unique_ptr<Prep> prep_callback(new Prep(SM));
-					PP->addPPCallbacks(std::move(prep_callback));
-				}
-
-				void storeOptions(ClangTidyOptions::OptionMap &Opts) override;
-
-				void check(const ast_matchers::MatchFinder::MatchResult &Result) override;
-
-				void ProcessIntegerForLoop(const ForStmt *integerForLoop, const MatchFinder::MatchResult &Result);
-
-				void ProcessIteratorForLoop(const ForStmt *iteratorForLoop, const MatchFinder::MatchResult &Result);
-
-				void ProcessRangeForLoop(const CXXForRangeStmt *rangeForLoop, const MatchFinder::MatchResult &Result);
-
-				template<class LoopExplorer, class Loop>
-				void addDiagnostic(LoopExplorer currentMap, Loop loop) {
-
-					if (currentMap.isMapReducePattern() && currentMap.isParallelizable()) {
-						diag(loop->getBeginLoc(),
-							 Diag::label + "MapReduce pattern detected. Loop can be parallelized.",
-							 DiagnosticIDs::Remark) << FixItHint::CreateReplacement(loop->getSourceRange(),
-																					currentMap.getMapReduceTransformation());
-					} else if (currentMap.isReducePattern() && !currentMap.isMapPattern() &&
-							   currentMap.isParallelizable()) {
-						diag(loop->getBeginLoc(),
-							 Diag::label + "Reduce pattern detected. Loop can be parallelized.",
-							 DiagnosticIDs::Remark)
-								<< FixItHint::CreateReplacement(loop->getSourceRange(),
-																currentMap.getReduceTransformation());
-					} else if (currentMap.isMapPattern() && !currentMap.isReducePattern() &&
-							   currentMap.isParallelizable()) {
-						diag(loop->getBeginLoc(),
-							 Diag::label + "Map pattern detected. Loop can be parallelized.",
-							 DiagnosticIDs::Remark)
-								<< FixItHint::CreateReplacement(loop->getSourceRange(),
-																currentMap.getMapTransformation());
-
-					} else {
-						diag(loop->getBeginLoc(), Diag::label + "No parallelization possible.");
-					}
-				}
-
-				private:
-				const uint64_t IntegerForLoopSizeMin;
-				const bool Verbose = false;
-
-			};
 
 			class Pattern {
 				public:
@@ -253,10 +195,7 @@ namespace clang {
 				}
 			};
 
-
-// Loop Explorer
-			template<class LoopType>
-			class LoopVisitor : public RecursiveASTVisitor<LoopType> {
+			class LoopExplorer{
 				protected:
 				ASTContext *Context;
 				ClangTidyCheck &Check;
@@ -279,30 +218,138 @@ namespace clang {
 
 				const bool verbose;
 
-
-				LoopVisitor(ASTContext *Context, ClangTidyCheck &Check,
-							 std::vector<const Stmt *> visitedForLoopList,
-							 std::vector<const FunctionDecl *> visitedFunctionDeclarationList,
-							 std::vector<DeclarationName> localVariables, bool isThisExprValid,
-							 const Stmt *visitingForStmtBody, const VarDecl *iterator, const bool verbose)
-						: Context(Context), Check(Check), visitingForStmtBody(visitingForStmtBody),
-						  visitedForLoopList(visitedForLoopList),
-						  visitedFunctionDeclarationList(visitedFunctionDeclarationList),
-						  localVariables(localVariables), iterator_variable(iterator),
-						  isThisExprValid(isThisExprValid), verbose(verbose) {}
-
-				virtual ~LoopVisitor() = default;
-
 				const virtual Expr *getLoopContainer(Expr *write) = 0;
 
 				public:
-				LoopVisitor(ASTContext *Context, ClangTidyCheck &Check,
-							 std::vector<const Stmt *> visitedForLoopList,
-							 const Stmt *visitingForStmtBody, const VarDecl *iterator, const bool verbose)
-						: Context(Context), Check(Check), visitingForStmtBody(visitingForStmtBody),
-						  visitedForLoopList(visitedForLoopList), iterator_variable(iterator), verbose(verbose)  {
+				LoopExplorer(ASTContext *Context, ClangTidyCheck &Check,
+						std::vector<const Stmt *> visitedForLoopList,
+				std::vector<const FunctionDecl *> visitedFunctionDeclarationList,
+						std::vector<DeclarationName> localVariables, bool isThisExprValid,
+				const Stmt *visitingForStmtBody, const VarDecl *iterator, const bool verbose)
+				: Context(Context), Check(Check), visitingForStmtBody(visitingForStmtBody),
+				visitedForLoopList(visitedForLoopList),
+				visitedFunctionDeclarationList(visitedFunctionDeclarationList),
+				localVariables(localVariables), iterator_variable(iterator),
+				isThisExprValid(isThisExprValid), verbose(verbose) {}
+
+				LoopExplorer(ASTContext *Context, ClangTidyCheck &Check,
+						std::vector<const Stmt *> visitedForLoopList,
+				const Stmt *visitingForStmtBody, const VarDecl *iterator, const bool verbose)
+				: Context(Context), Check(Check), visitingForStmtBody(visitingForStmtBody),
+				visitedForLoopList(visitedForLoopList), iterator_variable(iterator), verbose(verbose) {
+				}
+				virtual ~LoopExplorer() = default;
+
+
+				virtual bool isValidWrite(Expr *write);
+				bool isLocalCallee(const Expr *callee);
+				const DeclRefExpr *getPointer(const Expr *S);
+
+				// Auxiliary Functions
+				bool PointerHasValidLastValue(const VarDecl *pointerVarDecl, const Expr *expr);
+
+				bool isParallelizable();
+				bool isMapPattern();
+				bool isReducePattern();
+				bool isMapReducePattern();
+
+
+				virtual bool isMapAssignment(Expr *write) = 0;
+				Expr *isReduceCallExpr(const Expr *expr);
+				std::vector<const Expr *> getReduceElementsFromCallExpr(const Expr *expr);
+				virtual bool isLoopElem(Expr *write) = 0;
+				Reduce *isReduceAssignment(const BinaryOperator *BO);
+				bool isRepeatedForStmt(const Stmt *FS);
+				void appendForLoopList();
+
+				std::vector<DeclarationName> getValidParameterList(FunctionDecl *functionDeclaration);
+
+				void appendVisitedFunctionDeclarationList(std::vector<const FunctionDecl *> visitedFunctionDeclarations);
+
+				bool isLocalVariable(DeclarationName DN);
+
+				//Transformation
+				virtual std::string getArrayBeginOffset() const;
+				virtual std::string getArrayEndOffset() const;
+				virtual std::string getArrayEndString() const;
+
+				virtual bool isVariableUsedInArraySubscript(const DeclRefExpr *dre);
+
+				virtual std::string getMultipleInputTransformation();
+
+				virtual std::string getBeginInputAsString(const DeclRefExpr *inputName);
+				virtual std::string getEndInputAsString(const DeclRefExpr *inputName);
+				virtual std::string getOutputAsString(const DeclRefExpr *output);
+				virtual std::string getElementAsString(const DeclRefExpr *elem) const;
+
+
+				std::string getBeginInputTransformation(const DeclRefExpr *expr);
+				std::string getCloseBeginInputTransformation(const DeclRefExpr *expr);
+				std::string getEndInputTransformation(const DeclRefExpr *expr);
+				std::string getCloseEndInputTransformation(const DeclRefExpr *expr);
+				std::string getStartOffsetString();
+				std::string getEndOffsetString();
+
+
+				//Pattern Transformation
+				std::string getPatternTransformationInput(Pattern &pattern);
+				std::string getPatternTransformationInputEnd(const Pattern &pattern);
+				std::string getMapTransformationOutput(const Pattern &pattern);
+				std::string getMapTransformationLambdaParameters(Map &map);
+
+				template<typename Pattern>
+				void removePatternFromRewriter(SourceRange &currentRange, int &offset, std::vector<Pattern> PatterList,
+											   typename std::vector<Pattern>::iterator pattern, SourceManager &SM,
+											   Rewriter &rewriter) {
+					for (typename std::vector<Pattern>::iterator otherPattern = PatterList.begin();
+						 otherPattern != PatterList.end(); otherPattern++) {
+						if (otherPattern != pattern) {
+							otherPattern->removeFromRewriter(currentRange, offset, SM, rewriter);
+						}
+					}
 				}
 
+				template<typename Pattern>
+				void removePatternFromRewriter(SourceRange &currentRange, int &offset, std::vector<Pattern> PatterList,
+											   SourceManager &SM, Rewriter &rewriter) {
+					for (typename std::vector<Pattern>::iterator otherPattern = PatterList.begin();
+						 otherPattern != PatterList.end(); otherPattern++) {
+						otherPattern->removeFromRewriter(currentRange, offset, SM, rewriter);
+					}
+				}
+
+				std::string getMapTransformationLambdaBody(const std::vector<Map>::iterator &map);
+				std::string getReduceTransformationLambdaParameters(const Reduce &reduce);
+				std::string getReduceTransformationLambdaBody(const std::vector<Reduce>::iterator &reduce);
+
+				std::string getMapTransformation();
+				std::string getReduceTransformation();
+				std::string getMapReduceTransformation();
+			};
+
+			static std::vector<std::shared_ptr<LoopExplorer>> LoopExplorerList;
+
+			// Loop Visitor
+			template<class LoopType>
+			class LoopVisitor : public LoopExplorer,  public RecursiveASTVisitor<LoopType> {
+
+				public:
+				LoopVisitor(ASTContext *context, ClangTidyCheck &check,
+							const std::vector<const Stmt *> &visitedForLoopList,
+							const std::vector<const FunctionDecl *> &visitedFunctionDeclarationList,
+							const std::vector<DeclarationName> &localVariables, bool isThisExprValid,
+							const Stmt *visitingForStmtBody, const VarDecl *iterator, const bool verbose)
+						: LoopExplorer(context, check, visitedForLoopList, visitedFunctionDeclarationList,
+									   localVariables, isThisExprValid, visitingForStmtBody, iterator, verbose) {}
+
+				LoopVisitor(ASTContext *context, ClangTidyCheck &check,
+							const std::vector<const Stmt *> &visitedForLoopList, const Stmt *visitingForStmtBody,
+							const VarDecl *iterator, const bool verbose) : LoopExplorer(context, check,
+																						visitedForLoopList,
+																						visitingForStmtBody, iterator,
+																						verbose) {}
+
+				public:
 				// Traverse Function
 				bool TraverseLambdaExpr(LambdaExpr *LE) {
 					parallelizable = false;
@@ -311,7 +358,7 @@ namespace clang {
 
 				bool VisitCXXThrowExpr(CXXThrowExpr *CXXTE) {
 					parallelizable = false;
-					if(verbose) {
+					if (verbose) {
 						Check.diag(CXXTE->getBeginLoc(),
 								   Diag::label + "Throw exception makes loop parallelization unsafe");
 					}
@@ -375,7 +422,8 @@ namespace clang {
 							std::vector<DeclarationName> functionVariables;
 							LoopType constructorExpr(Context, Check, visitedForLoopList,
 													 visitedFunctionDeclarationList,
-													 functionVariables, true, visitingForStmtBody, iterator_variable, verbose);
+													 functionVariables, true, visitingForStmtBody, iterator_variable,
+													 verbose);
 							constructorExpr.TraverseStmt(CXXCE->getConstructor()->getBody());
 							if (!constructorExpr.isParallelizable()) {
 								parallelizable = false;
@@ -499,802 +547,6 @@ namespace clang {
 					}
 					return false;
 				}
-
-				virtual bool isValidWrite(Expr *write) {
-					write = write->IgnoreParenImpCasts();
-					// possibility of removing
-					if (isMapAssignment(write))
-						return true;
-					if (auto *BO_LHS = dyn_cast<DeclRefExpr>(write)) {
-						if (!isLocalVariable(BO_LHS->getDecl()->getDeclName())) {
-							if (verbose) {
-								Check.diag(write->getBeginLoc(),
-										   Diag::label + "Write to variable declared outside for loop statement "
-														 "makes loop parallelization unsafe");
-							}
-							parallelizable = false;
-							return false;
-						}
-						return true;
-					} else if (auto *BO_LHS = dyn_cast<MemberExpr>(write)) {
-						bool isValidMember = true;
-						if (auto *memberDecl = dyn_cast<VarDecl>(BO_LHS->getMemberDecl())) {
-							if (memberDecl->hasGlobalStorage()) {
-								if (verbose) {
-									Check.diag(BO_LHS->getBeginLoc(),
-											   Diag::label + "Write to variable stored globally makes loop "
-															 "parallelization unsafe");
-								}
-								parallelizable = false;
-								isValidMember = false;
-							}
-						}
-						bool isValidBase = isValidWrite(BO_LHS->getBase());
-						if (!isValidMember)
-							return false;
-						return isValidBase;
-					} else if (auto *BO_LHS = dyn_cast<CXXThisExpr>(write)) {
-						if (!isThisExprValid) {
-							if (verbose) {
-								Check.diag(BO_LHS->getBeginLoc(), Diag::label + "Write to variable stored globally "
-																				"makes loop parallelization unsafe");
-							}
-							parallelizable = false;
-							return false;
-						}
-						return true;
-					} else if (auto *BO_LHS =
-							dyn_cast<CXXOperatorCallExpr>(write)) {
-						if (verbose) {
-							Check.diag(BO_LHS->getBeginLoc(),
-									   Diag::label + "Write to overloaded operator could be unsafe");
-						}
-						return true;
-					} else {
-						if (verbose) {
-							Check.diag(write->getBeginLoc(),
-									   Diag::label +
-									   "Write to type that is not variable or array subscript of loop variable makes "
-									   "for loop parallelization unsafe");
-						}
-						parallelizable = false;
-						return false;
-					}
-				}
-
-				bool isLocalCallee(const Expr *callee) {
-					callee = callee->IgnoreParenImpCasts();
-					if (auto *BO_LHS = dyn_cast<DeclRefExpr>(callee)) {
-						if (!isLocalVariable(BO_LHS->getDecl()->getDeclName())) {
-							/*std::cout << BO_LHS->getDecl()->getDeclName().getAsString()
-									  << std::endl;*/
-							return false;
-						}
-						return true;
-					} else if (auto *BO_LHS =
-							dyn_cast<ArraySubscriptExpr>(callee)) {
-						return false;
-					} else if (auto *BO_LHS = dyn_cast<MemberExpr>(callee)) {
-						return isLocalCallee(BO_LHS->getBase());
-					} else {
-						return false;
-					}
-				}
-
-				const DeclRefExpr *getPointer(const Expr *S) {
-					if (const auto *DRE = dyn_cast<DeclRefExpr>(S->IgnoreParenImpCasts())) {
-
-						if (DRE->getDecl() != nullptr) {
-							return DRE;
-						}
-					} else if (const auto *ase =
-							dyn_cast<ArraySubscriptExpr>(S->IgnoreParenImpCasts())) {
-						return getPointer(ase->getBase());
-					} else if (const auto *UO =
-							dyn_cast<UnaryOperator>(S->IgnoreParenImpCasts())) {
-
-						return getPointer(UO->getSubExpr());
-					} else if (const auto *OO =
-							dyn_cast<CXXOperatorCallExpr>(S->IgnoreParenImpCasts())) {
-						if (OO->getOperator() == OO_Subscript || OO->getOperator() == OO_Star) {
-
-							return getPointer(OO->getArg(0));
-						}
-					}
-					return nullptr;
-				}
-
-				// Auxiliary Functions
-
-				/*
-				 * Takes as first parameter the declaration of the pointer
-				 * Takes as second parameter the expression where the pointer is used for outputting error message
-				 * */
-				bool PointerHasValidLastValue(const VarDecl *pointerVarDecl, const Expr *expr) {
-
-					if (!Functions::hasElement<DeclarationName>(exploredPointers,
-																pointerVarDecl->getDeclName())) {
-						exploredPointers.push_back(pointerVarDecl->getDeclName());
-						if (!pointerVarDecl->hasGlobalStorage()) {
-
-							const auto hasValidPointerAssignment = [] {
-								return cxxNewExpr();
-							};
-							bool hasValidInit = false;
-							if (pointerVarDecl->hasInit()) {
-								hasValidInit = true;
-								const auto validInit = match(findAll(varDecl(equalsNode(pointerVarDecl), hasInitializer(
-										hasValidPointerAssignment()))), *Context);
-								if (validInit.size() == 0) hasValidInit = false;
-							}
-							if (!hasValidInit) {
-								if (verbose) {
-									Check.diag(expr->getBeginLoc(),
-											   Diag::label + "Pointer has invalid initialization");
-								}
-								parallelizable = false;
-							}
-							if (auto *functionDecl = dyn_cast<FunctionDecl>(
-									pointerVarDecl->getParentFunctionOrMethod())) {
-								//
-
-								const auto isVariable = [](const VarDecl *VD) {
-									return ignoringImpCasts(declRefExpr(to(varDecl(equalsNode(VD)))));
-								};
-								const auto invalidAssignments =
-//                                        match(findAll(
-//                                                binaryOperator(isAssignmentOperator(),
-//                                                        hasLHS(equalsNode(write)), unless(hasRHS(hasValidPointerAssignment())))),*Context);
-//*/
-										match(findAll(stmt(anyOf(
-												binaryOperator(
-														hasLHS(isVariable(pointerVarDecl)),
-														unless(hasRHS(hasValidPointerAssignment()))),
-												unaryOperator(hasUnaryOperand(isVariable(pointerVarDecl)),
-															  hasAnyOperatorName("++", "--"))
-
-										))), *Context);
-
-
-								if (invalidAssignments.size() > 0) {
-									if (verbose) {
-										Check.diag(expr->getBeginLoc(),
-												   Diag::label + "Pointer points to potentially unsafe memory space");
-									}
-									parallelizable = false;
-									return false;
-								}
-							}
-						} else {
-							if (verbose) {
-								Check.diag(expr->getBeginLoc(),
-										   Diag::label + "Global pointer makes parallelization unsafe");
-							}
-							parallelizable = false;
-							return false;
-						}
-						return true;
-					}
-					return true;
-				}
-
-				bool isParallelizable() { return parallelizable; }
-
-				bool isMapPattern() { return !MapList.empty(); }
-
-				bool isReducePattern() { return !ReduceList.empty(); }
-
-				bool isMapReducePattern() {
-					if (MapList.size() != 1 || ReduceList.size() != 1) return false;
-					Map m = MapList[0];
-					Reduce r = ReduceList[0];
-
-					const DeclRefExpr *mapVar = getPointer(m.Output);
-					const DeclRefExpr *reduceVar = getPointer(r.Input[0]);
-
-					if (Functions::isSameVariable(mapVar->getDecl(), reduceVar->getDecl())) return true;
-
-					return false;
-
-				}
-
-				virtual bool isMapAssignment(Expr *write) = 0;
-
-				Expr *isReduceCallExpr(const Expr *expr) {
-					if (auto *callexpr =
-							dyn_cast<CallExpr>(expr->IgnoreParenImpCasts())) {
-						if (callexpr->getNumArgs() > 0 && callexpr->getNumArgs() <= 2) {
-							for (auto arg:callexpr->arguments()) {
-								if (isLoopElem(const_cast<Expr *> (arg))) {
-									return const_cast<Expr *>(arg);
-								}
-							}
-						}
-					}
-					return nullptr;
-				}
-
-				std::vector<const Expr *> getReduceElementsFromCallExpr(const Expr *expr) {
-					std::vector<const Expr *> elements{};
-					if (auto *callexpr =
-							dyn_cast<CallExpr>(expr->IgnoreParenImpCasts())) {
-						for (auto arg:callexpr->arguments()) {
-							elements.emplace_back(arg);
-						}
-					}
-					return elements;
-				}
-
-				virtual bool isLoopElem(Expr *write) = 0;
-
-				Reduce *isReduceAssignment(const BinaryOperator *BO) {
-					Expr *LHS = BO->getLHS();
-					if (auto *write =
-							dyn_cast<DeclRefExpr>(LHS->IgnoreParenImpCasts())) {
-						if (!isLocalVariable(write->getFoundDecl()->getDeclName()) && !isLoopElem(write)) {
-
-							//callexpr
-							if (BO->isAssignmentOp() && !BO->isCompoundAssignmentOp()) {
-								Expr *loopElem = isReduceCallExpr(BO->getRHS());
-								if (loopElem != nullptr) {
-									std::vector<const Expr *> elements = getReduceElementsFromCallExpr(BO->getRHS());
-									return new Reduce({getLoopContainer(loopElem)}, write, elements, nullptr, BO);
-								}
-							}
-
-
-							// invariant += i;
-							if (BO->isCompoundAssignmentOp()) {
-								if (BO->getOpcode() == BO_AddAssign ||
-									BO->getOpcode() == BO_MulAssign) {
-
-									if (isLoopElem(BO->getRHS()))
-										return new Reduce({getLoopContainer(BO->getRHS())}, write, {}, BO, BO);
-								}
-							}
-								// invariant = invariant + i;
-								// invariant = i + invariant;
-							else if (BO->isAssignmentOp()) {
-								Expr *RHS = BO->getRHS();
-								if (auto *RHS_BO =
-										dyn_cast<BinaryOperator>(RHS->IgnoreParenImpCasts())) {
-									if (RHS_BO->getOpcode() == BO_Add ||
-										RHS_BO->getOpcode() == BO_Mul) {
-
-										// invariant = invariant + i;
-										if (isLoopElem(RHS_BO->getRHS())) {
-											if (auto *read = dyn_cast<DeclRefExpr>(
-													RHS_BO->getLHS()->IgnoreParenImpCasts())) {
-												if (Functions::isSameVariable(write->getFoundDecl()->getDeclName(),
-																			  read->getFoundDecl()->getDeclName())) {
-													return new Reduce({getLoopContainer(RHS_BO->getRHS())}, write, {},
-																	  RHS_BO, BO);
-												}
-											}
-										}
-											// invariant = i + invariant;
-										else if (isLoopElem(RHS_BO->getLHS())) {
-											if (auto *read = dyn_cast<DeclRefExpr>(
-													RHS_BO->getRHS()->IgnoreParenImpCasts())) {
-												if (Functions::isSameVariable(write->getFoundDecl()->getDeclName(),
-																			  read->getFoundDecl()->getDeclName())) {
-													return new Reduce({getLoopContainer(RHS_BO->getLHS())}, write, {},
-																	  RHS_BO, BO);
-												}
-											}
-										}
-									}
-								}
-							}
-						}
-					}
-
-					return nullptr;
-				}
-
-				bool isRepeatedForStmt(const Stmt *FS) {
-					for (const Stmt *currentFor : visitedForLoopList) {
-						if (currentFor == FS) {
-							parallelizable = false;
-							if (verbose) {
-								Check.diag(FS->getBeginLoc(),
-										   Diag::label + "Recursion makes for loop parallelization unsafe");
-							}
-							return true;
-						}
-					}
-					return false;
-				}
-
-				void appendForLoopList() {
-					if (parallelizable) {
-						forLoopList.insert(forLoopList.begin(), visitedForLoopList.begin(),
-										   visitedForLoopList.end());
-					}
-				}
-
-				std::vector<DeclarationName>
-				getValidParameterList(FunctionDecl *functionDeclaration) {
-					std::vector<DeclarationName> validParameterList;
-					for (unsigned i = 0; i < functionDeclaration->getNumParams(); i++) {
-						ParmVarDecl *PVD = functionDeclaration->getParamDecl(i);
-						if (PVD->getType()->isBuiltinType()) {
-							validParameterList.push_back(PVD->getDeclName());
-						}
-					}
-					return validParameterList;
-				}
-
-				void appendVisitedFunctionDeclarationList(
-						std::vector<const FunctionDecl *> visitedFunctionDeclarations) {
-					visitedFunctionDeclarationList.insert(
-							visitedFunctionDeclarationList.begin(),
-							visitedFunctionDeclarations.begin(), visitedFunctionDeclarations.end());
-				}
-
-				bool isLocalVariable(DeclarationName DN) {
-					for (auto declarationName : localVariables) {
-						if (Functions::isSameVariable(declarationName, DN)) {
-							return true;
-						}
-					}
-					return false;
-				}
-
-				//Transformation
-				virtual std::string getArrayBeginOffset() const {
-					return "";
-				}
-
-				virtual std::string getArrayEndOffset() const {
-					return "";
-				}
-
-				virtual std::string getArrayEndString() const {
-					return "std::end(";
-				}
-
-				virtual bool isVariableUsedInArraySubscript(const DeclRefExpr *dre) {
-					return true;
-				}
-
-				virtual std::string getMultipleInputTransformation() {
-					return "std::make_tuple( ";
-				}
-
-				virtual std::string getBeginInputAsString(const DeclRefExpr *inputName) {
-					return getBeginInputTransformation(inputName) +
-						   inputName->getNameInfo().getName().getAsString()
-						   + getCloseBeginInputTransformation(inputName) + getStartOffsetString();
-				}
-
-				virtual std::string getEndInputAsString(const DeclRefExpr *inputName) {
-					return getEndInputTransformation(inputName) +
-						   inputName->getNameInfo().getName().getAsString()
-						   + getCloseEndInputTransformation(inputName) + getEndOffsetString();
-				}
-
-				virtual std::string getOutputAsString(const DeclRefExpr *output) {
-					return getBeginInputTransformation(output) +
-						   output->getNameInfo().getName().getAsString()
-						   + getCloseBeginInputTransformation(output) + getStartOffsetString();;
-				}
-				virtual std::string getElementAsString(const DeclRefExpr *elem) const{
-					return elem->getNameInfo().getAsString();
-				}
-
-				/*
-				 * Gets beginning iterator for inputs that are not pointers
-				 *
-				 * */
-				std::string getBeginInputTransformation(const DeclRefExpr *expr) {
-					if (!expr->getType()->isPointerType() && !expr->getType()->isArrayType()) {
-						return "std::begin(";
-					}
-					return "";
-				}
-
-				/*
-				 * Closes parenthesis for inputs that require it
-				 */
-				std::string getCloseBeginInputTransformation(const DeclRefExpr *expr) {
-					if (!expr->getType()->isPointerType() && !expr->getType()->isArrayType()) {
-						return ")";
-					}
-					return "";
-				}
-
-				/*
-				 * Gets back iterator for input
-				 * Integer for loops have their own ending
-				 */
-				std::string getEndInputTransformation(const DeclRefExpr *expr) {
-
-					if (expr != nullptr && !expr->getType()->isPointerType()) {
-						return getArrayEndString();
-					}
-					return "";
-				}
-
-				/*
-				 * Closes parenthesis for inputs that require it
-				 *
-				 */
-				std::string getCloseEndInputTransformation(const DeclRefExpr *expr) {
-					if (!expr->getType()->isPointerType()) {
-						return ")";
-					}
-					return "";
-				}
-
-				/*
-				 * Gets the beginning offset as a string in order to obtain the correct iterator as the starting point
-				 */
-				std::string getStartOffsetString() {
-					std::string result = getArrayBeginOffset();
-					if (result == "") return "";
-					return " + " + result;
-				}
-
-				std::string getEndOffsetString() {
-					std::string result = getArrayEndOffset();
-					if (result == "") return "";
-					return " + " + result;
-				}
-
-
-				//Pattern Transformation
-				std::string getPatternTransformationInput(Pattern &pattern) {
-					std::string transformation = "";
-					if (pattern.Input.empty()) {
-						pattern.Input.push_back(pattern.Output);
-					}
-
-					std::string add_comma = ", ";
-
-					//if more than one input, put it in a tuple
-					if (pattern.Input.size() > 1) {
-						add_comma += getMultipleInputTransformation();
-					}
-					for (auto &input : pattern.Input) {
-						const DeclRefExpr *inputName = getPointer(input);
-						if (inputName == nullptr) return "input null";
-
-						transformation += add_comma + getBeginInputAsString(inputName);
-						add_comma = ", ";
-					}
-					if (pattern.Input.size() > 1) {
-						transformation += ")";
-					}
-					return transformation;
-				}
-
-				std::string getPatternTransformationInputEnd(const Pattern &pattern) {
-					if (pattern.Input.empty()) return "no input";
-					const Expr *input = pattern.Input[0];
-					if (input == nullptr) return "no input";
-
-					const DeclRefExpr *inputName = getPointer(input);
-					if (inputName == nullptr) return "no input";
-
-					std::string transformation = "";
-					std::string endInput = getEndInputAsString(inputName);
-					if (endInput != "") {
-						transformation += ", " + endInput;
-					}
-
-					return transformation;
-				}
-
-				std::string getMapTransformationOutput(const Pattern &pattern) {
-					std::string transformation = "";
-
-					const DeclRefExpr *output = getPointer(pattern.Output);
-					if (output == nullptr)
-						return "output null";
-
-					transformation += ", " + getOutputAsString(output);
-
-					return transformation;
-				}
-
-				std::string getMapTransformationLambdaParameters(Map &map) {
-					std::string transformation = ", [=](";
-
-					if (map.isCompoundAssignmentBO()) {
-						if (!Functions::hasElement(map.Input, map.Output)) {
-							map.Input.push_back(map.Output);
-						}
-					}
-
-					int numElem = 0;
-					for (auto &element:map.Input) {
-						if (numElem != 0) {
-							transformation += ", ";
-						}
-						const DeclRefExpr *name = getPointer(element);
-						if (name == nullptr) parallelizable = false;
-						else {
-							transformation +=
-									"auto " + LoopConstant::startElement + name->getNameInfo().getName().getAsString();
-						}
-
-						numElem++;
-					}
-					transformation += ")";
-
-					return transformation;
-				}
-
-				template<typename Pattern>
-				void removePatternFromRewriter(SourceRange &currentRange, int &offset, std::vector<Pattern> PatterList,
-											   typename std::vector<Pattern>::iterator pattern, SourceManager &SM,
-											   Rewriter &rewriter) {
-					for (typename std::vector<Pattern>::iterator otherPattern = PatterList.begin();
-						 otherPattern != PatterList.end(); otherPattern++) {
-						if (otherPattern != pattern) {
-							otherPattern->removeFromRewriter(currentRange, offset, SM, rewriter);
-						}
-					}
-				}
-
-				template<typename Pattern>
-				void removePatternFromRewriter(SourceRange &currentRange, int &offset, std::vector<Pattern> PatterList,
-											   SourceManager &SM, Rewriter &rewriter) {
-					for (typename std::vector<Pattern>::iterator otherPattern = PatterList.begin();
-						 otherPattern != PatterList.end(); otherPattern++) {
-						otherPattern->removeFromRewriter(currentRange, offset, SM, rewriter);
-					}
-				}
-
-				std::string getMapTransformationLambdaBody(const std::vector<Map>::iterator &map) {
-					SourceManager &SM = Context->getSourceManager();
-
-					std::string mapLambda = "";
-
-					Rewriter rewriter(SM, LangOptions());
-					int offset = 0;
-					SourceRange currentRange;
-
-					// remove all other maps
-					removePatternFromRewriter(currentRange, offset, MapList, map, SM, rewriter);
-
-					//remove all other reduces
-					removePatternFromRewriter(currentRange, offset, ReduceList, SM, rewriter);
-
-					//remove left hand side of assignment if Binary Operator
-					if (auto *BO = dyn_cast<BinaryOperator>(map->mapFunction->IgnoreParenImpCasts())) {
-						currentRange = SourceRange(
-								BO->getBeginLoc().getLocWithOffset(offset),
-								BO->getOperatorLoc().getLocWithOffset(offset));
-						rewriter.RemoveText(currentRange);
-						offset -= rewriter.getRangeSize(currentRange);
-					}
-
-
-					for (const auto *read:map->Element) {
-						const DeclRefExpr *elem = getPointer(read);
-						if (elem != nullptr) {
-							currentRange = SourceRange(read->getSourceRange());
-							rewriter.ReplaceText(currentRange,
-												 LoopConstant::startElement + getElementAsString(elem));
-						}
-					}
-
-					if (map->isCompoundAssignmentBO()) {
-						const DeclRefExpr *output = getPointer(map->Output);
-						if (output == nullptr)
-							return "output null";
-						std::string end_lambda = " ) " + map->getOperatorAsString(SM) + " " +
-												 LoopConstant::startElement +
-												 output->getNameInfo().getName().getAsString();
-						rewriter.InsertTextAfter(Lexer::getLocForEndOfToken(map->mapFunction->getEndLoc(),
-																			offset, SM, LangOptions()), end_lambda);
-					}
-
-					std::string to_insert = "return ";
-					if (map->isCompoundAssignmentBO()) {
-						to_insert += "(";
-					}
-					rewriter.InsertTextBefore(
-							map->mapFunction->getBeginLoc().getLocWithOffset(offset), to_insert);
-
-
-					mapLambda = rewriter.getRewrittenText(
-							visitingForStmtBody->getSourceRange());
-
-					return mapLambda;
-				}
-
-				std::string getReduceTransformationLambdaParameters(const Reduce &reduce) {
-					std::string transformation = ", [=](";
-					int numElem = 0;
-					if (reduce.Element.size() == 2) {
-						for (auto elem : reduce.Element) {
-							if (numElem != 0) transformation += ", ";
-							const DeclRefExpr *name = getPointer(elem);
-							if (name == nullptr) parallelizable = false;
-							else
-								transformation += "auto " + LoopConstant::startElement +
-												  name->getNameInfo().getName().getAsString();
-							numElem++;
-						}
-						transformation += ")";
-					} else
-						transformation +=
-								"auto " + LoopConstant::startElement + "x, auto " + LoopConstant::startElement + "y)";
-					return transformation;
-				}
-
-				std::string getReduceTransformationLambdaBody(const std::vector<Reduce>::iterator &reduce) {
-					SourceManager &SM = Context->getSourceManager();
-					std::string reduceLambda = "";
-
-					Rewriter rewriter(SM, LangOptions());
-					int offset = 0;
-					SourceRange currentRange;
-
-					// remove all other reduces
-					removePatternFromRewriter(currentRange, offset, ReduceList, reduce, SM, rewriter);
-
-					//remove all other maps
-					removePatternFromRewriter(currentRange, offset, MapList, SM, rewriter);
-
-					std::string to_insert = "return ";
-					if (reduce->Element.size() == 2) {
-						if (auto *BO = dyn_cast<BinaryOperator>(reduce->original_expr->IgnoreParenImpCasts())) {
-							currentRange = SourceRange(
-									BO->getBeginLoc().getLocWithOffset(offset),
-									BO->getOperatorLoc().getLocWithOffset(offset));
-							rewriter.RemoveText(currentRange);
-							offset -= rewriter.getRangeSize(currentRange);
-						}
-
-						for (const auto *read:reduce->Element) {
-							const DeclRefExpr *elem = getPointer(read);
-							if (elem != nullptr) {
-								currentRange = SourceRange(read->getSourceRange());
-								rewriter.ReplaceText(currentRange,
-													 LoopConstant::startElement + elem->getNameInfo().getAsString());
-							}
-						}
-					} else {
-						//remove original reduce expression to be replaced
-						reduce->removeFromRewriter(currentRange, offset, SM, rewriter);
-
-
-						to_insert += LoopConstant::startElement + "x" + reduce->getOperatorAsString() +
-									 LoopConstant::startElement + "y;";
-					}
-
-					rewriter.InsertTextBefore(
-							reduce->original_expr->getBeginLoc().getLocWithOffset(offset), to_insert);
-
-
-					reduceLambda = rewriter.getRewrittenText(
-							visitingForStmtBody->getSourceRange());
-
-					return reduceLambda;
-				}
-
-				std::string getMapTransformation() {
-					std::string transformation;
-					std::vector<Map> PastMapList;
-					for (std::vector<Map>::iterator map = MapList.begin(); map != MapList.end(); map++) {
-						transformation += "grppi::map(grppi::dynamic_execution()";
-						//Input
-						transformation += getPatternTransformationInput(*map);
-
-						//End iterator of input
-						transformation += getPatternTransformationInputEnd(*map);
-
-						//Output
-						transformation += getMapTransformationOutput(*map);
-
-						//Parameters for lambda expression
-						transformation += getMapTransformationLambdaParameters(*map);
-
-						//Lambda body
-						std::string mapLambda = getMapTransformationLambdaBody(map);
-						transformation += mapLambda + ");\n";
-
-						//End of current map translation
-						PastMapList.push_back(*map);
-					}
-					//Removes new line characters that may have existed
-					transformation.erase(
-							std::remove(transformation.begin(), transformation.end(), '\n'),
-							transformation.end());
-
-					return transformation;
-				}
-
-				std::string getReduceTransformation() {
-					std::string transformation;
-					std::vector<Reduce> PastReduceList;
-					for (std::vector<Reduce>::iterator reduce = ReduceList.begin();
-						 reduce != ReduceList.end(); reduce++) {
-						std::string variable = "";
-						const DeclRefExpr *dre = getPointer(reduce->Output);
-						if (dre != nullptr) {
-							variable = dre->getNameInfo().getAsString();
-						}
-						transformation += variable + " " + reduce->getOperatorAsString() + "= ";
-						transformation += "grppi::reduce(grppi::dynamic_execution()";
-
-						//Input
-						transformation += getPatternTransformationInput(*reduce);
-
-						//End iterator of input
-						transformation += getPatternTransformationInputEnd(*reduce);
-
-						//Get reduce identity
-						transformation += ", " + reduce->getIdentityAsString();
-
-						//Parameters for lambda expression
-						transformation += getReduceTransformationLambdaParameters(*reduce);
-
-						//Lambda body
-						std::string reduceLambda = getReduceTransformationLambdaBody(reduce);
-						transformation += reduceLambda + ");\n";
-
-						//End of current map translation
-						PastReduceList.push_back(*reduce);
-					}
-					//Removes new line characters that may have existed
-					transformation.erase(
-							std::remove(transformation.begin(), transformation.end(), '\n'),
-							transformation.end());
-
-					return transformation;
-				}
-
-				std::string getMapReduceTransformation() {
-					if (MapList.size() != 1 || ReduceList.size() != 1) return "";
-					std::vector<Map>::iterator map = MapList.begin();
-					std::vector<Reduce>::iterator reduce = ReduceList.begin();
-
-					std::string transformation = "";
-
-					std::string variable = "";
-
-					const DeclRefExpr *dre = getPointer(reduce->Output);
-					if (dre != nullptr) {
-						variable = dre->getNameInfo().getAsString();
-					}
-					transformation += variable + " " + reduce->getOperatorAsString() + "= ";
-					transformation += "grppi::map_reduce(grppi::dynamic_execution()";
-
-					//Input of map
-					transformation += getPatternTransformationInput(*map);
-
-					//End iterator of input of map
-					transformation += getPatternTransformationInputEnd(*map);
-
-					//Get reduce identity of reduce
-					transformation += ", " + reduce->getIdentityAsString();
-
-					//Parameters for lambda expression
-					transformation += getMapTransformationLambdaParameters(*map);
-
-					//Lambda body
-					std::string mapLambda = getMapTransformationLambdaBody(map);
-					transformation += mapLambda + "";
-
-					//Parameters for lambda expression
-					transformation += getReduceTransformationLambdaParameters(*reduce);
-
-					//Lambda body
-					std::string reduceLambda = getReduceTransformationLambdaBody(reduce);
-					transformation += reduceLambda + ");\n";
-
-					//Removes new line characters that may have existed
-					transformation.erase(
-							std::remove(transformation.begin(), transformation.end(), '\n'),
-							transformation.end());
-
-					return transformation;
-				}
 			};
 
 
@@ -1308,6 +560,7 @@ namespace clang {
 
 				const uint64_t LoopSizeMin = 0;
 
+
 				public:
 				IntegerForLoopExplorer(ASTContext *Context, ClangTidyCheck &Check,
 									   std::vector<const Stmt *> visitedForLoopList,
@@ -1315,7 +568,7 @@ namespace clang {
 									   const VarDecl *iterator, const uint64_t LoopSizeMin, const bool verbose)
 						: LoopVisitor(Context, Check, visitedForLoopList, visitingForStmtBody, iterator, verbose),
 						  start_expr(start_expr),
-						  end_expr(end_expr), LoopSizeMin(LoopSizeMin)  {
+						  end_expr(end_expr), LoopSizeMin(LoopSizeMin) {
 					if (!isRequiredMinSize()) parallelizable = false;
 				}
 
@@ -1326,8 +579,8 @@ namespace clang {
 						std::vector<DeclarationName> localVariables, bool isThisExprValid,
 						const Stmt *visitingForStmtBody, const VarDecl *iterator, const bool verbose)
 						: LoopVisitor(Context, Check, visitedForLoopList,
-									   visitedFunctionDeclarationList, localVariables,
-									   isThisExprValid, visitingForStmtBody, iterator, verbose) {}
+									  visitedFunctionDeclarationList, localVariables,
+									  isThisExprValid, visitingForStmtBody, iterator, verbose) {}
 
 				const Expr *getLoopContainer(Expr *write) override;
 
@@ -1368,6 +621,7 @@ namespace clang {
 				bool addToWriteArraySubscriptList(CustomArray, ASTContext *context);
 
 				bool isLoopElem(Expr *write) override;
+
 				bool isMapAssignment(Expr *write) override;
 
 			};
@@ -1378,6 +632,7 @@ namespace clang {
 				std::vector<Expr *> writeList;
 
 				bool isLoopElem(Expr *write) override;
+
 				bool isMapAssignment(Expr *write) override;
 
 				const Expr *getLoopContainer(Expr *write) override;
@@ -1401,10 +656,11 @@ namespace clang {
 						std::vector<DeclarationName> localVariables, bool isThisExprValid,
 						const Stmt *visitingForStmtBody, const VarDecl *iterator, const bool verbose)
 						: LoopVisitor(Context, Check, visitedForLoopList,
-									   visitedFunctionDeclarationList, localVariables,
-									   isThisExprValid, visitingForStmtBody, iterator, verbose) {}
+									  visitedFunctionDeclarationList, localVariables,
+									  isThisExprValid, visitingForStmtBody, iterator, verbose) {}
 
 				bool VisitCXXOperatorCallExpr(CXXOperatorCallExpr *OO);
+
 				bool VisitUnaryOperator(UnaryOperator *UO);
 
 				DeclRefExpr *isValidDereference(Expr *expr);
@@ -1422,6 +678,7 @@ namespace clang {
 				DeclRefExpr *isElemDeclRefExpr(Expr *expr);
 
 				bool isLoopElem(Expr *write) override;
+
 				bool isMapAssignment(Expr *write) override;
 
 				const Expr *getLoopContainer(Expr *write) override;
@@ -1452,10 +709,70 @@ namespace clang {
 						std::vector<DeclarationName> localVariables, bool isThisExprValid,
 						const Stmt *visitingForStmtBody, const VarDecl *iterator, const bool verbose)
 						: LoopVisitor(Context, Check, visitedForLoopList,
-									   visitedFunctionDeclarationList, localVariables,
-									   isThisExprValid, visitingForStmtBody, iterator, verbose) {}
+									  visitedFunctionDeclarationList, localVariables,
+									  isThisExprValid, visitingForStmtBody, iterator, verbose) {}
 
 				bool VisitDeclRefExpr(DeclRefExpr *DRE);
+			};
+
+			class MapReduceCheck : public ClangTidyCheck {
+				public:
+				MapReduceCheck(StringRef name, ClangTidyContext *context)
+						: ClangTidyCheck(name, context),
+						  IntegerForLoopSizeMin(Options.get("IntegerForLoopSizeMin", 0)),
+						  Verbose(Options.get("Verbose", false)) {}
+
+				void registerMatchers(ast_matchers::MatchFinder *Finder) override;
+
+				void registerPPCallbacks(const SourceManager &SM, Preprocessor *PP,
+										 Preprocessor *ModuleExpanderPP) override {
+					std::unique_ptr<Prep> prep_callback(new Prep(SM));
+					PP->addPPCallbacks(std::move(prep_callback));
+				}
+
+				void storeOptions(ClangTidyOptions::OptionMap &Opts) override;
+
+				void check(const ast_matchers::MatchFinder::MatchResult &Result) override;
+
+				void ProcessIntegerForLoop(const ForStmt *integerForLoop, const MatchFinder::MatchResult &Result);
+
+				void ProcessIteratorForLoop(const ForStmt *iteratorForLoop, const MatchFinder::MatchResult &Result);
+
+				void ProcessRangeForLoop(const CXXForRangeStmt *rangeForLoop, const MatchFinder::MatchResult &Result);
+
+				template<class LoopExplorer, class Loop>
+				void addDiagnostic(std::shared_ptr<LoopExplorer> currentPattern, Loop loop) {
+
+					LoopExplorerList.push_back(currentPattern);
+					if (currentPattern->isMapReducePattern() && currentPattern->isParallelizable()) {
+						diag(loop->getBeginLoc(),
+							 Diag::label + "MapReduce pattern detected. Loop can be parallelized.",
+							 DiagnosticIDs::Remark) << FixItHint::CreateReplacement(loop->getSourceRange(),
+																					currentPattern->getMapReduceTransformation());
+					} else if (currentPattern->isReducePattern() && !currentPattern->isMapPattern() &&
+							   currentPattern->isParallelizable()) {
+						diag(loop->getBeginLoc(),
+							 Diag::label + "Reduce pattern detected. Loop can be parallelized.",
+							 DiagnosticIDs::Remark)
+								<< FixItHint::CreateReplacement(loop->getSourceRange(),
+																currentPattern->getReduceTransformation());
+					} else if (currentPattern->isMapPattern() && !currentPattern->isReducePattern() &&
+							   currentPattern->isParallelizable()) {
+						diag(loop->getBeginLoc(),
+							 Diag::label + "Map pattern detected. Loop can be parallelized.",
+							 DiagnosticIDs::Remark)
+								<< FixItHint::CreateReplacement(loop->getSourceRange(),
+																currentPattern->getMapTransformation());
+
+					} else {
+						diag(loop->getBeginLoc(), Diag::label + "No parallelization possible.");
+					}
+				}
+
+				private:
+				const uint64_t IntegerForLoopSizeMin;
+				const bool Verbose = false;
+
 			};
 
 
