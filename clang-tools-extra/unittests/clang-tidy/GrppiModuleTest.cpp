@@ -416,7 +416,7 @@ namespace clang {
 			}
 
 			TEST(ReduceCheckTest, IntegerLoopArrayInputCompoundAdditionFloat) {
-				std::string Expected = "";
+				std::string Expected = "k += grppi::reduce(grppi::dynamic_execution(), array, 10, 0L, [=](auto grppi_x, auto grppi_y){return grppi_x+grppi_y;});";
 
 				std::string Code = runCheckOnFile<MapReduceCheck>(
 						"int main() {\n"
@@ -501,7 +501,7 @@ namespace clang {
 			}
 
 			TEST(ReduceCheckTest, ContainerLoopVectorInputCompoundAdditionFloat) {
-				std::string Expected = "";
+				std::string Expected = "k += grppi::reduce(grppi::dynamic_execution(), std::begin(a), std::end(a), 0L, [=](auto grppi_x, auto grppi_y){return grppi_x+grppi_y;});";
 
 				std::string Code = runCheckOnFile<MapReduceCheck>(
 						"#include <vector>\n"

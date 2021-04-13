@@ -731,8 +731,7 @@ namespace clang {
 					Expr *LHS = BO->getLHS();
 					if (auto *write =
 							dyn_cast<DeclRefExpr>(LHS->IgnoreParenImpCasts())) {
-						if (write->getType()->isIntegerType() &&
-							!isLocalVariable(write->getFoundDecl()->getDeclName()) && !isLoopElem(write)) {
+						if (!isLocalVariable(write->getFoundDecl()->getDeclName()) && !isLoopElem(write)) {
 
 							//callexpr
 							if (BO->isAssignmentOp() && !BO->isCompoundAssignmentOp()) {
