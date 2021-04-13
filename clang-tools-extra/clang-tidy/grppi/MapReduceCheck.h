@@ -256,7 +256,7 @@ namespace clang {
 
 // Loop Explorer
 			template<class LoopType>
-			class LoopExplorer : public RecursiveASTVisitor<LoopType> {
+			class LoopVisitor : public RecursiveASTVisitor<LoopType> {
 				protected:
 				ASTContext *Context;
 				ClangTidyCheck &Check;
@@ -280,7 +280,7 @@ namespace clang {
 				const bool verbose;
 
 
-				LoopExplorer(ASTContext *Context, ClangTidyCheck &Check,
+				LoopVisitor(ASTContext *Context, ClangTidyCheck &Check,
 							 std::vector<const Stmt *> visitedForLoopList,
 							 std::vector<const FunctionDecl *> visitedFunctionDeclarationList,
 							 std::vector<DeclarationName> localVariables, bool isThisExprValid,
@@ -291,12 +291,12 @@ namespace clang {
 						  localVariables(localVariables), iterator_variable(iterator),
 						  isThisExprValid(isThisExprValid), verbose(verbose) {}
 
-				virtual ~LoopExplorer() = default;
+				virtual ~LoopVisitor() = default;
 
 				const virtual Expr *getLoopContainer(Expr *write) = 0;
 
 				public:
-				LoopExplorer(ASTContext *Context, ClangTidyCheck &Check,
+				LoopVisitor(ASTContext *Context, ClangTidyCheck &Check,
 							 std::vector<const Stmt *> visitedForLoopList,
 							 const Stmt *visitingForStmtBody, const VarDecl *iterator, const bool verbose)
 						: Context(Context), Check(Check), visitingForStmtBody(visitingForStmtBody),
@@ -1298,7 +1298,7 @@ namespace clang {
 			};
 
 
-			class IntegerForLoopExplorer : public LoopExplorer<IntegerForLoopExplorer> {
+			class IntegerForLoopExplorer : public LoopVisitor<IntegerForLoopExplorer> {
 				private:
 				std::vector<CustomArray> readArraySubscriptList;
 				std::vector<CustomArray> writeArraySubscriptList;
@@ -1313,7 +1313,7 @@ namespace clang {
 									   std::vector<const Stmt *> visitedForLoopList,
 									   const Stmt *visitingForStmtBody, const Expr *start_expr, const Expr *end_expr,
 									   const VarDecl *iterator, const uint64_t LoopSizeMin, const bool verbose)
-						: LoopExplorer(Context, Check, visitedForLoopList, visitingForStmtBody, iterator, verbose),
+						: LoopVisitor(Context, Check, visitedForLoopList, visitingForStmtBody, iterator, verbose),
 						  start_expr(start_expr),
 						  end_expr(end_expr), LoopSizeMin(LoopSizeMin)  {
 					if (!isRequiredMinSize()) parallelizable = false;
@@ -1325,7 +1325,7 @@ namespace clang {
 						std::vector<const FunctionDecl *> visitedFunctionDeclarationList,
 						std::vector<DeclarationName> localVariables, bool isThisExprValid,
 						const Stmt *visitingForStmtBody, const VarDecl *iterator, const bool verbose)
-						: LoopExplorer(Context, Check, visitedForLoopList,
+						: LoopVisitor(Context, Check, visitedForLoopList,
 									   visitedFunctionDeclarationList, localVariables,
 									   isThisExprValid, visitingForStmtBody, iterator, verbose) {}
 
@@ -1372,7 +1372,7 @@ namespace clang {
 
 			};
 
-			class ContainerForLoopExplorer : public LoopExplorer<ContainerForLoopExplorer> {
+			class ContainerForLoopExplorer : public LoopVisitor<ContainerForLoopExplorer> {
 				protected:
 				const DeclRefExpr *LoopContainer = nullptr;
 				std::vector<Expr *> writeList;
@@ -1389,7 +1389,7 @@ namespace clang {
 										 std::vector<const Stmt *> visitedForLoopList,
 										 const Stmt *visitingForStmtBody, const VarDecl *iterator,
 										 const DeclRefExpr *traversalArray, const bool verbose)
-						: LoopExplorer(Context, Check, visitedForLoopList, visitingForStmtBody, iterator, verbose),
+						: LoopVisitor(Context, Check, visitedForLoopList, visitingForStmtBody, iterator, verbose),
 						  LoopContainer(traversalArray) {
 
 				}
@@ -1400,7 +1400,7 @@ namespace clang {
 						std::vector<const FunctionDecl *> visitedFunctionDeclarationList,
 						std::vector<DeclarationName> localVariables, bool isThisExprValid,
 						const Stmt *visitingForStmtBody, const VarDecl *iterator, const bool verbose)
-						: LoopExplorer(Context, Check, visitedForLoopList,
+						: LoopVisitor(Context, Check, visitedForLoopList,
 									   visitedFunctionDeclarationList, localVariables,
 									   isThisExprValid, visitingForStmtBody, iterator, verbose) {}
 
@@ -1414,7 +1414,7 @@ namespace clang {
 
 			};
 
-			class RangeForLoopExplorer : public LoopExplorer<RangeForLoopExplorer> {
+			class RangeForLoopExplorer : public LoopVisitor<RangeForLoopExplorer> {
 				protected:
 				const DeclRefExpr *LoopContainer = nullptr;
 				std::vector<DeclRefExpr *> writeList;
@@ -1441,7 +1441,7 @@ namespace clang {
 									 std::vector<const Stmt *> visitedForLoopList,
 									 const Stmt *visitingForStmtBody, const VarDecl *iterator,
 									 const DeclRefExpr *traversalArray, const bool verbose)
-						: LoopExplorer(Context, Check, visitedForLoopList, visitingForStmtBody, iterator, verbose),
+						: LoopVisitor(Context, Check, visitedForLoopList, visitingForStmtBody, iterator, verbose),
 						  LoopContainer(traversalArray) {
 				}
 
@@ -1451,7 +1451,7 @@ namespace clang {
 						std::vector<const FunctionDecl *> visitedFunctionDeclarationList,
 						std::vector<DeclarationName> localVariables, bool isThisExprValid,
 						const Stmt *visitingForStmtBody, const VarDecl *iterator, const bool verbose)
-						: LoopExplorer(Context, Check, visitedForLoopList,
+						: LoopVisitor(Context, Check, visitedForLoopList,
 									   visitedFunctionDeclarationList, localVariables,
 									   isThisExprValid, visitingForStmtBody, iterator, verbose) {}
 

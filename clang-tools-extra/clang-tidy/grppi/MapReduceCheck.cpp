@@ -506,7 +506,7 @@ namespace clang {
 			//Range For Loop
 			bool RangeForLoopExplorer::VisitDeclRefExpr(DeclRefExpr *DRE) {
 
-				bool continueExploring = LoopExplorer::VisitDeclRefExpr(DRE);
+				bool continueExploring = LoopVisitor::VisitDeclRefExpr(DRE);
 				if (DRE->getFoundDecl() == iterator_variable) {
 
 					if (!Functions::hasElement(writeList, DRE)) {
