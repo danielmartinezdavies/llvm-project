@@ -207,8 +207,12 @@ namespace clang {
 				protected:
 
 				bool parallelizable = true;
+
+				public:
 				std::vector<Map> MapList;
 				std::vector<Reduce> ReduceList;
+
+				protected:
 				Map placeHolderMap = {{}, {}, nullptr, nullptr};
 
 				std::vector<const Stmt *> visitedForLoopList;
@@ -265,7 +269,7 @@ namespace clang {
 				bool isMapReducePattern(std::vector<Map> MapList, std::vector<Reduce> ReduceList);
 
 				bool isMapReducePattern(std::shared_ptr<LoopExplorer> le){
-						if(isMapReducePattern(le->MapList, this->ReduceList)){
+						if(isMapReducePattern(le->MapList, this->ReduceList) && !le->isReducePattern() && !isMapPattern()){
 							if(haveSameVisitingForLoopHeaderExpressions(le->visitingForStmt)) {
 								const Stmt& previousForStmt = *le->visitingForStmt;
 								auto parent = Context->getParents(previousForStmt);
@@ -286,9 +290,7 @@ namespace clang {
 								}
 							}
 						}
-
 						return false;
-
 				}
 
 				virtual bool isMapAssignment(Expr *write) = 0;
@@ -362,6 +364,7 @@ namespace clang {
 				std::string getMapTransformation();
 				std::string getReduceTransformation();
 				std::string getMapReduceTransformation();
+				std::string getMapReduceTransformation(LoopExplorer&, LoopExplorer&);
 			};
 
 			static std::vector<std::shared_ptr<LoopExplorer>> LoopExplorerList;
@@ -799,7 +802,7 @@ namespace clang {
 						diag(previousLoopExplorer->visitingForStmt->getBeginLoc(),
 							 Diag::label + "MapReduce pattern detected. Loops can be merged",
 							 DiagnosticIDs::Remark) << FixItHint::CreateReplacement(range,
-																					"Test1"/*currentPattern->getMapReduceTransformation()*/);
+																					currentPattern->getMapReduceTransformation(*previousLoopExplorer, *currentPattern));
 					}
 					if (currentPattern->isMapReducePattern() && currentPattern->isParallelizable()) {
 						diag(loop->getBeginLoc(),

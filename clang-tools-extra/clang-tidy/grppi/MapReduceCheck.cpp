@@ -631,7 +631,6 @@ namespace clang {
 					offset -= rewriter.getRangeSize(currentRange);
 				}
 
-
 				for (const auto *read:map->Element) {
 					const DeclRefExpr *elem = getPointer(read);
 					if (elem != nullptr) {
@@ -662,6 +661,7 @@ namespace clang {
 
 				mapLambda = rewriter.getRewrittenText(
 						getVisitingForLoopBody()->getSourceRange());
+
 
 				return mapLambda;
 			}
@@ -811,9 +811,12 @@ namespace clang {
 			}
 
 			std::string LoopExplorer::getMapReduceTransformation() {
-				if (MapList.size() != 1 || ReduceList.size() != 1) return "";
-				std::vector<Map>::iterator map = MapList.begin();
-				std::vector<Reduce>::iterator reduce = ReduceList.begin();
+				return getMapReduceTransformation( *this, *this);
+			}
+			std::string LoopExplorer::getMapReduceTransformation(LoopExplorer& MapExplorer, LoopExplorer& ReduceExplorer) {
+				if (MapExplorer.MapList.size() != 1 || ReduceExplorer.ReduceList.size() != 1) return "";
+				std::vector<Map>::iterator map = MapExplorer.MapList.begin();
+				std::vector<Reduce>::iterator reduce = ReduceExplorer.ReduceList.begin();
 
 				std::string transformation = "";
 
@@ -827,26 +830,26 @@ namespace clang {
 				transformation += "grppi::map_reduce(grppi::dynamic_execution()";
 
 				//Input of map
-				transformation += getPatternTransformationInput(*map);
+				transformation += MapExplorer.getPatternTransformationInput(*map);
 
 				//End iterator of input of map
-				transformation += getPatternTransformationInputEnd(*map);
+				transformation += MapExplorer.getPatternTransformationInputEnd(*map);
 
 				//Get reduce identity of reduce
 				transformation += ", " + reduce->getIdentityAsString();
 
 				//Parameters for lambda expression
-				transformation += getMapTransformationLambdaParameters(*map);
+				transformation += MapExplorer.getMapTransformationLambdaParameters(*map);
 
 				//Lambda body
-				std::string mapLambda = getMapTransformationLambdaBody(map);
+				std::string mapLambda = MapExplorer.getMapTransformationLambdaBody(map);
 				transformation += mapLambda + "";
 
 				//Parameters for lambda expression
-				transformation += getReduceTransformationLambdaParameters(*reduce);
+				transformation += ReduceExplorer.getReduceTransformationLambdaParameters(*reduce);
 
 				//Lambda body
-				std::string reduceLambda = getReduceTransformationLambdaBody(reduce);
+				std::string reduceLambda = ReduceExplorer.getReduceTransformationLambdaBody(reduce);
 				transformation += reduceLambda + ");\n";
 
 				//Removes new line characters that may have existed
