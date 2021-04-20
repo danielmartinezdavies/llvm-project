@@ -267,21 +267,24 @@ namespace clang {
 			bool LoopExplorer::isReducePattern() { return !ReduceList.empty(); }
 
 			bool LoopExplorer::isMapReducePattern() {
+				return isMapReducePattern(this->MapList, this->ReduceList);
+			}
+
+			bool LoopExplorer::isMapReducePattern(std::vector<Map> MapList, std::vector<Reduce> ReduceList) {
 				if (MapList.size() != 1 || ReduceList.size() != 1) return false;
-				Map m = MapList[0];
-				Reduce r = ReduceList[0];
+
+				Map &m = MapList[0];
+				Reduce &r = ReduceList[0];
 
 				const DeclRefExpr *mapVar = getPointer(m.Output);
 				const DeclRefExpr *reduceVar = getPointer(r.Input[0]);
 
-				if (Functions::isSameVariable(mapVar->getDecl(), reduceVar->getDecl())) return true;
+				if (mapVar != nullptr && reduceVar != nullptr &&
+					Functions::isSameVariable(mapVar->getDecl(), reduceVar->getDecl()))
+					return true;
 
 				return false;
 			}
-
-			/*bool LoopExplorer::isMapReducePattern(){
-
-			}*/
 
 			Expr *LoopExplorer::isReduceCallExpr(const Expr *expr) {
 				if (auto *callexpr =
@@ -658,7 +661,7 @@ namespace clang {
 
 
 				mapLambda = rewriter.getRewrittenText(
-						visitingForStmtBody->getSourceRange());
+						getVisitingForLoopBody()->getSourceRange());
 
 				return mapLambda;
 			}
@@ -730,7 +733,7 @@ namespace clang {
 
 
 				reduceLambda = rewriter.getRewrittenText(
-						visitingForStmtBody->getSourceRange());
+						getVisitingForLoopBody()->getSourceRange());
 
 				return reduceLambda;
 			}
@@ -854,6 +857,14 @@ namespace clang {
 				return transformation;
 			}
 
+			const StringRef LoopExplorer::getSourceText(const Expr *expr) const {
+				return getSourceText(expr->getSourceRange());
+			}
+
+			const StringRef LoopExplorer::getSourceText(const SourceRange source_range) const {
+				return Lexer::getSourceText(CharSourceRange::getTokenRange(source_range), Context->getSourceManager(),
+											LangOptions());
+			}
 
 
 			//IntegerForLoop
@@ -1201,6 +1212,28 @@ namespace clang {
 				return found;
 			}
 
+			const Stmt *IntegerForLoopExplorer::getVisitingForLoopBody() {
+				if (auto forStmt = dyn_cast<ForStmt>(visitingForStmt)) {
+					return forStmt->getBody();
+				}
+				return nullptr;
+			}
+
+			bool IntegerForLoopExplorer::haveSameVisitingForLoopHeaderExpressions(const Stmt *stmt) {
+				if (auto forStmt = dyn_cast<ForStmt>(stmt)) {
+					if (auto vForStmt = dyn_cast<ForStmt>(visitingForStmt)) {
+						if (getSourceText((const Expr *) (forStmt->getInit())) ==
+							getSourceText((const Expr *) (vForStmt->getInit())) &&
+							getSourceText((const Expr *) forStmt->getCond()) ==
+							getSourceText((const Expr *) vForStmt->getCond()) &&
+							getSourceText(forStmt->getInc()) == getSourceText(vForStmt->getInc())) {
+							return true;
+						}
+					}
+				}
+				return false;
+			}
+
 			//ContainerForLoop
 			bool ContainerForLoopExplorer::VisitCXXOperatorCallExpr(CXXOperatorCallExpr *OO) {
 				return ExploreDereference(OO);
@@ -1282,6 +1315,28 @@ namespace clang {
 				return LoopContainer->getNameInfo().getAsString();
 			}
 
+			const Stmt *ContainerForLoopExplorer::getVisitingForLoopBody() {
+				if (auto forStmt = dyn_cast<ForStmt>(visitingForStmt)) {
+					return forStmt->getBody();
+				}
+				return nullptr;
+			}
+
+			bool ContainerForLoopExplorer::haveSameVisitingForLoopHeaderExpressions(const Stmt *stmt) {
+				if (auto forStmt = dyn_cast<ForStmt>(stmt)) {
+					if (auto vForStmt = dyn_cast<ForStmt>(visitingForStmt)) {
+						if (getSourceText((const Expr *) (forStmt->getInit())) ==
+							getSourceText((const Expr *) (vForStmt->getInit())) &&
+							getSourceText((const Expr *) forStmt->getCond()) ==
+							getSourceText((const Expr *) vForStmt->getCond()) &&
+							getSourceText(forStmt->getInc()) == getSourceText(vForStmt->getInc())){
+							return true;
+						}
+					}
+				}
+				return false;
+			}
+
 			//Range For Loop
 			bool RangeForLoopExplorer::VisitDeclRefExpr(DeclRefExpr *DRE) {
 
@@ -1358,6 +1413,30 @@ namespace clang {
 
 			std::string RangeForLoopExplorer::getElementAsString(const DeclRefExpr *elem) const {
 				return LoopContainer->getNameInfo().getAsString();
+			}
+
+			const Stmt *RangeForLoopExplorer::getVisitingForLoopBody() {
+				if (auto *rangeLoop = dyn_cast<CXXForRangeStmt>(
+						visitingForStmt)) {
+					return rangeLoop->getBody();
+
+				}
+				return nullptr;
+			}
+
+			bool RangeForLoopExplorer::haveSameVisitingForLoopHeaderExpressions(const Stmt *stmt) {
+				if (auto *rangeLoop = dyn_cast<CXXForRangeStmt>(
+						stmt)) {
+					if (auto *vRangeLoop = dyn_cast<CXXForRangeStmt>(
+							visitingForStmt)) {
+						//list.push_back(rangeLoop->getLoopVarStmt());
+						if (getSourceText((const Expr *) rangeLoop->getLoopVarStmt()) ==
+							getSourceText((const Expr *) (vRangeLoop->getLoopVarStmt())) ) {
+							return true;
+						}
+					}
+				}
+				return false;
 			}
 
 			//MapReduceCheck
@@ -1487,15 +1566,17 @@ namespace clang {
 				//IntegerForLoop->dump();
 
 				auto currentPattern = std::make_shared<IntegerForLoopExplorer>(Result.Context, *this,
-												  std::vector<const Stmt *>(), IntegerForLoop->getBody(),
-												  start_expr,
-												  end_expr,
-												  InitVar, IntegerForLoopSizeMin, Verbose);
+																			   std::vector<const Stmt *>(),
+																			   IntegerForLoop,
+																			   start_expr,
+																			   end_expr,
+																			   InitVar, IntegerForLoopSizeMin, Verbose);
 
 				currentPattern->TraverseStmt(const_cast<Stmt *>(IntegerForLoop->getBody()));
 
 				currentPattern->appendForLoopList();
 				addDiagnostic(std::move(currentPattern), IntegerForLoop);
+
 			}
 
 			void MapReduceCheck::ProcessIteratorForLoop(const ForStmt *iteratorForLoop,
@@ -1523,9 +1604,9 @@ namespace clang {
 					return;
 				std::cout << "Processing Iterator loop" << std::endl;
 
-				auto currentPattern = std::make_shared<ContainerForLoopExplorer>(ContainerForLoopExplorer(Result.Context, *this, {}, iteratorForLoop->getBody(), IncVar,
-													matchedArray, Verbose));
-
+				auto currentPattern = std::make_shared<ContainerForLoopExplorer>(
+						ContainerForLoopExplorer(Result.Context, *this, {}, iteratorForLoop, IncVar,
+												 matchedArray, Verbose));
 
 				currentPattern->TraverseStmt(const_cast<Stmt *>(iteratorForLoop->getBody()));
 				addDiagnostic(std::move(currentPattern), iteratorForLoop);
@@ -1537,8 +1618,9 @@ namespace clang {
 				const auto *iterator = rangeForLoop->getLoopVariable();
 				if (const auto *input = dyn_cast<DeclRefExpr>(
 						rangeForLoop->getRangeInit()->IgnoreParenImpCasts())) {
-					auto  currentPattern = std::make_shared<RangeForLoopExplorer>(RangeForLoopExplorer(Result.Context, *this, {}, rangeForLoop->getBody(), iterator,
-													input, Verbose));
+					auto currentPattern = std::make_shared<RangeForLoopExplorer>(
+							RangeForLoopExplorer(Result.Context, *this, {}, rangeForLoop, iterator,
+												 input, Verbose));
 					currentPattern->TraverseStmt(const_cast<Stmt *>( rangeForLoop->getBody()));
 					addDiagnostic(std::move(currentPattern), rangeForLoop);
 				}

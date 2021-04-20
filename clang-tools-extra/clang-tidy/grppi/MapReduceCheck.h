@@ -196,11 +196,15 @@ namespace clang {
 			};
 
 			class LoopExplorer{
-				protected:
+
+				public:
 				ASTContext *Context;
 				ClangTidyCheck &Check;
 
-				const Stmt *visitingForStmtBody;
+				public:
+				const Stmt *visitingForStmt;
+
+				protected:
 
 				bool parallelizable = true;
 				std::vector<Map> MapList;
@@ -225,8 +229,8 @@ namespace clang {
 						std::vector<const Stmt *> visitedForLoopList,
 				std::vector<const FunctionDecl *> visitedFunctionDeclarationList,
 						std::vector<DeclarationName> localVariables, bool isThisExprValid,
-				const Stmt *visitingForStmtBody, const VarDecl *iterator, const bool verbose)
-				: Context(Context), Check(Check), visitingForStmtBody(visitingForStmtBody),
+				const Stmt *visitingForStmt, const VarDecl *iterator, const bool verbose)
+				: Context(Context), Check(Check), visitingForStmt(visitingForStmt),
 				visitedForLoopList(visitedForLoopList),
 				visitedFunctionDeclarationList(visitedFunctionDeclarationList),
 				localVariables(localVariables), iterator_variable(iterator),
@@ -234,8 +238,8 @@ namespace clang {
 
 				LoopExplorer(ASTContext *Context, ClangTidyCheck &Check,
 						std::vector<const Stmt *> visitedForLoopList,
-				const Stmt *visitingForStmtBody, const VarDecl *iterator, const bool verbose)
-				: Context(Context), Check(Check), visitingForStmtBody(visitingForStmtBody),
+				const Stmt *visitingForStmt, const VarDecl *iterator, const bool verbose)
+				: Context(Context), Check(Check), visitingForStmt(visitingForStmt),
 				visitedForLoopList(visitedForLoopList), iterator_variable(iterator), verbose(verbose) {
 				}
 				virtual ~LoopExplorer() = default;
@@ -245,6 +249,12 @@ namespace clang {
 				bool isLocalCallee(const Expr *callee);
 				const DeclRefExpr *getPointer(const Expr *S);
 
+				virtual const Stmt* getVisitingForLoopBody() = 0;
+				virtual bool haveSameVisitingForLoopHeaderExpressions(const Stmt*) = 0;
+
+				const StringRef getSourceText(const Expr*) const;
+				const StringRef getSourceText(const SourceRange) const;
+
 				// Auxiliary Functions
 				bool PointerHasValidLastValue(const VarDecl *pointerVarDecl, const Expr *expr);
 
@@ -252,7 +262,34 @@ namespace clang {
 				bool isMapPattern();
 				bool isReducePattern();
 				bool isMapReducePattern();
+				bool isMapReducePattern(std::vector<Map> MapList, std::vector<Reduce> ReduceList);
 
+				bool isMapReducePattern(std::shared_ptr<LoopExplorer> le){
+						if(isMapReducePattern(le->MapList, this->ReduceList)){
+							if(haveSameVisitingForLoopHeaderExpressions(le->visitingForStmt)) {
+								const Stmt& previousForStmt = *le->visitingForStmt;
+								auto parent = Context->getParents(previousForStmt);
+
+								const Stmt *parentStmt = parent.begin()->get<clang::Stmt>();
+
+								for(auto stmt = parentStmt->child_begin(); stmt != parentStmt->child_end(); stmt++){
+									if(auto forStmt = dyn_cast<ForStmt>(*stmt)){
+										if(forStmt == le->visitingForStmt){
+											stmt++;
+											if(auto nextForStmt = dyn_cast<ForStmt>(*stmt)){
+												if(nextForStmt == visitingForStmt){
+													return true;
+												}
+											}
+										}
+									}
+								}
+							}
+						}
+
+						return false;
+
+				}
 
 				virtual bool isMapAssignment(Expr *write) = 0;
 				Expr *isReduceCallExpr(const Expr *expr);
@@ -338,15 +375,15 @@ namespace clang {
 							const std::vector<const Stmt *> &visitedForLoopList,
 							const std::vector<const FunctionDecl *> &visitedFunctionDeclarationList,
 							const std::vector<DeclarationName> &localVariables, bool isThisExprValid,
-							const Stmt *visitingForStmtBody, const VarDecl *iterator, const bool verbose)
+							const Stmt *visitingForStmt, const VarDecl *iterator, const bool verbose)
 						: LoopExplorer(context, check, visitedForLoopList, visitedFunctionDeclarationList,
-									   localVariables, isThisExprValid, visitingForStmtBody, iterator, verbose) {}
+									   localVariables, isThisExprValid, visitingForStmt, iterator, verbose) {}
 
 				LoopVisitor(ASTContext *context, ClangTidyCheck &check,
-							const std::vector<const Stmt *> &visitedForLoopList, const Stmt *visitingForStmtBody,
+							const std::vector<const Stmt *> &visitedForLoopList, const Stmt *visitingForStmt,
 							const VarDecl *iterator, const bool verbose) : LoopExplorer(context, check,
 																						visitedForLoopList,
-																						visitingForStmtBody, iterator,
+																						visitingForStmt, iterator,
 																						verbose) {}
 
 				public:
@@ -420,16 +457,16 @@ namespace clang {
 						if (!Functions::hasElement<const FunctionDecl *>(
 								visitedFunctionDeclarationList, CXXCE->getConstructor())) {
 							std::vector<DeclarationName> functionVariables;
-							LoopType constructorExpr(Context, Check, visitedForLoopList,
+							/*LoopType constructorExpr(Context, Check, visitedForLoopList,
 													 visitedFunctionDeclarationList,
-													 functionVariables, true, visitingForStmtBody, iterator_variable,
+													 functionVariables, true, visitingForStmt, iterator_variable,
 													 verbose);
 							constructorExpr.TraverseStmt(CXXCE->getConstructor()->getBody());
 							if (!constructorExpr.isParallelizable()) {
 								parallelizable = false;
 							}
 							constructorExpr.appendForLoopList();
-							visitedFunctionDeclarationList.push_back(CXXCE->getConstructor());
+							visitedFunctionDeclarationList.push_back(CXXCE->getConstructor());*/
 						}
 						// Check Destructor
 						if (CXXCE->getConstructor()->getParent() != nullptr &&
@@ -439,16 +476,16 @@ namespace clang {
 									visitedFunctionDeclarationList, destructor)) {
 
 								std::vector<DeclarationName> functionVariables;
-								LoopType destructorExpr(Context, Check, visitedForLoopList,
+								/*LoopType destructorExpr(Context, Check, visitedForLoopList,
 														visitedFunctionDeclarationList,
-														functionVariables, true, visitingForStmtBody,
+														functionVariables, true, visitingForStmt,
 														iterator_variable, verbose);
 								destructorExpr.TraverseStmt(destructor->getBody());
 								if (!destructorExpr.isParallelizable()) {
 									parallelizable = false;
 								}
 								destructorExpr.appendForLoopList();
-								visitedFunctionDeclarationList.push_back(destructor);
+								visitedFunctionDeclarationList.push_back(destructor);*/
 							}
 						}
 					}
@@ -479,9 +516,9 @@ namespace clang {
 
 							visitedFunctionDeclarationList.push_back(functionDeclaration);
 
-							LoopType callExpr(Context, Check, visitedForLoopList,
+							/*LoopType callExpr(Context, Check, visitedForLoopList,
 											  visitedFunctionDeclarationList, validParameterList,
-											  isLocCallee, visitingForStmtBody, iterator_variable, verbose);
+											  isLocCallee, visitingForStmt, iterator_variable, verbose);
 							callExpr.TraverseStmt(functionDeclaration->getBody());
 							if (!callExpr.isParallelizable()) {
 								if (verbose) {
@@ -489,7 +526,7 @@ namespace clang {
 											   Diag::label + "Call expression unsafe");
 								}
 							}
-							callExpr.appendForLoopList();
+							callExpr.appendForLoopList();*/
 						}
 					} else {
 						if (verbose) {
@@ -564,9 +601,9 @@ namespace clang {
 				public:
 				IntegerForLoopExplorer(ASTContext *Context, ClangTidyCheck &Check,
 									   std::vector<const Stmt *> visitedForLoopList,
-									   const Stmt *visitingForStmtBody, const Expr *start_expr, const Expr *end_expr,
+									   const Stmt *visitingForStmt, const Expr *start_expr, const Expr *end_expr,
 									   const VarDecl *iterator, const uint64_t LoopSizeMin, const bool verbose)
-						: LoopVisitor(Context, Check, visitedForLoopList, visitingForStmtBody, iterator, verbose),
+						: LoopVisitor(Context, Check, visitedForLoopList, visitingForStmt, iterator, verbose),
 						  start_expr(start_expr),
 						  end_expr(end_expr), LoopSizeMin(LoopSizeMin) {
 					if (!isRequiredMinSize()) parallelizable = false;
@@ -577,13 +614,15 @@ namespace clang {
 						std::vector<const Stmt *> visitedForLoopList,
 						std::vector<const FunctionDecl *> visitedFunctionDeclarationList,
 						std::vector<DeclarationName> localVariables, bool isThisExprValid,
-						const Stmt *visitingForStmtBody, const VarDecl *iterator, const bool verbose)
+						const Stmt *visitingForStmt, const VarDecl *iterator, const bool verbose)
 						: LoopVisitor(Context, Check, visitedForLoopList,
 									  visitedFunctionDeclarationList, localVariables,
-									  isThisExprValid, visitingForStmtBody, iterator, verbose) {}
+									  isThisExprValid, visitingForStmt, iterator, verbose) {}
 
 				const Expr *getLoopContainer(Expr *write) override;
 
+				const Stmt* getVisitingForLoopBody() override;
+				bool haveSameVisitingForLoopHeaderExpressions(const Stmt*) override;
 
 				bool isArrayLoopElem(CustomArray);
 
@@ -637,14 +676,17 @@ namespace clang {
 
 				const Expr *getLoopContainer(Expr *write) override;
 
+				const Stmt* getVisitingForLoopBody() override;
+				bool haveSameVisitingForLoopHeaderExpressions(const Stmt*) override;
+
 				std::string getElementAsString(const DeclRefExpr *elem) const override;
 
 				public:
 				ContainerForLoopExplorer(ASTContext *Context, ClangTidyCheck &Check,
 										 std::vector<const Stmt *> visitedForLoopList,
-										 const Stmt *visitingForStmtBody, const VarDecl *iterator,
+										 const Stmt *visitingForStmt, const VarDecl *iterator,
 										 const DeclRefExpr *traversalArray, const bool verbose)
-						: LoopVisitor(Context, Check, visitedForLoopList, visitingForStmtBody, iterator, verbose),
+						: LoopVisitor(Context, Check, visitedForLoopList, visitingForStmt, iterator, verbose),
 						  LoopContainer(traversalArray) {
 
 				}
@@ -654,10 +696,10 @@ namespace clang {
 						std::vector<const Stmt *> visitedForLoopList,
 						std::vector<const FunctionDecl *> visitedFunctionDeclarationList,
 						std::vector<DeclarationName> localVariables, bool isThisExprValid,
-						const Stmt *visitingForStmtBody, const VarDecl *iterator, const bool verbose)
+						const Stmt *visitingForStmt, const VarDecl *iterator, const bool verbose)
 						: LoopVisitor(Context, Check, visitedForLoopList,
 									  visitedFunctionDeclarationList, localVariables,
-									  isThisExprValid, visitingForStmtBody, iterator, verbose) {}
+									  isThisExprValid, visitingForStmt, iterator, verbose) {}
 
 				bool VisitCXXOperatorCallExpr(CXXOperatorCallExpr *OO);
 
@@ -676,6 +718,9 @@ namespace clang {
 				std::vector<DeclRefExpr *> writeList;
 
 				DeclRefExpr *isElemDeclRefExpr(Expr *expr);
+
+				const Stmt* getVisitingForLoopBody() override;
+				bool haveSameVisitingForLoopHeaderExpressions(const Stmt *) override;
 
 				bool isLoopElem(Expr *write) override;
 
@@ -696,9 +741,9 @@ namespace clang {
 				public:
 				RangeForLoopExplorer(ASTContext *Context, ClangTidyCheck &Check,
 									 std::vector<const Stmt *> visitedForLoopList,
-									 const Stmt *visitingForStmtBody, const VarDecl *iterator,
+									 const Stmt *visitingForStmt, const VarDecl *iterator,
 									 const DeclRefExpr *traversalArray, const bool verbose)
-						: LoopVisitor(Context, Check, visitedForLoopList, visitingForStmtBody, iterator, verbose),
+						: LoopVisitor(Context, Check, visitedForLoopList, visitingForStmt, iterator, verbose),
 						  LoopContainer(traversalArray) {
 				}
 
@@ -707,10 +752,10 @@ namespace clang {
 						std::vector<const Stmt *> visitedForLoopList,
 						std::vector<const FunctionDecl *> visitedFunctionDeclarationList,
 						std::vector<DeclarationName> localVariables, bool isThisExprValid,
-						const Stmt *visitingForStmtBody, const VarDecl *iterator, const bool verbose)
+						const Stmt *visitingForStmt, const VarDecl *iterator, const bool verbose)
 						: LoopVisitor(Context, Check, visitedForLoopList,
 									  visitedFunctionDeclarationList, localVariables,
-									  isThisExprValid, visitingForStmtBody, iterator, verbose) {}
+									  isThisExprValid, visitingForStmt, iterator, verbose) {}
 
 				bool VisitDeclRefExpr(DeclRefExpr *DRE);
 			};
@@ -740,10 +785,22 @@ namespace clang {
 
 				void ProcessRangeForLoop(const CXXForRangeStmt *rangeForLoop, const MatchFinder::MatchResult &Result);
 
-				template<class LoopExplorer, class Loop>
+				template<class Loop>
 				void addDiagnostic(std::shared_ptr<LoopExplorer> currentPattern, Loop loop) {
+					std::shared_ptr<LoopExplorer> previousLoopExplorer = nullptr;
+					if(!LoopExplorerList.empty())
+						 previousLoopExplorer = LoopExplorerList.back();
 
 					LoopExplorerList.push_back(currentPattern);
+
+					//TODO: make sure map reduce map output is not used later
+					if (currentPattern->isParallelizable() && previousLoopExplorer != nullptr && currentPattern->isMapReducePattern(previousLoopExplorer)) {
+						SourceRange range = SourceRange(previousLoopExplorer->visitingForStmt->getBeginLoc(), loop->getEndLoc());
+						diag(previousLoopExplorer->visitingForStmt->getBeginLoc(),
+							 Diag::label + "MapReduce pattern detected. Loops can be merged",
+							 DiagnosticIDs::Remark) << FixItHint::CreateReplacement(range,
+																					"Test1"/*currentPattern->getMapReduceTransformation()*/);
+					}
 					if (currentPattern->isMapReducePattern() && currentPattern->isParallelizable()) {
 						diag(loop->getBeginLoc(),
 							 Diag::label + "MapReduce pattern detected. Loop can be parallelized.",
