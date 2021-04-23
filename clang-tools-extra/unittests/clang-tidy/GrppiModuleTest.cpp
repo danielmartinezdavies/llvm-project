@@ -626,6 +626,7 @@ namespace clang {
 			 * Map Reduce
 			 *
 			 * */
+			//Map and Reduce in same for loop
 			TEST(MapReduceCheckTest, IntegerLoopVectorInputVectorOutputCompoundAddition) {
 				std::string Expected = "k += grppi::map_reduce(grppi::dynamic_execution(), std::begin(b), 10, 0L, [=](auto grppi_b){return  grppi_b;}, [=](auto grppi_x, auto grppi_y){return grppi_x+grppi_y;});";
 
@@ -778,6 +779,7 @@ namespace clang {
 				EXPECT_EQ(Code, Expected);
 			}
 
+			//TODO
 			//Need to include in PathToVector std::begin for array
 			/*
 			TEST(MapReduceCheckTest, ContainerLoopArrayInputArrayOutputCompoundAddition) {
@@ -981,6 +983,337 @@ namespace clang {
 						"\t\t\n"
 						"\t\te = e + e;\n"
 						"\t\tk = e + k;\n"
+						"\t}\n"
+						"}", PathToVector);
+				removeSpaces(Code, Expected);
+				EXPECT_EQ(Code, Expected);
+			}
+
+
+			//Map and Reduce in different for loops
+			TEST(MapReduceCheckTest, MultipleIntegerLoopVectorInputVectorOutputCompoundAddition) {
+				std::string Expected = "k += grppi::map_reduce(grppi::dynamic_execution(), std::begin(b), 10, 0L, [=](auto grppi_b){return  grppi_b;}, [=](auto grppi_x, auto grppi_y){return grppi_x+grppi_y;});";
+
+				std::string Code = runCheckOnFile<MapReduceCheck>(
+						"#include <vector>\n"
+						"\n"
+						"int main() {\n"
+						"\tint k = 0;\n"
+						"\n"
+						"\tstd::vector<int> a(10);\n"
+						"\tstd::vector<int> b(10);\n"
+						"\n"
+						"\tfor (int i = 0; i < 10; i++) {\n"
+						"\t\ta[i] = b[i];\n"
+						"\t}\n"
+						"\tfor (int i = 0; i < 10; i++) {\n"
+						"\t\tk += a[i];\n"
+						"\t}\n"
+						"}", PathToVector);
+				removeSpaces(Code, Expected);
+				EXPECT_EQ(Code, Expected);
+			}
+
+			TEST(MapReduceCheckTest, MultipleIntegerLoopArrayInputArrayOutputCompoundAddition) {
+				std::string Expected = "k += grppi::map_reduce(grppi::dynamic_execution(), b, 10, 0L, [=](auto grppi_b){return  grppi_b;}, [=](auto grppi_x, auto grppi_y){return grppi_x+grppi_y;});\n";
+				std::string Code = runCheckOnFile<MapReduceCheck>(
+						"#include <vector>\n"
+						"int main() {\n"
+						"\tint k = 0;\n"
+						"\tint a[10];\n"
+						"\tint b[10];\n"
+						"\tfor (int i = 0; i < 10; i++) {\n"
+						"\t\ta[i] = b[i];\n"
+						"\t}\n"
+						"\tfor (int i = 0; i < 10; i++) {\n"
+						"\t\tk += a[i];\n"
+						"\t}\n"
+						"}", PathToVector);
+				removeSpaces(Code, Expected);
+				EXPECT_EQ(Code, Expected);
+			}
+
+			TEST(MapReduceCheckTest, MultipleIntegerLoopPointerInputPointerOutputCompoundAddition) {
+				std::string Expected = "k += grppi::map_reduce(grppi::dynamic_execution(), b, 10, 0L, [=](auto grppi_b){return  grppi_b;}, [=](auto grppi_x, auto grppi_y){return grppi_x+grppi_y;});";
+				std::string Code = runCheckOnFile<MapReduceCheck>(
+						"#include <vector>\n"
+						"\n"
+						"int main() {\n"
+						"\tint k = 0;\n"
+						"\tint *a = new int[10];\n"
+						"\tint *b = new int[10];\n"
+						"\tfor (int i = 0; i < 10; i++) {\n"
+						"\t\ta[i] = b[i];\n"
+						"\t}\n"
+						"\tfor (int i = 0; i < 10; i++) {\n"
+						"\t\tk += a[i];\n"
+						"\t}\n"
+						"}", PathToVector);
+				removeSpaces(Code, Expected);
+				EXPECT_EQ(Code, Expected);
+			}
+
+			TEST(MapReduceCheckTest, MultipleIntegerLoopVectorInputVectorOutputAdditionLeft) {
+				std::string Expected = "k += grppi::map_reduce(grppi::dynamic_execution(), std::begin(b), 10, 0L, [=](auto grppi_b){return  grppi_b;}, [=](auto grppi_x, auto grppi_y){return grppi_x+grppi_y;});";
+
+				std::string Code = runCheckOnFile<MapReduceCheck>(
+						"#include <vector>\n"
+						"int main() {\n"
+						"\tint k = 0;\n"
+						"\tstd::vector<int> a(10);\n"
+						"\tstd::vector<int> b(10);\n"
+						"\tfor (int i = 0; i < 10; i++) {\n"
+						"\t\ta[i] = b[i];\n"
+						"\t}\n"
+						"\tfor (int i = 0; i < 10; i++) {\n"
+						"\t\tk = k + a[i];\n"
+						"\t}\n"
+						"}", PathToVector);
+				removeSpaces(Code, Expected);
+				EXPECT_EQ(Code, Expected);
+			}
+
+			TEST(MapReduceCheckTest, MultipleIntegerLoopVectorInputVectorOutputAdditionRight) {
+				std::string Expected = "k += grppi::map_reduce(grppi::dynamic_execution(), std::begin(b), 10, 0L, [=](auto grppi_b){return  grppi_b;}, [=](auto grppi_x, auto grppi_y){return grppi_x+grppi_y;});";
+
+				std::string Code = runCheckOnFile<MapReduceCheck>(
+						"#include <vector>\n"
+						"\n"
+						"int main() {\n"
+						"\tint k = 0;\n"
+						"\tstd::vector<int> a(10);\n"
+						"\tstd::vector<int> b(10);\n"
+						"\tfor (int i = 0; i < 10; i++) {\n"
+						"\t\ta[i] = b[i];\n"
+						"\t}\n"
+						"\tfor (int i = 0; i < 10; i++) {\n"
+						"\t\tk =  a[i] + k;\n"
+						"\t}\n"
+						"}", PathToVector);
+				removeSpaces(Code, Expected);
+				EXPECT_EQ(Code, Expected);
+			}
+
+			TEST(MapReduceCheckTest, MultipleIntegerLoopVectorInputVectorOutputCompundMultiplication) {
+				std::string Expected = "k *= grppi::map_reduce(grppi::dynamic_execution(), std::begin(b), 10, 1L, [=](auto grppi_b){return  grppi_b;}, [=](auto grppi_x, auto grppi_y){return grppi_x*grppi_y;});";
+
+				std::string Code = runCheckOnFile<MapReduceCheck>(
+						"#include <vector>\n"
+						"int main() {\n"
+						"\tint k = 0;\n"
+						"\tstd::vector<int> a(10);\n"
+						"\tstd::vector<int> b(10);\n"
+						"\tfor (int i = 0; i < 10; i++) {\n"
+						"\t\ta[i] = b[i];\n"
+						"\t}\n"
+						"\tfor (int i = 0; i < 10; i++) {\n"
+						"\t\tk *=  a[i];\n"
+						"\t}\n"
+						"}", PathToVector);
+				removeSpaces(Code, Expected);
+				EXPECT_EQ(Code, Expected);
+			}
+
+			//Container for loop
+			TEST(MapReduceCheckTest, MultipleContainerLoopVectorInputVectorOutputCompoundAddition) {
+				std::string Expected = "k += grppi::map_reduce(grppi::dynamic_execution(), std::begin(a), std::end(a), 0L, [=](auto grppi_a){return  grppi_a*2;}, [=](auto grppi_x, auto grppi_y){return grppi_x+grppi_y;});";
+
+				std::string Code = runCheckOnFile<MapReduceCheck>(
+						"#include <vector>\n"
+						"int main() {\n"
+						"\tint k = 0;\n"
+						"\tstd::vector<int> a(10);\n"
+						"\tfor (auto i = a.begin(); i != a.end();i++) {\n"
+						"\t\t*i = *i*2;\n"
+						"\t}\n"
+						"\tfor (auto i = a.begin(); i != a.end();i++) {\n"
+						"\t\tk += *i;\n"
+						"\t}\n"
+						"}", PathToVector);
+				removeSpaces(Code, Expected);
+				EXPECT_EQ(Code, Expected);
+			}
+
+			//TODO:
+			//Need to include in PathToVector std::begin for array
+			/*
+			TEST(MapReduceCheckTest, ContainerLoopArrayInputArrayOutputCompoundAddition) {
+				std::string Expected = "k += grppi::map_reduce(grppi::dynamic_execution(), a, std::end(a), 0L, [=](auto grppi_a){return  grppi_a*2;}, [=](auto grppi_x, auto grppi_y){return grppi_x+grppi_y;});";
+				std::string Code = runCheckOnFile<MapReduceCheck>(
+						"#include <vector>\n"
+						"int main() {\n"
+						"\tint k = 0;\n"
+						"\tint a[10];\n"
+						"\tfor (auto i = std::begin(a); i != std::end(a);i++) {\n"
+						"\t\t*i = *i*2;\n"
+						"\t\tk += *i;\n"
+						"\t}\n"
+						"}", PathToVector);
+				removeSpaces(Code, Expected);
+				EXPECT_EQ(Code, Expected);
+			}*/
+
+
+			//Container for loop cannot iterate over a pointer
+			/*
+			TEST(MapReduceCheckTest, ContainerLoopPointerInputPointerOutputCompoundAddition) {
+				std::string Expected = "";
+				std::string Code = runCheckOnFile<MapReduceCheck>(
+						"", PathToVector);
+				removeSpaces(Code, Expected);
+				EXPECT_EQ(Code, Expected);
+			}*/
+
+			TEST(MapReduceCheckTest, MultipleContainerLoopVectorInputVectorOutputAdditionLeft) {
+				std::string Expected = "k += grppi::map_reduce(grppi::dynamic_execution(), std::begin(a), std::end(a), 0L, [=](auto grppi_a){return  grppi_a*2;}, [=](auto grppi_x, auto grppi_y){return grppi_x+grppi_y;});";
+
+				std::string Code = runCheckOnFile<MapReduceCheck>(
+						"#include <vector>\n"
+						"int main() {\n"
+						"\tint k = 0;\n"
+						"\tstd::vector<int> a(10);\n"
+						"\tfor (auto i = std::begin(a); i != std::end(a);i++) {\n"
+						"\t\t*i = *i*2;\n"
+						"\t}\n"
+						"\tfor (auto i = std::begin(a); i != std::end(a);i++) {\n"
+						"\t\tk = k + *i;\n"
+						"\t}\n"
+						"}", PathToVector);
+				removeSpaces(Code, Expected);
+				EXPECT_EQ(Code, Expected);
+			}
+
+			TEST(MapReduceCheckTest, MultipleContainerLoopVectorInputVectorOutputAdditionRight) {
+				std::string Expected = "k += grppi::map_reduce(grppi::dynamic_execution(), std::begin(a), std::end(a), 0L, [=](auto grppi_a){return  grppi_a*2;}, [=](auto grppi_x, auto grppi_y){return grppi_x+grppi_y;});";
+
+				std::string Code = runCheckOnFile<MapReduceCheck>(
+						"#include <vector>\n"
+						"int main() {\n"
+						"\tint k = 0;\n"
+						"\tstd::vector<int> a(10);\n"
+						"\tfor (auto i = std::begin(a); i != std::end(a);i++) {\n"
+						"\t\t*i = *i*2;\n"
+						"\t}\n"
+						"\tfor (auto i = std::begin(a); i != std::end(a);i++) {\n"
+						"\t\tk =  *i + k;\n"
+						"\t}\n"
+						"}", PathToVector);
+				removeSpaces(Code, Expected);
+				EXPECT_EQ(Code, Expected);
+			}
+
+			TEST(MapReduceCheckTest, MultipleContainerLoopVectorInputVectorOutputCompundMultiplication) {
+				std::string Expected = "k *= grppi::map_reduce(grppi::dynamic_execution(), std::begin(a), std::end(a), 1L, [=](auto grppi_a){return  grppi_a*2;}, [=](auto grppi_x, auto grppi_y){return grppi_x*grppi_y;});";
+
+				std::string Code = runCheckOnFile<MapReduceCheck>(
+						"#include <vector>\n"
+						"int main() {\n"
+						"\tint k = 0;\n"
+						"\tstd::vector<int> a(10);\n"
+						"\tfor (auto i = std::begin(a); i != std::end(a);i++) {\n"
+						"\t\t*i = *i*2;\n"
+						"\t}\n"
+						"\tfor (auto i = std::begin(a); i != std::end(a);i++) {\n"
+						"\t\tk *=  *i;\n"
+						"\t}\n"
+						"}", PathToVector);
+				removeSpaces(Code, Expected);
+				EXPECT_EQ(Code, Expected);
+			}
+
+
+			//Range for loop
+			TEST(MapReduceCheckTest, MultipleRangeLoopVectorInputVectorOutputCompoundAddition) {
+				std::string Expected = "k += grppi::map_reduce(grppi::dynamic_execution(), a, 0L, [=](auto grppi_a){return  grppi_a * 2;}, [=](auto grppi_x, auto grppi_y){return grppi_x+grppi_y;});\n";
+
+				std::string Code = runCheckOnFile<MapReduceCheck>(
+						"#include <vector>\n"
+						"int main() {\n"
+						"\tint k = 0;\n"
+						"\tstd::vector<int> a(10);\n"
+						"\tfor (auto &e :a) {\n"
+						"\t\te = e * 2;\n"
+						"\t}\n"
+						"\tfor (auto &e :a) {\n"
+						"\t\tk += e;\n"
+						"\t}\n"
+						"}", PathToVector);
+				removeSpaces(Code, Expected);
+				EXPECT_EQ(Code, Expected);
+			}
+
+			TEST(MapReduceCheckTest, MultipleRangeLoopArrayInputArrayOutputCompoundAddition) {
+				std::string Expected = "k += grppi::map_reduce(grppi::dynamic_execution(), a, 0L, [=](auto grppi_a){return  grppi_a * 2;}, [=](auto grppi_x, auto grppi_y){return grppi_x+grppi_y;});";
+				std::string Code = runCheckOnFile<MapReduceCheck>(
+						"#include <vector>\n"
+						"int main() {\n"
+						"\tint k = 0;\n"
+						"\tint a[10];\n"
+						"\tfor (auto &e : a) {\n"
+						"\t\te = e * 2;\n"
+						"\t}\n"
+						"\tfor (auto &e : a) {\n"
+						"\t\tk += e;\n"
+						"\t}\n"
+						"}", PathToVector);
+				removeSpaces(Code, Expected);
+				EXPECT_EQ(Code, Expected);
+			}
+
+
+
+			TEST(MapReduceCheckTest, MultipleRangeLoopVectorInputVectorOutputAdditionLeft) {
+				std::string Expected = "k += grppi::map_reduce(grppi::dynamic_execution(), a, 0L, [=](auto grppi_a){return  grppi_a * 2;}, [=](auto grppi_x, auto grppi_y){return grppi_x+grppi_y;});";
+
+				std::string Code = runCheckOnFile<MapReduceCheck>(
+						"#include <vector>\n"
+						"int main() {\n"
+						"\tint k = 0;\n"
+						"\tstd::vector<int> a(10);\n"
+						"\tfor (auto &e : a) {\n"
+						"\t\te = e * 2;\n"
+						"\t}\n"
+						"\tfor (auto &e : a) {\n"
+						"\t\tk = k + e;\n"
+						"\t}\n"
+						"}", PathToVector);
+				removeSpaces(Code, Expected);
+				EXPECT_EQ(Code, Expected);
+			}
+
+			TEST(MapReduceCheckTest, MultipleRangeLoopVectorInputVectorOutputAdditionRight) {
+				std::string Expected = "k += grppi::map_reduce(grppi::dynamic_execution(), a, 0L, [=](auto grppi_a){return  grppi_a * 2;}, [=](auto grppi_x, auto grppi_y){return grppi_x+grppi_y;});";
+
+				std::string Code = runCheckOnFile<MapReduceCheck>(
+						"#include <vector>\n"
+						"int main() {\n"
+						"\tint k = 0;\n"
+						"\tstd::vector<int> a(10);\n"
+						"\tfor (auto &e : a) {\n"
+						"\t\te = e * 2;\n"
+						"\t}\n"
+						"\tfor (auto &e : a) {\n"
+						"\t\tk =  e + k;\n"
+						"\t}\n"
+						"}", PathToVector);
+				removeSpaces(Code, Expected);
+				EXPECT_EQ(Code, Expected);
+			}
+
+			TEST(MapReduceCheckTest, MultipleRangeLoopVectorInputVectorOutputCompundMultiplication) {
+				std::string Expected = "k *= grppi::map_reduce(grppi::dynamic_execution(), a, 1L, [=](auto grppi_a){return  grppi_a * 2;}, [=](auto grppi_x, auto grppi_y){return grppi_x*grppi_y;});";
+
+				std::string Code = runCheckOnFile<MapReduceCheck>(
+						"#include <vector>\n"
+						"\n"
+						"int main() {\n"
+						"\tint k = 0;\n"
+						"\tstd::vector<int> a(10);\n"
+						"\tfor (auto &e : a) {\n"
+						"\t\te = e * 2;\n"
+						"\t}\n"
+						"\tfor (auto &e : a) {\n"
+						"\t\tk *=  e;\n"
 						"\t}\n"
 						"}", PathToVector);
 				removeSpaces(Code, Expected);
