@@ -124,7 +124,6 @@ namespace clang {
 			};
 
 
-
 			class Pattern {
 				public:
 				Pattern(std::vector<const Expr *> Input, const Expr *Output)
@@ -195,7 +194,7 @@ namespace clang {
 				}
 			};
 
-			class LoopExplorer{
+			class LoopExplorer {
 
 				public:
 				ASTContext *Context;
@@ -230,63 +229,81 @@ namespace clang {
 
 				public:
 				LoopExplorer(ASTContext *Context, ClangTidyCheck &Check,
-						std::vector<const Stmt *> visitedForLoopList,
-				std::vector<const FunctionDecl *> visitedFunctionDeclarationList,
-						std::vector<DeclarationName> localVariables, bool isThisExprValid,
-				const Stmt *visitingForStmt, const VarDecl *iterator, const bool verbose)
-				: Context(Context), Check(Check), visitingForStmt(visitingForStmt),
-				visitedForLoopList(visitedForLoopList),
-				visitedFunctionDeclarationList(visitedFunctionDeclarationList),
-				localVariables(localVariables), iterator_variable(iterator),
-				isThisExprValid(isThisExprValid), verbose(verbose) {}
+							 std::vector<const Stmt *> visitedForLoopList,
+							 std::vector<const FunctionDecl *> visitedFunctionDeclarationList,
+							 std::vector<DeclarationName> localVariables, bool isThisExprValid,
+							 const Stmt *visitingForStmt, const VarDecl *iterator, const bool verbose)
+						: Context(Context), Check(Check), visitingForStmt(visitingForStmt),
+						  visitedForLoopList(visitedForLoopList),
+						  visitedFunctionDeclarationList(visitedFunctionDeclarationList),
+						  localVariables(localVariables), iterator_variable(iterator),
+						  isThisExprValid(isThisExprValid), verbose(verbose) {}
 
 				LoopExplorer(ASTContext *Context, ClangTidyCheck &Check,
-						std::vector<const Stmt *> visitedForLoopList,
-				const Stmt *visitingForStmt, const VarDecl *iterator, const bool verbose)
-				: Context(Context), Check(Check), visitingForStmt(visitingForStmt),
-				visitedForLoopList(visitedForLoopList), iterator_variable(iterator), verbose(verbose) {
+							 std::vector<const Stmt *> visitedForLoopList,
+							 const Stmt *visitingForStmt, const VarDecl *iterator, const bool verbose)
+						: Context(Context), Check(Check), visitingForStmt(visitingForStmt),
+						  visitedForLoopList(visitedForLoopList), iterator_variable(iterator), verbose(verbose) {
 				}
+
 				virtual ~LoopExplorer() = default;
 
 
 				virtual bool isValidWrite(Expr *write);
+
 				bool isLocalCallee(const Expr *callee);
+
 				const DeclRefExpr *getPointer(const Expr *S);
 
-				virtual const Stmt* getVisitingForLoopBody() = 0;
-				virtual bool haveSameVisitingForLoopHeaderExpressions(const Stmt*) = 0;
+				virtual const Stmt *getVisitingForLoopBody() = 0;
 
-				const StringRef getSourceText(const Expr*) const;
+				virtual bool haveSameVisitingForLoopHeaderExpressions(const Stmt *) = 0;
+
+				const StringRef getSourceText(const Expr *) const;
+
 				const StringRef getSourceText(const SourceRange) const;
 
 				// Auxiliary Functions
 				bool PointerHasValidLastValue(const VarDecl *pointerVarDecl, const Expr *expr);
 
 				bool isParallelizable();
+
 				bool isMapPattern();
+
 				bool isReducePattern();
+
 				bool isMapReducePattern();
+
 				bool isMapReducePattern(std::vector<Map> MapList, std::vector<Reduce> ReduceList);
 
 				bool isMapReducePattern(std::shared_ptr<LoopExplorer> le);
 
 				virtual bool isMapAssignment(Expr *write) = 0;
+
 				Expr *isReduceCallExpr(const Expr *expr);
+
 				std::vector<const Expr *> getReduceElementsFromCallExpr(const Expr *expr);
+
 				virtual bool isLoopElem(Expr *write) = 0;
+
 				Reduce *isReduceAssignment(const BinaryOperator *BO);
+
 				bool isRepeatedForStmt(const Stmt *FS);
+
 				void appendForLoopList();
 
 				std::vector<DeclarationName> getValidParameterList(FunctionDecl *functionDeclaration);
 
-				void appendVisitedFunctionDeclarationList(std::vector<const FunctionDecl *> visitedFunctionDeclarations);
+				void
+				appendVisitedFunctionDeclarationList(std::vector<const FunctionDecl *> visitedFunctionDeclarations);
 
 				bool isLocalVariable(DeclarationName DN);
 
 				//Transformation
 				virtual std::string getArrayBeginOffset() const;
+
 				virtual std::string getArrayEndOffset() const;
+
 				virtual std::string getArrayEndString() const;
 
 				virtual bool isVariableUsedInArraySubscript(const DeclRefExpr *dre);
@@ -294,23 +311,34 @@ namespace clang {
 				virtual std::string getMultipleInputTransformation();
 
 				virtual std::string getBeginInputAsString(const DeclRefExpr *inputName);
+
 				virtual std::string getEndInputAsString(const DeclRefExpr *inputName);
+
 				virtual std::string getOutputAsString(const DeclRefExpr *output);
+
 				virtual std::string getElementAsString(const DeclRefExpr *elem) const;
 
 
 				std::string getBeginInputTransformation(const DeclRefExpr *expr);
+
 				std::string getCloseBeginInputTransformation(const DeclRefExpr *expr);
+
 				std::string getEndInputTransformation(const DeclRefExpr *expr);
+
 				std::string getCloseEndInputTransformation(const DeclRefExpr *expr);
+
 				std::string getStartOffsetString();
+
 				std::string getEndOffsetString();
 
 
 				//Pattern Transformation
 				std::string getPatternTransformationInput(Pattern &pattern);
+
 				std::string getPatternTransformationInputEnd(const Pattern &pattern);
+
 				std::string getMapTransformationOutput(const Pattern &pattern);
+
 				std::string getMapTransformationLambdaParameters(Map &map);
 
 				template<typename Pattern>
@@ -335,20 +363,25 @@ namespace clang {
 				}
 
 				std::string getMapTransformationLambdaBody(const std::vector<Map>::iterator &map);
+
 				std::string getReduceTransformationLambdaParameters(const Reduce &reduce);
+
 				std::string getReduceTransformationLambdaBody(const std::vector<Reduce>::iterator &reduce);
 
 				std::string getMapTransformation();
+
 				std::string getReduceTransformation();
+
 				std::string getMapReduceTransformation();
-				std::string getMapReduceTransformation(LoopExplorer&, LoopExplorer&);
+
+				std::string getMapReduceTransformation(LoopExplorer &, LoopExplorer &);
 			};
 
 			static std::vector<std::shared_ptr<LoopExplorer>> LoopExplorerList;
 
 			// Loop Visitor
 			template<class LoopType>
-			class LoopVisitor : public LoopExplorer,  public RecursiveASTVisitor<LoopType> {
+			class LoopVisitor : public LoopExplorer, public RecursiveASTVisitor<LoopType> {
 
 				public:
 				LoopVisitor(ASTContext *context, ClangTidyCheck &check,
@@ -601,8 +634,9 @@ namespace clang {
 
 				const Expr *getLoopContainer(Expr *write) override;
 
-				const Stmt* getVisitingForLoopBody() override;
-				bool haveSameVisitingForLoopHeaderExpressions(const Stmt*) override;
+				const Stmt *getVisitingForLoopBody() override;
+
+				bool haveSameVisitingForLoopHeaderExpressions(const Stmt *) override;
 
 				bool isArrayLoopElem(CustomArray);
 
@@ -656,8 +690,9 @@ namespace clang {
 
 				const Expr *getLoopContainer(Expr *write) override;
 
-				const Stmt* getVisitingForLoopBody() override;
-				bool haveSameVisitingForLoopHeaderExpressions(const Stmt*) override;
+				const Stmt *getVisitingForLoopBody() override;
+
+				bool haveSameVisitingForLoopHeaderExpressions(const Stmt *) override;
 
 				std::string getElementAsString(const DeclRefExpr *elem) const override;
 
@@ -699,7 +734,8 @@ namespace clang {
 
 				DeclRefExpr *isElemDeclRefExpr(Expr *expr);
 
-				const Stmt* getVisitingForLoopBody() override;
+				const Stmt *getVisitingForLoopBody() override;
+
 				bool haveSameVisitingForLoopHeaderExpressions(const Stmt *) override;
 
 				bool isLoopElem(Expr *write) override;
@@ -768,18 +804,23 @@ namespace clang {
 				template<class Loop>
 				void addDiagnostic(std::shared_ptr<LoopExplorer> currentPattern, Loop loop) {
 					std::shared_ptr<LoopExplorer> previousLoopExplorer = nullptr;
-					if(!LoopExplorerList.empty())
-						 previousLoopExplorer = LoopExplorerList.back();
+					if (!LoopExplorerList.empty())
+						previousLoopExplorer = LoopExplorerList.back();
 
 					LoopExplorerList.push_back(currentPattern);
 
 					//TODO: make sure map reduce map output is not used later
-					if (currentPattern->isParallelizable() && previousLoopExplorer != nullptr && currentPattern->isMapReducePattern(previousLoopExplorer)) {
-						SourceRange range = SourceRange(previousLoopExplorer->visitingForStmt->getBeginLoc(), loop->getEndLoc());
+					if (previousLoopExplorer != nullptr && currentPattern->isParallelizable() &&
+						previousLoopExplorer->isParallelizable() &&
+						currentPattern->isMapReducePattern(previousLoopExplorer)) {
+						SourceRange range = SourceRange(previousLoopExplorer->visitingForStmt->getBeginLoc(),
+														loop->getEndLoc());
 						diag(previousLoopExplorer->visitingForStmt->getBeginLoc(),
 							 Diag::label + "MapReduce pattern detected. Loops can be merged",
 							 DiagnosticIDs::Remark) << FixItHint::CreateReplacement(range,
-																					currentPattern->getMapReduceTransformation(*previousLoopExplorer, *currentPattern));
+																					currentPattern->getMapReduceTransformation(
+																							*previousLoopExplorer,
+																							*currentPattern));
 					}
 					if (currentPattern->isMapReducePattern() && currentPattern->isParallelizable()) {
 						diag(loop->getBeginLoc(),

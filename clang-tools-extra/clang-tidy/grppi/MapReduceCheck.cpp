@@ -286,20 +286,20 @@ namespace clang {
 				return false;
 			}
 
-			bool LoopExplorer::isMapReducePattern(std::shared_ptr<LoopExplorer> le){
-				if(isMapReducePattern(le->MapList, this->ReduceList) && !le->isReducePattern() && !isMapPattern()){
-					if(haveSameVisitingForLoopHeaderExpressions(le->visitingForStmt)) {
-						const Stmt& previousForStmt = *le->visitingForStmt;
+			bool LoopExplorer::isMapReducePattern(std::shared_ptr<LoopExplorer> le) {
+				if (isMapReducePattern(le->MapList, this->ReduceList) && !le->isReducePattern() && !isMapPattern()) {
+					if (haveSameVisitingForLoopHeaderExpressions(le->visitingForStmt)) {
+						const Stmt &previousForStmt = *le->visitingForStmt;
 						auto parent = Context->getParents(previousForStmt);
 
 						const Stmt *parentStmt = parent.begin()->get<clang::Stmt>();
-						for(auto stmt = parentStmt->child_begin(); stmt != parentStmt->child_end(); stmt++){
+						for (auto stmt = parentStmt->child_begin(); stmt != parentStmt->child_end(); stmt++) {
 
-							if(isa<ForStmt>(*stmt)|| isa<CXXForRangeStmt>(*stmt) ){
-								if(*stmt == le->visitingForStmt){
+							if (isa<ForStmt>(*stmt) || isa<CXXForRangeStmt>(*stmt)) {
+								if (*stmt == le->visitingForStmt) {
 									stmt++;
-									if(isa<ForStmt>(*stmt)|| isa<CXXForRangeStmt>(*stmt)){
-										if(*stmt == visitingForStmt){
+									if (isa<ForStmt>(*stmt) || isa<CXXForRangeStmt>(*stmt)) {
+										if (*stmt == visitingForStmt) {
 											return true;
 										}
 									}
@@ -836,9 +836,11 @@ namespace clang {
 			}
 
 			std::string LoopExplorer::getMapReduceTransformation() {
-				return getMapReduceTransformation( *this, *this);
+				return getMapReduceTransformation(*this, *this);
 			}
-			std::string LoopExplorer::getMapReduceTransformation(LoopExplorer& MapExplorer, LoopExplorer& ReduceExplorer) {
+
+			std::string
+			LoopExplorer::getMapReduceTransformation(LoopExplorer &MapExplorer, LoopExplorer &ReduceExplorer) {
 				if (MapExplorer.MapList.size() != 1 || ReduceExplorer.ReduceList.size() != 1) return "";
 				std::vector<Map>::iterator map = MapExplorer.MapList.begin();
 				std::vector<Reduce>::iterator reduce = ReduceExplorer.ReduceList.begin();
@@ -1353,7 +1355,7 @@ namespace clang {
 							getSourceText((const Expr *) (vForStmt->getInit())) &&
 							getSourceText((const Expr *) forStmt->getCond()) ==
 							getSourceText((const Expr *) vForStmt->getCond()) &&
-							getSourceText(forStmt->getInc()) == getSourceText(vForStmt->getInc())){
+							getSourceText(forStmt->getInc()) == getSourceText(vForStmt->getInc())) {
 							return true;
 						}
 					}
@@ -1455,7 +1457,7 @@ namespace clang {
 							visitingForStmt)) {
 						//list.push_back(rangeLoop->getLoopVarStmt());
 						if (getSourceText((const Expr *) rangeLoop->getLoopVarStmt()) ==
-							getSourceText((const Expr *) (vRangeLoop->getLoopVarStmt())) ) {
+							getSourceText((const Expr *) (vRangeLoop->getLoopVarStmt()))) {
 							return true;
 						}
 					}
