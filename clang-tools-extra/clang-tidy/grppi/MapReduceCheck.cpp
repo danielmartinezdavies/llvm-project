@@ -876,10 +876,8 @@ namespace clang {
 			}
 
 			std::string IntegerForLoopExplorer::getArrayBeginOffset() const {
-				std::string result = Lexer::getSourceText(
-						CharSourceRange::getTokenRange(start_expr->getSourceRange()),
-						Context->getSourceManager(),
-						LangOptions()).str();
+				std::string result = getSourceText(start_expr->getSourceRange()).str();
+
 				if (result == "0") return "";
 				return result;
 			}
@@ -889,10 +887,8 @@ namespace clang {
 			}
 
 			std::string IntegerForLoopExplorer::getArrayEndOffset() const {
-				std::string result = Lexer::getSourceText(
-						CharSourceRange::getTokenRange(end_expr->getSourceRange()),
-						Context->getSourceManager(),
-						LangOptions()).str();
+				std::string result = getSourceText(end_expr->getSourceRange()).str();
+
 				if (result == "0") return "";
 				return result;
 			}
@@ -1602,7 +1598,7 @@ namespace clang {
 					}
 				}
 				if (matchedArray == nullptr) return;
-				iteratorForLoop->dump();
+				//iteratorForLoop->dump();
 				if (!Functions::isSameVariable(IncVar, CondVar) || !Functions::isSameVariable(IncVar, InitVar))
 					return;
 				std::cout << "Processing Iterator loop" << std::endl;
@@ -1666,8 +1662,3 @@ namespace clang {
 					return;
 				}*/
 
-/*
-StringRef init_expr =
-Lexer::getSourceText(CharSourceRange::getTokenRange(init_range), sm,
-										   LangOptions());
-*/
