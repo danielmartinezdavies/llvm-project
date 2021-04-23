@@ -268,30 +268,7 @@ namespace clang {
 				bool isMapReducePattern();
 				bool isMapReducePattern(std::vector<Map> MapList, std::vector<Reduce> ReduceList);
 
-				bool isMapReducePattern(std::shared_ptr<LoopExplorer> le){
-						if(isMapReducePattern(le->MapList, this->ReduceList) && !le->isReducePattern() && !isMapPattern()){
-							if(haveSameVisitingForLoopHeaderExpressions(le->visitingForStmt)) {
-								const Stmt& previousForStmt = *le->visitingForStmt;
-								auto parent = Context->getParents(previousForStmt);
-
-								const Stmt *parentStmt = parent.begin()->get<clang::Stmt>();
-
-								for(auto stmt = parentStmt->child_begin(); stmt != parentStmt->child_end(); stmt++){
-									if(auto forStmt = dyn_cast<ForStmt>(*stmt)){
-										if(forStmt == le->visitingForStmt){
-											stmt++;
-											if(auto nextForStmt = dyn_cast<ForStmt>(*stmt)){
-												if(nextForStmt == visitingForStmt){
-													return true;
-												}
-											}
-										}
-									}
-								}
-							}
-						}
-						return false;
-				}
+				bool isMapReducePattern(std::shared_ptr<LoopExplorer> le);
 
 				virtual bool isMapAssignment(Expr *write) = 0;
 				Expr *isReduceCallExpr(const Expr *expr);

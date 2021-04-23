@@ -286,6 +286,31 @@ namespace clang {
 				return false;
 			}
 
+			bool LoopExplorer::isMapReducePattern(std::shared_ptr<LoopExplorer> le){
+				if(isMapReducePattern(le->MapList, this->ReduceList) && !le->isReducePattern() && !isMapPattern()){
+					if(haveSameVisitingForLoopHeaderExpressions(le->visitingForStmt)) {
+						const Stmt& previousForStmt = *le->visitingForStmt;
+						auto parent = Context->getParents(previousForStmt);
+
+						const Stmt *parentStmt = parent.begin()->get<clang::Stmt>();
+						for(auto stmt = parentStmt->child_begin(); stmt != parentStmt->child_end(); stmt++){
+
+							if(isa<ForStmt>(*stmt)|| isa<CXXForRangeStmt>(*stmt) ){
+								if(*stmt == le->visitingForStmt){
+									stmt++;
+									if(isa<ForStmt>(*stmt)|| isa<CXXForRangeStmt>(*stmt)){
+										if(*stmt == visitingForStmt){
+											return true;
+										}
+									}
+								}
+							}
+						}
+					}
+				}
+				return false;
+			}
+
 			Expr *LoopExplorer::isReduceCallExpr(const Expr *expr) {
 				if (auto *callexpr =
 						dyn_cast<CallExpr>(expr->IgnoreParenImpCasts())) {
