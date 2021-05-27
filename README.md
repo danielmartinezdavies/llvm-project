@@ -6,13 +6,15 @@ optimizers, and run-time environments. Added to it is the source code for a mapr
 
 The README briefly describes how to get started with building clang-tidy.
 
-This project is still being worked on and so will have some bugs
+This project is still being worked on and so will have some bugs.
 
 ## Clang-tidy check
 The clang-tidy check created is called MapReduce, and will look for loops that can be parallelized. Once found, the check will suggest transforming the source code to its parallel equivalent, using GrPPI(Generic Reusable Parallel Pattern Interface).
 
+
 More information on GrPPI can be found here:
 * https://github.com/arcosuc3m/grppi
+
 
 ### Getting the Source Code and Building LLVM
 
