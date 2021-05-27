@@ -43,6 +43,13 @@ def AArch64PreLegalizerCombinerHelper: GICombinerHelper<
   let AdditionalArguments = [];
 }
 
+def AArch64O0PreLegalizerCombinerHelper: GICombinerHelper<
+  "AArch64GenO0PreLegalizerCombinerHelper", [optnone_combines]> {
+  let DisableRuleOption = "aarch64O0prelegalizercombiner-disable-rule";
+  let StateClass = "AArch64O0PreLegalizerCombinerHelperState";
+  let AdditionalArguments = [];
+}
+
 // Matchdata for combines which replace a G_SHUFFLE_VECTOR with a
 // target-specific opcode.
 def shuffle_matchdata : GIDefMatchData<"ShuffleVectorPseudo">;
@@ -127,7 +134,14 @@ def adjust_icmp_imm : GICombineRule <
   (apply [{ applyAdjustICmpImmAndPred(*${root}, ${matchinfo}, B, Observer); }])
 >;
 
-def icmp_lowering : GICombineGroup<[adjust_icmp_imm]>;
+def swap_icmp_operands : GICombineRule <
+  (defs root:$root),
+  (match (wip_match_opcode G_ICMP):$root,
+          [{ return trySwapICmpOperands(*${root}, MRI); }]),
+  (apply [{ applySwapICmpOperands(*${root}, Observer); }])
+>;
+
+def icmp_lowering : GICombineGroup<[adjust_icmp_imm, swap_icmp_operands]>;
 
 def extractvecelt_pairwise_add_matchdata : GIDefMatchData<"std::tuple<unsigned, LLT, Register>">;
 def extractvecelt_pairwise_add : GICombineRule<
@@ -154,13 +168,36 @@ def build_vector_to_dup : GICombineRule<
 
 def build_vector_lowering : GICombineGroup<[build_vector_to_dup]>;
 
+def bitfield_extract_from_sext_inreg : GICombineRule<
+  (defs root:$root, build_fn_matchinfo:$info),
+  (match (wip_match_opcode G_SEXT_INREG):$root,
+    [{ return matchBitfieldExtractFromSExtInReg(*${root}, MRI, ${info}); }]),
+  (apply [{ return Helper.applyBuildFn(*${root}, ${info}); }])>;
+
+def form_bitfield_extract : GICombineGroup<[bitfield_extract_from_sext_inreg]>;
+
+def lower_vector_fcmp : GICombineRule<
+  (defs root:$root),
+  (match (wip_match_opcode G_FCMP):$root,
+    [{ return lowerVectorFCMP(*${root}, MRI, B); }]),
+  (apply [{}])>;
+
+def form_truncstore_matchdata : GIDefMatchData<"Register">;
+def form_truncstore : GICombineRule<
+  (defs root:$root, form_truncstore_matchdata:$matchinfo),
+  (match (wip_match_opcode G_STORE):$root,
+          [{ return matchFormTruncstore(*${root}, MRI, ${matchinfo}); }]),
+  (apply [{ applyFormTruncstore(*${root}, MRI, B, Observer, ${matchinfo}); }])
+>;
+
 // Post-legalization combines which should happen at all optimization levels.
 // (E.g. ones that facilitate matching for the selector) For example, matching
 // pseudos.
 def AArch64PostLegalizerLoweringHelper
     : GICombinerHelper<"AArch64GenPostLegalizerLoweringHelper",
                        [shuffle_vector_lowering, vashr_vlshr_imm,
-                        icmp_lowering, build_vector_lowering]> {
+                        icmp_lowering, build_vector_lowering,
+                        lower_vector_fcmp, form_truncstore]> {
   let DisableRuleOption = "aarch64postlegalizerlowering-disable-rule";
 }
 
@@ -172,6 +209,8 @@ def AArch64PostLegalizerCombinerHelper
                         hoist_logic_op_with_same_opcode_hands,
                         redundant_and, xor_of_and_with_same_reg,
                         extractvecelt_pairwise_add, redundant_or,
-                        mul_const, redundant_sext_inreg]> {
+                        mul_const, redundant_sext_inreg,
+                        form_bitfield_extract, rotate_out_of_range,
+                        icmp_to_true_false_known_bits]> {
   let DisableRuleOption = "aarch64postlegalizercombiner-disable-rule";
 }

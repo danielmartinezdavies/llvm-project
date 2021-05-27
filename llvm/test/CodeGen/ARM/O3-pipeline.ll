@@ -10,6 +10,7 @@
 ; CHECK-NEXT:      Dominator Tree Construction
 ; CHECK-NEXT:      Natural Loop Information
 ; CHECK-NEXT:      MVE gather/scatter lowering
+; CHECK-NEXT:      MVE lane interleaving
 ; CHECK-NEXT:      Module Verifier
 ; CHECK-NEXT:      Basic Alias Analysis (stateless AA impl)
 ; CHECK-NEXT:      Canonicalize natural loops
@@ -36,6 +37,7 @@
 ; CHECK-NEXT:      Constant Hoisting
 ; CHECK-NEXT:      Replace intrinsics with calls to vector library
 ; CHECK-NEXT:      Partially inline calls to library functions
+; CHECK-NEXT:      Expand vector predication intrinsics
 ; CHECK-NEXT:      Scalarize Masked Memory Intrinsics
 ; CHECK-NEXT:      Expand reduction intrinsics
 ; CHECK-NEXT:      Natural Loop Information

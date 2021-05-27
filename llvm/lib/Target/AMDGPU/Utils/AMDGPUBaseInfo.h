@@ -44,6 +44,12 @@ bool isHsaAbiVersion2(const MCSubtargetInfo *STI);
 /// \returns True if HSA OS ABI Version identification is 3,
 /// false otherwise.
 bool isHsaAbiVersion3(const MCSubtargetInfo *STI);
+/// \returns True if HSA OS ABI Version identification is 4,
+/// false otherwise.
+bool isHsaAbiVersion4(const MCSubtargetInfo *STI);
+/// \returns True if HSA OS ABI Version identification is 3 or 4,
+/// false otherwise.
+bool isHsaAbiVersion3Or4(const MCSubtargetInfo *STI);
 
 struct GcnBufferFormatInfo {
   unsigned Format;
@@ -78,6 +84,7 @@ enum class TargetIDSetting {
 
 class AMDGPUTargetID {
 private:
+  const MCSubtargetInfo &STI;
   TargetIDSetting XnackSetting;
   TargetIDSetting SramEccSetting;
 
@@ -145,10 +152,10 @@ public:
 
   void setTargetIDFromFeaturesString(StringRef FS);
   void setTargetIDFromTargetIDStream(StringRef TargetID);
-};
 
-/// Streams isa version string for given subtarget \p STI into \p Stream.
-void streamIsaVersion(const MCSubtargetInfo *STI, raw_ostream &Stream);
+  /// \returns String representation of an object.
+  std::string toString() const;
+};
 
 /// \returns Wavefront size for given subtarget \p STI.
 unsigned getWavefrontSize(const MCSubtargetInfo *STI);
@@ -340,6 +347,11 @@ int getMIMGOpcode(unsigned BaseOpcode, unsigned MIMGEncoding,
 LLVM_READONLY
 int getMaskedMIMGOp(unsigned Opc, unsigned NewChannels);
 
+LLVM_READONLY
+unsigned getAddrSizeMIMGOp(const MIMGBaseOpcodeInfo *BaseOpcode,
+                           const MIMGDimInfo *Dim, bool IsA16,
+                           bool IsG16Supported);
+
 struct MIMGInfo {
   uint16_t Opcode;
   uint16_t BaseOpcode;
@@ -388,7 +400,19 @@ LLVM_READONLY
 bool getMUBUFHasSoffset(unsigned Opc);
 
 LLVM_READONLY
+bool getMUBUFIsBufferInv(unsigned Opc);
+
+LLVM_READONLY
 bool getSMEMIsBuffer(unsigned Opc);
+
+LLVM_READONLY
+bool getVOP1IsSingle(unsigned Opc);
+
+LLVM_READONLY
+bool getVOP2IsSingle(unsigned Opc);
+
+LLVM_READONLY
+bool getVOP3IsSingle(unsigned Opc);
 
 LLVM_READONLY
 const GcnBufferFormatInfo *getGcnBufferFormatInfo(uint8_t BitsPerComp,
@@ -459,6 +483,14 @@ struct Waitcnt {
 
   bool hasWait() const {
     return VmCnt != ~0u || ExpCnt != ~0u || LgkmCnt != ~0u || VsCnt != ~0u;
+  }
+
+  bool hasWaitExceptVsCnt() const {
+    return VmCnt != ~0u || ExpCnt != ~0u || LgkmCnt != ~0u;
+  }
+
+  bool hasWaitVsCnt() const {
+    return VsCnt != ~0u;
   }
 
   bool dominates(const Waitcnt &Other) const {
@@ -708,6 +740,7 @@ bool isGCN3Encoding(const MCSubtargetInfo &STI);
 bool isGFX10_BEncoding(const MCSubtargetInfo &STI);
 bool hasGFX10_3Insts(const MCSubtargetInfo &STI);
 bool isGFX90A(const MCSubtargetInfo &STI);
+bool hasArchitectedFlatScratch(const MCSubtargetInfo &STI);
 
 /// Is Reg - scalar register
 bool isSGPR(unsigned Reg, const MCRegisterInfo* TRI);

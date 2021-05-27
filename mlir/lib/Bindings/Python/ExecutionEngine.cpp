@@ -59,17 +59,20 @@ void mlir::python::populateExecutionEngineSubmodule(py::module &m) {
   // Mapping of the top-level PassManager
   //----------------------------------------------------------------------------
   py::class_<PyExecutionEngine>(m, "ExecutionEngine")
-      .def(py::init<>([](PyModule &module) {
+      .def(py::init<>([](PyModule &module, int optLevel) {
              MlirExecutionEngine executionEngine =
-                 mlirExecutionEngineCreate(module.get());
+                 mlirExecutionEngineCreate(module.get(), optLevel);
              if (mlirExecutionEngineIsNull(executionEngine))
                throw std::runtime_error(
                    "Failure while creating the ExecutionEngine.");
              return new PyExecutionEngine(executionEngine);
            }),
+           py::arg("module"), py::arg("opt_level") = 2,
            "Create a new ExecutionEngine instance for the given Module. The "
-           "module must "
-           "contain only dialects that can be translated to LLVM.")
+           "module must contain only dialects that can be translated to LLVM. "
+           "Perform transformations and code generation at the optimization "
+           "level `opt_level` if specified, or otherwise at the default "
+           "level of two (-O2).")
       .def_property_readonly(MLIR_PYTHON_CAPI_PTR_ATTR,
                              &PyExecutionEngine::getCapsule)
       .def("_testing_release", &PyExecutionEngine::release,
@@ -81,7 +84,25 @@ void mlir::python::populateExecutionEngineSubmodule(py::module &m) {
             auto *res = mlirExecutionEngineLookup(
                 executionEngine.get(),
                 mlirStringRefCreate(func.c_str(), func.size()));
-            return (int64_t)res;
+            return reinterpret_cast<uintptr_t>(res);
           },
-          "Lookup function `func` in the ExecutionEngine.");
+          "Lookup function `func` in the ExecutionEngine.")
+      .def(
+          "raw_register_runtime",
+          [](PyExecutionEngine &executionEngine, const std::string &name,
+             uintptr_t sym) {
+            mlirExecutionEngineRegisterSymbol(
+                executionEngine.get(),
+                mlirStringRefCreate(name.c_str(), name.size()),
+                reinterpret_cast<void *>(sym));
+          },
+          "Lookup function `func` in the ExecutionEngine.")
+      .def(
+          "dump_to_object_file",
+          [](PyExecutionEngine &executionEngine, const std::string &fileName) {
+            mlirExecutionEngineDumpToObjectFile(
+                executionEngine.get(),
+                mlirStringRefCreate(fileName.c_str(), fileName.size()));
+          },
+          "Dump ExecutionEngine to an object file.");
 }

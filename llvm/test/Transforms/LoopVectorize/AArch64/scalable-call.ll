@@ -1,4 +1,4 @@
-; RUN: opt -S -loop-vectorize -force-vector-interleave=1 -instcombine -mattr=+sve -mtriple aarch64-unknown-linux-gnu < %s | FileCheck %s
+; RUN: opt -S -loop-vectorize -force-vector-interleave=1 -instcombine -mattr=+sve -mtriple aarch64-unknown-linux-gnu -scalable-vectorization=on < %s | FileCheck %s
 
 define void @vec_load(i64 %N, double* nocapture %a, double* nocapture readonly %b) {
 ; CHECK-LABEL: @vec_load
@@ -72,11 +72,10 @@ for.end:
 }
 
 define void @vec_intrinsic(i64 %N, double* nocapture readonly %a) {
-;; FIXME: Should be calling sin_vec, once the cost of scalarizing is handled.
 ; CHECK-LABEL: @vec_intrinsic
 ; CHECK: vector.body:
 ; CHECK: %[[LOAD:.*]] = load <vscale x 2 x double>, <vscale x 2 x double>*
-; CHECK: call fast <vscale x 2 x double> @llvm.sin.nxv2f64(<vscale x 2 x double> %[[LOAD]])
+; CHECK: call fast <vscale x 2 x double> @sin_vec(<vscale x 2 x double> %[[LOAD]])
 entry:
   %cmp7 = icmp sgt i64 %N, 0
   br i1 %cmp7, label %for.body, label %for.end

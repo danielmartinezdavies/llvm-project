@@ -162,6 +162,7 @@ static bool sink(Instruction &I, LoopInfo *LI, DominatorTree *DT,
                  OptimizationRemarkEmitter *ORE);
 static bool isSafeToExecuteUnconditionally(Instruction &Inst,
                                            const DominatorTree *DT,
+                                           const TargetLibraryInfo *TLI,
                                            const Loop *CurLoop,
                                            const LoopSafetyInfo *SafetyInfo,
                                            OptimizationRemarkEmitter *ORE,
@@ -188,8 +189,7 @@ static void moveInstructionBefore(Instruction &I, Instruction &Dest,
 static void foreachMemoryAccess(MemorySSA *MSSA, Loop *L,
                                 function_ref<void(Instruction *)> Fn);
 static SmallVector<SmallSetVector<Value *, 8>, 0>
-collectPromotionCandidates(MemorySSA *MSSA, AliasAnalysis *AA, Loop *L,
-                           SmallVectorImpl<Instruction *> &MaybePromotable);
+collectPromotionCandidates(MemorySSA *MSSA, AliasAnalysis *AA, Loop *L);
 
 namespace {
 struct LoopInvariantCodeMotion {
@@ -472,11 +472,6 @@ bool LoopInvariantCodeMotion::runOnLoop(
               DT, TLI, L, CurAST.get(), MSSAU.get(), &SafetyInfo, ORE);
         }
       } else {
-        SmallVector<Instruction *, 16> MaybePromotable;
-        foreachMemoryAccess(MSSA, L, [&](Instruction *I) {
-          MaybePromotable.push_back(I);
-        });
-
         // Promoting one set of accesses may make the pointers for another set
         // loop invariant, so run this in a loop (with the MaybePromotable set
         // decreasing in size over time).
@@ -484,7 +479,7 @@ bool LoopInvariantCodeMotion::runOnLoop(
         do {
           LocalPromoted = false;
           for (const SmallSetVector<Value *, 8> &PointerMustAliases :
-               collectPromotionCandidates(MSSA, AA, L, MaybePromotable)) {
+               collectPromotionCandidates(MSSA, AA, L)) {
             LocalPromoted |= promoteLoopAccessesToScalars(
                 PointerMustAliases, ExitBlocks, InsertPts, MSSAInsertPts, PIC,
                 LI, DT, TLI, L, /*AST*/nullptr, MSSAU.get(), &SafetyInfo, ORE);
@@ -557,8 +552,8 @@ bool llvm::sinkRegion(DomTreeNode *N, AAResults *AA, LoopInfo *LI,
     for (BasicBlock::iterator II = BB->end(); II != BB->begin();) {
       Instruction &I = *--II;
 
-      // If the instruction is dead, we would try to sink it because it isn't
-      // used in the loop, instead, just delete it.
+      // The instruction is not used in the loop if it is dead.  In this case,
+      // we just delete it instead of sinking it.
       if (isInstructionTriviallyDead(&I, TLI)) {
         LLVM_DEBUG(dbgs() << "LICM deleting dead inst: " << I << '\n');
         salvageKnowledge(&I);
@@ -921,7 +916,7 @@ bool llvm::hoistRegion(DomTreeNode *N, AAResults *AA, LoopInfo *LI,
                              ORE) &&
           worthSinkOrHoistInst(I, CurLoop->getLoopPreheader(), ORE, BFI) &&
           isSafeToExecuteUnconditionally(
-              I, DT, CurLoop, SafetyInfo, ORE,
+              I, DT, TLI, CurLoop, SafetyInfo, ORE,
               CurLoop->getLoopPreheader()->getTerminator())) {
         hoist(I, DT, CurLoop, CFH.getOrCreateHoistedBlock(BB), SafetyInfo,
               MSSAU, SE, ORE);
@@ -1125,7 +1120,7 @@ bool isHoistableAndSinkableInst(Instruction &I) {
           isa<InsertValueInst>(I) || isa<FreezeInst>(I));
 }
 /// Return true if all of the alias sets within this AST are known not to
-/// contain a Mod, or if MSSA knows thare are no MemoryDefs in the loop.
+/// contain a Mod, or if MSSA knows there are no MemoryDefs in the loop.
 bool isReadOnly(AliasSetTracker *CurAST, const MemorySSAUpdater *MSSAU,
                 const Loop *L) {
   if (CurAST) {
@@ -1350,7 +1345,7 @@ bool llvm::canSinkOrHoistInst(Instruction &I, AAResults *AA, DominatorTree *DT,
               }
               // Any call, while it may not be clobbering SI, it may be a use.
               if (auto *CI = dyn_cast<CallInst>(MD->getMemoryInst())) {
-                // Check if the call may read from the memory locattion written
+                // Check if the call may read from the memory location written
                 // to by SI. Check CI's attributes and arguments; the number of
                 // such checks performed is limited above by NoOfMemAccTooLarge.
                 ModRefInfo MRI = AA->getModRefInfo(CI, MemoryLocation::get(SI));
@@ -1661,17 +1656,8 @@ static bool sink(Instruction &I, LoopInfo *LI, DominatorTree *DT,
                  BlockFrequencyInfo *BFI, const Loop *CurLoop,
                  ICFLoopSafetyInfo *SafetyInfo, MemorySSAUpdater *MSSAU,
                  OptimizationRemarkEmitter *ORE) {
-  LLVM_DEBUG(dbgs() << "LICM sinking instruction: " << I << "\n");
-  ORE->emit([&]() {
-    return OptimizationRemark(DEBUG_TYPE, "InstSunk", &I)
-           << "sinking " << ore::NV("Inst", &I);
-  });
   bool Changed = false;
-  if (isa<LoadInst>(I))
-    ++NumMovedLoads;
-  else if (isa<CallInst>(I))
-    ++NumMovedCalls;
-  ++NumSunk;
+  LLVM_DEBUG(dbgs() << "LICM sinking instruction: " << I << "\n");
 
   // Iterate over users to be ready for actual sinking. Replace users via
   // unreachable blocks with undef and make all user PHIs trivially replaceable.
@@ -1722,6 +1708,16 @@ static bool sink(Instruction &I, LoopInfo *LI, DominatorTree *DT,
 
   if (VisitedUsers.empty())
     return Changed;
+
+  ORE->emit([&]() {
+    return OptimizationRemark(DEBUG_TYPE, "InstSunk", &I)
+           << "sinking " << ore::NV("Inst", &I);
+  });
+  if (isa<LoadInst>(I))
+    ++NumMovedLoads;
+  else if (isa<CallInst>(I))
+    ++NumMovedCalls;
+  ++NumSunk;
 
 #ifndef NDEBUG
   SmallVector<BasicBlock *, 32> ExitBlocks;
@@ -1814,11 +1810,12 @@ static void hoist(Instruction &I, const DominatorTree *DT, const Loop *CurLoop,
 /// or if it is a trapping instruction and is guaranteed to execute.
 static bool isSafeToExecuteUnconditionally(Instruction &Inst,
                                            const DominatorTree *DT,
+                                           const TargetLibraryInfo *TLI,
                                            const Loop *CurLoop,
                                            const LoopSafetyInfo *SafetyInfo,
                                            OptimizationRemarkEmitter *ORE,
                                            const Instruction *CtxI) {
-  if (isSafeToSpeculativelyExecute(&Inst, CtxI, DT))
+  if (isSafeToSpeculativelyExecute(&Inst, CtxI, DT, TLI))
     return true;
 
   bool GuaranteedToExecute =
@@ -1947,10 +1944,21 @@ public:
   }
 };
 
+bool isNotCapturedBeforeOrInLoop(const Value *V, const Loop *L,
+                                 DominatorTree *DT) {
+  // We can perform the captured-before check against any instruction in the
+  // loop header, as the loop header is reachable from any instruction inside
+  // the loop.
+  // TODO: ReturnCaptures=true shouldn't be necessary here.
+  return !PointerMayBeCapturedBefore(V, /* ReturnCaptures */ true,
+                                     /* StoreCaptures */ true,
+                                     L->getHeader()->getTerminator(), DT);
+}
 
 /// Return true iff we can prove that a caller of this function can not inspect
 /// the contents of the provided object in a well defined program.
-bool isKnownNonEscaping(Value *Object, const TargetLibraryInfo *TLI) {
+bool isKnownNonEscaping(Value *Object, const Loop *L,
+                        const TargetLibraryInfo *TLI, DominatorTree *DT) {
   if (isa<AllocaInst>(Object))
     // Since the alloca goes out of scope, we know the caller can't retain a
     // reference to it and be well defined.  Thus, we don't need to check for
@@ -1967,7 +1975,7 @@ bool isKnownNonEscaping(Value *Object, const TargetLibraryInfo *TLI) {
   //      weaker condition and handle only AllocLikeFunctions (which are
   //      known to be noalias).  TODO
   return isAllocLikeFn(Object, TLI) &&
-    !PointerMayBeCaptured(Object, true, true);
+         isNotCapturedBeforeOrInLoop(Object, L, DT);
 }
 
 } // namespace
@@ -2053,7 +2061,7 @@ bool llvm::promoteLoopAccessesToScalars(
     // this by proving that the caller can't have a reference to the object
     // after return and thus can't possibly load from the object.
     Value *Object = getUnderlyingObject(SomePtr);
-    if (!isKnownNonEscaping(Object, TLI))
+    if (!isKnownNonEscaping(Object, CurLoop, TLI, DT))
       return false;
     // Subtlety: Alloca's aren't visible to callers, but *are* potentially
     // visible to other threads if captured and used during their lifetimes.
@@ -2090,10 +2098,11 @@ bool llvm::promoteLoopAccessesToScalars(
         // Note that proving a load safe to speculate requires proving
         // sufficient alignment at the target location.  Proving it guaranteed
         // to execute does as well.  Thus we can increase our guaranteed
-        // alignment as well. 
+        // alignment as well.
         if (!DereferenceableInPH || (InstAlignment > Alignment))
-          if (isSafeToExecuteUnconditionally(*Load, DT, CurLoop, SafetyInfo,
-                                             ORE, Preheader->getTerminator())) {
+          if (isSafeToExecuteUnconditionally(*Load, DT, TLI, CurLoop,
+                                             SafetyInfo, ORE,
+                                             Preheader->getTerminator())) {
             DereferenceableInPH = true;
             Alignment = std::max(Alignment, InstAlignment);
           }
@@ -2140,7 +2149,7 @@ bool llvm::promoteLoopAccessesToScalars(
         if (!DereferenceableInPH) {
           DereferenceableInPH = isDereferenceableAndAlignedPointer(
               Store->getPointerOperand(), Store->getValueOperand()->getType(),
-              Store->getAlign(), MDL, Preheader->getTerminator(), DT);
+              Store->getAlign(), MDL, Preheader->getTerminator(), DT, TLI);
         }
       } else
         return false; // Not a load or store.
@@ -2187,7 +2196,7 @@ bool llvm::promoteLoopAccessesToScalars(
       Value *Object = getUnderlyingObject(SomePtr);
       SafeToInsertStore =
           (isAllocLikeFn(Object, TLI) || isa<AllocaInst>(Object)) &&
-          !PointerMayBeCaptured(Object, true, true);
+          isNotCapturedBeforeOrInLoop(Object, CurLoop, DT);
     }
   }
 
@@ -2264,8 +2273,7 @@ static void foreachMemoryAccess(MemorySSA *MSSA, Loop *L,
 }
 
 static SmallVector<SmallSetVector<Value *, 8>, 0>
-collectPromotionCandidates(MemorySSA *MSSA, AliasAnalysis *AA, Loop *L,
-                           SmallVectorImpl<Instruction *> &MaybePromotable) {
+collectPromotionCandidates(MemorySSA *MSSA, AliasAnalysis *AA, Loop *L) {
   AliasSetTracker AST(*AA);
 
   auto IsPotentiallyPromotable = [L](const Instruction *I) {
@@ -2279,13 +2287,11 @@ collectPromotionCandidates(MemorySSA *MSSA, AliasAnalysis *AA, Loop *L,
   // Populate AST with potentially promotable accesses and remove them from
   // MaybePromotable, so they will not be checked again on the next iteration.
   SmallPtrSet<Value *, 16> AttemptingPromotion;
-  llvm::erase_if(MaybePromotable, [&](Instruction *I) {
+  foreachMemoryAccess(MSSA, L, [&](Instruction *I) {
     if (IsPotentiallyPromotable(I)) {
       AttemptingPromotion.insert(I);
       AST.add(I);
-      return true;
     }
-    return false;
   });
 
   // We're only interested in must-alias sets that contain a mod.

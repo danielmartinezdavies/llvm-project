@@ -22,7 +22,7 @@ include "mlir/IR/BuiltinDialect.td"
 
 // Base class for Builtin dialect types.
 class Builtin_Type<string name, string baseCppClass = "::mlir::Type">
-    : TypeDef<Builtin_Dialect, name, baseCppClass> {
+    : TypeDef<Builtin_Dialect, name, [], baseCppClass> {
   let mnemonic = ?;
 }
 
@@ -65,8 +65,7 @@ def Builtin_Complex : Builtin_Type<"Complex"> {
 //===----------------------------------------------------------------------===//
 
 // Base class for Builtin dialect float types.
-class Builtin_FloatType<string name> : TypeDef<Builtin_Dialect, name,
-                                               "::mlir::FloatType"> {
+class Builtin_FloatType<string name> : Builtin_Type<name, "::mlir::FloatType"> {
   let extraClassDeclaration = [{
     static }] # name # [{Type get(MLIRContext *context);
   }];
@@ -171,8 +170,7 @@ def Builtin_Index : Builtin_Type<"Index"> {
 
     The index type is a signless integer whose size is equal to the natural
     machine word of the target ( [rationale](https://mlir.llvm.org/docs/Rationale/Rationale/#integer-signedness-semantics) )
-    and is used by the affine constructs in MLIR. Unlike fixed-size integers,
-    it cannot be used as an element of vector ( [rationale](https://mlir.llvm.org/docs/Rationale/Rationale/#index-type-disallowed-in-vector-types) ).
+    and is used by the affine constructs in MLIR.
 
     **Rationale:** integers of platform-specific bit widths are practical to
     express sizes, dimensionalities and subscripts.
@@ -329,7 +327,7 @@ def Builtin_MemRef : Builtin_Type<"MemRef", "BaseMemRefType"> {
     ```
 
     The core syntax and representation of a layout specification is a
-    [semi-affine map](Dialects/Affine.md#semi-affine-maps). Additionally,
+    [semi-affine map](Affine.md/#semi-affine-maps). Additionally,
     syntactic sugar is supported to make certain layout specifications more
     intuitive to read. For the moment, a `memref` supports parsing a strided
     form which is converted to a semi-affine map automatically.
@@ -424,7 +422,7 @@ def Builtin_MemRef : Builtin_Type<"MemRef", "BaseMemRefType"> {
     ##### Index Map
 
     An index map is a one-to-one
-    [semi-affine map](Dialects/Affine.md#semi-affine-maps) that transforms a
+    [semi-affine map](Affine.md/#semi-affine-maps) that transforms a
     multidimensional index from one index space to another. For example, the
     following figure shows an index map which maps a 2-dimensional index from a
     2x2 index space to a 3x3 index space, using symbols `S0` and `S1` as
@@ -442,7 +440,7 @@ def Builtin_MemRef : Builtin_Type<"MemRef", "BaseMemRefType"> {
 
     ##### Layout Map
 
-    A layout map is a [semi-affine map](Dialects/Affine.md#semi-affine-maps)
+    A layout map is a [semi-affine map](Affine.md/#semi-affine-maps)
     which encodes logical to physical index space mapping, by mapping input
     dimensions to their ordering from most-major (slowest varying) to most-minor
     (fastest varying). Therefore, an identity layout map corresponds to a
@@ -476,7 +474,7 @@ def Builtin_MemRef : Builtin_Type<"MemRef", "BaseMemRefType"> {
     The semi-affine map composition specified in the memref type, maps from
     accesses used to index the memref in load/store operations to other index
     spaces (i.e. logical to physical index mapping). Each of the
-    [semi-affine maps](Affine.md) and thus its composition is required
+    [semi-affine maps](Affine.md/#semi-affine-maps) and thus its composition is required
     to be one-to-one.
 
     The semi-affine map composition can be used in dependence analysis, memory
@@ -636,9 +634,10 @@ def Builtin_RankedTensor : Builtin_Type<"RankedTensor", "TensorType"> {
     Syntax:
 
     ```
-    tensor-type ::= `tensor` `<` dimension-list type `>`
+    tensor-type ::= `tensor` `<` dimension-list type (`,` encoding)? `>`
     dimension-list ::= (dimension `x`)*
     dimension ::= `?` | decimal-literal
+    encoding ::= attribute-value
     ```
 
     Values with tensor type represents aggregate N-dimensional data values, and
@@ -651,8 +650,16 @@ def Builtin_RankedTensor : Builtin_Type<"RankedTensor", "TensorType"> {
     low level buffer access, MLIR has a [`memref` type](#memref-type). This
     abstracted runtime representation holds both the tensor data values as well
     as information about the (potentially dynamic) shape of the tensor. The
-    [`dim` operation](Dialects/Standard.md#dim-operation) returns the size of a
+    [`dim` operation](MemRef.md/#memrefdim-mlirmemrefdimop) returns the size of a
     dimension from a value of tensor type.
+
+    The `encoding` attribute provides additional information on the tensor.
+    An empty attribute denotes a straightforward tensor without any specific
+    structure. But particular properties, like sparsity or other specific
+    characteristics of the data of the tensor can be encoded through this
+    attribute. The semantics are defined by a type and attribute interface
+    and must be respected by all passes that operate on tensor types.
+    TODO: provide this interface, and document it further.
 
     Note: hexadecimal integer literals are not allowed in tensor type
     declarations to avoid confusion between `0xf32` and `0 x f32`. Zero sizes
@@ -681,18 +688,24 @@ def Builtin_RankedTensor : Builtin_Type<"RankedTensor", "TensorType"> {
 
     // Zero-element tensor of f32 type (hexadecimal literals not allowed here).
     tensor<0xf32>
+
+    // Tensor with an encoding attribute (where #ENCODING is a named alias).
+    tensor<?x?xf64, #ENCODING>
     ```
   }];
   let parameters = (ins
     ArrayRefParameter<"int64_t">:$shape,
-    "Type":$elementType
+    "Type":$elementType,
+    "Attribute":$encoding
   );
 
   let builders = [
     TypeBuilderWithInferredContext<(ins
-      "ArrayRef<int64_t>":$shape, "Type":$elementType
+      "ArrayRef<int64_t>":$shape,
+      "Type":$elementType,
+      CArg<"Attribute", "{}">:$encoding
     ), [{
-      return $_get(elementType.getContext(), shape, elementType);
+      return $_get(elementType.getContext(), shape, elementType, encoding);
     }]>
   ];
   let skipDefaultBuilders = 1;
@@ -717,7 +730,7 @@ def Builtin_Tuple : Builtin_Type<"Tuple"> {
 
     **Rationale:** Though this type is first class in the type system, MLIR
     provides no standard operations for operating on `tuple` types
-    ([rationale](Rationale/Rationale.md#tuple-types)).
+    ([rationale](Rationale/Rationale.md/#tuple-types)).
 
     Examples:
 
@@ -874,7 +887,7 @@ def Builtin_Vector : Builtin_Type<"Vector", "ShapedType"> {
 
     ```
     vector-type ::= `vector` `<` static-dimension-list vector-element-type `>`
-    vector-element-type ::= float-type | integer-type
+    vector-element-type ::= float-type | integer-type | index-type
 
     static-dimension-list ::= (decimal-literal `x`)+
     ```
@@ -911,9 +924,10 @@ def Builtin_Vector : Builtin_Type<"Vector", "ShapedType"> {
   ];
   let extraClassDeclaration = [{
     /// Returns true of the given type can be used as an element of a vector
-    /// type. In particular, vectors can consist of integer or float primitives.
+    /// type. In particular, vectors can consist of integer, index, or float
+    /// primitives.
     static bool isValidElementType(Type t) {
-      return t.isa<IntegerType, FloatType>();
+      return t.isa<IntegerType, IndexType, FloatType>();
     }
 
     /// Get or create a new VectorType with the same shape as `this` and an

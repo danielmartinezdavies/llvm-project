@@ -443,6 +443,32 @@ calls.
   }];
 }
 
+def MustTailDocs : Documentation {
+  let Category = DocCatStmt;
+  let Content = [{
+If a ``return`` statement is marked ``musttail``, this indicates that the
+compiler must generate a tail call for the program to be correct, even when
+optimizations are disabled. This guarantees that the call will not cause
+unbounded stack growth if it is part of a recursive cycle in the call graph.
+
+If the callee is a virtual function that is implemented by a thunk, there is
+no guarantee in general that the thunk tail-calls the implementation of the
+virtual function, so such a call in a recursive cycle can still result in
+unbounded stack growth.
+
+``clang::musttail`` can only be applied to a ``return`` statement whose value
+is the result of a function call (even functions returning void must use
+``return``, although no value is returned). The target function must have the
+same number of arguments as the caller. The types of the return value and all
+arguments must be similar according to C++ rules (differing only in cv
+qualifiers or array size), including the implicit "this" argument, if any.
+Any variables in scope, including all arguments to the function and the
+return value must be trivially destructible. The calling convention of the
+caller and callee must match, and they must not be variadic functions or have
+old style K&R C function declarations.
+  }];
+}
+
 def AssertCapabilityDocs : Documentation {
   let Category = DocCatFunction;
   let Heading = "assert_capability, assert_shared_capability";
@@ -2538,12 +2564,17 @@ def NoSanitizeDocs : Documentation {
   let Content = [{
 Use the ``no_sanitize`` attribute on a function or a global variable
 declaration to specify that a particular instrumentation or set of
-instrumentations should not be applied. The attribute takes a list of
-string literals, which have the same meaning as values accepted by the
-``-fno-sanitize=`` flag. For example,
-``__attribute__((no_sanitize("address", "thread")))`` specifies that
-AddressSanitizer and ThreadSanitizer should not be applied to the
-function or variable.
+instrumentations should not be applied.
+
+The attribute takes a list of string literals with the following accepted
+values:
+* all values accepted by ``-fno-sanitize=``;
+* ``coverage``, to disable SanitizerCoverage instrumentation.
+
+For example, ``__attribute__((no_sanitize("address", "thread")))`` specifies
+that AddressSanitizer and ThreadSanitizer should not be applied to the function
+or variable. Using ``__attribute__((no_sanitize("coverage")))`` specifies that
+SanitizerCoverage should not be applied to the function.
 
 See :ref:`Controlling Code Generation <controlling-code-generation>` for a
 full list of supported sanitizer flags.
@@ -3026,19 +3057,31 @@ It is only supported when using the Microsoft C++ ABI.
 def LifetimeBoundDocs : Documentation {
   let Category = DocCatFunction;
   let Content = [{
-The ``lifetimebound`` attribute indicates that a resource owned by
-a function parameter or implicit object parameter
-is retained by the return value of the annotated function
-(or, for a parameter of a constructor, in the value of the constructed object).
-It is only supported in C++.
+The ``lifetimebound`` attribute on a function parameter or implicit object
+parameter indicates that objects that are referred to by that parameter may
+also be referred to by the return value of the annotated function (or, for a
+parameter of a constructor, by the value of the constructed object). It is only
+supported in C++.
 
-This attribute causes warnings to be produced if a temporary object does not
-live long enough. For example:
+By default, a reference is considered to refer to its referenced object, a
+pointer is considered to refer to its pointee, a ``std::initializer_list<T>``
+is considered to refer to its underlying array, and aggregates (arrays and
+simple ``struct``\s) are considered to refer to all objects that their
+transitive subobjects refer to.
+
+Clang warns if it is able to detect that an object or reference refers to
+another object with a shorter lifetime. For example, Clang will warn if a
+function returns a reference to a local variable, or if a reference is bound to
+a temporary object whose lifetime is not extended. By using the
+``lifetimebound`` attribute, this determination can be extended to look through
+user-declared functions. For example:
 
 .. code-block:: c++
 
+    // Returns m[key] if key is present, or default_value if not.
     template<typename T, typename U>
-    const U &get_or_default(std::map<T, U> &m, const T &key,
+    const U &get_or_default(const std::map<T, U> &m [[clang::lifetimebound]],
+                            const T &key, /* note, not lifetimebound */
                             const U &default_value [[clang::lifetimebound]]);
 
     std::map<std::string, std::string> m;
@@ -3046,11 +3089,9 @@ live long enough. For example:
     // will be destroyed at the end of the full-expression
     const std::string &val = get_or_default(m, "foo"s, "bar"s);
 
-When applied to a reference parameter, the referenced object is assumed to be
-retained by the return value of the function. When applied to a non-reference
-parameter (for example, a pointer or a class type), all temporaries referenced
-by the parameter are assumed to be retained by the return value of the
-function.
+    // No warning in this case.
+    std::string def_val = "bar"s;
+    const std::string &val = get_or_default(m, "foo"s, def_val);
 
 The attribute can be applied to the implicit ``this`` parameter of a member
 function by writing the attribute after the function type:
@@ -3207,7 +3248,9 @@ def UnrollHintDocs : Documentation {
   let Content = [{
 Loop unrolling optimization hints can be specified with ``#pragma unroll`` and
 ``#pragma nounroll``. The pragma is placed immediately before a for, while,
-do-while, or c++11 range-based for loop.
+do-while, or c++11 range-based for loop. GCC's loop unrolling hints
+``#pragma GCC unroll`` and ``#pragma GCC nounroll`` are also supported and have
+identical semantics to ``#pragma unroll`` and ``#pragma nounroll``.
 
 Specifying ``#pragma unroll`` without a parameter directs the loop unroller to
 attempt to fully unroll the loop if the trip count is known at compile time and
@@ -3671,6 +3714,16 @@ parameter is undefined behavior, which the optimizer may take advantage of to,
 e.g., remove null checks. The ``_Nonnull`` type qualifier indicates that a
 pointer cannot be null in a more general manner (because it is part of the type
 system) and does not imply undefined behavior, making it more widely applicable.
+  }];
+}
+
+def RestrictDocs : Documentation {
+  let Category = DocCatFunction;
+  let Heading = "malloc";
+  let Content = [{
+The ``malloc`` attribute indicates that the function acts like a system memory
+allocation function, returning a pointer to allocated storage disjoint from the
+storage for any other object accessible to the caller.
   }];
 }
 
@@ -4648,6 +4701,26 @@ could have a different set of data members and thus have a different size. Using
 the ``abi_tag`` attribute, it is possible to have different mangled names for
 a global variable of the class type. Therefore, the old code could keep using
 the old mangled name and the new code will use the new mangled name with tags.
+  }];
+}
+
+def BuiltinAliasDocs : Documentation {
+  let Category = DocCatFunction;
+  let Heading = "clang::builtin_alias, clang_builtin_alias";
+  let Content = [{
+This attribute is used in the implementation of the C intrinsics.
+It allows the C intrinsic functions to be declared using the names defined
+in target builtins, and still be recognized as clang builtins equivalent to the
+underlying name. For example, ``riscv_vector.h`` declares the function ``vadd``
+with ``__attribute__((clang_builtin_alias(__builtin_rvv_vadd_vv_i8m1)))``.
+This ensures that both functions are recognized as that clang builtin,
+and in the latter case, the choice of which builtin to identify the
+function as can be deferred until after overload resolution.
+
+This attribute can only be used to set up the aliases for certain ARM/RISC-V
+C intrinsic functions; it is intended for use only inside ``arm_*.h`` and
+``riscv_*.h`` and is not a general mechanism for declaring arbitrary aliases
+for clang builtin functions.
   }];
 }
 
@@ -5645,6 +5718,10 @@ This attribute can only be used to set up the aliases for certain Arm
 intrinsic functions; it is intended for use only inside ``arm_*.h``
 and is not a general mechanism for declaring arbitrary aliases for
 clang builtin functions.
+
+In order to avoid duplicating the attribute definitions for similar
+purpose for other architecture, there is a general form for the
+attribute `clang_builtin_alias`.
   }];
 }
 

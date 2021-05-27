@@ -51,9 +51,11 @@ class RewritePattern;
 class Type;
 class Value;
 class ValueRange;
-template <typename ValueRangeT> class ValueTypeRange;
+template <typename ValueRangeT>
+class ValueTypeRange;
 
-class OwningRewritePatternList;
+class RewritePatternSet;
+using OwningRewritePatternList = RewritePatternSet;
 
 //===----------------------------------------------------------------------===//
 // AbstractOperation
@@ -65,14 +67,17 @@ class OwningRewritePatternList;
 /// the concrete operation types.
 class AbstractOperation {
 public:
-  using GetCanonicalizationPatternsFn = void (*)(OwningRewritePatternList &,
-                                                 MLIRContext *);
-  using FoldHookFn = LogicalResult (*)(Operation *, ArrayRef<Attribute>,
-                                       SmallVectorImpl<OpFoldResult> &);
-  using HasTraitFn = bool (*)(TypeID);
-  using ParseAssemblyFn = ParseResult (*)(OpAsmParser &, OperationState &);
-  using PrintAssemblyFn = void (*)(Operation *, OpAsmPrinter &);
-  using VerifyInvariantsFn = LogicalResult (*)(Operation *);
+  using GetCanonicalizationPatternsFn =
+      llvm::unique_function<void(RewritePatternSet &, MLIRContext *) const>;
+  using FoldHookFn = llvm::unique_function<LogicalResult(
+      Operation *, ArrayRef<Attribute>, SmallVectorImpl<OpFoldResult> &) const>;
+  using HasTraitFn = llvm::unique_function<bool(TypeID) const>;
+  using ParseAssemblyFn =
+      llvm::unique_function<ParseResult(OpAsmParser &, OperationState &) const>;
+  using PrintAssemblyFn =
+      llvm::unique_function<void(Operation *, OpAsmPrinter &) const>;
+  using VerifyInvariantsFn =
+      llvm::unique_function<LogicalResult(Operation *) const>;
 
   /// This is the name of the operation.
   const Identifier name;
@@ -85,6 +90,9 @@ public:
 
   /// Use the specified object to parse this ops custom assembly format.
   ParseResult parseAssembly(OpAsmParser &parser, OperationState &result) const;
+
+  /// Return the static hook for parsing this operation assembly.
+  const ParseAssemblyFn &getParseAssemblyFn() const { return parseAssemblyFn; }
 
   /// This hook implements the AsmPrinter for this operation.
   void printAssembly(Operation *op, OpAsmPrinter &p) const {
@@ -124,7 +132,7 @@ public:
 
   /// This hook returns any canonicalization pattern rewrites that the operation
   /// supports, for use by the canonicalization pass.
-  void getCanonicalizationPatterns(OwningRewritePatternList &results,
+  void getCanonicalizationPatterns(RewritePatternSet &results,
                                    MLIRContext *context) const {
     return getCanonicalizationPatternsFn(results, context);
   }
@@ -132,14 +140,24 @@ public:
   /// Returns an instance of the concept object for the given interface if it
   /// was registered to this operation, null otherwise. This should not be used
   /// directly.
-  template <typename T> typename T::Concept *getInterface() const {
+  template <typename T>
+  typename T::Concept *getInterface() const {
     return interfaceMap.lookup<T>();
   }
 
+  /// Returns true if this operation has the given interface registered to it.
+  bool hasInterface(TypeID interfaceID) const {
+    return interfaceMap.contains(interfaceID);
+  }
+
   /// Returns true if the operation has a particular trait.
-  template <template <typename T> class Trait> bool hasTrait() const {
+  template <template <typename T> class Trait>
+  bool hasTrait() const {
     return hasTraitFn(TypeID::get<Trait>());
   }
+
+  /// Returns true if the operation has a particular trait.
+  bool hasTrait(TypeID traitID) const { return hasTraitFn(traitID); }
 
   /// Look up the specified operation in the specified MLIRContext and return a
   /// pointer to it if present.  Otherwise, return a null pointer.
@@ -148,7 +166,8 @@ public:
 
   /// This constructor is used by Dialect objects when they register the list of
   /// operations they contain.
-  template <typename T> static void insert(Dialect &dialect) {
+  template <typename T>
+  static void insert(Dialect &dialect) {
     insert(T::getOperationName(), dialect, TypeID::get<T>(),
            T::getParseAssemblyFn(), T::getPrintAssemblyFn(),
            T::getVerifyInvariantsFn(), T::getFoldHookFn(),
@@ -156,20 +175,24 @@ public:
            T::getHasTraitFn());
   }
 
-private:
-  static void insert(StringRef name, Dialect &dialect, TypeID typeID,
-                     ParseAssemblyFn parseAssembly,
-                     PrintAssemblyFn printAssembly,
-                     VerifyInvariantsFn verifyInvariants, FoldHookFn foldHook,
-                     GetCanonicalizationPatternsFn getCanonicalizationPatterns,
-                     detail::InterfaceMap &&interfaceMap, HasTraitFn hasTrait);
+  /// Register a new operation in a Dialect object.
+  /// The use of this method is in general discouraged in favor of
+  /// 'insert<CustomOp>(dialect)'.
+  static void
+  insert(StringRef name, Dialect &dialect, TypeID typeID,
+         ParseAssemblyFn &&parseAssembly, PrintAssemblyFn &&printAssembly,
+         VerifyInvariantsFn &&verifyInvariants, FoldHookFn &&foldHook,
+         GetCanonicalizationPatternsFn &&getCanonicalizationPatterns,
+         detail::InterfaceMap &&interfaceMap, HasTraitFn &&hasTrait);
 
+private:
   AbstractOperation(StringRef name, Dialect &dialect, TypeID typeID,
-                    ParseAssemblyFn parseAssembly,
-                    PrintAssemblyFn printAssembly,
-                    VerifyInvariantsFn verifyInvariants, FoldHookFn foldHook,
-                    GetCanonicalizationPatternsFn getCanonicalizationPatterns,
-                    detail::InterfaceMap &&interfaceMap, HasTraitFn hasTrait);
+                    ParseAssemblyFn &&parseAssembly,
+                    PrintAssemblyFn &&printAssembly,
+                    VerifyInvariantsFn &&verifyInvariants,
+                    FoldHookFn &&foldHook,
+                    GetCanonicalizationPatternsFn &&getCanonicalizationPatterns,
+                    detail::InterfaceMap &&interfaceMap, HasTraitFn &&hasTrait);
 
   /// A map of interfaces that were registered to this operation.
   detail::InterfaceMap interfaceMap;
@@ -220,7 +243,8 @@ public:
   void append(NamedAttribute attr) { push_back(attr); }
 
   /// Add an array of named attributes.
-  template <typename RangeT> void append(RangeT &&newAttributes) {
+  template <typename RangeT>
+  void append(RangeT &&newAttributes) {
     append(std::begin(newAttributes), std::end(newAttributes));
   }
 
@@ -460,6 +484,7 @@ namespace detail {
 /// This class contains the information for a trailing operand storage.
 struct TrailingOperandStorage final
     : public llvm::TrailingObjects<TrailingOperandStorage, OpOperand> {
+  TrailingOperandStorage() : reserved(0), capacity(0), numOperands(0) {}
   ~TrailingOperandStorage() {
     for (auto &operand : getOperands())
       operand.~OpOperand();
@@ -470,12 +495,12 @@ struct TrailingOperandStorage final
     return {getTrailingObjects<OpOperand>(), numOperands};
   }
 
-  /// The number of operands within the storage.
-  unsigned numOperands;
-  /// The total capacity number of operands that the storage can hold.
-  unsigned capacity : 31;
   /// We reserve a range of bits for use by the operand storage.
   unsigned reserved : 1;
+  /// The total capacity number of operands that the storage can hold.
+  unsigned capacity : 31;
+  /// The number of operands within the storage.
+  unsigned numOperands;
 };
 
 /// This class handles the management of operation operands. Operands are
@@ -517,9 +542,11 @@ public:
   }
 
 private:
-  enum : uint64_t {
-    /// The bit used to mark the storage as dynamic.
-    DynamicStorageBit = 1ull << 63ull
+  /// Pointer type traits for the storage pointer that ensures that we use the
+  /// lowest bit for the storage pointer.
+  struct StoragePointerLikeTypeTraits
+      : llvm::PointerLikeTypeTraits<TrailingOperandStorage *> {
+    static constexpr int NumLowBitsAvailable = 1;
   };
 
   /// Resize the storage to the given size. Returns the array containing the new
@@ -535,27 +562,25 @@ private:
   /// Returns the storage container if the storage is inline.
   TrailingOperandStorage &getInlineStorage() {
     assert(!isDynamicStorage() && "expected storage to be inline");
-    static_assert(sizeof(TrailingOperandStorage) == sizeof(uint64_t),
-                  "inline storage representation must match the opaque "
-                  "representation");
     return inlineStorage;
   }
 
   /// Returns the storage container if this storage is dynamic.
   TrailingOperandStorage &getDynamicStorage() {
     assert(isDynamicStorage() && "expected dynamic storage");
-    uint64_t maskedRepresentation = representation & ~DynamicStorageBit;
-    return *reinterpret_cast<TrailingOperandStorage *>(maskedRepresentation);
+    return *dynamicStorage.getPointer();
   }
 
   /// Returns true if the storage is currently dynamic.
-  bool isDynamicStorage() const { return representation & DynamicStorageBit; }
+  bool isDynamicStorage() const { return dynamicStorage.getInt(); }
 
   /// The current representation of the storage. This is either a
   /// InlineOperandStorage, or a pointer to a InlineOperandStorage.
   union {
     TrailingOperandStorage inlineStorage;
-    uint64_t representation;
+    llvm::PointerIntPair<TrailingOperandStorage *, 1, bool,
+                         StoragePointerLikeTypeTraits>
+        dynamicStorage;
   };
 
   /// This stuff is used by the TrailingObjects template.
@@ -851,7 +876,8 @@ LLVM_ENABLE_BITMASK_ENUMS_IN_NAMESPACE();
 
 namespace llvm {
 // Identifiers hash just like pointers, there is no need to hash the bytes.
-template <> struct DenseMapInfo<mlir::OperationName> {
+template <>
+struct DenseMapInfo<mlir::OperationName> {
   static mlir::OperationName getEmptyKey() {
     auto pointer = llvm::DenseMapInfo<void *>::getEmptyKey();
     return mlir::OperationName::getFromOpaquePointer(pointer);
@@ -871,7 +897,8 @@ template <> struct DenseMapInfo<mlir::OperationName> {
 /// The pointer inside of an identifier comes from a StringMap, so its alignment
 /// is always at least 4 and probably 8 (on 64-bit machines).  Allow LLVM to
 /// steal the low bits.
-template <> struct PointerLikeTypeTraits<mlir::OperationName> {
+template <>
+struct PointerLikeTypeTraits<mlir::OperationName> {
 public:
   static inline void *getAsVoidPointer(mlir::OperationName I) {
     return const_cast<void *>(I.getAsOpaquePointer());

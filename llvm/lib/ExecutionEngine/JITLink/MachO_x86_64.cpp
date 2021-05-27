@@ -13,8 +13,8 @@
 #include "llvm/ExecutionEngine/JITLink/MachO_x86_64.h"
 #include "llvm/ExecutionEngine/JITLink/x86_64.h"
 
-#include "BasicGOTAndStubsBuilder.h"
 #include "MachOLinkGraphBuilder.h"
+#include "PerGraphGOTAndPLTStubsBuilder.h"
 
 #define DEBUG_TYPE "jitlink"
 
@@ -347,8 +347,6 @@ private:
           else
             return TargetSymbolOrErr.takeError();
           Addend = *(const little32_t *)FixupContent - 4;
-          // -
-          //   (1 << (*MachORelocKind - MachOPCRel32Minus1));
           Kind = x86_64::Delta32;
           break;
         case MachOPCRel32Anon: {
@@ -414,14 +412,14 @@ private:
   }
 };
 
-class MachO_x86_64_GOTAndStubsBuilder
-    : public BasicGOTAndStubsBuilder<MachO_x86_64_GOTAndStubsBuilder> {
+class PerGraphGOTAndPLTStubsBuilder_MachO_x86_64
+    : public PerGraphGOTAndPLTStubsBuilder<
+          PerGraphGOTAndPLTStubsBuilder_MachO_x86_64> {
 public:
-  static const uint8_t NullGOTEntryContent[8];
-  static const uint8_t StubContent[6];
 
-  MachO_x86_64_GOTAndStubsBuilder(LinkGraph &G)
-      : BasicGOTAndStubsBuilder<MachO_x86_64_GOTAndStubsBuilder>(G) {}
+  using PerGraphGOTAndPLTStubsBuilder<
+      PerGraphGOTAndPLTStubsBuilder_MachO_x86_64>::
+      PerGraphGOTAndPLTStubsBuilder;
 
   bool isGOTEdgeToFix(Edge &E) const {
     return E.getKind() == x86_64::RequestGOTAndTransformToDelta32 ||
@@ -430,10 +428,7 @@ public:
   }
 
   Symbol &createGOTEntry(Symbol &Target) {
-    auto &GOTEntryBlock = G.createContentBlock(
-        getGOTSection(), getGOTEntryBlockContent(), 0, 8, 0);
-    GOTEntryBlock.addEdge(x86_64::Pointer64, 0, Target, 0);
-    return G.addAnonymousSymbol(GOTEntryBlock, 0, 8, false, false);
+    return x86_64::createAnonymousPointer(G, getGOTSection(), &Target);
   }
 
   void fixGOTEdge(Edge &E, Symbol &GOTEntry) {
@@ -456,16 +451,12 @@ public:
     return E.getKind() == x86_64::BranchPCRel32 && E.getTarget().isExternal();
   }
 
-  Symbol &createStub(Symbol &Target) {
-    auto &StubContentBlock =
-        G.createContentBlock(getStubsSection(), getStubBlockContent(), 0, 1, 0);
-    // Re-use GOT entries for stub targets.
-    auto &GOTEntrySymbol = getGOTEntrySymbol(Target);
-    StubContentBlock.addEdge(x86_64::Delta32, 2, GOTEntrySymbol, -4);
-    return G.addAnonymousSymbol(StubContentBlock, 0, 6, true, false);
+  Symbol &createPLTStub(Symbol &Target) {
+    return x86_64::createAnonymousPointerJumpStub(G, getStubsSection(),
+                                                  getGOTEntry(Target));
   }
 
-  void fixExternalBranchEdge(Edge &E, Symbol &Stub) {
+  void fixPLTEdge(Edge &E, Symbol &Stub) {
     assert(E.getKind() == x86_64::BranchPCRel32 && "Not a Branch32 edge?");
     assert(E.getAddend() == 0 &&
            "BranchPCRel32 edge has unexpected addend value");
@@ -493,24 +484,10 @@ private:
     return *StubsSection;
   }
 
-  StringRef getGOTEntryBlockContent() {
-    return StringRef(reinterpret_cast<const char *>(NullGOTEntryContent),
-                     sizeof(NullGOTEntryContent));
-  }
-
-  StringRef getStubBlockContent() {
-    return StringRef(reinterpret_cast<const char *>(StubContent),
-                     sizeof(StubContent));
-  }
-
   Section *GOTSection = nullptr;
   Section *StubsSection = nullptr;
 };
 
-const uint8_t MachO_x86_64_GOTAndStubsBuilder::NullGOTEntryContent[8] = {
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
-const uint8_t MachO_x86_64_GOTAndStubsBuilder::StubContent[6] = {
-    0xFF, 0x25, 0x00, 0x00, 0x00, 0x00};
 } // namespace
 
 static Error optimizeMachO_x86_64_GOTAndStubs(LinkGraph &G) {
@@ -545,9 +522,8 @@ static Error optimizeMachO_x86_64_GOTAndStubs(LinkGraph &G) {
           E.setTarget(GOTTarget);
           E.setKind(x86_64::Delta32);
           E.setAddend(E.getAddend() - 4);
-          auto *BlockData = reinterpret_cast<uint8_t *>(
-              const_cast<char *>(B->getContent().data()));
-          BlockData[E.getOffset() - 2] = 0x8d;
+          char *BlockData = B->getMutableContent(G).data();
+          BlockData[E.getOffset() - 2] = (char)0x8d;
           LLVM_DEBUG({
             dbgs() << "  Replaced GOT load wih LEA:\n    ";
             printEdge(dbgs(), *B, E, x86_64::getEdgeKindName(E.getKind()));
@@ -556,8 +532,7 @@ static Error optimizeMachO_x86_64_GOTAndStubs(LinkGraph &G) {
         }
       } else if (E.getKind() == x86_64::BranchPCRel32ToPtrJumpStubRelaxable) {
         auto &StubBlock = E.getTarget().getBlock();
-        assert(StubBlock.getSize() ==
-                   sizeof(MachO_x86_64_GOTAndStubsBuilder::StubContent) &&
+        assert(StubBlock.getSize() == sizeof(x86_64::PointerJumpStubContent) &&
                "Stub block should be stub sized");
         assert(StubBlock.edges_size() == 1 &&
                "Stub block should only have one outgoing edge");
@@ -601,9 +576,8 @@ public:
       : JITLinker(std::move(Ctx), std::move(G), std::move(PassConfig)) {}
 
 private:
-  Error applyFixup(LinkGraph &G, Block &B, const Edge &E,
-                   char *BlockWorkingMem) const {
-    return x86_64::applyFixup(G, B, E, BlockWorkingMem);
+  Error applyFixup(LinkGraph &G, Block &B, const Edge &E) const {
+    return x86_64::applyFixup(G, B, E);
   }
 };
 
@@ -622,10 +596,8 @@ void link_MachO_x86_64(std::unique_ptr<LinkGraph> G,
 
   if (Ctx->shouldAddDefaultTargetPasses(G->getTargetTriple())) {
     // Add eh-frame passses.
-    Config.PrePrunePasses.push_back(EHFrameSplitter("__eh_frame"));
-    Config.PrePrunePasses.push_back(
-        EHFrameEdgeFixer("__eh_frame", G->getPointerSize(), x86_64::Delta64,
-                         x86_64::Delta32, x86_64::NegDelta32));
+    Config.PrePrunePasses.push_back(createEHFrameSplitterPass_MachO_x86_64());
+    Config.PrePrunePasses.push_back(createEHFrameEdgeFixerPass_MachO_x86_64());
 
     // Add a mark-live pass.
     if (auto MarkLive = Ctx->getMarkLivePass(G->getTargetTriple()))
@@ -634,10 +606,8 @@ void link_MachO_x86_64(std::unique_ptr<LinkGraph> G,
       Config.PrePrunePasses.push_back(markAllSymbolsLive);
 
     // Add an in-place GOT/Stubs pass.
-    Config.PostPrunePasses.push_back([](LinkGraph &G) -> Error {
-      MachO_x86_64_GOTAndStubsBuilder(G).run();
-      return Error::success();
-    });
+    Config.PostPrunePasses.push_back(
+        PerGraphGOTAndPLTStubsBuilder_MachO_x86_64::asPass);
 
     // Add GOT/Stubs optimizer pass.
     Config.PreFixupPasses.push_back(optimizeMachO_x86_64_GOTAndStubs);
@@ -648,6 +618,15 @@ void link_MachO_x86_64(std::unique_ptr<LinkGraph> G,
 
   // Construct a JITLinker and run the link function.
   MachOJITLinker_x86_64::link(std::move(Ctx), std::move(G), std::move(Config));
+}
+
+LinkGraphPassFunction createEHFrameSplitterPass_MachO_x86_64() {
+  return EHFrameSplitter("__TEXT,__eh_frame");
+}
+
+LinkGraphPassFunction createEHFrameEdgeFixerPass_MachO_x86_64() {
+  return EHFrameEdgeFixer("__TEXT,__eh_frame", x86_64::PointerSize,
+                          x86_64::Delta64, x86_64::Delta32, x86_64::NegDelta32);
 }
 
 } // end namespace jitlink

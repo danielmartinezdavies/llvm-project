@@ -14,8 +14,6 @@ The clang-tidy check created is called MapReduce, and will look for loops that c
 More information on GrPPI can be found here:
 * https://github.com/arcosuc3m/grppi
 
-## Building clang-tidy
-
 ### Getting the Source Code and Building LLVM
 
 The LLVM Getting Started documentation may be out of date.  The [Clang

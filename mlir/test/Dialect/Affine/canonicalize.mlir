@@ -93,11 +93,8 @@ func @compose_affine_maps_1dto2d_with_symbols() {
 // CHECK-DAG: #[[$MAP8:.*]] = affine_map<(d0, d1) -> (d1 + (d0 ceildiv 4) * 4 - (d1 floordiv 4) * 4)>
 // CHECK-DAG: #[[$MAP8a:.*]] = affine_map<(d0, d1) -> (d1 + (d0 ceildiv 8) * 8 - (d1 floordiv 8) * 8)>
 
-// CHECK-LABEL: func @compose_affine_maps_2d_tile() {
-func @compose_affine_maps_2d_tile() {
-  %0 = memref.alloc() : memref<16x32xf32>
-  %1 = memref.alloc() : memref<16x32xf32>
-
+// CHECK-LABEL: func @compose_affine_maps_2d_tile
+func @compose_affine_maps_2d_tile(%0: memref<16x32xf32>, %1: memref<16x32xf32>) {
   %c4 = constant 4 : index
   %c8 = constant 8 : index
 
@@ -221,7 +218,7 @@ func @compose_affine_maps_multiple_symbols(%arg0: index, %arg1: index) -> index 
 // -----
 
 // CHECK-LABEL: func @arg_used_as_dim_and_symbol
-func @arg_used_as_dim_and_symbol(%arg0: memref<100x100xf32>, %arg1: index, %arg2: f32) {
+func @arg_used_as_dim_and_symbol(%arg0: memref<100x100xf32>, %arg1: index, %arg2: f32) -> (memref<100x100xf32, 1>, memref<1xi32>) {
   %c9 = constant 9 : index
   %1 = memref.alloc() : memref<100x100xf32, 1>
   %2 = memref.alloc() : memref<1xi32>
@@ -235,7 +232,7 @@ func @arg_used_as_dim_and_symbol(%arg0: memref<100x100xf32>, %arg1: index, %arg2
       memref.store %arg2, %1[%4, %arg1] : memref<100x100xf32, 1>
     }
   }
-  return
+  return %1, %2 : memref<100x100xf32, 1>, memref<1xi32>
 }
 
 // -----
@@ -691,6 +688,239 @@ func @compose_affine_maps_div_symbol(%A : memref<i64>, %i0 : index, %i1 : index)
     %4 = affine.apply affine_map<(d0)[s0, s1] -> (d0 ceildiv s1 + s0 + s0 * 3)> (%i2)[%0, %1]
     %5 = index_cast %4: index to i64
     memref.store %5, %A[]: memref<i64>
+  }
+  return
+}
+
+// -----
+
+// CHECK: #[[MAP:.+]] = affine_map<()[s0, s1] -> (s0 + s1, s0 * s1)>
+
+// CHECK: func @deduplicate_affine_min_expressions
+// CHECK-SAME: (%[[I0:.+]]: index, %[[I1:.+]]: index)
+func @deduplicate_affine_min_expressions(%i0: index, %i1: index) -> index {
+  // CHECK:  affine.min #[[MAP]]()[%[[I0]], %[[I1]]]
+  %0 = affine.min affine_map<()[s0, s1] -> (s0 + s1, s0 * s1, s1 + s0, s0 * s1)> ()[%i0, %i1]
+  return %0: index
+}
+
+// -----
+
+// CHECK: #[[MAP:.+]] = affine_map<()[s0, s1] -> (s0 + s1, s0 * s1)>
+
+// CHECK: func @deduplicate_affine_max_expressions
+// CHECK-SAME: (%[[I0:.+]]: index, %[[I1:.+]]: index)
+func @deduplicate_affine_max_expressions(%i0: index, %i1: index) -> index {
+  // CHECK:  affine.max #[[MAP]]()[%[[I0]], %[[I1]]]
+  %0 = affine.max affine_map<()[s0, s1] -> (s0 + s1, s0 * s1, s1 + s0, s0 * s1)> ()[%i0, %i1]
+  return %0: index
+}
+
+// -----
+
+// CHECK-DAG: #[[MAP0:.+]] = affine_map<()[s0, s1, s2] -> (s0 * 3, 16, -s1 + s2)>
+// CHECK-DAG: #[[MAP1:.+]] = affine_map<()[s0, s1, s2] -> (-s2 + 5, 16, -s0 + s1)>
+
+// CHECK: func @merge_affine_min_ops
+// CHECK-SAME: (%[[I0:.+]]: index, %[[I1:.+]]: index, %[[I2:.+]]: index, %[[I3:.+]]: index)
+func @merge_affine_min_ops(%i0: index, %i1: index, %i2: index, %i3: index) -> (index, index) {
+  %0 = affine.min affine_map<(d0)[s0] -> (16, d0 - s0)> (%i0)[%i1]
+
+ // CHECK: affine.min #[[MAP0]]()[%[[I2]], %[[I1]], %[[I0]]]
+  %1 = affine.min affine_map<(d0)[s0] -> (3 * s0, d0)> (%0)[%i2] // Use as dim
+ // CHECK: affine.min #[[MAP1]]()[%[[I1]], %[[I0]], %[[I3]]]
+  %2 = affine.min affine_map<(d0)[s0] -> (s0, 5 - d0)> (%i3)[%0] // Use as symbol
+
+  return %1, %2: index, index
+}
+
+// -----
+
+// CHECK: #[[MAP:.+]] = affine_map<()[s0, s1, s2] -> (s0 + 7, s1 + 16, s1 * 8, s2 + 8, s2 * 4)>
+
+// CHECK: func @merge_multiple_affine_min_ops
+// CHECK-SAME: (%[[I0:.+]]: index, %[[I1:.+]]: index, %[[I2:.+]]: index)
+func @merge_multiple_affine_min_ops(%i0: index, %i1: index, %i2: index) -> index {
+  %0 = affine.min affine_map<()[s0] -> (s0 + 16, s0 * 8)> ()[%i0]
+  %1 = affine.min affine_map<()[s0] -> (s0 + 8, s0 * 4)> ()[%i1]
+  // CHECK: affine.min #[[MAP]]()[%[[I2]], %[[I0]], %[[I1]]]
+  %2 = affine.min affine_map<()[s0, s1, s2] -> (s0, 7 + s1, s2)> ()[%0, %i2, %1]
+  return %2: index
+}
+
+// -----
+
+// CHECK-DAG: #[[MAP:.+]] = affine_map<()[s0, s1] -> (s0 * 2, s1 + 16, s1 * 8)>
+
+// CHECK: func @merge_multiple_uses_of_affine_min_ops
+// CHECK-SAME: (%[[I0:.+]]: index, %[[I1:.+]]: index)
+func @merge_multiple_uses_of_affine_min_ops(%i0: index, %i1: index) -> index {
+  %0 = affine.min affine_map<()[s0] -> (s0 + 16, s0 * 8)> ()[%i0]
+  // CHECK: affine.min #[[MAP]]()[%[[I1]], %[[I0]]]
+  %2 = affine.min affine_map<()[s0, s1, s2] -> (s0, s1, s2 * 2)> ()[%0, %0, %i1]
+  return %2: index
+}
+
+// -----
+
+// CHECK-DAG: #[[MAP0:.+]] = affine_map<()[s0] -> (s0 + 16, s0 * 8)>
+// CHECK-DAG: #[[MAP1:.+]] = affine_map<()[s0, s1, s2] -> (s0 + 1, s1 * 2, s2 + 16, s2 * 8)>
+
+// CHECK: func @merge_mixed_uses_of_affine_min_ops
+// CHECK-SAME: (%[[I0:.+]]: index, %[[I1:.+]]: index)
+func @merge_mixed_uses_of_affine_min_ops(%i0: index, %i1: index) -> index {
+  // CHECK: %[[AFFINE:.+]] = affine.min #[[MAP0]]()[%[[I0]]]
+  %0 = affine.min affine_map<()[s0] -> (s0 + 16, s0 * 8)> ()[%i0]
+  // %0 is bound to a symbol that is both a standalone expression and a part
+  // of other expressions.
+  // CHECK: affine.min #[[MAP1]]()[%[[AFFINE]], %[[I1]], %[[I0]]]
+  %2 = affine.min affine_map<()[s0, s1, s2] -> (s0, s1 + 1, s2 * 2)> ()[%0, %0, %i1]
+  return %2: index
+}
+
+// -----
+
+// CHECK-LABEL: func @dont_merge_affine_min_if_not_single_dim
+func @dont_merge_affine_min_if_not_single_dim(%i0: index, %i1: index, %i2: index) -> index {
+  // CHECK-COUNT-2: affine.min
+  %0 = affine.min affine_map<()[s0] -> (s0 + 16, s0 * 8)> ()[%i0]
+  %1 = affine.min affine_map<(d0)[s0] -> (s0 + 4, 7 + d0)> (%0)[%i2]
+  return %1: index
+}
+
+// -----
+
+// CHECK-LABEL: func @dont_merge_affine_min_if_not_single_sym
+func @dont_merge_affine_min_if_not_single_sym(%i0: index, %i1: index, %i2: index) -> index {
+  // CHECK-COUNT-2: affine.min
+  %0 = affine.min affine_map<()[s0] -> (s0 + 16, s0 * 8)> ()[%i0]
+  %1 = affine.min affine_map<()[s0, s1] -> (s0 + 4, 7 + s1)> ()[%0, %i2]
+  return %1: index
+}
+
+// -----
+
+// CHECK-DAG: #[[MAP0:.+]] = affine_map<()[s0, s1, s2] -> (s0 * 3, 16, -s1 + s2)>
+// CHECK-DAG: #[[MAP1:.+]] = affine_map<()[s0, s1, s2] -> (-s2 + 5, 16, -s0 + s1)>
+
+// CHECK: func @merge_affine_max_ops
+// CHECK-SAME: (%[[I0:.+]]: index, %[[I1:.+]]: index, %[[I2:.+]]: index, %[[I3:.+]]: index)
+func @merge_affine_max_ops(%i0: index, %i1: index, %i2: index, %i3: index) -> (index, index) {
+  %0 = affine.max affine_map<(d0)[s0] -> (16, d0 - s0)> (%i0)[%i1]
+
+ // CHECK: affine.max #[[MAP0]]()[%[[I2]], %[[I1]], %[[I0]]]
+  %1 = affine.max affine_map<(d0)[s0] -> (3 * s0, d0)> (%0)[%i2] // Use as dim
+ // CHECK: affine.max #[[MAP1]]()[%[[I1]], %[[I0]], %[[I3]]]
+  %2 = affine.max affine_map<(d0)[s0] -> (s0, 5 - d0)> (%i3)[%0] // Use as symbol
+
+  return %1, %2: index, index
+}
+
+// -----
+
+// CHECK: #[[MAP:.+]] = affine_map<()[s0, s1, s2] -> (s0 + 7, s1 + 16, s1 * 8, s2 + 8, s2 * 4)>
+
+// CHECK: func @merge_multiple_affine_max_ops
+// CHECK-SAME: (%[[I0:.+]]: index, %[[I1:.+]]: index, %[[I2:.+]]: index)
+func @merge_multiple_affine_max_ops(%i0: index, %i1: index, %i2: index) -> index {
+  %0 = affine.max affine_map<()[s0] -> (s0 + 16, s0 * 8)> ()[%i0]
+  %1 = affine.max affine_map<()[s0] -> (s0 + 8, s0 * 4)> ()[%i1]
+  // CHECK: affine.max #[[MAP]]()[%[[I2]], %[[I0]], %[[I1]]]
+  %2 = affine.max affine_map<()[s0, s1, s2] -> (s0, 7 + s1, s2)> ()[%0, %i2, %1]
+  return %2: index
+}
+
+// -----
+
+// CHECK-DAG: #[[MAP:.+]] = affine_map<()[s0, s1] -> (s0 * 2, s1 + 16, s1 * 8)>
+
+// CHECK: func @merge_multiple_uses_of_affine_max_ops
+// CHECK-SAME: (%[[I0:.+]]: index, %[[I1:.+]]: index)
+func @merge_multiple_uses_of_affine_max_ops(%i0: index, %i1: index) -> index {
+  %0 = affine.max affine_map<()[s0] -> (s0 + 16, s0 * 8)> ()[%i0]
+  // CHECK: affine.max #[[MAP]]()[%[[I1]], %[[I0]]]
+  %2 = affine.max affine_map<()[s0, s1, s2] -> (s0, s1, s2 * 2)> ()[%0, %0, %i1]
+  return %2: index
+}
+
+// -----
+
+// CHECK-DAG: #[[MAP0:.+]] = affine_map<()[s0] -> (s0 + 16, s0 * 8)>
+// CHECK-DAG: #[[MAP1:.+]] = affine_map<()[s0, s1, s2] -> (s0 + 1, s1 * 2, s2 + 16, s2 * 8)>
+
+// CHECK: func @merge_mixed_uses_of_affine_max_ops
+// CHECK-SAME: (%[[I0:.+]]: index, %[[I1:.+]]: index)
+func @merge_mixed_uses_of_affine_max_ops(%i0: index, %i1: index) -> index {
+  // CHECK: %[[AFFINE:.+]] = affine.max #[[MAP0]]()[%[[I0]]]
+  %0 = affine.max affine_map<()[s0] -> (s0 + 16, s0 * 8)> ()[%i0]
+  // %0 is bound to a symbol that is both a standalone expression and a part
+  // of other expressions.
+  // CHECK: affine.max #[[MAP1]]()[%[[AFFINE]], %[[I1]], %[[I0]]]
+  %2 = affine.max affine_map<()[s0, s1, s2] -> (s0, s1 + 1, s2 * 2)> ()[%0, %0, %i1]
+  return %2: index
+}
+
+// -----
+
+// CHECK-LABEL: func @dont_merge_affine_max_if_not_single_dim
+func @dont_merge_affine_max_if_not_single_dim(%i0: index, %i1: index, %i2: index) -> index {
+  // CHECK-COUNT-2: affine.max
+  %0 = affine.max affine_map<()[s0] -> (s0 + 16, s0 * 8)> ()[%i0]
+  %1 = affine.max affine_map<(d0)[s0] -> (s0 + 4, 7 + d0)> (%0)[%i2]
+  return %1: index
+}
+
+
+// -----
+
+// CHECK-LABEL: func @dont_merge_affine_max_if_not_single_sym
+func @dont_merge_affine_max_if_not_single_sym(%i0: index, %i1: index, %i2: index) -> index {
+  // CHECK-COUNT-2: affine.max
+  %0 = affine.max affine_map<()[s0] -> (s0 + 16, s0 * 8)> ()[%i0]
+  %1 = affine.max affine_map<()[s0, s1] -> (s0 + 4, 7 + s1)> ()[%0, %i2]
+  return %1: index
+}
+
+// -----
+
+// Ensure bounding maps of affine.for are composed.
+
+// CHECK-DAG: #[[$MAP0]] = affine_map<()[s0] -> (s0 - 2)>
+// CHECK-DAG: #[[$MAP1]] = affine_map<()[s0] -> (s0 + 2)>
+
+// CHECK-LABEL: func @compose_affine_for_bounds
+// CHECK-SAME:   %[[N:.*]]: index)
+// CHECK: affine.for %{{.*}} = #[[$MAP0]]()[%[[N]]] to #[[$MAP1]]()[%[[N]]] {
+
+func @compose_affine_for_bounds(%N: index) {
+  %u = affine.apply affine_map<(d0) -> (d0 + 2)>(%N)
+  %l = affine.apply affine_map<(d0) -> (d0 - 2)>(%N)
+  affine.for %i = %l to %u {
+    "foo"() : () -> ()
+  }
+  return
+}
+
+// -----
+
+// Compose maps into affine.vector_load / affine.vector_store
+
+// CHECK-LABEL: func @compose_into_affine_vector_load_vector_store
+// CHECK: affine.for %[[IV:.*]] = 0 to 1024
+// CHECK-NEXT: affine.vector_load %{{.*}}[%[[IV]] + 1]
+// CHECK-NEXT: affine.vector_store %{{.*}}, %{{.*}}[%[[IV]] + 1]
+// CHECK-NEXT: affine.vector_load %{{.*}}[%[[IV]]]
+func @compose_into_affine_vector_load_vector_store(%A : memref<1024xf32>, %u : index) {
+  affine.for %i = 0 to 1024 {
+    // Make sure the unused operand (%u below) gets dropped as well.
+    %idx = affine.apply affine_map<(d0, d1) -> (d0 + 1)> (%i, %u)
+    %0 = affine.vector_load %A[%idx] : memref<1024xf32>, vector<8xf32>
+    affine.vector_store %0, %A[%idx] : memref<1024xf32>, vector<8xf32>
+
+    // Map remains the same, but operand changes on composition.
+    %copy = affine.apply affine_map<(d0) -> (d0)> (%i)
+    %1 = affine.vector_load %A[%copy] : memref<1024xf32>, vector<8xf32>
+    "prevent.dce"(%1) : (vector<8xf32>) -> ()
   }
   return
 }

@@ -91,11 +91,19 @@ public:
     Location loc = op.getLoc();
     Value stride = rewriter.create<ConstantIndexOp>(loc, 1);
     for (int i = rank - 1; i >= 0; --i) {
-      Value index = rewriter.create<ConstantIndexOp>(loc, i);
-      Value size = rewriter.create<memref::LoadOp>(loc, op.shape(), index);
-      if (!size.getType().isa<IndexType>())
-        size = rewriter.create<IndexCastOp>(loc, size, rewriter.getIndexType());
-      sizes[i] = size;
+      Value size;
+      // Load dynamic sizes from the shape input, use constants for static dims.
+      if (op.getType().isDynamicDim(i)) {
+        Value index = rewriter.create<ConstantIndexOp>(loc, i);
+        size = rewriter.create<memref::LoadOp>(loc, op.shape(), index);
+        if (!size.getType().isa<IndexType>())
+          size =
+              rewriter.create<IndexCastOp>(loc, size, rewriter.getIndexType());
+        sizes[i] = size;
+      } else {
+        sizes[i] = rewriter.getIndexAttr(op.getType().getDimSize(i));
+        size = rewriter.create<ConstantOp>(loc, sizes[i].get<Attribute>());
+      }
       strides[i] = stride;
       if (i > 0)
         stride = rewriter.create<MulIOp>(loc, stride, size);
@@ -211,7 +219,7 @@ struct StdExpandOpsPass : public StdExpandOpsBase<StdExpandOpsPass> {
   void runOnFunction() override {
     MLIRContext &ctx = getContext();
 
-    OwningRewritePatternList patterns(&ctx);
+    RewritePatternSet patterns(&ctx);
     populateStdExpandOpsPatterns(patterns);
 
     ConversionTarget target(getContext());
@@ -234,9 +242,9 @@ struct StdExpandOpsPass : public StdExpandOpsBase<StdExpandOpsPass> {
 
 } // namespace
 
-void mlir::populateStdExpandOpsPatterns(OwningRewritePatternList &patterns) {
-  patterns.insert<AtomicRMWOpConverter, MemRefReshapeOpConverter,
-                  SignedCeilDivIOpConverter, SignedFloorDivIOpConverter>(
+void mlir::populateStdExpandOpsPatterns(RewritePatternSet &patterns) {
+  patterns.add<AtomicRMWOpConverter, MemRefReshapeOpConverter,
+               SignedCeilDivIOpConverter, SignedFloorDivIOpConverter>(
       patterns.getContext());
 }
 

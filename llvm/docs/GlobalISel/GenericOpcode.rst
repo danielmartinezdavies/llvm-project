@@ -186,10 +186,18 @@ Extract a register of the specified size, starting from the block given by
 index. This will almost certainly be mapped to sub-register COPYs after
 register banks have been selected.
 
+.. code-block:: none
+
+  %3:_(s32) = G_EXTRACT %2:_(s64), 32
+
 G_INSERT
 ^^^^^^^^
 
 Insert a smaller register into a larger one at the specified bit-index.
+
+.. code-block:: none
+
+  %2:_(s64) = G_INSERT %0:(_s64), %1:_(s32), 0
 
 G_MERGE_VALUES
 ^^^^^^^^^^^^^^
@@ -300,6 +308,11 @@ G_SHL, G_LSHR, G_ASHR
 ^^^^^^^^^^^^^^^^^^^^^
 
 Shift the bits of a scalar left or right inserting zeros (sign-bit for G_ASHR).
+
+G_ROTR, G_ROTL
+^^^^^^^^^^^^^^
+
+Rotate the bits right (G_ROTR) or left (G_ROTL).
 
 G_ICMP
 ^^^^^^
@@ -772,7 +785,7 @@ G_DYN_STACKALLOC
 ^^^^^^^^^^^^^^^^
 
 Dynamically realigns the stack pointer to the specified size and alignment.
-An alignment value of `0` or `1` mean no specific alignment.
+An alignment value of `0` or `1` means no specific alignment.
 
 .. code-block:: none
 
@@ -787,7 +800,7 @@ hints for various combines.
 G_ASSERT_SEXT, G_ASSERT_ZEXT
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Signifies that the contents of a register were previously extended from a
+This signifies that the contents of a register were previously extended from a
 smaller type.
 
 The smaller type is denoted using an immediate operand. For scalars, this is the

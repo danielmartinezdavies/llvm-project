@@ -41,24 +41,16 @@ class GCNSubtarget final : public AMDGPUGenSubtargetInfo,
   using AMDGPUSubtarget::getMaxWavesPerEU;
 
 public:
-  enum TrapHandlerAbi {
-    TrapHandlerAbiNone = 0,
-    TrapHandlerAbiHsa = 1
+  // Following 2 enums are documented at:
+  //   - https://llvm.org/docs/AMDGPUUsage.html#trap-handler-abi
+  enum class TrapHandlerAbi {
+    NONE   = 0x00,
+    AMDHSA = 0x01,
   };
 
-  enum TrapID {
-    TrapIDHardwareReserved = 0,
-    TrapIDHSADebugTrap = 1,
-    TrapIDLLVMTrap = 2,
-    TrapIDLLVMDebugTrap = 3,
-    TrapIDDebugBreakpoint = 7,
-    TrapIDDebugReserved8 = 8,
-    TrapIDDebugReservedFE = 0xfe,
-    TrapIDDebugReservedFF = 0xff
-  };
-
-  enum TrapRegValues {
-    LLVMTrapHandlerRegValue = 1
+  enum class TrapID {
+    LLVMAMDHSATrap      = 0x02,
+    LLVMAMDHSADebugTrap = 0x03,
   };
 
 private:
@@ -121,6 +113,8 @@ protected:
   bool GFX10_3Insts;
   bool GFX7GFX8GFX9Insts;
   bool SGPRInitBug;
+  bool NegativeScratchOffsetBug;
+  bool NegativeUnalignedScratchOffsetBug;
   bool HasSMemRealTime;
   bool HasIntClamp;
   bool HasFmaMixInsts;
@@ -173,6 +167,7 @@ protected:
   bool FlatGlobalInsts;
   bool FlatScratchInsts;
   bool ScalarFlatScratchInsts;
+  bool HasArchitectedFlatScratch;
   bool AddNoCarryInsts;
   bool HasUnpackedD16VMem;
   bool R600ALUInst;
@@ -194,6 +189,7 @@ protected:
   bool HasVcmpxExecWARHazard;
   bool HasLdsBranchVmemWARHazard;
   bool HasNSAtoVMEMBug;
+  bool HasNSAClauseBug;
   bool HasOffset3fBug;
   bool HasFlatSegmentOffsetBug;
   bool HasImageStoreD16Bug;
@@ -253,6 +249,10 @@ public:
 
   const RegisterBankInfo *getRegBankInfo() const override {
     return RegBankInfo.get();
+  }
+
+  const AMDGPU::IsaInfo::AMDGPUTargetID &getTargetID() const {
+    return TargetID;
   }
 
   // Nothing implemented, just prevent crashes on use.
@@ -388,7 +388,12 @@ public:
   }
 
   TrapHandlerAbi getTrapHandlerAbi() const {
-    return isAmdHsaOS() ? TrapHandlerAbiHsa : TrapHandlerAbiNone;
+    return isAmdHsaOS() ? TrapHandlerAbi::AMDHSA : TrapHandlerAbi::NONE;
+  }
+
+  bool supportsGetDoorbellID() const {
+    // The S_GETREG DOORBELL_ID is supported by all GFX9 onward targets.
+    return getGeneration() >= GFX9;
   }
 
   /// True if the offset field of DS instructions works as expected. On SI, the
@@ -810,6 +815,9 @@ public:
     return GFX8Insts;
   }
 
+  /// \returns true if the subtarget has the v_permlanex16_b32 instruction.
+  bool hasPermLaneX16() const { return getGeneration() >= GFX10; }
+
   bool hasDPP() const {
     return HasDPP;
   }
@@ -832,6 +840,10 @@ public:
 
   bool hasPackedFP32Ops() const {
     return HasPackedFP32Ops;
+  }
+
+  bool hasFmaakFmamkF32Insts() const {
+    return getGeneration() >= GFX10;
   }
 
   bool hasExtendedImageInsts() const {
@@ -880,6 +892,12 @@ public:
 
   bool hasSGPRInitBug() const {
     return SGPRInitBug;
+  }
+
+  bool hasNegativeScratchOffsetBug() const { return NegativeScratchOffsetBug; }
+
+  bool hasNegativeUnalignedScratchOffsetBug() const {
+    return NegativeUnalignedScratchOffsetBug;
   }
 
   bool hasMFMAInlineLiteralBug() const {
@@ -936,6 +954,8 @@ public:
     return HasNSAtoVMEMBug;
   }
 
+  bool hasNSAClauseBug() const { return HasNSAClauseBug; }
+
   bool hasHardClauses() const { return getGeneration() >= GFX10; }
 
   bool hasGFX90AInsts() const { return GFX90AInsts; }
@@ -965,6 +985,10 @@ public:
   bool flatScratchIsPointer() const {
     return getGeneration() >= AMDGPUSubtarget::GFX9;
   }
+
+  /// \returns true if the flat_scratch register is initialized by the HW.
+  /// In this case it is readonly.
+  bool flatScratchIsArchitected() const { return HasArchitectedFlatScratch; }
 
   /// \returns true if the machine has merged shaders in which s0-s7 are
   /// reserved by the hardware and user SGPRs start at s8

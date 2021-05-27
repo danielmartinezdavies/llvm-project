@@ -250,6 +250,7 @@ StringRef Triple::getEnvironmentTypeName(EnvironmentType Kind) {
   case Musl: return "musl";
   case MuslEABI: return "musleabi";
   case MuslEABIHF: return "musleabihf";
+  case MuslX32: return "muslx32";
   case Simulator: return "simulator";
   }
 
@@ -555,6 +556,7 @@ static Triple::EnvironmentType parseEnvironment(StringRef EnvironmentName) {
       .StartsWith("android", Triple::Android)
       .StartsWith("musleabihf", Triple::MuslEABIHF)
       .StartsWith("musleabi", Triple::MuslEABI)
+      .StartsWith("muslx32", Triple::MuslX32)
       .StartsWith("musl", Triple::Musl)
       .StartsWith("msvc", Triple::MSVC)
       .StartsWith("itanium", Triple::Itanium)
@@ -1714,7 +1716,9 @@ StringRef Triple::getARMCPUForArch(StringRef MArch) const {
     break;
   case llvm::Triple::Win32:
     // FIXME: this is invalid for WindowsCE
-    return "cortex-a9";
+    if (ARM::parseArchVersion(MArch) <= 7)
+      return "cortex-a9";
+    break;
   case llvm::Triple::IOS:
   case llvm::Triple::MacOSX:
   case llvm::Triple::TvOS:

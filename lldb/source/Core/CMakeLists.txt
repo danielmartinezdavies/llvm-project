@@ -26,6 +26,7 @@ add_lldb_library(lldbCore
   AddressResolverFileLine.cpp
   Communication.cpp
   Debugger.cpp
+  Declaration.cpp
   Disassembler.cpp
   DumpDataExtractor.cpp
   DumpRegisterValue.cpp
@@ -43,9 +44,11 @@ add_lldb_library(lldbCore
   ModuleList.cpp
   Opcode.cpp
   PluginManager.cpp
+  Progress.cpp
   RichManglingContext.cpp
   SearchFilter.cpp
   Section.cpp
+  SourceLocationSpec.cpp
   SourceManager.cpp
   StreamAsynchronousIO.cpp
   StreamFile.cpp

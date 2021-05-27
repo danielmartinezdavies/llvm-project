@@ -153,24 +153,24 @@ define void @local_var_m8() {
 define void @local_var_m2_mix_local_scalar() {
 ; RV64IV-LABEL: local_var_m2_mix_local_scalar:
 ; RV64IV:       # %bb.0:
-; RV64IV-NEXT:    addi sp, sp, -16
-; RV64IV-NEXT:    .cfi_def_cfa_offset 16
+; RV64IV-NEXT:    addi sp, sp, -32
+; RV64IV-NEXT:    .cfi_def_cfa_offset 32
 ; RV64IV-NEXT:    csrr a0, vlenb
 ; RV64IV-NEXT:    slli a0, a0, 2
 ; RV64IV-NEXT:    sub sp, sp, a0
-; RV64IV-NEXT:    lw a0, 12(sp)
+; RV64IV-NEXT:    lw a0, 28(sp)
 ; RV64IV-NEXT:    csrr a0, vlenb
 ; RV64IV-NEXT:    slli a0, a0, 1
 ; RV64IV-NEXT:    add a0, sp, a0
-; RV64IV-NEXT:    addi a0, a0, 16
+; RV64IV-NEXT:    addi a0, a0, 32
 ; RV64IV-NEXT:    vl2r.v v26, (a0)
-; RV64IV-NEXT:    addi a0, sp, 16
+; RV64IV-NEXT:    addi a0, sp, 32
 ; RV64IV-NEXT:    vl2r.v v26, (a0)
-; RV64IV-NEXT:    lw a0, 8(sp)
+; RV64IV-NEXT:    lw a0, 24(sp)
 ; RV64IV-NEXT:    csrr a0, vlenb
 ; RV64IV-NEXT:    slli a0, a0, 2
 ; RV64IV-NEXT:    add sp, sp, a0
-; RV64IV-NEXT:    addi sp, sp, 16
+; RV64IV-NEXT:    addi sp, sp, 32
 ; RV64IV-NEXT:    ret
   %local_scalar0 = alloca i32
   %local0 = alloca <vscale x 16 x i8>
@@ -256,15 +256,15 @@ define void @local_var_m2_with_bp(i64 %n) {
 ; RV64IV-NEXT:    csrr a2, vlenb
 ; RV64IV-NEXT:    slli a2, a2, 1
 ; RV64IV-NEXT:    add a2, s1, a2
-; RV64IV-NEXT:    addi a2, a2, 224
+; RV64IV-NEXT:    addi a2, a2, 232
 ; RV64IV-NEXT:    call notdead2@plt
 ; RV64IV-NEXT:    lw a0, 124(s1)
 ; RV64IV-NEXT:    csrr a0, vlenb
 ; RV64IV-NEXT:    slli a0, a0, 1
 ; RV64IV-NEXT:    add a0, s1, a0
-; RV64IV-NEXT:    addi a0, a0, 224
+; RV64IV-NEXT:    addi a0, a0, 232
 ; RV64IV-NEXT:    vl2r.v v26, (a0)
-; RV64IV-NEXT:    addi a0, s1, 224
+; RV64IV-NEXT:    addi a0, s1, 232
 ; RV64IV-NEXT:    vl2r.v v26, (a0)
 ; RV64IV-NEXT:    lw a0, 120(s1)
 ; RV64IV-NEXT:    addi sp, s0, -256
@@ -285,6 +285,27 @@ define void @local_var_m2_with_bp(i64 %n) {
   load volatile <vscale x 16 x i8>, <vscale x 16 x i8>* %local1
   load volatile i32, i32* %local_scalar1
   ret void
+}
+
+define i64 @fixed_object(i64 %0, i64 %1, i64 %2, i64 %3, i64 %4, i64 %5, i64 %6, i64 %7, i64 %8) nounwind {
+; RV64IV-LABEL: fixed_object:
+; RV64IV:       # %bb.0:
+; RV64IV-NEXT:    addi sp, sp, -32
+; RV64IV-NEXT:    csrr a0, vlenb
+; RV64IV-NEXT:    slli a0, a0, 3
+; RV64IV-NEXT:    sub sp, sp, a0
+; RV64IV-NEXT:    csrr a0, vlenb
+; RV64IV-NEXT:    slli a0, a0, 3
+; RV64IV-NEXT:    add a0, sp, a0
+; RV64IV-NEXT:    ld a0, 32(a0)
+; RV64IV-NEXT:    csrr a1, vlenb
+; RV64IV-NEXT:    slli a1, a1, 3
+; RV64IV-NEXT:    add sp, sp, a1
+; RV64IV-NEXT:    addi sp, sp, 32
+; RV64IV-NEXT:    ret
+  %fixed_size = alloca i32
+  %rvv_vector = alloca <vscale x 8 x i64>, align 8
+  ret i64 %8
 }
 
 declare void @notdead(i8*, <vscale x 16 x i8>*)

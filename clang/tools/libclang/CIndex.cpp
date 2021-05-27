@@ -2291,6 +2291,19 @@ void OMPClauseEnqueue::VisitOMPDestroyClause(const OMPDestroyClause *C) {
     Visitor->AddStmt(C->getInteropVar());
 }
 
+void OMPClauseEnqueue::VisitOMPNovariantsClause(const OMPNovariantsClause *C) {
+  Visitor->AddStmt(C->getCondition());
+}
+
+void OMPClauseEnqueue::VisitOMPNocontextClause(const OMPNocontextClause *C) {
+  Visitor->AddStmt(C->getCondition());
+}
+
+void OMPClauseEnqueue::VisitOMPFilterClause(const OMPFilterClause *C) {
+  VisitOMPClauseWithPreInit(C);
+  Visitor->AddStmt(C->getThreadID());
+}
+
 void OMPClauseEnqueue::VisitOMPUnifiedAddressClause(
     const OMPUnifiedAddressClause *) {}
 
@@ -5172,8 +5185,9 @@ CXString clang_getCursorDisplayName(CXCursor C) {
     SmallString<128> Str;
     llvm::raw_svector_ostream OS(Str);
     OS << *ClassSpec;
-    printTemplateArgumentList(OS, ClassSpec->getTemplateArgs().asArray(),
-                              Policy);
+    printTemplateArgumentList(
+        OS, ClassSpec->getTemplateArgs().asArray(), Policy,
+        ClassSpec->getSpecializedTemplate()->getTemplateParameters());
     return cxstring::createDup(OS.str());
   }
 
@@ -5668,6 +5682,10 @@ CXString clang_getCursorKindSpelling(enum CXCursorKind Kind) {
     return cxstring::createRef("OMPTargetTeamsDistributeSimdDirective");
   case CXCursor_OMPInteropDirective:
     return cxstring::createRef("OMPInteropDirective");
+  case CXCursor_OMPDispatchDirective:
+    return cxstring::createRef("OMPDispatchDirective");
+  case CXCursor_OMPMaskedDirective:
+    return cxstring::createRef("OMPMaskedDirective");
   case CXCursor_OverloadCandidate:
     return cxstring::createRef("OverloadCandidate");
   case CXCursor_TypeAliasTemplateDecl:

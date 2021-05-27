@@ -434,7 +434,8 @@ std::unique_ptr<CoverageMapping> CodeCoverageTool::load() {
       warning("profile data may be out of date - object is newer",
               ObjectFilename);
   auto CoverageOrErr =
-      CoverageMapping::load(ObjectFilenames, PGOFilename, CoverageArches);
+      CoverageMapping::load(ObjectFilenames, PGOFilename, CoverageArches,
+                            ViewOpts.CompilationDirectory);
   if (Error E = CoverageOrErr.takeError()) {
     error("Failed to load coverage: " + toString(std::move(E)),
           join(ObjectFilenames.begin(), ObjectFilenames.end(), ", "));
@@ -475,7 +476,7 @@ void CodeCoverageTool::remapPathNames(const CoverageMapping &Coverage) {
     SmallString<128> NativePath;
     sys::path::native(Path, NativePath);
     sys::path::remove_dots(NativePath, true);
-    if (!sys::path::is_separator(NativePath.back()))
+    if (!NativePath.empty() && !sys::path::is_separator(NativePath.back()))
       NativePath += sys::path::get_separator();
     return NativePath.c_str();
   };
@@ -739,6 +740,10 @@ int CodeCoverageTool::run(Command Cmd, int argc, const char **argv) {
   cl::alias NumThreadsA("j", cl::desc("Alias for --num-threads"),
                         cl::aliasopt(NumThreads));
 
+  cl::opt<std::string> CompilationDirectory(
+      "compilation-dir", cl::init(""),
+      cl::desc("Directory used as a base for relative coverage mapping paths"));
+
   auto commandLineParser = [&, this](int argc, const char **argv) -> int {
     cl::ParseCommandLineOptions(argc, argv, "LLVM code coverage tool\n");
     ViewOpts.Debug = DebugDump;
@@ -873,6 +878,7 @@ int CodeCoverageTool::run(Command Cmd, int argc, const char **argv) {
     ViewOpts.ShowInstantiationSummary = InstantiationSummary;
     ViewOpts.ExportSummaryOnly = SummaryOnly;
     ViewOpts.NumThreads = NumThreads;
+    ViewOpts.CompilationDirectory = CompilationDirectory;
 
     return 0;
   };

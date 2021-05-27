@@ -7,12 +7,12 @@ v_add_f32 v2, v1, v0
 
 # CHECK:      Iterations:        1
 # CHECK-NEXT: Instructions:      3
-# CHECK-NEXT: Total Cycles:      13
+# CHECK-NEXT: Total Cycles:      12
 # CHECK-NEXT: Total uOps:        3
 
 # CHECK:      Dispatch Width:    1
-# CHECK-NEXT: uOps Per Cycle:    0.23
-# CHECK-NEXT: IPC:               0.23
+# CHECK-NEXT: uOps Per Cycle:    0.25
+# CHECK-NEXT: IPC:               0.25
 # CHECK-NEXT: Block RThroughput: 3.0
 
 # CHECK:      Instruction Info:
@@ -34,26 +34,27 @@ v_add_f32 v2, v1, v0
 # CHECK-NEXT: [2]   - HWLGKM
 # CHECK-NEXT: [3]   - HWRC
 # CHECK-NEXT: [4]   - HWSALU
-# CHECK-NEXT: [5]   - HWVALU
-# CHECK-NEXT: [6]   - HWVMEM
+# CHECK-NEXT: [5]   - HWTransVALU
+# CHECK-NEXT: [6]   - HWVALU
+# CHECK-NEXT: [7]   - HWVMEM
 
 # CHECK:      Resource pressure per iteration:
-# CHECK-NEXT: [0]    [1]    [2]    [3]    [4]    [5]    [6]
-# CHECK-NEXT:  -      -      -     3.00    -     3.00    -
+# CHECK-NEXT: [0]    [1]    [2]    [3]    [4]    [5]    [6]    [7]
+# CHECK-NEXT:  -      -      -     3.00    -      -     3.00    -
 
 # CHECK:      Resource pressure by instruction:
-# CHECK-NEXT: [0]    [1]    [2]    [3]    [4]    [5]    [6]    Instructions:
-# CHECK-NEXT:  -      -      -     1.00    -     1.00    -     v_add_f32_e32 v0, v0, v0
-# CHECK-NEXT:  -      -      -     1.00    -     1.00    -     v_add_f32_e32 v1, v1, v1
-# CHECK-NEXT:  -      -      -     1.00    -     1.00    -     v_add_f32_e32 v2, v1, v0
+# CHECK-NEXT: [0]    [1]    [2]    [3]    [4]    [5]    [6]    [7]    Instructions:
+# CHECK-NEXT:  -      -      -     1.00    -      -     1.00    -     v_add_f32_e32 v0, v0, v0
+# CHECK-NEXT:  -      -      -     1.00    -      -     1.00    -     v_add_f32_e32 v1, v1, v1
+# CHECK-NEXT:  -      -      -     1.00    -      -     1.00    -     v_add_f32_e32 v2, v1, v0
 
 # CHECK:      Timeline view:
-# CHECK-NEXT:                     012
+# CHECK-NEXT:                     01
 # CHECK-NEXT: Index     0123456789
 
-# CHECK:      [0,0]     DeeeeER   . .   v_add_f32_e32 v0, v0, v0
-# CHECK-NEXT: [0,1]     .DeeeeER  . .   v_add_f32_e32 v1, v1, v1
-# CHECK-NEXT: [0,2]     .    .DeeeeER   v_add_f32_e32 v2, v1, v0
+# CHECK:      [0,0]     DeeeeE    ..   v_add_f32_e32 v0, v0, v0
+# CHECK-NEXT: [0,1]     .DeeeeE   ..   v_add_f32_e32 v1, v1, v1
+# CHECK-NEXT: [0,2]     .    .DeeeeE   v_add_f32_e32 v2, v1, v0
 
 # CHECK:      Average Wait times (based on the timeline view):
 # CHECK-NEXT: [0]: Executions

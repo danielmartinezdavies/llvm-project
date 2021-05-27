@@ -155,17 +155,18 @@ LogicalResult BroadcastOpConverter::matchAndRewrite(
                        return lb.create<SubIOp>(indexTy, maxRank, v);
                      }));
 
-  rewriter.replaceOp(
-      op, lb.create<tensor::GenerateOp>(
-                getExtentTensorType(lb.getContext()), ValueRange{maxRank},
-                [&](OpBuilder &b, Location loc, ValueRange args) {
-                  Value broadcastedDim = getBroadcastedDim(
-                      ImplicitLocOpBuilder(loc, b), transformed.shapes(),
-                      rankDiffs, args[0]);
+  Value replacement = lb.create<tensor::GenerateOp>(
+      getExtentTensorType(lb.getContext()), ValueRange{maxRank},
+      [&](OpBuilder &b, Location loc, ValueRange args) {
+        Value broadcastedDim =
+            getBroadcastedDim(ImplicitLocOpBuilder(loc, b),
+                              transformed.shapes(), rankDiffs, args[0]);
 
-                  b.create<tensor::YieldOp>(loc, broadcastedDim);
-                })
-              ->getResults());
+        b.create<tensor::YieldOp>(loc, broadcastedDim);
+      });
+  if (replacement.getType() != op.getType())
+    replacement = lb.create<tensor::CastOp>(op.getType(), replacement);
+  rewriter.replaceOp(op, replacement);
   return success();
 }
 
@@ -675,10 +676,10 @@ void ConvertShapeToStandardPass::runOnOperation() {
   ConversionTarget target(ctx);
   target.addLegalDialect<memref::MemRefDialect, StandardOpsDialect, SCFDialect,
                          tensor::TensorDialect>();
-  target.addLegalOp<CstrRequireOp, FuncOp, ModuleOp, ModuleTerminatorOp>();
+  target.addLegalOp<CstrRequireOp, FuncOp, ModuleOp>();
 
   // Setup conversion patterns.
-  OwningRewritePatternList patterns(&ctx);
+  RewritePatternSet patterns(&ctx);
   populateShapeToStandardConversionPatterns(patterns);
 
   // Apply conversion.
@@ -688,10 +689,10 @@ void ConvertShapeToStandardPass::runOnOperation() {
 }
 
 void mlir::populateShapeToStandardConversionPatterns(
-    OwningRewritePatternList &patterns) {
+    RewritePatternSet &patterns) {
   // clang-format off
   populateWithGenerated(patterns);
-  patterns.insert<
+  patterns.add<
       AnyOpConversion,
       BinaryOpConversion<AddOp, AddIOp>,
       BinaryOpConversion<MulOp, MulIOp>,

@@ -49,6 +49,7 @@
 #include "llvm/Support/AtomicOrdering.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/InstructionCost.h"
 #include "llvm/Support/MachineValueType.h"
 #include <algorithm>
 #include <cassert>
@@ -93,14 +94,16 @@ class Value;
 
 namespace Sched {
 
-  enum Preference {
-    None,             // No preference
-    Source,           // Follow source order.
-    RegPressure,      // Scheduling for lowest register pressure.
-    Hybrid,           // Scheduling for both latency and register pressure.
-    ILP,              // Scheduling for ILP in low register pressure mode.
-    VLIW              // Scheduling for VLIW targets.
-  };
+enum Preference {
+  None,        // No preference
+  Source,      // Follow source order.
+  RegPressure, // Scheduling for lowest register pressure.
+  Hybrid,      // Scheduling for both latency and register pressure.
+  ILP,         // Scheduling for ILP in low register pressure mode.
+  VLIW,        // Scheduling for VLIW targets.
+  Fast,        // Fast suboptimal list scheduling
+  Linearize    // Linearize DAG, no scheduling
+};
 
 } // end namespace Sched
 
@@ -283,17 +286,18 @@ public:
     bool IsPreallocated : 1;
     bool IsReturned : 1;
     bool IsSwiftSelf : 1;
+    bool IsSwiftAsync : 1;
     bool IsSwiftError : 1;
     bool IsCFGuardTarget : 1;
     MaybeAlign Alignment = None;
-    Type *ByValType = nullptr;
-    Type *PreallocatedType = nullptr;
+    // Type for byval, inalloca, or preallocated.
+    Type *IndirectType = nullptr;
 
     ArgListEntry()
         : IsSExt(false), IsZExt(false), IsInReg(false), IsSRet(false),
           IsNest(false), IsByVal(false), IsByRef(false), IsInAlloca(false),
           IsPreallocated(false), IsReturned(false), IsSwiftSelf(false),
-          IsSwiftError(false), IsCFGuardTarget(false) {}
+          IsSwiftAsync(false), IsSwiftError(false), IsCFGuardTarget(false) {}
 
     void setAttributes(const CallBase *Call, unsigned ArgIdx);
   };
@@ -528,10 +532,6 @@ public:
     return false;
   }
 
-  /// If a branch or a select condition is skewed in one direction by more than
-  /// this factor, it is very likely to be predicted correctly.
-  virtual BranchProbability getPredictableBranchThreshold() const;
-
   /// Return true if the following transform is beneficial:
   /// fold (conv (load x)) -> (load (conv*)x)
   /// On architectures that don't natively support some vector loads
@@ -614,6 +614,10 @@ public:
   /// Return true if instruction generated for equality comparison is folded
   /// with instruction generated for signed comparison.
   virtual bool isEqualityCmpFoldedWithSignedCmp() const { return true; }
+
+  /// Return true if the heuristic to prefer icmp eq zero should be used in code
+  /// gen prepare.
+  virtual bool preferZeroCompareBranch() const { return false; }
 
   /// Return true if it is safe to transform an integer-domain bitwise operation
   /// into the equivalent floating-point operation. This should be set to true
@@ -785,7 +789,7 @@ public:
     return false;
   }
 
-  /// Return true if target always beneficiates from combining into FMA for a
+  /// Return true if target always benefits from combining into FMA for a
   /// given value type. This must typically return false on targets where FMA
   /// takes more cycles to execute than FADD.
   virtual bool enableAggressiveFMAFusion(EVT VT) const {
@@ -1148,7 +1152,7 @@ public:
 
   /// Return true if lowering to a jump table is allowed.
   virtual bool areJTsAllowed(const Function *Fn) const {
-    if (Fn->getFnAttribute("no-jump-tables").getValueAsString() == "true")
+    if (Fn->getFnAttribute("no-jump-tables").getValueAsBool())
       return false;
 
     return isOperationLegalOrCustom(ISD::BR_JT, MVT::Other) ||
@@ -1468,7 +1472,12 @@ public:
   /// like i140, which are first promoted then expanded, it is the number of
   /// registers needed to hold all the bits of the original type.  For an i140
   /// on a 32 bit machine this means 5 registers.
-  unsigned getNumRegisters(LLVMContext &Context, EVT VT) const {
+  ///
+  /// RegisterVT may be passed as a way to override the default settings, for
+  /// instance with i128 inline assembly operands on SystemZ.
+  virtual unsigned
+  getNumRegisters(LLVMContext &Context, EVT VT,
+                  Optional<MVT> RegisterVT = None) const {
     if (VT.isSimple()) {
       assert((unsigned)VT.getSimpleVT().SimpleTy <
                 array_lengthof(NumRegistersForVT));
@@ -1818,8 +1827,8 @@ public:
   int InstructionOpcodeToISD(unsigned Opcode) const;
 
   /// Estimate the cost of type-legalization and the legalized type.
-  std::pair<int, MVT> getTypeLegalizationCost(const DataLayout &DL,
-                                              Type *Ty) const;
+  std::pair<InstructionCost, MVT> getTypeLegalizationCost(const DataLayout &DL,
+                                                          Type *Ty) const;
 
   /// @}
 
@@ -2351,8 +2360,9 @@ public:
   /// If the AM is not supported, it returns a negative value.
   /// TODO: Handle pre/postinc as well.
   /// TODO: Remove default argument
-  virtual int getScalingFactorCost(const DataLayout &DL, const AddrMode &AM,
-                                   Type *Ty, unsigned AS = 0) const {
+  virtual InstructionCost getScalingFactorCost(const DataLayout &DL,
+                                               const AddrMode &AM, Type *Ty,
+                                               unsigned AS = 0) const {
     // Default: assume that any scaling factor used in a legal AM is free.
     if (isLegalAddressingMode(DL, AM, Ty, AS))
       return 0;
@@ -4206,6 +4216,10 @@ public:
   virtual unsigned getInlineAsmMemConstraint(StringRef ConstraintCode) const {
     if (ConstraintCode == "m")
       return InlineAsm::Constraint_m;
+    if (ConstraintCode == "o")
+      return InlineAsm::Constraint_o;
+    if (ConstraintCode == "X")
+      return InlineAsm::Constraint_X;
     return InlineAsm::Constraint_Unknown;
   }
 
@@ -4351,6 +4365,13 @@ public:
   /// \returns True, if the expansion was successful, false otherwise
   bool expandROT(SDNode *N, bool AllowVectorOps, SDValue &Result,
                  SelectionDAG &DAG) const;
+
+  /// Expand shift-by-parts.
+  /// \param N Node to expand
+  /// \param Lo lower-output-part after conversion
+  /// \param Hi upper-output-part after conversion
+  void expandShiftParts(SDNode *N, SDValue &Lo, SDValue &Hi,
+                        SelectionDAG &DAG) const;
 
   /// Expand float(f32) to SINT(i64) conversion
   /// \param N Node to expand
@@ -4516,6 +4537,29 @@ public:
   /// Method for building the DAG expansion of ISD::VECTOR_SPLICE. This
   /// method accepts vectors as its arguments.
   SDValue expandVectorSplice(SDNode *Node, SelectionDAG &DAG) const;
+
+  /// Legalize a SETCC with given LHS and RHS and condition code CC on the
+  /// current target.
+  ///
+  /// If the SETCC has been legalized using AND / OR, then the legalized node
+  /// will be stored in LHS. RHS and CC will be set to SDValue(). NeedInvert
+  /// will be set to false.
+  ///
+  /// If the SETCC has been legalized by using getSetCCSwappedOperands(),
+  /// then the values of LHS and RHS will be swapped, CC will be set to the
+  /// new condition, and NeedInvert will be set to false.
+  ///
+  /// If the SETCC has been legalized using the inverse condcode, then LHS and
+  /// RHS will be unchanged, CC will set to the inverted condcode, and
+  /// NeedInvert will be set to true. The caller must invert the result of the
+  /// SETCC with SelectionDAG::getLogicalNOT() or take equivalent action to swap
+  /// the effect of a true/false result.
+  ///
+  /// \returns true if the SetCC has been legalized, false if it hasn't.
+  bool LegalizeSetCCCondCode(SelectionDAG &DAG, EVT VT, SDValue &LHS,
+                             SDValue &RHS, SDValue &CC, bool &NeedInvert,
+                             const SDLoc &dl, SDValue &Chain,
+                             bool IsSignaling = false) const;
 
   //===--------------------------------------------------------------------===//
   // Instruction Emitting Hooks

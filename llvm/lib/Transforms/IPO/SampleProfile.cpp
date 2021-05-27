@@ -77,6 +77,7 @@
 #include "llvm/Support/GenericDomTree.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Transforms/IPO.h"
+#include "llvm/Transforms/IPO/ProfiledCallGraph.h"
 #include "llvm/Transforms/IPO/SampleContextTracker.h"
 #include "llvm/Transforms/IPO/SampleProfileProbe.h"
 #include "llvm/Transforms/Instrumentation.h"
@@ -160,35 +161,40 @@ static cl::opt<bool> ProfileTopDownLoad(
              "order of call graph during sample profile loading. It only "
              "works for new pass manager. "));
 
-static cl::opt<bool> UseProfileIndirectCallEdges(
-    "use-profile-indirect-call-edges", cl::init(true), cl::Hidden,
-    cl::desc("Considering indirect call samples from profile when top-down "
-             "processing functions. Only CSSPGO is supported."));
-
-static cl::opt<bool> UseProfileTopDownOrder(
-    "use-profile-top-down-order", cl::init(false), cl::Hidden,
-    cl::desc("Process functions in one SCC in a top-down order "
-             "based on the input profile."));
+static cl::opt<bool>
+    UseProfiledCallGraph("use-profiled-call-graph", cl::init(true), cl::Hidden,
+                         cl::desc("Process functions in a top-down order "
+                                  "defined by the profiled call graph when "
+                                  "-sample-profile-top-down-load is on."));
 
 static cl::opt<bool> ProfileSizeInline(
     "sample-profile-inline-size", cl::Hidden, cl::init(false),
     cl::desc("Inline cold call sites in profile loader if it's beneficial "
              "for code size."));
 
-static cl::opt<int> ProfileInlineGrowthLimit(
+cl::opt<int> ProfileInlineGrowthLimit(
     "sample-profile-inline-growth-limit", cl::Hidden, cl::init(12),
     cl::desc("The size growth ratio limit for proirity-based sample profile "
              "loader inlining."));
 
-static cl::opt<int> ProfileInlineLimitMin(
+cl::opt<int> ProfileInlineLimitMin(
     "sample-profile-inline-limit-min", cl::Hidden, cl::init(100),
     cl::desc("The lower bound of size growth limit for "
              "proirity-based sample profile loader inlining."));
 
-static cl::opt<int> ProfileInlineLimitMax(
+cl::opt<int> ProfileInlineLimitMax(
     "sample-profile-inline-limit-max", cl::Hidden, cl::init(10000),
     cl::desc("The upper bound of size growth limit for "
              "proirity-based sample profile loader inlining."));
+
+cl::opt<int> SampleHotCallSiteThreshold(
+    "sample-profile-hot-inline-threshold", cl::Hidden, cl::init(3000),
+    cl::desc("Hot callsite threshold for proirity-based sample profile loader "
+             "inlining."));
+
+cl::opt<int> SampleColdCallSiteThreshold(
+    "sample-profile-cold-inline-threshold", cl::Hidden, cl::init(45),
+    cl::desc("Threshold for inlining cold callsites"));
 
 static cl::opt<int> ProfileICPThreshold(
     "sample-profile-icp-threshold", cl::Hidden, cl::init(5),
@@ -196,20 +202,11 @@ static cl::opt<int> ProfileICPThreshold(
         "Relative hotness threshold for indirect "
         "call promotion in proirity-based sample profile loader inlining."));
 
-static cl::opt<int> SampleHotCallSiteThreshold(
-    "sample-profile-hot-inline-threshold", cl::Hidden, cl::init(3000),
-    cl::desc("Hot callsite threshold for proirity-based sample profile loader "
-             "inlining."));
-
 static cl::opt<bool> CallsitePrioritizedInline(
     "sample-profile-prioritized-inline", cl::Hidden, cl::ZeroOrMore,
     cl::init(false),
     cl::desc("Use call site prioritized inlining for sample profile loader."
              "Currently only CSSPGO is supported."));
-
-static cl::opt<int> SampleColdCallSiteThreshold(
-    "sample-profile-cold-inline-threshold", cl::Hidden, cl::init(45),
-    cl::desc("Threshold for inlining cold callsites"));
 
 static cl::opt<std::string> ProfileInlineReplayFile(
     "sample-profile-inline-replay", cl::init(""), cl::value_desc("filename"),
@@ -223,6 +220,10 @@ static cl::opt<unsigned>
                      cl::ZeroOrMore,
                      cl::desc("Max number of promotions for a single indirect "
                               "call callsite in sample profile loader"));
+
+static cl::opt<bool> OverwriteExistingWeights(
+    "overwrite-existing-weights", cl::Hidden, cl::init(false),
+    cl::desc("Ignore existing branch weights on IR and always overwrite."));
 
 namespace {
 
@@ -321,11 +322,16 @@ struct CandidateComparer {
     if (LHS.CallsiteCount != RHS.CallsiteCount)
       return LHS.CallsiteCount < RHS.CallsiteCount;
 
+    const FunctionSamples *LCS = LHS.CalleeSamples;
+    const FunctionSamples *RCS = RHS.CalleeSamples;
+    assert(LCS && RCS && "Expect non-null FunctionSamples");
+
+    // Tie breaker using number of samples try to favor smaller functions first
+    if (LCS->getBodySamples().size() != RCS->getBodySamples().size())
+      return LCS->getBodySamples().size() > RCS->getBodySamples().size();
+
     // Tie breaker using GUID so we have stable/deterministic inlining order
-    assert(LHS.CalleeSamples && RHS.CalleeSamples &&
-           "Expect non-null FunctionSamples");
-    return LHS.CalleeSamples->getGUID(LHS.CalleeSamples->getName()) <
-           RHS.CalleeSamples->getGUID(RHS.CalleeSamples->getName());
+    return LCS->getGUID(LCS->getName()) < RCS->getGUID(RCS->getName());
   }
 };
 
@@ -389,8 +395,7 @@ protected:
       const SmallVectorImpl<CallBase *> &Candidates, const Function &F,
       bool Hot);
   std::vector<Function *> buildFunctionOrder(Module &M, CallGraph *CG);
-  void addCallGraphEdges(CallGraph &CG, const FunctionSamples &Samples);
-  void replaceCallGraphEdges(CallGraph &CG, StringMap<Function *> &SymbolMap);
+  std::unique_ptr<ProfiledCallGraph> buildProfiledCallGraph(CallGraph &CG);
   void generateMDProfMetadata(Function &F);
 
   /// Map from function name to Function *. Used to find the function from
@@ -538,21 +543,36 @@ ErrorOr<uint64_t> SampleProfileLoader::getInstWeight(const Instruction &Inst) {
   return getInstWeightImpl(Inst);
 }
 
+// Here use error_code to represent: 1) The dangling probe. 2) Ignore the weight
+// of non-probe instruction. So if all instructions of the BB give error_code,
+// tell the inference algorithm to infer the BB weight.
 ErrorOr<uint64_t> SampleProfileLoader::getProbeWeight(const Instruction &Inst) {
   assert(FunctionSamples::ProfileIsProbeBased &&
          "Profile is not pseudo probe based");
   Optional<PseudoProbe> Probe = extractProbe(Inst);
+  // Ignore the non-probe instruction. If none of the instruction in the BB is
+  // probe, we choose to infer the BB's weight.
   if (!Probe)
     return std::error_code();
 
-  // Ignore danling probes since they are logically deleted and should not
-  // consume any profile samples.
+  // This is not the dangling probe from the training pass but generated by the
+  // current compilation. Ignore this since they are logically deleted and
+  // should not consume any profile samples.
   if (Probe->isDangling())
     return std::error_code();
 
   const FunctionSamples *FS = findFunctionSamples(Inst);
+  // If none of the instruction has FunctionSample, we choose to return zero
+  // value sample to indicate the BB is cold. This could happen when the
+  // instruction is from inlinee and no profile data is found.
+  // FIXME: This should not be affected by the source drift issue as 1) if the
+  // newly added function is top-level inliner, it won't match the CFG checksum
+  // in the function profile or 2) if it's the inlinee, the inlinee should have
+  // a profile, otherwise it wouldn't be inlined. For non-probe based profile,
+  // we can improve it by adding a switch for profile-sample-block-accurate for
+  // block level counts in the future.
   if (!FS)
-    return std::error_code();
+    return 0;
 
   // For non-CS profile, If a direct call/invoke instruction is inlined in
   // profile (findCalleeFunctionSamples returns non-empty result), but not
@@ -829,7 +849,10 @@ updateIDTMetaData(Instruction &Inst,
 ///
 /// \param F  Caller function.
 /// \param Candidate  ICP and inline candidate.
-/// \param Sum  Sum of target counts for indirect call.
+/// \param SumOrigin  Original sum of target counts for indirect call before
+///                   promoting given candidate.
+/// \param Sum        Prorated sum of remaining target counts for indirect call
+///                   after promoting given candidate.
 /// \param InlinedCallSite  Output vector for new call sites exposed after
 /// inlining.
 bool SampleProfileLoader::tryPromoteAndInlineCandidate(
@@ -864,23 +887,26 @@ bool SampleProfileLoader::tryPromoteAndInlineCandidate(
         CI, R->getValue(), Candidate.CallsiteCount, Sum, false, ORE);
     if (DI) {
       Sum -= Candidate.CallsiteCount;
-      // Prorate the indirect callsite distribution.
+      // Do not prorate the indirect callsite distribution since the original
+      // distribution will be used to scale down non-promoted profile target
+      // counts later. By doing this we lose track of the real callsite count
+      // for the leftover indirect callsite as a trade off for accurate call
+      // target counts.
+      // TODO: Ideally we would have two separate factors, one for call site
+      // counts and one is used to prorate call target counts.
       // Do not update the promoted direct callsite distribution at this
-      // point since the original distribution combined with the callee
-      // profile will be used to prorate callsites from the callee if
-      // inlined. Once not inlined, the direct callsite distribution should
-      // be prorated so that the it will reflect the real callsite counts.
-      setProbeDistributionFactor(CI, Candidate.CallsiteDistribution * Sum /
-                                         SumOrigin);
+      // point since the original distribution combined with the callee profile
+      // will be used to prorate callsites from the callee if inlined. Once not
+      // inlined, the direct callsite distribution should be prorated so that
+      // the it will reflect the real callsite counts.
       Candidate.CallInstr = DI;
       if (isa<CallInst>(DI) || isa<InvokeInst>(DI)) {
         bool Inlined = tryInlineCandidate(Candidate, InlinedCallSite);
         if (!Inlined) {
           // Prorate the direct callsite distribution so that it reflects real
           // callsite counts.
-          setProbeDistributionFactor(*DI, Candidate.CallsiteDistribution *
-                                              Candidate.CallsiteCount /
-                                              SumOrigin);
+          setProbeDistributionFactor(
+              *DI, static_cast<float>(Candidate.CallsiteCount) / SumOrigin);
         }
         return Inlined;
       }
@@ -1322,7 +1348,7 @@ bool SampleProfileLoader::inlineHotFunctionsWithPriority(
     if (CalledFunction == &F)
       continue;
     if (I->isIndirectCall()) {
-      uint64_t Sum;
+      uint64_t Sum = 0;
       auto CalleeSamples = findIndirectCallFunctionSamples(*I, Sum);
       uint64_t SumOrigin = Sum;
       Sum *= Candidate.CallsiteDistribution;
@@ -1430,9 +1456,10 @@ void SampleProfileLoader::generateMDProfMetadata(Function &F) {
           auto T = FS->findCallTargetMapAt(CallSite);
           if (!T || T.get().empty())
             continue;
-          // Prorate the callsite counts to reflect what is already done to the
-          // callsite, such as ICP or calliste cloning.
           if (FunctionSamples::ProfileIsProbeBased) {
+            // Prorate the callsite counts based on the pre-ICP distribution
+            // factor to reflect what is already done to the callsite before
+            // ICP, such as calliste cloning.
             if (Optional<PseudoProbe> Probe = extractProbe(I)) {
               if (Probe->Factor < 1)
                 T = SampleRecord::adjustCallTargets(T.get(), Probe->Factor);
@@ -1453,20 +1480,34 @@ void SampleProfileLoader::generateMDProfMetadata(Function &F) {
                 Sum += NameFS.second.getEntrySamples();
             }
           }
-          if (!Sum)
-            continue;
-          updateIDTMetaData(I, SortedCallTargets, Sum);
+          if (Sum)
+            updateIDTMetaData(I, SortedCallTargets, Sum);
+          else if (OverwriteExistingWeights)
+            I.setMetadata(LLVMContext::MD_prof, nullptr);
         } else if (!isa<IntrinsicInst>(&I)) {
           I.setMetadata(LLVMContext::MD_prof,
                         MDB.createBranchWeights(
                             {static_cast<uint32_t>(BlockWeights[BB])}));
         }
       }
+    } else if (OverwriteExistingWeights) {
+      // Set profile metadata (possibly annotated by LTO prelink) to zero or
+      // clear it for cold code.
+      for (auto &I : BB->getInstList()) {
+        if (isa<CallInst>(I) || isa<InvokeInst>(I)) {
+          if (cast<CallBase>(I).isIndirectCall())
+            I.setMetadata(LLVMContext::MD_prof, nullptr);
+          else
+            I.setMetadata(LLVMContext::MD_prof, MDB.createBranchWeights(0));
+        }
+      }
     }
+
     Instruction *TI = BB->getTerminator();
     if (TI->getNumSuccessors() == 1)
       continue;
-    if (!isa<BranchInst>(TI) && !isa<SwitchInst>(TI))
+    if (!isa<BranchInst>(TI) && !isa<SwitchInst>(TI) &&
+        !isa<IndirectBrInst>(TI))
       continue;
 
     DebugLoc BranchLoc = TI->getDebugLoc();
@@ -1503,20 +1544,28 @@ void SampleProfileLoader::generateMDProfMetadata(Function &F) {
     uint64_t TempWeight;
     // Only set weights if there is at least one non-zero weight.
     // In any other case, let the analyzer set weights.
-    // Do not set weights if the weights are present. In ThinLTO, the profile
-    // annotation is done twice. If the first annotation already set the
-    // weights, the second pass does not need to set it.
-    if (MaxWeight > 0 && !TI->extractProfTotalWeight(TempWeight)) {
+    // Do not set weights if the weights are present unless under
+    // OverwriteExistingWeights. In ThinLTO, the profile annotation is done
+    // twice. If the first annotation already set the weights, the second pass
+    // does not need to set it. With OverwriteExistingWeights, Blocks with zero
+    // weight should have their existing metadata (possibly annotated by LTO
+    // prelink) cleared.
+    if (MaxWeight > 0 &&
+        (!TI->extractProfTotalWeight(TempWeight) || OverwriteExistingWeights)) {
       LLVM_DEBUG(dbgs() << "SUCCESS. Found non-zero weights.\n");
-      TI->setMetadata(LLVMContext::MD_prof,
-                      MDB.createBranchWeights(Weights));
+      TI->setMetadata(LLVMContext::MD_prof, MDB.createBranchWeights(Weights));
       ORE->emit([&]() {
         return OptimizationRemark(DEBUG_TYPE, "PopularDest", MaxDestInst)
                << "most popular destination for conditional branches at "
                << ore::NV("CondBranchesLoc", BranchLoc);
       });
     } else {
-      LLVM_DEBUG(dbgs() << "SKIPPED. All branch weights are zero.\n");
+      if (OverwriteExistingWeights) {
+        TI->setMetadata(LLVMContext::MD_prof, nullptr);
+        LLVM_DEBUG(dbgs() << "CLEARED. All branch weights are zero.\n");
+      } else {
+        LLVM_DEBUG(dbgs() << "SKIPPED. All branch weights are zero.\n");
+      }
     }
   }
 }
@@ -1573,49 +1622,35 @@ INITIALIZE_PASS_DEPENDENCY(ProfileSummaryInfoWrapperPass)
 INITIALIZE_PASS_END(SampleProfileLoaderLegacyPass, "sample-profile",
                     "Sample Profile loader", false, false)
 
-// Add inlined profile call edges to the call graph.
-void SampleProfileLoader::addCallGraphEdges(CallGraph &CG,
-                                            const FunctionSamples &Samples) {
-  Function *Caller = SymbolMap.lookup(Samples.getFuncName());
-  if (!Caller || Caller->isDeclaration())
-    return;
+std::unique_ptr<ProfiledCallGraph>
+SampleProfileLoader::buildProfiledCallGraph(CallGraph &CG) {
+  std::unique_ptr<ProfiledCallGraph> ProfiledCG;
+  if (ProfileIsCS)
+    ProfiledCG = std::make_unique<ProfiledCallGraph>(*ContextTracker);
+  else
+    ProfiledCG = std::make_unique<ProfiledCallGraph>(Reader->getProfiles());
 
-  // Skip non-inlined call edges which are not important since top down inlining
-  // for non-CS profile is to get more precise profile matching, not to enable
-  // more inlining.
-
-  for (const auto &CallsiteSamples : Samples.getCallsiteSamples()) {
-    for (const auto &InlinedSamples : CallsiteSamples.second) {
-      Function *Callee = SymbolMap.lookup(InlinedSamples.first);
-      if (Callee && !Callee->isDeclaration())
-        CG[Caller]->addCalledFunction(nullptr, CG[Callee]);
-      addCallGraphEdges(CG, InlinedSamples.second);
-    }
+  // Add all functions into the profiled call graph even if they are not in
+  // the profile. This makes sure functions missing from the profile still
+  // gets a chance to be processed.
+  for (auto &Node : CG) {
+    const auto *F = Node.first;
+    if (!F || F->isDeclaration() || !F->hasFnAttribute("use-sample-profile"))
+      continue;
+    ProfiledCG->addProfiledFunction(FunctionSamples::getCanonicalFnName(*F));
   }
-}
 
-// Replace call graph edges with dynamic call edges from the profile.
-void SampleProfileLoader::replaceCallGraphEdges(
-    CallGraph &CG, StringMap<Function *> &SymbolMap) {
-  // Remove static call edges from the call graph except for the ones from the
-  // root which make the call graph connected.
-  for (const auto &Node : CG)
-    if (Node.second.get() != CG.getExternalCallingNode())
-      Node.second->removeAllCalledFunctions();
-
-  // Add profile call edges to the call graph.
-  if (ProfileIsCS) {
-    ContextTracker->addCallGraphEdges(CG, SymbolMap);
-  } else {
-    for (const auto &Samples : Reader->getProfiles())
-      addCallGraphEdges(CG, Samples.second);
-  }
+  return ProfiledCG;
 }
 
 std::vector<Function *>
 SampleProfileLoader::buildFunctionOrder(Module &M, CallGraph *CG) {
   std::vector<Function *> FunctionOrderList;
   FunctionOrderList.reserve(M.size());
+
+  if (!ProfileTopDownLoad && UseProfiledCallGraph)
+    errs() << "WARNING: -use-profiled-call-graph ignored, should be used "
+              "together with -sample-profile-top-down-load.\n";
 
   if (!ProfileTopDownLoad || CG == nullptr) {
     if (ProfileMergeInlinee) {
@@ -1635,87 +1670,76 @@ SampleProfileLoader::buildFunctionOrder(Module &M, CallGraph *CG) {
 
   assert(&CG->getModule() == &M);
 
-  // Add indirect call edges from profile to augment the static call graph.
-  // Functions will be processed in a top-down order defined by the static call
-  // graph. Adjusting the order by considering indirect call edges from the
-  // profile (which don't exist in the static call graph) can enable the
-  // inlining of indirect call targets by processing the caller before them.
-  // TODO: enable this for non-CS profile and fix the counts returning logic to
-  // have a full support for indirect calls.
-  if (UseProfileIndirectCallEdges && ProfileIsCS) {
-    for (auto &Entry : *CG) {
-      const auto *F = Entry.first;
-      if (!F || F->isDeclaration() || !F->hasFnAttribute("use-sample-profile"))
-        continue;
-      auto &AllContexts = ContextTracker->getAllContextSamplesFor(F->getName());
-      if (AllContexts.empty())
-        continue;
+  if (UseProfiledCallGraph ||
+      (ProfileIsCS && !UseProfiledCallGraph.getNumOccurrences())) {
+    // Use profiled call edges to augment the top-down order. There are cases
+    // that the top-down order computed based on the static call graph doesn't
+    // reflect real execution order. For example
+    //
+    // 1. Incomplete static call graph due to unknown indirect call targets.
+    //    Adjusting the order by considering indirect call edges from the
+    //    profile can enable the inlining of indirect call targets by allowing
+    //    the caller processed before them.
+    // 2. Mutual call edges in an SCC. The static processing order computed for
+    //    an SCC may not reflect the call contexts in the context-sensitive
+    //    profile, thus may cause potential inlining to be overlooked. The
+    //    function order in one SCC is being adjusted to a top-down order based
+    //    on the profile to favor more inlining. This is only a problem with CS
+    //    profile.
+    // 3. Transitive indirect call edges due to inlining. When a callee function
+    //    (say B) is inlined into into a caller function (say A) in LTO prelink,
+    //    every call edge originated from the callee B will be transferred to
+    //    the caller A. If any transferred edge (say A->C) is indirect, the
+    //    original profiled indirect edge B->C, even if considered, would not
+    //    enforce a top-down order from the caller A to the potential indirect
+    //    call target C in LTO postlink since the inlined callee B is gone from
+    //    the static call graph.
+    // 4. #3 can happen even for direct call targets, due to functions defined
+    //    in header files. A header function (say A), when included into source
+    //    files, is defined multiple times but only one definition survives due
+    //    to ODR. Therefore, the LTO prelink inlining done on those dropped
+    //    definitions can be useless based on a local file scope. More
+    //    importantly, the inlinee (say B), once fully inlined to a
+    //    to-be-dropped A, will have no profile to consume when its outlined
+    //    version is compiled. This can lead to a profile-less prelink
+    //    compilation for the outlined version of B which may be called from
+    //    external modules. while this isn't easy to fix, we rely on the
+    //    postlink AutoFDO pipeline to optimize B. Since the survived copy of
+    //    the A can be inlined in its local scope in prelink, it may not exist
+    //    in the merged IR in postlink, and we'll need the profiled call edges
+    //    to enforce a top-down order for the rest of the functions.
+    //
+    // Considering those cases, a profiled call graph completely independent of
+    // the static call graph is constructed based on profile data, where
+    // function objects are not even needed to handle case #3 and case 4.
+    //
+    // Note that static callgraph edges are completely ignored since they
+    // can be conflicting with profiled edges for cyclic SCCs and may result in
+    // an SCC order incompatible with profile-defined one. Using strictly
+    // profile order ensures a maximum inlining experience. On the other hand,
+    // static call edges are not so important when they don't correspond to a
+    // context in the profile.
 
-      for (const auto &BB : *F) {
-        for (const auto &I : BB.getInstList()) {
-          const auto *CB = dyn_cast<CallBase>(&I);
-          if (!CB || !CB->isIndirectCall())
-            continue;
-          const DebugLoc &DLoc = I.getDebugLoc();
-          if (!DLoc)
-            continue;
-          auto CallSite = FunctionSamples::getCallSiteIdentifier(DLoc);
-          for (FunctionSamples *Samples : AllContexts) {
-            if (auto CallTargets = Samples->findCallTargetMapAt(CallSite)) {
-              for (const auto &Target : CallTargets.get()) {
-                Function *Callee = SymbolMap.lookup(Target.first());
-                if (Callee && !Callee->isDeclaration())
-                  Entry.second->addCalledFunction(nullptr, (*CG)[Callee]);
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-
-  // Compute a top-down order the profile which is used to sort functions in
-  // one SCC later. The static processing order computed for an SCC may not
-  // reflect the call contexts in the context-sensitive profile, thus may cause
-  // potential inlining to be overlooked. The function order in one SCC is being
-  // adjusted to a top-down order based on the profile to favor more inlining.
-  DenseMap<Function *, uint64_t> ProfileOrderMap;
-  if (UseProfileTopDownOrder ||
-      (ProfileIsCS && !UseProfileTopDownOrder.getNumOccurrences())) {
-    // Create a static call graph. The call edges are not important since they
-    // will be replaced by dynamic edges from the profile.
-    CallGraph ProfileCG(M);
-    replaceCallGraphEdges(ProfileCG, SymbolMap);
-    scc_iterator<CallGraph *> CGI = scc_begin(&ProfileCG);
-    uint64_t I = 0;
+    std::unique_ptr<ProfiledCallGraph> ProfiledCG = buildProfiledCallGraph(*CG);
+    scc_iterator<ProfiledCallGraph *> CGI = scc_begin(ProfiledCG.get());
     while (!CGI.isAtEnd()) {
-      for (CallGraphNode *Node : *CGI) {
-        if (auto *F = Node->getFunction())
-          ProfileOrderMap[F] = ++I;
+      for (ProfiledCallGraphNode *Node : *CGI) {
+        Function *F = SymbolMap.lookup(Node->Name);
+        if (F && !F->isDeclaration() && F->hasFnAttribute("use-sample-profile"))
+          FunctionOrderList.push_back(F);
       }
       ++CGI;
     }
-  }
-
-  scc_iterator<CallGraph *> CGI = scc_begin(CG);
-  while (!CGI.isAtEnd()) {
-    uint64_t Start = FunctionOrderList.size();
-    for (CallGraphNode *Node : *CGI) {
-      auto *F = Node->getFunction();
-      if (F && !F->isDeclaration() && F->hasFnAttribute("use-sample-profile"))
-        FunctionOrderList.push_back(F);
+  } else {
+    scc_iterator<CallGraph *> CGI = scc_begin(CG);
+    while (!CGI.isAtEnd()) {
+      for (CallGraphNode *Node : *CGI) {
+        auto *F = Node->getFunction();
+        if (F && !F->isDeclaration() && F->hasFnAttribute("use-sample-profile"))
+          FunctionOrderList.push_back(F);
+      }
+      ++CGI;
     }
-
-    // Sort nodes in SCC based on the profile top-down order.
-    if (!ProfileOrderMap.empty()) {
-      std::stable_sort(FunctionOrderList.begin() + Start,
-                       FunctionOrderList.end(),
-                       [&ProfileOrderMap](Function *Left, Function *Right) {
-                         return ProfileOrderMap[Left] < ProfileOrderMap[Right];
-                       });
-    }
-
-    ++CGI;
   }
 
   LLVM_DEBUG({

@@ -33,6 +33,7 @@
 #include "Symbols.h"
 #include "Target.h"
 #include "llvm/Support/Parallel.h"
+#include "llvm/Support/TimeProfiler.h"
 
 using namespace llvm;
 using namespace llvm::sys;
@@ -66,8 +67,11 @@ static std::vector<Defined *> getSymbols() {
         if (sym == nullptr)
           continue;
         if (auto *d = dyn_cast<Defined>(sym))
-          if (d->isec && d->getFile() == file)
+          if (d->isec && d->getFile() == file) {
+            assert(!d->isec->shouldOmitFromOutput() &&
+                   "file->symbols should store resolved symbols");
             v.push_back(d);
+          }
       }
   return v;
 }
@@ -75,7 +79,7 @@ static std::vector<Defined *> getSymbols() {
 // Construct a map from symbols to their stringified representations.
 // Demangling symbols (which is what toString() does) is slow, so
 // we do that in batch using parallel-for.
-static DenseMap<macho::Symbol *, std::string>
+static DenseMap<Symbol *, std::string>
 getSymbolStrings(ArrayRef<Defined *> syms) {
   std::vector<std::string> str(syms.size());
   parallelForEachN(0, syms.size(), [&](size_t i) {
@@ -83,7 +87,7 @@ getSymbolStrings(ArrayRef<Defined *> syms) {
     os << toString(*syms[i]);
   });
 
-  DenseMap<macho::Symbol *, std::string> ret;
+  DenseMap<Symbol *, std::string> ret;
   for (size_t i = 0, e = syms.size(); i < e; ++i)
     ret[syms[i]] = std::move(str[i]);
   return ret;
@@ -93,6 +97,8 @@ void macho::writeMapFile() {
   if (config->mapFile.empty())
     return;
 
+  TimeTraceScope timeScope("Write map file");
+
   // Open a map file for writing.
   std::error_code ec;
   raw_fd_ostream os(config->mapFile, ec, sys::fs::OF_None);
@@ -101,14 +107,14 @@ void macho::writeMapFile() {
     return;
   }
 
-  // Dump output path
+  // Dump output path.
   os << format("# Path: %s\n", config->outputFile.str().c_str());
 
-  // Dump output architecure
+  // Dump output architecture.
   os << format("# Arch: %s\n",
-               getArchitectureName(config->target.Arch).str().c_str());
+               getArchitectureName(config->arch()).str().c_str());
 
-  // Dump table of object files
+  // Dump table of object files.
   os << "# Object files:\n";
   os << format("[%3u] %s\n", 0, (const char *)"linker synthesized");
   uint32_t fileIndex = 1;
@@ -123,7 +129,7 @@ void macho::writeMapFile() {
   // Collect symbol info that we want to print out.
   std::vector<Defined *> syms = getSymbols();
   SymbolMapTy sectionSyms = getSectionSyms(syms);
-  DenseMap<lld::macho::Symbol *, std::string> symStr = getSymbolStrings(syms);
+  DenseMap<Symbol *, std::string> symStr = getSymbolStrings(syms);
 
   // Dump table of sections
   os << "# Sections:\n";
@@ -141,7 +147,11 @@ void macho::writeMapFile() {
   os << "# Symbols:\n";
   os << "# Address\t    File  Name\n";
   for (InputSection *isec : inputSections) {
-    for (macho::Symbol *sym : sectionSyms[isec]) {
+    auto symsIt = sectionSyms.find(isec);
+    assert(!isec->shouldOmitFromOutput() || (symsIt == sectionSyms.end()));
+    if (symsIt == sectionSyms.end())
+      continue;
+    for (Symbol *sym : symsIt->second) {
       os << format("0x%08llX\t[%3u] %s\n", sym->getVA(),
                    readerToFileOrdinal[sym->getFile()], symStr[sym].c_str());
     }

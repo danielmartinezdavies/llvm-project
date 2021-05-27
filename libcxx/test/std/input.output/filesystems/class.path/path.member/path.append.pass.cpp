@@ -128,7 +128,7 @@ void doAppendSourceAllocTest(AppendOperatorTestcase const& TC)
   using Ptr = CharT const*;
   using Str = std::basic_string<CharT>;
   using StrView = std::basic_string_view<CharT>;
-  using InputIter = input_iterator<Ptr>;
+  using InputIter = cpp17_input_iterator<Ptr>;
 
   const Ptr L = TC.lhs;
   Str RShort = (Ptr)TC.rhs;
@@ -195,6 +195,9 @@ void doAppendSourceAllocTest(AppendOperatorTestcase const& TC)
   // required.
   // On Windows, the append method is more complex and uses intermediate
   // path objects, which causes extra allocations.
+  // In DLL builds on Windows, the overridden operator new won't pick up
+  // allocations done within the DLL, so the RequireAllocationGuard below
+  // won't necessarily see allocations in the cases where they're expected.
 #ifdef _WIN32
   bool DisableAllocations = false;
 #else
@@ -206,6 +209,7 @@ void doAppendSourceAllocTest(AppendOperatorTestcase const& TC)
     {
       RequireAllocationGuard  g; // requires 1 or more allocations occur by default
       if (DisableAllocations) g.requireExactly(0);
+      else TEST_ONLY_WIN32_DLL(g.requireAtLeast(0));
       LHS /= RHS;
     }
     assert(PathEq(LHS, E));
@@ -217,6 +221,7 @@ void doAppendSourceAllocTest(AppendOperatorTestcase const& TC)
     {
       RequireAllocationGuard g;
       if (DisableAllocations) g.requireExactly(0);
+      else TEST_ONLY_WIN32_DLL(g.requireAtLeast(0));
       LHS.append(RHS, REnd);
     }
     assert(PathEq(LHS, E));
@@ -230,7 +235,7 @@ void doAppendSourceTest(AppendOperatorTestcase const& TC)
   using Ptr = CharT const*;
   using Str = std::basic_string<CharT>;
   using StrView = std::basic_string_view<CharT>;
-  using InputIter = input_iterator<Ptr>;
+  using InputIter = cpp17_input_iterator<Ptr>;
   const Ptr L = TC.lhs;
   const Ptr R = TC.rhs;
   const Ptr E = TC.expected_result();
@@ -336,7 +341,7 @@ void test_sfinae()
     static_assert(has_append<It>(), "");
   }
   {
-    using It = input_iterator<const char*>;
+    using It = cpp17_input_iterator<const char*>;
     static_assert(has_append<It>(), "");
   }
   {
@@ -347,7 +352,7 @@ void test_sfinae()
       using reference = const char&;
       using difference_type = std::ptrdiff_t;
     };
-    using It = input_iterator<const char*, Traits>;
+    using It = cpp17_input_iterator<const char*, Traits>;
     static_assert(has_append<It>(), "");
   }
   {

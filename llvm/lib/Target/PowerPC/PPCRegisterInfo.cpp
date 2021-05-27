@@ -159,10 +159,16 @@ PPCRegisterInfo::getCalleeSavedRegs(const MachineFunction *MF) const {
   if (MF->getFunction().getCallingConv() == CallingConv::AnyReg) {
     if (!TM.isPPC64() && Subtarget.isAIXABI())
       report_fatal_error("AnyReg unimplemented on 32-bit AIX.");
-    if (Subtarget.hasVSX())
+    if (Subtarget.hasVSX()) {
+      if (Subtarget.isAIXABI() && !TM.getAIXExtendedAltivecABI())
+        return CSR_64_AllRegs_AIX_Dflt_VSX_SaveList;
       return CSR_64_AllRegs_VSX_SaveList;
-    if (Subtarget.hasAltivec())
+    }
+    if (Subtarget.hasAltivec()) {
+      if (Subtarget.isAIXABI() && !TM.getAIXExtendedAltivecABI())
+        return CSR_64_AllRegs_AIX_Dflt_Altivec_SaveList;
       return CSR_64_AllRegs_Altivec_SaveList;
+    }
     return CSR_64_AllRegs_SaveList;
   }
 
@@ -222,10 +228,16 @@ PPCRegisterInfo::getCallPreservedMask(const MachineFunction &MF,
                                       CallingConv::ID CC) const {
   const PPCSubtarget &Subtarget = MF.getSubtarget<PPCSubtarget>();
   if (CC == CallingConv::AnyReg) {
-    if (Subtarget.hasVSX())
+    if (Subtarget.hasVSX()) {
+      if (Subtarget.isAIXABI() && !TM.getAIXExtendedAltivecABI())
+        return CSR_64_AllRegs_AIX_Dflt_VSX_RegMask;
       return CSR_64_AllRegs_VSX_RegMask;
-    if (Subtarget.hasAltivec())
+    }
+    if (Subtarget.hasAltivec()) {
+      if (Subtarget.isAIXABI() && !TM.getAIXExtendedAltivecABI())
+        return CSR_64_AllRegs_AIX_Dflt_Altivec_RegMask;
       return CSR_64_AllRegs_Altivec_RegMask;
+    }
     return CSR_64_AllRegs_RegMask;
   }
 
@@ -345,6 +357,9 @@ BitVector PPCRegisterInfo::getReservedRegs(const MachineFunction &MF) const {
       if (Reg == 0)
         break;
       markSuperRegs(Reserved, Reg);
+      for (MCRegAliasIterator AS(Reg, this, true); AS.isValid(); ++AS) {
+        Reserved.set(*AS);
+      }
     }
   }
 
@@ -358,22 +373,32 @@ bool PPCRegisterInfo::requiresFrameIndexScavenging(const MachineFunction &MF) co
   const MachineFrameInfo &MFI = MF.getFrameInfo();
   const std::vector<CalleeSavedInfo> &Info = MFI.getCalleeSavedInfo();
 
+  LLVM_DEBUG(dbgs() << "requiresFrameIndexScavenging for " << MF.getName()
+                    << ".\n");
   // If the callee saved info is invalid we have to default to true for safety.
-  if (!MFI.isCalleeSavedInfoValid())
+  if (!MFI.isCalleeSavedInfoValid()) {
+    LLVM_DEBUG(dbgs() << "TRUE - Invalid callee saved info.\n");
     return true;
+  }
 
   // We will require the use of X-Forms because the frame is larger than what
   // can be represented in signed 16 bits that fit in the immediate of a D-Form.
   // If we need an X-Form then we need a register to store the address offset.
   unsigned FrameSize = MFI.getStackSize();
   // Signed 16 bits means that the FrameSize cannot be more than 15 bits.
-  if (FrameSize & ~0x7FFF)
+  if (FrameSize & ~0x7FFF) {
+    LLVM_DEBUG(dbgs() << "TRUE - Frame size is too large for D-Form.\n");
     return true;
+  }
 
   // The callee saved info is valid so it can be traversed.
   // Checking for registers that need saving that do not have load or store
   // forms where the address offset is an immediate.
   for (unsigned i = 0; i < Info.size(); i++) {
+    // If the spill is to a register no scavenging is required.
+    if (Info[i].isSpilledToReg())
+      continue;
+
     int FrIdx = Info[i].getFrameIdx();
     unsigned Reg = Info[i].getReg();
 
@@ -382,8 +407,13 @@ bool PPCRegisterInfo::requiresFrameIndexScavenging(const MachineFunction &MF) co
     if (!MFI.isFixedObjectIndex(FrIdx)) {
       // This is not a fixed object. If it requires alignment then we may still
       // need to use the XForm.
-      if (offsetMinAlignForOpcode(Opcode) > 1)
+      if (offsetMinAlignForOpcode(Opcode) > 1) {
+        LLVM_DEBUG(dbgs() << "Memory Operand: " << InstrInfo->getName(Opcode)
+                          << " for register " << printReg(Reg, this) << ".\n");
+        LLVM_DEBUG(dbgs() << "TRUE - Not fixed frame object that requires "
+                          << "alignment.\n");
         return true;
+      }
     }
 
     // This is eiher:
@@ -392,10 +422,25 @@ bool PPCRegisterInfo::requiresFrameIndexScavenging(const MachineFunction &MF) co
     // need to consider the alignment here.
     // 2) A not fixed object but in that case we now know that the min required
     // alignment is no more than 1 based on the previous check.
-    if (InstrInfo->isXFormMemOp(Opcode))
+    if (InstrInfo->isXFormMemOp(Opcode)) {
+      LLVM_DEBUG(dbgs() << "Memory Operand: " << InstrInfo->getName(Opcode)
+                        << " for register " << printReg(Reg, this) << ".\n");
+      LLVM_DEBUG(dbgs() << "TRUE - Memory operand is X-Form.\n");
       return true;
+    }
   }
+  LLVM_DEBUG(dbgs() << "FALSE - Scavenging is not required.\n");
   return false;
+}
+
+bool PPCRegisterInfo::requiresVirtualBaseRegisters(
+    const MachineFunction &MF) const {
+  const PPCSubtarget &Subtarget = MF.getSubtarget<PPCSubtarget>();
+  // Do not use virtual base registers when ROP protection is turned on.
+  // Virtual base registers break the layout of the local variable space and may
+  // push the ROP Hash location past the 512 byte range of the ROP store
+  // instruction.
+  return !Subtarget.hasROPProtect();
 }
 
 bool PPCRegisterInfo::isCallerPreservedPhysReg(MCRegister PhysReg,
@@ -403,22 +448,20 @@ bool PPCRegisterInfo::isCallerPreservedPhysReg(MCRegister PhysReg,
   assert(Register::isPhysicalRegister(PhysReg));
   const PPCSubtarget &Subtarget = MF.getSubtarget<PPCSubtarget>();
   const MachineFrameInfo &MFI = MF.getFrameInfo();
-  if (!TM.isPPC64())
-    return false;
 
-  if (!Subtarget.isSVR4ABI())
+  if (!Subtarget.is64BitELFABI() && !Subtarget.isAIXABI())
     return false;
-  if (PhysReg == PPC::X2)
-    // X2 is guaranteed to be preserved within a function if it is reserved.
+  if (PhysReg == Subtarget.getTOCPointerRegister())
+    // X2/R2 is guaranteed to be preserved within a function if it is reserved.
     // The reason it's reserved is that it's the TOC pointer (and the function
     // uses the TOC). In functions where it isn't reserved (i.e. leaf functions
     // with no TOC access), we can't claim that it is preserved.
-    return (getReservedRegs(MF).test(PPC::X2));
-  if (StackPtrConst && (PhysReg == PPC::X1) && !MFI.hasVarSizedObjects()
-      && !MFI.hasOpaqueSPAdjustment())
+    return (getReservedRegs(MF).test(PhysReg));
+  if (StackPtrConst && PhysReg == Subtarget.getStackPointerRegister() &&
+      !MFI.hasVarSizedObjects() && !MFI.hasOpaqueSPAdjustment())
     // The value of the stack pointer does not change within a function after
     // the prologue and before the epilogue if there are no dynamic allocations
-    // and no inline asm which clobbers X1.
+    // and no inline asm which clobbers X1/R1.
     return true;
   return false;
 }
@@ -1349,7 +1392,7 @@ bool PPCRegisterInfo::hasBasePointer(const MachineFunction &MF) const {
   // If we need to realign the stack, then the stack pointer can no longer
   // serve as an offset into the caller's stack space. As a result, we need a
   // base pointer.
-  return needsStackRealignment(MF);
+  return hasStackRealignment(MF);
 }
 
 /// Returns true if the instruction's frame index

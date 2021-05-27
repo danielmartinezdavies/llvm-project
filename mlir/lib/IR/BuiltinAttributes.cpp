@@ -79,11 +79,9 @@ static bool dictionaryAttrSort(ArrayRef<NamedAttribute> value,
       storage.assign(value.begin(), value.end());
     // Check to see they are sorted already.
     bool isSorted = llvm::is_sorted(value);
-    if (!isSorted) {
-      // If not, do a general sort.
+    // If not, do a general sort.
+    if (!isSorted)
       llvm::array_pod_sort(storage.begin(), storage.end());
-      value = storage;
-    }
     return !isSorted;
   }
   return false;
@@ -198,6 +196,10 @@ DictionaryAttr DictionaryAttr::getEmptyUnchecked(MLIRContext *context) {
   return Base::get(context, ArrayRef<NamedAttribute>());
 }
 
+StringAttr StringAttr::getEmptyStringAttrUnchecked(MLIRContext *context) {
+  return Base::get(context, "", NoneType::get(context));
+}
+
 //===----------------------------------------------------------------------===//
 // FloatAttr
 //===----------------------------------------------------------------------===//
@@ -261,6 +263,14 @@ uint64_t IntegerAttr::getUInt() const {
   return getValue().getZExtValue();
 }
 
+/// Return the value as an APSInt which carries the signed from the type of
+/// the attribute.  This traps on signless integers types!
+APSInt IntegerAttr::getAPSInt() const {
+  assert(!getType().isSignlessInteger() &&
+         "Signless integers don't carry a sign for APSInt");
+  return APSInt(getValue(), getType().isUnsignedInteger());
+}
+
 LogicalResult IntegerAttr::verify(function_ref<InFlightDiagnostic()> emitError,
                                   Type type, APInt value) {
   if (IntegerType integerType = type.dyn_cast<IntegerType>()) {
@@ -302,6 +312,19 @@ LogicalResult OpaqueAttr::verify(function_ref<InFlightDiagnostic()> emitError,
                                  Type type) {
   if (!Dialect::isValidNamespace(dialect.strref()))
     return emitError() << "invalid dialect namespace '" << dialect << "'";
+
+  // Check that the dialect is actually registered.
+  MLIRContext *context = dialect.getContext();
+  if (!context->allowsUnregisteredDialects() &&
+      !context->getLoadedDialect(dialect.strref())) {
+    return emitError()
+           << "#" << dialect << "<\"" << attrData << "\"> : " << type
+           << " attribute created with unregistered dialect. If this is "
+              "intended, please call allowUnregisteredDialects() on the "
+              "MLIRContext, or use -allow-unregistered-dialect with "
+              "mlir-opt";
+  }
+
   return success();
 }
 
@@ -342,7 +365,8 @@ bool ElementsAttr::isValidIndex(ArrayRef<uint64_t> index) const {
   // Verify that all of the indices are within the shape dimensions.
   auto shape = type.getShape();
   return llvm::all_of(llvm::seq<int>(0, rank), [&](int i) {
-    return static_cast<int64_t>(index[i]) < shape[i];
+    int64_t dim = static_cast<int64_t>(index[i]);
+    return 0 <= dim && dim < shape[i];
   });
 }
 
@@ -566,6 +590,25 @@ Attribute DenseElementsAttr::AttributeElementIterator::operator*() const {
     FloatElementIterator floatIt(floatEltTy.getFloatSemantics(), intIt);
     return FloatAttr::get(eltTy, *floatIt);
   }
+  if (auto complexTy = eltTy.dyn_cast<ComplexType>()) {
+    auto complexEltTy = complexTy.getElementType();
+    ComplexIntElementIterator complexIntIt(owner, index);
+    if (complexEltTy.isa<IntegerType>()) {
+      auto value = *complexIntIt;
+      auto real = IntegerAttr::get(complexEltTy, value.real());
+      auto imag = IntegerAttr::get(complexEltTy, value.imag());
+      return ArrayAttr::get(complexTy.getContext(),
+                            ArrayRef<Attribute>{real, imag});
+    }
+
+    ComplexFloatElementIterator complexFloatIt(
+        complexEltTy.cast<FloatType>().getFloatSemantics(), complexIntIt);
+    auto value = *complexFloatIt;
+    auto real = FloatAttr::get(complexEltTy, value.real());
+    auto imag = FloatAttr::get(complexEltTy, value.imag());
+    return ArrayAttr::get(complexTy.getContext(),
+                          ArrayRef<Attribute>{real, imag});
+  }
   if (owner.isa<DenseStringElementsAttr>()) {
     ArrayRef<StringRef> vals = owner.getRawStringData();
     return StringAttr::get(owner.isSplat() ? vals.front() : vals[index], eltTy);
@@ -682,7 +725,7 @@ DenseElementsAttr DenseElementsAttr::get(ShapedType type,
            "expected attribute value to have element type");
     if (eltType.isa<FloatType>())
       intVal = values[i].cast<FloatAttr>().getValue().bitcastToAPInt();
-    else if (eltType.isa<IntegerType>())
+    else if (eltType.isa<IntegerType, IndexType>())
       intVal = values[i].cast<IntegerAttr>().getValue();
     else
       llvm_unreachable("unexpected element type");

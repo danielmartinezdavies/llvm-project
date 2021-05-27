@@ -36,6 +36,22 @@ def LinalgContractionOpInterface : OpInterface<"ContractionOpInterface"> {
   let verify = [{ return detail::verifyContractionInterface($_op); }];
   let methods = [
     InterfaceMethod<
+    /*desc=*/"Returns the left-hand side operand.",
+    /*retTy=*/"Value",
+    /*methodName=*/"lhs",
+    /*args=*/(ins),
+    /*methodBody=*/[{
+      return $_op.getOperation()->getOperand(0);
+    }]>,
+    InterfaceMethod<
+    /*desc=*/"Returns the right-hand side operand.",
+    /*retTy=*/"Value",
+    /*methodName=*/"rhs",
+    /*args=*/(ins),
+    /*methodBody=*/[{
+      return $_op.getOperation()->getOperand(1);
+    }]>,
+    InterfaceMethod<
     /*desc=*/[{
       Returns whether the given op has indexing maps that correspond to a
       row-major matmul operation.
@@ -896,7 +912,7 @@ def LinalgStructuredInterface : OpInterface<"LinalgOp"> {
       /*desc=*/[{
         Return the indexing maps within the current operation.
       }],
-      /*retTy=*/"SmallVector<AffineMap, 4>",
+      /*retTy=*/"SmallVector<AffineMap>",
       /*methodName=*/"getIndexingMaps",
       /*args=*/(ins),
       /*methodBody=*/"",
@@ -933,6 +949,20 @@ def LinalgStructuredInterface : OpInterface<"LinalgOp"> {
     >,
     InterfaceMethod<
       /*desc=*/[{
+        Return the input indexing maps.
+      }],
+      /*retTy=*/"SmallVector<AffineMap>",
+      /*methodName=*/"getInputIndexingMaps",
+      /*args=*/(ins),
+      /*methodBody=*/"",
+      /*defaultImplementation=*/[{
+        auto maps = $_op.getIndexingMaps();
+        return SmallVector<AffineMap>{maps.begin(),
+                                      maps.begin() + $_op.getNumInputs()};
+      }]
+    >,
+    InterfaceMethod<
+      /*desc=*/[{
         Return the output indexing map at index `i`.
       }],
       /*retTy=*/"AffineMap",
@@ -942,6 +972,20 @@ def LinalgStructuredInterface : OpInterface<"LinalgOp"> {
       /*defaultImplementation=*/[{
         assert(i < $_op.getNumOutputs());
         return getIndexingMaps()[i + $_op.getNumInputs()];
+      }]
+    >,
+    InterfaceMethod<
+      /*desc=*/[{
+        Return the output indexing maps.
+      }],
+      /*retTy=*/"SmallVector<AffineMap>",
+      /*methodName=*/"getOutputIndexingMaps",
+      /*args=*/(ins),
+      /*methodBody=*/"",
+      /*defaultImplementation=*/[{
+        auto maps = $_op.getIndexingMaps();
+        return SmallVector<AffineMap>{maps.begin() + $_op.getNumInputs(),
+                                      maps.begin() + $_op.getNumShapedOperands()};
       }]
     >,
     InterfaceMethod<
@@ -974,19 +1018,6 @@ def LinalgStructuredInterface : OpInterface<"LinalgOp"> {
     >,
     InterfaceMethod<
       /*desc=*/[{
-        Return whether the op has sparse tensor semantics.
-      }],
-      /*retTy=*/"bool",
-      /*methodName=*/"hasSparseSemantics",
-      /*args=*/(ins),
-      /*methodBody=*/"",
-      /*defaultImplementation=*/[{
-        return $_op->getAttr(getSparseAttrName()).
-          template dyn_cast_or_null<ArrayAttr>() != nullptr;
-      }]
-    >,
-    InterfaceMethod<
-      /*desc=*/[{
         Return the name registered for this op when lowering to an external
         library call.
       }],
@@ -998,7 +1029,16 @@ def LinalgStructuredInterface : OpInterface<"LinalgOp"> {
         return $_op.getLibraryCallName();
       }]
     >,
-
+    InterfaceMethod<
+      /*desc=*/[{
+         Return whether the op accesses the iteration indices.
+      }],
+      /*retTy=*/"bool",
+      /*methodName=*/"hasIndexSemantics",
+      /*args=*/(ins),
+      /*methodBody=*/"",
+      /*defaultImplementation=*/""
+    >,
     //===------------------------------------------------------------------===//
     // Linalg generalization hooks.
     //===------------------------------------------------------------------===//
@@ -1087,18 +1127,20 @@ def LinalgStructuredInterface : OpInterface<"LinalgOp"> {
     >,
     InterfaceMethod<
       /*desc=*/[{
-        Return the position in the results of the affine map computed
-        by getLoopsToShapesMap() that represents the shape of the
-        result value at a dimension.
+        Return the range of position in the result of the affine map
+        computed by getLoopsToShapesMap() which correspond to the
+        AffineExprs used to access the outputs of the operation.
       }],
-      /*retTy=*/"Optional<unsigned>",
-      /*methodName=*/"getResultValueDimPositionInLoopsToShapeMap",
-      /*args=*/(ins "unsigned":$resultIdx, "unsigned":$dim),
+      /*retTy=*/"std::pair<unsigned, unsigned>",
+      /*methodName=*/"getResultsPositionInLoopsToShapeMap",
+      /*args=*/(ins),
       /*methodBody=*/"",
       /*defaultImplementation=*/[{
-        if (resultIdx >= getNumOutputs()) return {};
-        return getOperandDimPositionInLoopsToShapeMap(
-            getNumInputs() + resultIdx, dim);
+        return
+          {*getOperandDimPositionInLoopsToShapeMap(getNumInputs(), 0),
+           (*getOperandDimPositionInLoopsToShapeMap
+                 (getNumInputs() + getNumOutputs() - 1,
+                  getOutputShapedType(getNumOutputs()-1).getRank() - 1)) + 1};
       }]
     >,
     InterfaceMethod<
@@ -1191,7 +1233,7 @@ def LinalgStructuredInterface : OpInterface<"LinalgOp"> {
         Returns a null function if this named op does not define a region
         builder.
       }],
-      /*retTy=*/"std::function<void(Block &, ValueRange)>",
+      /*retTy=*/"std::function<void(ImplicitLocOpBuilder &, Block &, ValueRange)>",
       /*methodName=*/"getRegionBuilder",
       (ins),
       [{ return ConcreteOp::getRegionBuilder(); }]
@@ -1203,10 +1245,20 @@ def LinalgStructuredInterface : OpInterface<"LinalgOp"> {
     /// appear in the operands.
     SmallVector<Value, 4> createFlatListOfOperandDims(OpBuilder &, Location);
 
+    /// Return the flat list of all operands' static dimension sizes in the
+    /// order they appear in the operands. All operand dimension sizes have to
+    /// be statically known.
+    SmallVector<int64_t, 4> createFlatListOfOperandStaticDims();
+
     /// Create the loop ranges to materialize the computation over the current
     /// operands. This is done by applying `getShapesToLoopsMap` to
     /// `createFlatListOfOperandDims`.
     SmallVector<Range, 4> createLoopRanges(OpBuilder &b, Location loc);
+
+    /// Compute the static loop sizes necessary to vectorize the computation.
+    /// This is done by applying `getShapesToLoopsMap` to
+    /// `createFlatListOfOperandStaticDims`.
+    SmallVector<int64_t, 4> computeStaticLoopSizes();
 
     /// Returns all the operands past the inputs, output_buffers and
     /// init_tensors operands. Asserts that these operands are value types to
@@ -1226,8 +1278,8 @@ def LinalgStructuredInterface : OpInterface<"LinalgOp"> {
 
     /// Returns the value that expresses the shape of the output in terms of
     /// shape of the input operands where possible
-    Optional<Value> inferResultDimFromInputShapes
-      (OpBuilder &b, Location loc, unsigned resultIdx, unsigned im);
+    LogicalResult reifyReturnTypeShapesPerResultDim(OpBuilder &b,
+        SmallVectorImpl<SmallVector<Value>> &reifiedReturnShapes);
 
     //========================================================================//
     // Helper functions to mutate the `operand_segment_sizes` attribute.

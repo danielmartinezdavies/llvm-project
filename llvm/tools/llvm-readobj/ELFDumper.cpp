@@ -298,6 +298,13 @@ protected:
 
   std::vector<GroupSection> getGroups();
 
+  // Returns the function symbol index for the given address. Matches the
+  // symbol's section with FunctionSec when specified.
+  // Returns None if no function symbol can be found for the address or in case
+  // it is not defined in the specified section.
+  Optional<uint32_t>
+  getSymbolIndexForFunctionAddress(uint64_t SymValue,
+                                   Optional<const Elf_Shdr *> FunctionSec);
   bool printFunctionStackSize(uint64_t SymValue,
                               Optional<const Elf_Shdr *> FunctionSec,
                               const Elf_Shdr &StackSizeSec, DataExtractor Data,
@@ -353,6 +360,7 @@ protected:
   const Elf_Shdr *DotAddrsigSec = nullptr;
   DenseMap<const Elf_Shdr *, ArrayRef<Elf_Word>> ShndxTables;
   Optional<uint64_t> SONameOffset;
+  Optional<DenseMap<uint64_t, std::vector<uint32_t>>> AddressToIndexMap;
 
   const Elf_Shdr *SymbolVersionSection = nullptr;   // .gnu.version
   const Elf_Shdr *SymbolVersionNeedSection = nullptr; // .gnu.version_r
@@ -1140,7 +1148,7 @@ static const EnumEntry<unsigned> ElfMachineType[] = {
   ENUM_ENT(EM_METAG,         "Imagination Technologies Meta processor architecture"),
   ENUM_ENT(EM_MCST_ELBRUS,   "MCST Elbrus general purpose hardware architecture"),
   ENUM_ENT(EM_ECOG16,        "Cyan Technology eCOG16 family"),
-  ENUM_ENT(EM_CR16,          "Xilinx MicroBlaze"),
+  ENUM_ENT(EM_CR16,          "National Semiconductor CompactRISC 16-bit processor"),
   ENUM_ENT(EM_ETPU,          "Freescale Extended Time Processing Unit"),
   ENUM_ENT(EM_SLE9X,         "Infineon Technologies SLE9X core"),
   ENUM_ENT(EM_L10M,          "EM_L10M"),
@@ -1150,6 +1158,7 @@ static const EnumEntry<unsigned> ElfMachineType[] = {
   ENUM_ENT(EM_STM8,          "STMicroeletronics STM8 8-bit microcontroller"),
   ENUM_ENT(EM_TILE64,        "Tilera TILE64 multicore architecture family"),
   ENUM_ENT(EM_TILEPRO,       "Tilera TILEPro multicore architecture family"),
+  ENUM_ENT(EM_MICROBLAZE,    "Xilinx MicroBlaze 32-bit RISC soft processor core"),
   ENUM_ENT(EM_CUDA,          "NVIDIA CUDA architecture"),
   ENUM_ENT(EM_TILEGX,        "Tilera TILE-Gx multicore architecture family"),
   ENUM_ENT(EM_CLOUDSHIELD,   "EM_CLOUDSHIELD"),
@@ -1430,7 +1439,7 @@ static const EnumEntry<unsigned> ElfHeaderMipsFlags[] = {
   ENUM_ENT(EF_MIPS_ARCH_64R6, "mips64r6")
 };
 
-static const EnumEntry<unsigned> ElfHeaderAMDGPUFlags[] = {
+static const EnumEntry<unsigned> ElfHeaderAMDGPUFlagsABIVersion3[] = {
   LLVM_READOBJ_ENUM_ENT(ELF, EF_AMDGPU_MACH_NONE),
   LLVM_READOBJ_ENUM_ENT(ELF, EF_AMDGPU_MACH_R600_R600),
   LLVM_READOBJ_ENUM_ENT(ELF, EF_AMDGPU_MACH_R600_R630),
@@ -1477,8 +1486,65 @@ static const EnumEntry<unsigned> ElfHeaderAMDGPUFlags[] = {
   LLVM_READOBJ_ENUM_ENT(ELF, EF_AMDGPU_MACH_AMDGCN_GFX1031),
   LLVM_READOBJ_ENUM_ENT(ELF, EF_AMDGPU_MACH_AMDGCN_GFX1032),
   LLVM_READOBJ_ENUM_ENT(ELF, EF_AMDGPU_MACH_AMDGCN_GFX1033),
-  LLVM_READOBJ_ENUM_ENT(ELF, EF_AMDGPU_XNACK),
-  LLVM_READOBJ_ENUM_ENT(ELF, EF_AMDGPU_SRAM_ECC)
+  LLVM_READOBJ_ENUM_ENT(ELF, EF_AMDGPU_MACH_AMDGCN_GFX1034),
+  LLVM_READOBJ_ENUM_ENT(ELF, EF_AMDGPU_FEATURE_XNACK_V3),
+  LLVM_READOBJ_ENUM_ENT(ELF, EF_AMDGPU_FEATURE_SRAMECC_V3)
+};
+
+static const EnumEntry<unsigned> ElfHeaderAMDGPUFlagsABIVersion4[] = {
+  LLVM_READOBJ_ENUM_ENT(ELF, EF_AMDGPU_MACH_NONE),
+  LLVM_READOBJ_ENUM_ENT(ELF, EF_AMDGPU_MACH_R600_R600),
+  LLVM_READOBJ_ENUM_ENT(ELF, EF_AMDGPU_MACH_R600_R630),
+  LLVM_READOBJ_ENUM_ENT(ELF, EF_AMDGPU_MACH_R600_RS880),
+  LLVM_READOBJ_ENUM_ENT(ELF, EF_AMDGPU_MACH_R600_RV670),
+  LLVM_READOBJ_ENUM_ENT(ELF, EF_AMDGPU_MACH_R600_RV710),
+  LLVM_READOBJ_ENUM_ENT(ELF, EF_AMDGPU_MACH_R600_RV730),
+  LLVM_READOBJ_ENUM_ENT(ELF, EF_AMDGPU_MACH_R600_RV770),
+  LLVM_READOBJ_ENUM_ENT(ELF, EF_AMDGPU_MACH_R600_CEDAR),
+  LLVM_READOBJ_ENUM_ENT(ELF, EF_AMDGPU_MACH_R600_CYPRESS),
+  LLVM_READOBJ_ENUM_ENT(ELF, EF_AMDGPU_MACH_R600_JUNIPER),
+  LLVM_READOBJ_ENUM_ENT(ELF, EF_AMDGPU_MACH_R600_REDWOOD),
+  LLVM_READOBJ_ENUM_ENT(ELF, EF_AMDGPU_MACH_R600_SUMO),
+  LLVM_READOBJ_ENUM_ENT(ELF, EF_AMDGPU_MACH_R600_BARTS),
+  LLVM_READOBJ_ENUM_ENT(ELF, EF_AMDGPU_MACH_R600_CAICOS),
+  LLVM_READOBJ_ENUM_ENT(ELF, EF_AMDGPU_MACH_R600_CAYMAN),
+  LLVM_READOBJ_ENUM_ENT(ELF, EF_AMDGPU_MACH_R600_TURKS),
+  LLVM_READOBJ_ENUM_ENT(ELF, EF_AMDGPU_MACH_AMDGCN_GFX600),
+  LLVM_READOBJ_ENUM_ENT(ELF, EF_AMDGPU_MACH_AMDGCN_GFX601),
+  LLVM_READOBJ_ENUM_ENT(ELF, EF_AMDGPU_MACH_AMDGCN_GFX602),
+  LLVM_READOBJ_ENUM_ENT(ELF, EF_AMDGPU_MACH_AMDGCN_GFX700),
+  LLVM_READOBJ_ENUM_ENT(ELF, EF_AMDGPU_MACH_AMDGCN_GFX701),
+  LLVM_READOBJ_ENUM_ENT(ELF, EF_AMDGPU_MACH_AMDGCN_GFX702),
+  LLVM_READOBJ_ENUM_ENT(ELF, EF_AMDGPU_MACH_AMDGCN_GFX703),
+  LLVM_READOBJ_ENUM_ENT(ELF, EF_AMDGPU_MACH_AMDGCN_GFX704),
+  LLVM_READOBJ_ENUM_ENT(ELF, EF_AMDGPU_MACH_AMDGCN_GFX705),
+  LLVM_READOBJ_ENUM_ENT(ELF, EF_AMDGPU_MACH_AMDGCN_GFX801),
+  LLVM_READOBJ_ENUM_ENT(ELF, EF_AMDGPU_MACH_AMDGCN_GFX802),
+  LLVM_READOBJ_ENUM_ENT(ELF, EF_AMDGPU_MACH_AMDGCN_GFX803),
+  LLVM_READOBJ_ENUM_ENT(ELF, EF_AMDGPU_MACH_AMDGCN_GFX805),
+  LLVM_READOBJ_ENUM_ENT(ELF, EF_AMDGPU_MACH_AMDGCN_GFX810),
+  LLVM_READOBJ_ENUM_ENT(ELF, EF_AMDGPU_MACH_AMDGCN_GFX900),
+  LLVM_READOBJ_ENUM_ENT(ELF, EF_AMDGPU_MACH_AMDGCN_GFX902),
+  LLVM_READOBJ_ENUM_ENT(ELF, EF_AMDGPU_MACH_AMDGCN_GFX904),
+  LLVM_READOBJ_ENUM_ENT(ELF, EF_AMDGPU_MACH_AMDGCN_GFX906),
+  LLVM_READOBJ_ENUM_ENT(ELF, EF_AMDGPU_MACH_AMDGCN_GFX908),
+  LLVM_READOBJ_ENUM_ENT(ELF, EF_AMDGPU_MACH_AMDGCN_GFX909),
+  LLVM_READOBJ_ENUM_ENT(ELF, EF_AMDGPU_MACH_AMDGCN_GFX90A),
+  LLVM_READOBJ_ENUM_ENT(ELF, EF_AMDGPU_MACH_AMDGCN_GFX90C),
+  LLVM_READOBJ_ENUM_ENT(ELF, EF_AMDGPU_MACH_AMDGCN_GFX1010),
+  LLVM_READOBJ_ENUM_ENT(ELF, EF_AMDGPU_MACH_AMDGCN_GFX1011),
+  LLVM_READOBJ_ENUM_ENT(ELF, EF_AMDGPU_MACH_AMDGCN_GFX1012),
+  LLVM_READOBJ_ENUM_ENT(ELF, EF_AMDGPU_MACH_AMDGCN_GFX1030),
+  LLVM_READOBJ_ENUM_ENT(ELF, EF_AMDGPU_MACH_AMDGCN_GFX1031),
+  LLVM_READOBJ_ENUM_ENT(ELF, EF_AMDGPU_MACH_AMDGCN_GFX1032),
+  LLVM_READOBJ_ENUM_ENT(ELF, EF_AMDGPU_MACH_AMDGCN_GFX1033),
+  LLVM_READOBJ_ENUM_ENT(ELF, EF_AMDGPU_MACH_AMDGCN_GFX1034),
+  LLVM_READOBJ_ENUM_ENT(ELF, EF_AMDGPU_FEATURE_XNACK_ANY_V4),
+  LLVM_READOBJ_ENUM_ENT(ELF, EF_AMDGPU_FEATURE_XNACK_OFF_V4),
+  LLVM_READOBJ_ENUM_ENT(ELF, EF_AMDGPU_FEATURE_XNACK_ON_V4),
+  LLVM_READOBJ_ENUM_ENT(ELF, EF_AMDGPU_FEATURE_SRAMECC_ANY_V4),
+  LLVM_READOBJ_ENUM_ENT(ELF, EF_AMDGPU_FEATURE_SRAMECC_OFF_V4),
+  LLVM_READOBJ_ENUM_ENT(ELF, EF_AMDGPU_FEATURE_SRAMECC_ON_V4)
 };
 
 static const EnumEntry<unsigned> ElfHeaderRISCVFlags[] = {
@@ -1488,6 +1554,29 @@ static const EnumEntry<unsigned> ElfHeaderRISCVFlags[] = {
   ENUM_ENT(EF_RISCV_FLOAT_ABI_QUAD, "quad-float ABI"),
   ENUM_ENT(EF_RISCV_RVE, "RVE")
 };
+
+static const EnumEntry<unsigned> ElfHeaderAVRFlags[] = {
+  LLVM_READOBJ_ENUM_ENT(ELF, EF_AVR_ARCH_AVR1),
+  LLVM_READOBJ_ENUM_ENT(ELF, EF_AVR_ARCH_AVR2),
+  LLVM_READOBJ_ENUM_ENT(ELF, EF_AVR_ARCH_AVR25),
+  LLVM_READOBJ_ENUM_ENT(ELF, EF_AVR_ARCH_AVR3),
+  LLVM_READOBJ_ENUM_ENT(ELF, EF_AVR_ARCH_AVR31),
+  LLVM_READOBJ_ENUM_ENT(ELF, EF_AVR_ARCH_AVR35),
+  LLVM_READOBJ_ENUM_ENT(ELF, EF_AVR_ARCH_AVR4),
+  LLVM_READOBJ_ENUM_ENT(ELF, EF_AVR_ARCH_AVR5),
+  LLVM_READOBJ_ENUM_ENT(ELF, EF_AVR_ARCH_AVR51),
+  LLVM_READOBJ_ENUM_ENT(ELF, EF_AVR_ARCH_AVR6),
+  LLVM_READOBJ_ENUM_ENT(ELF, EF_AVR_ARCH_AVRTINY),
+  LLVM_READOBJ_ENUM_ENT(ELF, EF_AVR_ARCH_XMEGA1),
+  LLVM_READOBJ_ENUM_ENT(ELF, EF_AVR_ARCH_XMEGA2),
+  LLVM_READOBJ_ENUM_ENT(ELF, EF_AVR_ARCH_XMEGA3),
+  LLVM_READOBJ_ENUM_ENT(ELF, EF_AVR_ARCH_XMEGA4),
+  LLVM_READOBJ_ENUM_ENT(ELF, EF_AVR_ARCH_XMEGA5),
+  LLVM_READOBJ_ENUM_ENT(ELF, EF_AVR_ARCH_XMEGA6),
+  LLVM_READOBJ_ENUM_ENT(ELF, EF_AVR_ARCH_XMEGA7),
+  ENUM_ENT(EF_AVR_LINKRELAX_PREPARED, "relaxable"),
+};
+
 
 static const EnumEntry<unsigned> ElfSymOtherFlags[] = {
   LLVM_READOBJ_ENUM_ENT(ELF, STV_INTERNAL),
@@ -3174,6 +3263,9 @@ template <class ELFT> void GNUELFDumper<ELFT>::printFileHeaders() {
                    unsigned(ELF::EF_MIPS_MACH));
   else if (e.e_machine == EM_RISCV)
     ElfFlags = printFlags(e.e_flags, makeArrayRef(ElfHeaderRISCVFlags));
+  else if (e.e_machine == EM_AVR)
+    ElfFlags = printFlags(e.e_flags, makeArrayRef(ElfHeaderAVRFlags),
+                          unsigned(ELF::EF_AVR_ARCH_MASK));
   Str = "0x" + to_hexString(e.e_flags);
   if (!ElfFlags.empty())
     Str = Str + ", " + ElfFlags;
@@ -4944,14 +5036,97 @@ static AMDNote getAMDNote(uint32_t NoteType, ArrayRef<uint8_t> Desc) {
   switch (NoteType) {
   default:
     return {"", ""};
-  case ELF::NT_AMD_AMDGPU_HSA_METADATA:
+  case ELF::NT_AMD_HSA_CODE_OBJECT_VERSION: {
+    struct CodeObjectVersion {
+      uint32_t MajorVersion;
+      uint32_t MinorVersion;
+    };
+    if (Desc.size() != sizeof(CodeObjectVersion))
+      return {"AMD HSA Code Object Version",
+              "Invalid AMD HSA Code Object Version"};
+    std::string VersionString;
+    raw_string_ostream StrOS(VersionString);
+    auto Version = reinterpret_cast<const CodeObjectVersion *>(Desc.data());
+    StrOS << "[Major: " << Version->MajorVersion
+          << ", Minor: " << Version->MinorVersion << "]";
+    return {"AMD HSA Code Object Version", VersionString};
+  }
+  case ELF::NT_AMD_HSA_HSAIL: {
+    struct HSAILProperties {
+      uint32_t HSAILMajorVersion;
+      uint32_t HSAILMinorVersion;
+      uint8_t Profile;
+      uint8_t MachineModel;
+      uint8_t DefaultFloatRound;
+    };
+    if (Desc.size() != sizeof(HSAILProperties))
+      return {"AMD HSA HSAIL Properties", "Invalid AMD HSA HSAIL Properties"};
+    auto Properties = reinterpret_cast<const HSAILProperties *>(Desc.data());
+    std::string HSAILPropetiesString;
+    raw_string_ostream StrOS(HSAILPropetiesString);
+    StrOS << "[HSAIL Major: " << Properties->HSAILMajorVersion
+          << ", HSAIL Minor: " << Properties->HSAILMinorVersion
+          << ", Profile: " << uint32_t(Properties->Profile)
+          << ", Machine Model: " << uint32_t(Properties->MachineModel)
+          << ", Default Float Round: "
+          << uint32_t(Properties->DefaultFloatRound) << "]";
+    return {"AMD HSA HSAIL Properties", HSAILPropetiesString};
+  }
+  case ELF::NT_AMD_HSA_ISA_VERSION: {
+    struct IsaVersion {
+      uint16_t VendorNameSize;
+      uint16_t ArchitectureNameSize;
+      uint32_t Major;
+      uint32_t Minor;
+      uint32_t Stepping;
+    };
+    if (Desc.size() < sizeof(IsaVersion))
+      return {"AMD HSA ISA Version", "Invalid AMD HSA ISA Version"};
+    auto Isa = reinterpret_cast<const IsaVersion *>(Desc.data());
+    if (Desc.size() < sizeof(IsaVersion) +
+                          Isa->VendorNameSize + Isa->ArchitectureNameSize ||
+        Isa->VendorNameSize == 0 || Isa->ArchitectureNameSize == 0)
+      return {"AMD HSA ISA Version", "Invalid AMD HSA ISA Version"};
+    std::string IsaString;
+    raw_string_ostream StrOS(IsaString);
+    StrOS << "[Vendor: "
+          << StringRef((const char*)Desc.data() + sizeof(IsaVersion), Isa->VendorNameSize - 1)
+          << ", Architecture: "
+          << StringRef((const char*)Desc.data() + sizeof(IsaVersion) + Isa->VendorNameSize,
+                       Isa->ArchitectureNameSize - 1)
+          << ", Major: " << Isa->Major << ", Minor: " << Isa->Minor
+          << ", Stepping: " << Isa->Stepping << "]";
+    return {"AMD HSA ISA Version", IsaString};
+  }
+  case ELF::NT_AMD_HSA_METADATA: {
+    if (Desc.size() == 0)
+      return {"AMD HSA Metadata", ""};
     return {
-        "HSA Metadata",
-        std::string(reinterpret_cast<const char *>(Desc.data()), Desc.size())};
-  case ELF::NT_AMD_AMDGPU_ISA:
+        "AMD HSA Metadata",
+        std::string(reinterpret_cast<const char *>(Desc.data()), Desc.size() - 1)};
+  }
+  case ELF::NT_AMD_HSA_ISA_NAME: {
+    if (Desc.size() == 0)
+      return {"AMD HSA ISA Name", ""};
     return {
-        "ISA Version",
+        "AMD HSA ISA Name",
         std::string(reinterpret_cast<const char *>(Desc.data()), Desc.size())};
+  }
+  case ELF::NT_AMD_PAL_METADATA: {
+    struct PALMetadata {
+      uint32_t Key;
+      uint32_t Value;
+    };
+    if (Desc.size() % sizeof(PALMetadata) != 0)
+      return {"AMD PAL Metadata", "Invalid AMD PAL Metadata"};
+    auto Isa = reinterpret_cast<const PALMetadata *>(Desc.data());
+    std::string MetadataString;
+    raw_string_ostream StrOS(MetadataString);
+    for (size_t I = 0, E = Desc.size() / sizeof(PALMetadata); I < E; ++I) {
+      StrOS << "[" << Isa[I].Key << ": " << Isa[I].Value << "]";
+    }
+    return {"AMD PAL Metadata", MetadataString};
+  }
   }
 }
 
@@ -4973,11 +5148,11 @@ static AMDGPUNote getAMDGPUNote(uint32_t NoteType, ArrayRef<uint8_t> Desc) {
       return {"", ""};
 
     AMDGPU::HSAMD::V3::MetadataVerifier Verifier(true);
-    std::string HSAMetadataString;
+    std::string MetadataString;
     if (!Verifier.verify(MsgPackDoc.getRoot()))
-      HSAMetadataString = "Invalid AMDGPU Metadata\n";
+      MetadataString = "Invalid AMDGPU Metadata\n";
 
-    raw_string_ostream StrOS(HSAMetadataString);
+    raw_string_ostream StrOS(MetadataString);
     if (MsgPackDoc.getRoot().isScalar()) {
       // TODO: passing a scalar root to toYAML() asserts:
       // (PolymorphicTraits<T>::getKind(Val) != NodeKind::Scalar &&
@@ -5106,11 +5281,13 @@ static const NoteType FreeBSDNoteTypes[] = {
 };
 
 static const NoteType AMDNoteTypes[] = {
-    {ELF::NT_AMD_AMDGPU_HSA_METADATA,
-     "NT_AMD_AMDGPU_HSA_METADATA (HSA Metadata)"},
-    {ELF::NT_AMD_AMDGPU_ISA, "NT_AMD_AMDGPU_ISA (ISA Version)"},
-    {ELF::NT_AMD_AMDGPU_PAL_METADATA,
-     "NT_AMD_AMDGPU_PAL_METADATA (PAL Metadata)"},
+    {ELF::NT_AMD_HSA_CODE_OBJECT_VERSION,
+     "NT_AMD_HSA_CODE_OBJECT_VERSION (AMD HSA Code Object Version)"},
+    {ELF::NT_AMD_HSA_HSAIL, "NT_AMD_HSA_HSAIL (AMD HSA HSAIL Properties)"},
+    {ELF::NT_AMD_HSA_ISA_VERSION, "NT_AMD_HSA_ISA_VERSION (AMD HSA ISA Version)"},
+    {ELF::NT_AMD_HSA_METADATA, "NT_AMD_HSA_METADATA (AMD HSA Metadata)"},
+    {ELF::NT_AMD_HSA_ISA_NAME, "NT_AMD_HSA_ISA_NAME (AMD HSA ISA Name)"},
+    {ELF::NT_AMD_PAL_METADATA, "NT_AMD_PAL_METADATA (AMD PAL Metadata)"},
 };
 
 static const NoteType AMDGPUNoteTypes[] = {
@@ -5534,64 +5711,82 @@ template <class ELFT> void GNUELFDumper<ELFT>::printDependentLibs() {
 }
 
 template <class ELFT>
-bool ELFDumper<ELFT>::printFunctionStackSize(
-    uint64_t SymValue, Optional<const Elf_Shdr *> FunctionSec,
-    const Elf_Shdr &StackSizeSec, DataExtractor Data, uint64_t *Offset) {
-  uint32_t FuncSymIndex = 0;
-  if (this->DotSymtabSec) {
-    if (Expected<Elf_Sym_Range> SymsOrError = Obj.symbols(this->DotSymtabSec)) {
-      uint32_t Index = (uint32_t)-1;
-      for (const Elf_Sym &Sym : *SymsOrError) {
-        ++Index;
+Optional<uint32_t> ELFDumper<ELFT>::getSymbolIndexForFunctionAddress(
+    uint64_t SymValue, Optional<const Elf_Shdr *> FunctionSec) {
+  if (!this->AddressToIndexMap.hasValue()) {
+    // Populate the address to index map upon the first invocation of this
+    // function.
+    this->AddressToIndexMap.emplace();
+    if (this->DotSymtabSec) {
+      if (Expected<Elf_Sym_Range> SymsOrError =
+              Obj.symbols(this->DotSymtabSec)) {
+        uint32_t Index = (uint32_t)-1;
+        for (const Elf_Sym &Sym : *SymsOrError) {
+          ++Index;
 
-        if (Sym.st_shndx == ELF::SHN_UNDEF || Sym.getType() != ELF::STT_FUNC)
-          continue;
-
-        if (Expected<uint64_t> SymAddrOrErr =
-                ObjF.toSymbolRef(this->DotSymtabSec, Index).getAddress()) {
-          if (SymValue != *SymAddrOrErr)
+          if (Sym.st_shndx == ELF::SHN_UNDEF || Sym.getType() != ELF::STT_FUNC)
             continue;
-        } else {
-          std::string Name = this->getStaticSymbolName(Index);
-          reportUniqueWarning("unable to get address of symbol '" + Name +
-                              "': " + toString(SymAddrOrErr.takeError()));
-          break;
-        }
 
-        // Check if the symbol is in the right section. FunctionSec == None
-        // means "any section".
-        if (FunctionSec) {
-          if (Expected<const Elf_Shdr *> SecOrErr =
-                  Obj.getSection(Sym, this->DotSymtabSec,
-                                 this->getShndxTable(this->DotSymtabSec))) {
-            if (*FunctionSec != *SecOrErr)
-              continue;
-          } else {
+          Expected<uint64_t> SymAddrOrErr =
+              ObjF.toSymbolRef(this->DotSymtabSec, Index).getAddress();
+          if (!SymAddrOrErr) {
             std::string Name = this->getStaticSymbolName(Index);
-            // Note: it is impossible to trigger this error currently, it is
-            // untested.
-            reportUniqueWarning("unable to get section of symbol '" + Name +
-                                "': " + toString(SecOrErr.takeError()));
-            break;
+            reportUniqueWarning("unable to get address of symbol '" + Name +
+                                "': " + toString(SymAddrOrErr.takeError()));
+            return None;
           }
-        }
 
-        FuncSymIndex = Index;
-        break;
+          (*this->AddressToIndexMap)[*SymAddrOrErr].push_back(Index);
+        }
+      } else {
+        reportUniqueWarning("unable to read the symbol table: " +
+                            toString(SymsOrError.takeError()));
       }
-    } else {
-      reportUniqueWarning("unable to read the symbol table: " +
-                          toString(SymsOrError.takeError()));
     }
   }
 
+  auto Symbols = this->AddressToIndexMap->find(SymValue);
+  if (Symbols == this->AddressToIndexMap->end())
+    return None;
+
+  for (uint32_t Index : Symbols->second) {
+    // Check if the symbol is in the right section. FunctionSec == None
+    // means "any section".
+    if (FunctionSec) {
+      const Elf_Sym &Sym = *cantFail(Obj.getSymbol(this->DotSymtabSec, Index));
+      if (Expected<const Elf_Shdr *> SecOrErr =
+              Obj.getSection(Sym, this->DotSymtabSec,
+                             this->getShndxTable(this->DotSymtabSec))) {
+        if (*FunctionSec != *SecOrErr)
+          continue;
+      } else {
+        std::string Name = this->getStaticSymbolName(Index);
+        // Note: it is impossible to trigger this error currently, it is
+        // untested.
+        reportUniqueWarning("unable to get section of symbol '" + Name +
+                            "': " + toString(SecOrErr.takeError()));
+        return None;
+      }
+    }
+
+    return Index;
+  }
+  return None;
+}
+
+template <class ELFT>
+bool ELFDumper<ELFT>::printFunctionStackSize(
+    uint64_t SymValue, Optional<const Elf_Shdr *> FunctionSec,
+    const Elf_Shdr &StackSizeSec, DataExtractor Data, uint64_t *Offset) {
+  Optional<uint32_t> FuncSymIndex =
+      this->getSymbolIndexForFunctionAddress(SymValue, FunctionSec);
   std::string FuncName = "?";
   if (!FuncSymIndex)
     reportUniqueWarning(
         "could not identify function symbol for stack size entry in " +
         describe(StackSizeSec));
   else
-    FuncName = this->getStaticSymbolName(FuncSymIndex);
+    FuncName = this->getStaticSymbolName(*FuncSymIndex);
 
   // Extract the size. The expectation is that Offset is pointing to the right
   // place, i.e. past the function address.
@@ -6050,11 +6245,32 @@ template <class ELFT> void LLVMELFDumper<ELFT>::printFileHeaders() {
       W.printFlags("Flags", E.e_flags, makeArrayRef(ElfHeaderMipsFlags),
                    unsigned(ELF::EF_MIPS_ARCH), unsigned(ELF::EF_MIPS_ABI),
                    unsigned(ELF::EF_MIPS_MACH));
-    else if (E.e_machine == EM_AMDGPU)
-      W.printFlags("Flags", E.e_flags, makeArrayRef(ElfHeaderAMDGPUFlags),
-                   unsigned(ELF::EF_AMDGPU_MACH));
-    else if (E.e_machine == EM_RISCV)
+    else if (E.e_machine == EM_AMDGPU) {
+      switch (E.e_ident[ELF::EI_ABIVERSION]) {
+      default:
+        W.printHex("Flags", E.e_flags);
+        break;
+      case 0:
+        // ELFOSABI_AMDGPU_PAL, ELFOSABI_AMDGPU_MESA3D support *_V3 flags.
+        LLVM_FALLTHROUGH;
+      case ELF::ELFABIVERSION_AMDGPU_HSA_V3:
+        W.printFlags("Flags", E.e_flags,
+                     makeArrayRef(ElfHeaderAMDGPUFlagsABIVersion3),
+                     unsigned(ELF::EF_AMDGPU_MACH));
+        break;
+      case ELF::ELFABIVERSION_AMDGPU_HSA_V4:
+        W.printFlags("Flags", E.e_flags,
+                     makeArrayRef(ElfHeaderAMDGPUFlagsABIVersion4),
+                     unsigned(ELF::EF_AMDGPU_MACH),
+                     unsigned(ELF::EF_AMDGPU_FEATURE_XNACK_V4),
+                     unsigned(ELF::EF_AMDGPU_FEATURE_SRAMECC_V4));
+        break;
+      }
+    } else if (E.e_machine == EM_RISCV)
       W.printFlags("Flags", E.e_flags, makeArrayRef(ElfHeaderRISCVFlags));
+    else if (E.e_machine == EM_AVR)
+      W.printFlags("Flags", E.e_flags, makeArrayRef(ElfHeaderAVRFlags),
+                   unsigned(ELF::EF_AVR_ARCH_MASK));
     else
       W.printFlags("Flags", E.e_flags);
     W.printNumber("HeaderSize", E.e_ehsize);
@@ -6528,6 +6744,7 @@ template <class ELFT> void LLVMELFDumper<ELFT>::printBBAddrMaps() {
         W.printBoolean("HasReturn", BBE.HasReturn);
         W.printBoolean("HasTailCall", BBE.HasTailCall);
         W.printBoolean("IsEHPad", BBE.IsEHPad);
+        W.printBoolean("CanFallThrough", BBE.CanFallThrough);
       }
     }
   }

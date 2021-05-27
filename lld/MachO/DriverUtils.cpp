@@ -10,6 +10,7 @@
 #include "Driver.h"
 #include "InputFiles.h"
 #include "ObjC.h"
+#include "Target.h"
 
 #include "lld/Common/Args.h"
 #include "lld/Common/ErrorHandler.h"
@@ -23,9 +24,10 @@
 #include "llvm/Option/ArgList.h"
 #include "llvm/Option/Option.h"
 #include "llvm/Support/CommandLine.h"
+#include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Path.h"
-#include "llvm/TextAPI/MachO/InterfaceFile.h"
-#include "llvm/TextAPI/MachO/TextAPIReader.h"
+#include "llvm/TextAPI/InterfaceFile.h"
+#include "llvm/TextAPI/TextAPIReader.h"
 
 using namespace llvm;
 using namespace llvm::MachO;
@@ -116,6 +118,14 @@ static std::string rewritePath(StringRef s) {
   return std::string(s);
 }
 
+static std::string rewriteInputPath(StringRef s) {
+  // Don't bother rewriting "absolute" paths that are actually under the
+  // syslibroot; simply rewriting the syslibroot is sufficient.
+  if (rerootPath(s) == s && fs::exists(s))
+    return relativeToRoot(s);
+  return std::string(s);
+}
+
 // Reconstructs command line arguments so that so that you can re-run
 // the same command with the same inputs. This is for --reproduce.
 std::string macho::createResponseFile(const InputArgList &args) {
@@ -128,7 +138,7 @@ std::string macho::createResponseFile(const InputArgList &args) {
     case OPT_reproduce:
       break;
     case OPT_INPUT:
-      os << quote(rewritePath(arg->getValue())) << "\n";
+      os << quote(rewriteInputPath(arg->getValue())) << "\n";
       break;
     case OPT_o:
       os << "-o " << quote(path::filename(arg->getValue())) << "\n";
@@ -136,14 +146,21 @@ std::string macho::createResponseFile(const InputArgList &args) {
     case OPT_filelist:
       if (Optional<MemoryBufferRef> buffer = readFile(arg->getValue()))
         for (StringRef path : args::getLines(*buffer))
-          os << quote(rewritePath(path)) << "\n";
+          os << quote(rewriteInputPath(path)) << "\n";
       break;
     case OPT_force_load:
-    case OPT_rpath:
-    case OPT_syslibroot:
+    case OPT_weak_library:
+      os << arg->getSpelling() << " "
+         << quote(rewriteInputPath(arg->getValue())) << "\n";
+      break;
     case OPT_F:
     case OPT_L:
+    case OPT_bundle_loader:
+    case OPT_exported_symbols_list:
     case OPT_order_file:
+    case OPT_rpath:
+    case OPT_syslibroot:
+    case OPT_unexported_symbols_list:
       os << arg->getSpelling() << " " << quote(rewritePath(arg->getValue()))
          << "\n";
       break;
@@ -164,12 +181,15 @@ Optional<std::string> macho::resolveDylibPath(StringRef path) {
   // they are consistent.
   if (fs::exists(path))
     return std::string(path);
+  else
+    depTracker->logFileNotFound(path);
 
   SmallString<261> location = path;
   path::replace_extension(location, ".tbd");
   if (fs::exists(location))
     return std::string(location);
-
+  else
+    depTracker->logFileNotFound(location);
   return {};
 }
 
@@ -180,8 +200,8 @@ static DenseMap<CachedHashStringRef, DylibFile *> loadedDylibs;
 Optional<DylibFile *> macho::loadDylib(MemoryBufferRef mbref,
                                        DylibFile *umbrella,
                                        bool isBundleLoader) {
-  StringRef path = mbref.getBufferIdentifier();
-  DylibFile *&file = loadedDylibs[CachedHashStringRef(path)];
+  CachedHashStringRef path(mbref.getBufferIdentifier());
+  DylibFile *file = loadedDylibs[path];
   if (file)
     return file;
 
@@ -201,7 +221,42 @@ Optional<DylibFile *> macho::loadDylib(MemoryBufferRef mbref,
            magic == file_magic::macho_bundle);
     file = make<DylibFile>(mbref, umbrella, isBundleLoader);
   }
+  // Note that DylibFile's ctor may recursively invoke loadDylib(), which can
+  // cause loadedDylibs to get resized and its iterators invalidated. As such,
+  // we redo the key lookup here instead of caching an iterator from our earlier
+  // lookup at the start of the function.
+  loadedDylibs[path] = file;
   return file;
+}
+
+Optional<StringRef>
+macho::findPathCombination(const Twine &name,
+                           const std::vector<StringRef> &roots,
+                           ArrayRef<StringRef> extensions) {
+  SmallString<261> base;
+  for (StringRef dir : roots) {
+    base = dir;
+    path::append(base, name);
+    for (StringRef ext : extensions) {
+      Twine location = base + ext;
+      if (fs::exists(location))
+        return saver.save(location.str());
+      else
+        depTracker->logFileNotFound(location);
+    }
+  }
+  return {};
+}
+
+StringRef macho::rerootPath(StringRef path) {
+  if (!path::is_absolute(path, path::Style::posix) || path.endswith(".o"))
+    return path;
+
+  if (Optional<StringRef> rerootedPath =
+          findPathCombination(path, config->systemLibraryRoots))
+    return *rerootedPath;
+
+  return path;
 }
 
 Optional<InputFile *> macho::loadArchiveMember(MemoryBufferRef mb,
@@ -239,4 +294,54 @@ void macho::printArchiveMemberLoad(StringRef reason, const InputFile *f) {
     message(toString(f));
   if (config->printWhyLoad)
     message(reason + " forced load of " + toString(f));
+}
+
+macho::DependencyTracker::DependencyTracker(StringRef path)
+    : path(path), active(!path.empty()) {
+  if (active && fs::exists(path) && !fs::can_write(path)) {
+    warn("Ignoring dependency_info option since specified path is not "
+         "writeable.");
+    active = false;
+  }
+}
+
+void macho::DependencyTracker::write(llvm::StringRef version,
+                                     const llvm::SetVector<InputFile *> &inputs,
+                                     llvm::StringRef output) {
+  if (!active)
+    return;
+
+  std::error_code ec;
+  llvm::raw_fd_ostream os(path, ec, llvm::sys::fs::OF_None);
+  if (ec) {
+    warn("Error writing dependency info to file");
+    return;
+  }
+
+  auto addDep = [&os](DepOpCode opcode, const StringRef &path) {
+    // XXX: Even though DepOpCode's underlying type is uint8_t,
+    // this cast is still needed because Clang older than 10.x has a bug,
+    // where it doesn't know to cast the enum to its underlying type.
+    // Hence `<< DepOpCode` is ambiguous to it.
+    os << static_cast<uint8_t>(opcode);
+    os << path;
+    os << '\0';
+  };
+
+  addDep(DepOpCode::Version, version);
+
+  // Sort the input by its names.
+  std::vector<StringRef> inputNames;
+  inputNames.reserve(inputs.size());
+  for (InputFile *f : inputs)
+    inputNames.push_back(f->getName());
+  llvm::sort(inputNames);
+
+  for (const StringRef &in : inputNames)
+    addDep(DepOpCode::Input, in);
+
+  for (const std::string &f : notFounds)
+    addDep(DepOpCode::NotFound, f);
+
+  addDep(DepOpCode::Output, output);
 }

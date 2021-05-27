@@ -2,6 +2,7 @@ from __future__ import print_function
 
 import copy
 import glob
+import os
 import re
 import subprocess
 import sys
@@ -16,6 +17,7 @@ else:
 
 
 _verbose = False
+_prefix_filecheck_ir_name = ''
 
 def parse_commandline_args(parser):
   parser.add_argument('--include-generated-funcs', action='store_true',
@@ -30,8 +32,10 @@ def parse_commandline_args(parser):
                        help='Activate CHECK line generation from this point forward')
   parser.add_argument('--disable', action='store_false', dest='enabled',
                       help='Deactivate CHECK line generation from this point forward')
-  parser.add_argument('--replace-function-regex', nargs='+', default=[],
-                      help='List of regular expressions to replace matching function names')
+  parser.add_argument('--replace-value-regex', nargs='+', default=[],
+                      help='List of regular expressions to replace matching value names')
+  parser.add_argument('--prefix-filecheck-ir-name', default='',
+                      help='Add a prefix to FileCheck IR value names to avoid conflicts with scripted names')
   args = parser.parse_args()
   global _verbose
   _verbose = args.verbose
@@ -53,6 +57,9 @@ class TestInfo(object):
     self.argparse_callback = argparse_callback
     self.path = test
     self.args = args
+    if args.prefix_filecheck_ir_name:
+      global _prefix_filecheck_ir_name
+      _prefix_filecheck_ir_name = args.prefix_filecheck_ir_name
     self.argv = argv
     self.input_lines = input_lines
     self.run_lines = find_run_lines(test, self.input_lines)
@@ -135,11 +142,23 @@ def should_add_line_to_output(input_line, prefix_set, skip_global_checks = False
   return True
 
 # Invoke the tool that is being tested.
-def invoke_tool(exe, cmd_args, ir):
+def invoke_tool(exe, cmd_args, ir, preprocess_cmd=None, verbose=False):
   with open(ir) as ir_file:
     # TODO Remove the str form which is used by update_test_checks.py and
     # update_llc_test_checks.py
     # The safer list form is used by update_cc_test_checks.py
+    if preprocess_cmd:
+      # Allow pre-processing the IR file (e.g. using sed):
+      assert isinstance(preprocess_cmd, str)  # TODO: use a list instead of using shell
+      preprocess_cmd = preprocess_cmd.replace('%s', ir).strip()
+      if verbose:
+        print('Pre-processing input file: ', ir, " with command '",
+              preprocess_cmd, "'", sep="", file=sys.stderr)
+      # Python 2.7 doesn't have subprocess.DEVNULL:
+      with open(os.devnull, 'w') as devnull:
+        pp = subprocess.Popen(preprocess_cmd, shell=True, stdin=devnull,
+                              stdout=subprocess.PIPE)
+        ir_file = pp.stdout
     if isinstance(cmd_args, list):
       stdout = subprocess.check_output([exe] + cmd_args, stdin=ir_file)
     else:
@@ -278,7 +297,7 @@ class FunctionTestBuilder:
     self._check_attributes = flags.check_attributes
     self._scrubber_args = scrubber_args
     # Strip double-quotes if input was read by UTC_ARGS
-    self._replace_function_regex = list(map(lambda x: x.strip('"'), flags.replace_function_regex))
+    self._replace_value_regex = list(map(lambda x: x.strip('"'), flags.replace_value_regex))
     self._func_dict = {}
     self._func_order = {}
     self._global_var_dict = {}
@@ -353,7 +372,7 @@ class FunctionTestBuilder:
               continue
 
         # Replace function names matching the regex.
-        for regex in self._replace_function_regex:
+        for regex in self._replace_value_regex:
           # Pattern that matches capture groups in the regex in leftmost order.
           group_regex = re.compile('\(.*?\)')
           # Replace function name with regex.
@@ -362,8 +381,8 @@ class FunctionTestBuilder:
             func_repl = regex
             # Replace any capture groups with their matched strings.
             for g in match.groups():
-              func_repl = group_regex.sub(g, func_repl, count=1)
-            func = '{{' + func_repl + '}}'
+              func_repl = group_regex.sub(re.escape(g), func_repl, count=1)
+            func = re.sub(func_repl, '{{' + func_repl + '}}', func)
 
           # Replace all calls to regex matching functions.
           matches = re.finditer(regex, scrubbed_body)
@@ -371,7 +390,7 @@ class FunctionTestBuilder:
             func_repl = regex
             # Replace any capture groups with their matched strings.
             for g in match.groups():
-                func_repl = group_regex.sub(g, func_repl, count=1)
+                func_repl = group_regex.sub(re.escape(g), func_repl, count=1)
             # Substitute function call names that match the regex with the same
             # capture groups set.
             scrubbed_body = re.sub(func_repl, '{{' + func_repl + '}}', scrubbed_body)
@@ -419,6 +438,7 @@ nameless_values = [
     NamelessValue(r'GLOB' , '@' , r'@'           , None            , None                   , r'[0-9]+'    , None                 , False) ,
     NamelessValue(r'GLOB' , '@' , None           , r'@'            , r'[a-zA-Z0-9_$"\\.-]+' , None         , r'.+'                , True)  ,
     NamelessValue(r'DBG'  , '!' , r'!dbg '       , None            , None                   , r'![0-9]+'   , None                 , False) ,
+    NamelessValue(r'PROF' , '!' , r'!prof '      , None            , None                   , r'![0-9]+'   , None                 , False) ,
     NamelessValue(r'TBAA' , '!' , r'!tbaa '      , None            , None                   , r'![0-9]+'   , None                 , False) ,
     NamelessValue(r'RNG'  , '!' , r'!range '     , None            , None                   , r'![0-9]+'   , None                 , False) ,
     NamelessValue(r'LOOP' , '!' , r'!llvm.loop ' , None            , None                   , r'![0-9]+'   , None                 , False) ,
@@ -504,19 +524,29 @@ def get_ir_prefix_from_ir_value_re_match(match):
         return nameless_values[idx].ir_regexp
     return nameless_values[idx].global_ir_prefix_regexp
 
-# Return true if this kind or IR value is "local", basically if it matches '%{{.*}}'.
+# Return true if this kind of IR value is "local", basically if it matches '%{{.*}}'.
 def is_local_def_ir_value_match(match):
     return nameless_values[get_idx_from_ir_value_match(match)].ir_prefix == '%'
 
-# Return true if this kind or IR value is "local", basically if it matches '%{{.*}}'.
+# Return true if this kind of IR value is "global", basically if it matches '#{{.*}}'.
 def is_global_scope_ir_value_match(match):
     return nameless_values[get_idx_from_ir_value_match(match)].global_ir_prefix is not None
+
+# Return true if var clashes with the scripted FileCheck check_prefix.
+def may_clash_with_default_check_prefix_name(check_prefix, var):
+  return check_prefix and re.match(r'^' + check_prefix + r'[0-9]+?$', var, re.IGNORECASE)
 
 # Create a FileCheck variable name based on an IR name.
 def get_value_name(var, check_prefix):
   var = var.replace('!', '')
+  # This is a nameless value, prepend check_prefix.
   if var.isdigit():
     var = check_prefix + var
+  else:
+    # This is a named value that clashes with the check_prefix, prepend with _prefix_filecheck_ir_name,
+    # if it has been defined.
+    if may_clash_with_default_check_prefix_name(check_prefix, var) and _prefix_filecheck_ir_name:
+      var = _prefix_filecheck_ir_name + var
   var = var.replace('.', '_')
   var = var.replace('-', '_')
   return var.upper()
@@ -546,8 +576,9 @@ def generalize_check_lines(lines, is_analyze, vars_seen, global_vars_seen):
     pre, check = get_ir_prefix_from_ir_value_match(match)
     var = get_name_from_ir_value_match(match)
     for nameless_value in nameless_values:
-        if nameless_value.check_prefix and re.match(r'^' + nameless_value.check_prefix + r'[0-9]+?$', var, re.IGNORECASE):
-            warn("Change IR value name '%s' to prevent possible conflict with scripted FileCheck name." % (var,))
+        if may_clash_with_default_check_prefix_name(nameless_value.check_prefix, var):
+          warn("Change IR value name '%s' or use -prefix-ir-filecheck-name to prevent possible conflict"
+            " with scripted FileCheck name." % (var,))
     key = (var, get_check_key_from_ir_value_match(match))
     is_local_def = is_local_def_ir_value_match(match)
     if is_local_def and key in vars_seen:

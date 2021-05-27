@@ -103,7 +103,8 @@ public:
       Value shiftThirty64 = rewriter.create<mlir::SignExtendIOp>(
           loc, rewriter.getI64Type(), shiftThirty32);
 
-      // Round value needs to with be added or sbustracted depending on
+      // Round value needs to with be added or subtracted depending on the sign
+      // of the input value.
       Value roundAdd64 =
           rewriter.create<mlir::AddIOp>(loc, round64, shiftThirty64);
       Value roundSub64 =
@@ -154,12 +155,12 @@ public:
 } // namespace
 
 void mlir::tosa::populateTosaToStandardConversionPatterns(
-    OwningRewritePatternList *patterns) {
-  patterns->insert<ApplyScaleOpConverter, ConstOpConverter, SliceOpConverter>(
+    RewritePatternSet *patterns) {
+  patterns->add<ApplyScaleOpConverter, ConstOpConverter, SliceOpConverter>(
       patterns->getContext());
 }
 
 void mlir::tosa::populateTosaRescaleToStandardConversionPatterns(
-    OwningRewritePatternList *patterns) {
-  patterns->insert<ApplyScaleOpConverter>(patterns->getContext());
+    RewritePatternSet *patterns) {
+  patterns->add<ApplyScaleOpConverter>(patterns->getContext());
 }

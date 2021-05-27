@@ -367,7 +367,7 @@ void MappingTraits<WasmYAML::Limits>::mapping(IO &IO,
                                               WasmYAML::Limits &Limits) {
   if (!IO.outputting() || Limits.Flags)
     IO.mapOptional("Flags", Limits.Flags);
-  IO.mapRequired("Initial", Limits.Initial);
+  IO.mapRequired("Minimum", Limits.Minimum);
   if (!IO.outputting() || Limits.Flags & wasm::WASM_LIMITS_FLAG_HAS_MAX)
     IO.mapOptional("Maximum", Limits.Maximum);
 }
@@ -541,7 +541,12 @@ void ScalarBitSetTraits<WasmYAML::LimitFlags>::bitset(
 }
 
 void ScalarBitSetTraits<WasmYAML::SegmentFlags>::bitset(
-    IO &IO, WasmYAML::SegmentFlags &Value) {}
+    IO &IO, WasmYAML::SegmentFlags &Value) {
+#define BCase(X) IO.bitSetCase(Value, #X, wasm::WASM_SEG_FLAG_##X)
+  BCase(STRINGS);
+  BCase(TLS);
+#undef BCase
+}
 
 void ScalarBitSetTraits<WasmYAML::SymbolFlags>::bitset(
     IO &IO, WasmYAML::SymbolFlags &Value) {

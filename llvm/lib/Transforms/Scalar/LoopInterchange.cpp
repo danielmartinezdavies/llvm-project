@@ -19,6 +19,7 @@
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Analysis/DependenceAnalysis.h"
 #include "llvm/Analysis/LoopInfo.h"
+#include "llvm/Analysis/LoopNestAnalysis.h"
 #include "llvm/Analysis/LoopPass.h"
 #include "llvm/Analysis/OptimizationRemarkEmitter.h"
 #include "llvm/Analysis/ScalarEvolution.h"
@@ -396,10 +397,8 @@ class LoopInterchangeTransform {
 public:
   LoopInterchangeTransform(Loop *Outer, Loop *Inner, ScalarEvolution *SE,
                            LoopInfo *LI, DominatorTree *DT,
-                           BasicBlock *LoopNestExit,
                            const LoopInterchangeLegality &LIL)
-      : OuterLoop(Outer), InnerLoop(Inner), SE(SE), LI(LI), DT(DT),
-        LoopExit(LoopNestExit), LIL(LIL) {}
+      : OuterLoop(Outer), InnerLoop(Inner), SE(SE), LI(LI), DT(DT), LIL(LIL) {}
 
   /// Interchange OuterLoop and InnerLoop.
   bool transform();
@@ -420,7 +419,6 @@ private:
 
   LoopInfo *LI;
   DominatorTree *DT;
-  BasicBlock *LoopExit;
 
   const LoopInterchangeLegality &LIL;
 };
@@ -522,7 +520,7 @@ struct LoopInterchange {
     Loop *LoopToBeInterchanged = LoopList[SelecLoopId];
     for (unsigned i = SelecLoopId; i > 0; i--) {
       bool Interchanged = processLoop(LoopToBeInterchanged, LoopList[i - 1], i,
-                                      i - 1, LoopNestExit, DependencyMatrix);
+                                      i - 1, DependencyMatrix);
       if (!Interchanged)
         return Changed;
       // Update the DependencyMatrix
@@ -537,7 +535,7 @@ struct LoopInterchange {
   }
 
   bool processLoop(Loop *InnerLoop, Loop *OuterLoop, unsigned InnerLoopId,
-                   unsigned OuterLoopId, BasicBlock *LoopNestExit,
+                   unsigned OuterLoopId,
                    std::vector<std::vector<char>> &DependencyMatrix) {
     LLVM_DEBUG(dbgs() << "Processing InnerLoopId = " << InnerLoopId
                       << " and OuterLoopId = " << OuterLoopId << "\n");
@@ -560,8 +558,7 @@ struct LoopInterchange {
              << "Loop interchanged with enclosing loop.";
     });
 
-    LoopInterchangeTransform LIT(OuterLoop, InnerLoop, SE, LI, DT, LoopNestExit,
-                                 LIL);
+    LoopInterchangeTransform LIT(OuterLoop, InnerLoop, SE, LI, DT, LIL);
     LIT.transform();
     LLVM_DEBUG(dbgs() << "Loops interchanged.\n");
     LoopsInterchanged++;
@@ -617,6 +614,22 @@ bool LoopInterchangeLegality::tightlyNested(Loop *OuterLoop, Loop *InnerLoop) {
       containsUnsafeInstructions(InnerLoopPreHeader))
     return false;
 
+  BasicBlock *InnerLoopExit = InnerLoop->getExitBlock();
+  // Ensure the inner loop exit block flows to the outer loop latch possibly
+  // through empty blocks.
+  const BasicBlock &SuccInner =
+      LoopNest::skipEmptyBlockUntil(InnerLoopExit, OuterLoopLatch);
+  if (&SuccInner != OuterLoopLatch) {
+    LLVM_DEBUG(dbgs() << "Inner loop exit block " << *InnerLoopExit
+                      << " does not lead to the outer loop latch.\n";);
+    return false;
+  }
+  // The inner loop exit block does flow to the outer loop latch and not some
+  // other BBs, now make sure it contains safe instructions, since it will be
+  // moved into the (new) inner loop after interchange.
+  if (containsUnsafeInstructions(InnerLoopExit))
+    return false;
+
   LLVM_DEBUG(dbgs() << "Loops are perfectly nested\n");
   // We have a perfect loop nest.
   return true;
@@ -643,6 +656,65 @@ bool LoopInterchangeLegality::isLoopStructureUnderstood(
       return false;
     }
   }
+
+  // TODO: Handle triangular loops of another form.
+  // e.g. for(int i=0;i<N;i++)
+  //        for(int j=0;j<i;j++)
+  // or,
+  //      for(int i=0;i<N;i++)
+  //        for(int j=0;j*i<N;j++)
+  BasicBlock *InnerLoopLatch = InnerLoop->getLoopLatch();
+  BranchInst *InnerLoopLatchBI =
+      dyn_cast<BranchInst>(InnerLoopLatch->getTerminator());
+  if (!InnerLoopLatchBI->isConditional())
+    return false;
+  if (CmpInst *InnerLoopCmp =
+          dyn_cast<CmpInst>(InnerLoopLatchBI->getCondition())) {
+    Value *Op0 = InnerLoopCmp->getOperand(0);
+    Value *Op1 = InnerLoopCmp->getOperand(1);
+
+    // LHS and RHS of the inner loop exit condition, e.g.,
+    // in "for(int j=0;j<i;j++)", LHS is j and RHS is i.
+    Value *Left = nullptr;
+    Value *Right = nullptr;
+
+    // Check if V only involves inner loop induction variable.
+    // Return true if V is InnerInduction, or a cast from
+    // InnerInduction, or a binary operator that involves
+    // InnerInduction and a constant.
+    std::function<bool(Value *)> IsPathToIndVar;
+    IsPathToIndVar = [&InnerInduction, &IsPathToIndVar](Value *V) -> bool {
+      if (V == InnerInduction)
+        return true;
+      if (isa<Constant>(V))
+        return true;
+      Instruction *I = dyn_cast<Instruction>(V);
+      if (!I)
+        return false;
+      if (isa<CastInst>(I))
+        return IsPathToIndVar(I->getOperand(0));
+      if (isa<BinaryOperator>(I))
+        return IsPathToIndVar(I->getOperand(0)) &&
+               IsPathToIndVar(I->getOperand(1));
+      return false;
+    };
+
+    if (IsPathToIndVar(Op0) && !isa<Constant>(Op0)) {
+      Left = Op0;
+      Right = Op1;
+    } else if (IsPathToIndVar(Op1) && !isa<Constant>(Op1)) {
+      Left = Op1;
+      Right = Op0;
+    }
+
+    if (Left == nullptr)
+      return false;
+
+    const SCEV *S = SE->getSCEV(Right);
+    if (!SE->isLoopInvariant(S, OuterLoop))
+      return false;
+  }
+
   return true;
 }
 
@@ -1457,6 +1529,13 @@ static void moveLCSSAPhis(BasicBlock *InnerExit, BasicBlock *InnerHeader,
       PHINode *NewPhi = dyn_cast<PHINode>(P.clone());
       NewPhi->setIncomingValue(0, P.getIncomingValue(0));
       NewPhi->setIncomingBlock(0, OuterLatch);
+      // We might have incoming edges from other BBs, i.e., the original outer
+      // header.
+      for (auto *Pred : predecessors(InnerLatch)) {
+        if (Pred == OuterLatch)
+          continue;
+        NewPhi->addIncoming(P.getIncomingValue(0), Pred);
+      }
       NewPhi->insertBefore(InnerLatch->getFirstNonPHI());
       P.setIncomingValue(0, NewPhi);
     }
@@ -1534,9 +1613,12 @@ bool LoopInterchangeTransform::adjustLoopBranches() {
                   InnerLoopPreHeader, DTUpdates, /*MustUpdateOnce=*/false);
   // The outer loop header might or might not branch to the outer latch.
   // We are guaranteed to branch to the inner loop preheader.
-  if (llvm::is_contained(OuterLoopHeaderBI->successors(), OuterLoopLatch))
-    updateSuccessor(OuterLoopHeaderBI, OuterLoopLatch, LoopExit, DTUpdates,
+  if (llvm::is_contained(OuterLoopHeaderBI->successors(), OuterLoopLatch)) {
+    // In this case the outerLoopHeader should branch to the InnerLoopLatch.
+    updateSuccessor(OuterLoopHeaderBI, OuterLoopLatch, InnerLoopLatch,
+                    DTUpdates,
                     /*MustUpdateOnce=*/false);
+  }
   updateSuccessor(OuterLoopHeaderBI, InnerLoopPreHeader,
                   InnerLoopHeaderSuccessor, DTUpdates,
                   /*MustUpdateOnce=*/false);

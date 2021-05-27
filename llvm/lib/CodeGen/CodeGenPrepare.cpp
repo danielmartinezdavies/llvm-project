@@ -46,6 +46,7 @@
 #include "llvm/IR/Constant.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DataLayout.h"
+#include "llvm/IR/DebugInfo.h"
 #include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/Dominators.h"
 #include "llvm/IR/Function.h"
@@ -405,6 +406,7 @@ class TypePromotionTransaction;
     bool dupRetToEnableTailCallOpts(BasicBlock *BB, bool &ModifiedDT);
     bool fixupDbgValue(Instruction *I);
     bool placeDbgValues(Function &F);
+    bool placePseudoProbes(Function &F);
     bool canFormExtLd(const SmallVectorImpl<Instruction *> &MovedExts,
                       LoadInst *&LI, Instruction *&Inst, bool HasPromoted);
     bool tryToPromoteExts(TypePromotionTransaction &TPT,
@@ -611,6 +613,7 @@ bool CodeGenPrepare::runOnFunction(Function &F) {
   // Do this last to clean up use-before-def scenarios introduced by other
   // preparatory transforms.
   EverMadeChange |= placeDbgValues(F);
+  EverMadeChange |= placePseudoProbes(F);
 
 #ifndef NDEBUG
   if (VerifyBFIUpdates)
@@ -626,12 +629,10 @@ bool CodeGenPrepare::eliminateAssumptions(Function &F) {
     CurInstIterator = BB.begin();
     while (CurInstIterator != BB.end()) {
       Instruction *I = &*(CurInstIterator++);
-      if (IntrinsicInst *II = dyn_cast<IntrinsicInst>(I)) {
-        if (II->getIntrinsicID() != Intrinsic::assume)
-          continue;
+      if (auto *Assume = dyn_cast<AssumeInst>(I)) {
         MadeChange = true;
-        Value *Operand = II->getOperand(0);
-        II->eraseFromParent();
+        Value *Operand = Assume->getOperand(0);
+        Assume->eraseFromParent();
 
         resetIteratorIfInvalidatedWhileCalling(&BB, [&]() {
           RecursivelyDeleteTriviallyDeadInstructions(Operand, TLInfo, nullptr);
@@ -6587,7 +6588,7 @@ static bool isFormingBranchFromSelectProfitable(const TargetTransformInfo *TTI,
     uint64_t Sum = TrueWeight + FalseWeight;
     if (Sum != 0) {
       auto Probability = BranchProbability::getBranchProbability(Max, Sum);
-      if (Probability > TLI->getPredictableBranchThreshold())
+      if (Probability > TTI->getPredictableBranchThreshold())
         return true;
     }
   }
@@ -7660,9 +7661,8 @@ static bool tryUnmergingGEPsAcrossIndirectBr(GetElementPtrInst *GEPI,
   for (GetElementPtrInst *UGEPI : UGEPIs) {
     ConstantInt *UGEPIIdx = cast<ConstantInt>(UGEPI->getOperand(1));
     APInt NewIdx = UGEPIIdx->getValue() - GEPIIdx->getValue();
-    unsigned ImmCost =
-      TTI->getIntImmCost(NewIdx, GEPIIdx->getType(),
-                         TargetTransformInfo::TCK_SizeAndLatency);
+    InstructionCost ImmCost = TTI->getIntImmCost(
+        NewIdx, GEPIIdx->getType(), TargetTransformInfo::TCK_SizeAndLatency);
     if (ImmCost > TargetTransformInfo::TCC_Basic)
       return false;
   }
@@ -7686,6 +7686,67 @@ static bool tryUnmergingGEPsAcrossIndirectBr(GetElementPtrInst *GEPI,
         return cast<Instruction>(Usr)->getParent() != SrcBlock;
       }) == GEPIOp->users().end() && "GEPIOp is used outside SrcBlock");
   return true;
+}
+
+static bool optimizeBranch(BranchInst *Branch, const TargetLowering &TLI) {
+  // Try and convert
+  //  %c = icmp ult %x, 8
+  //  br %c, bla, blb
+  //  %tc = lshr %x, 3
+  // to
+  //  %tc = lshr %x, 3
+  //  %c = icmp eq %tc, 0
+  //  br %c, bla, blb
+  // Creating the cmp to zero can be better for the backend, especially if the
+  // lshr produces flags that can be used automatically.
+  if (!TLI.preferZeroCompareBranch() || !Branch->isConditional())
+    return false;
+
+  ICmpInst *Cmp = dyn_cast<ICmpInst>(Branch->getCondition());
+  if (!Cmp || !isa<ConstantInt>(Cmp->getOperand(1)) || !Cmp->hasOneUse())
+    return false;
+
+  Value *X = Cmp->getOperand(0);
+  APInt CmpC = cast<ConstantInt>(Cmp->getOperand(1))->getValue();
+
+  for (auto *U : X->users()) {
+    Instruction *UI = dyn_cast<Instruction>(U);
+    // A quick dominance check
+    if (!UI ||
+        (UI->getParent() != Branch->getParent() &&
+         UI->getParent() != Branch->getSuccessor(0) &&
+         UI->getParent() != Branch->getSuccessor(1)) ||
+        (UI->getParent() != Branch->getParent() &&
+         !UI->getParent()->getSinglePredecessor()))
+      continue;
+
+    if (CmpC.isPowerOf2() && Cmp->getPredicate() == ICmpInst::ICMP_ULT &&
+        match(UI, m_Shr(m_Specific(X), m_SpecificInt(CmpC.logBase2())))) {
+      IRBuilder<> Builder(Branch);
+      if (UI->getParent() != Branch->getParent())
+        UI->moveBefore(Branch);
+      Value *NewCmp = Builder.CreateCmp(ICmpInst::ICMP_EQ, UI,
+                                        ConstantInt::get(UI->getType(), 0));
+      LLVM_DEBUG(dbgs() << "Converting " << *Cmp << "\n");
+      LLVM_DEBUG(dbgs() << " to compare on zero: " << *NewCmp << "\n");
+      Cmp->replaceAllUsesWith(NewCmp);
+      return true;
+    }
+    if (Cmp->isEquality() &&
+        (match(UI, m_Add(m_Specific(X), m_SpecificInt(-CmpC))) ||
+         match(UI, m_Sub(m_Specific(X), m_SpecificInt(CmpC))))) {
+      IRBuilder<> Builder(Branch);
+      if (UI->getParent() != Branch->getParent())
+        UI->moveBefore(Branch);
+      Value *NewCmp = Builder.CreateCmp(Cmp->getPredicate(), UI,
+                                        ConstantInt::get(UI->getType(), 0));
+      LLVM_DEBUG(dbgs() << "Converting " << *Cmp << "\n");
+      LLVM_DEBUG(dbgs() << " to compare on zero: " << *NewCmp << "\n");
+      Cmp->replaceAllUsesWith(NewCmp);
+      return true;
+    }
+  }
+  return false;
 }
 
 bool CodeGenPrepare::optimizeInst(Instruction *I, bool &ModifiedDT) {
@@ -7849,6 +7910,8 @@ bool CodeGenPrepare::optimizeInst(Instruction *I, bool &ModifiedDT) {
     return optimizeSwitchInst(cast<SwitchInst>(I));
   case Instruction::ExtractElement:
     return optimizeExtractElementInst(cast<ExtractElementInst>(I));
+  case Instruction::Br:
+    return optimizeBranch(cast<BranchInst>(I), *TLI);
   }
 
   return false;
@@ -7985,6 +8048,28 @@ bool CodeGenPrepare::placeDbgValues(Function &F) {
           DVI->insertAfter(VI);
         MadeChange = true;
         ++NumDbgValueMoved;
+      }
+    }
+  }
+  return MadeChange;
+}
+
+// Group scattered pseudo probes in a block to favor SelectionDAG. Scattered
+// probes can be chained dependencies of other regular DAG nodes and block DAG
+// combine optimizations.
+bool CodeGenPrepare::placePseudoProbes(Function &F) {
+  bool MadeChange = false;
+  for (auto &Block : F) {
+    // Move the rest probes to the beginning of the block.
+    auto FirstInst = Block.getFirstInsertionPt();
+    while (FirstInst != Block.end() && FirstInst->isDebugOrPseudoInst())
+      ++FirstInst;
+    BasicBlock::iterator I(FirstInst);
+    I++;
+    while (I != Block.end()) {
+      if (auto *II = dyn_cast<PseudoProbeInst>(I++)) {
+        II->moveBefore(&*FirstInst);
+        MadeChange = true;
       }
     }
   }

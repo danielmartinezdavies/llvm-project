@@ -684,8 +684,6 @@ def err_attribute_requires_arguments : Error<
   "parentheses must be omitted if %0 attribute's argument list is empty">;
 def err_cxx11_attribute_forbids_ellipsis : Error<
   "attribute %0 cannot be used as an attribute pack">;
-def err_cxx11_attribute_repeated : Error<
-  "attribute %0 cannot appear multiple times in an attribute specifier">;
 def warn_cxx14_compat_using_attribute_ns : Warning<
   "default scope specifier for attributes is incompatible with C++ standards "
   "before C++17">, InGroup<CXXPre17Compat>, DefaultIgnore;
@@ -949,9 +947,6 @@ def err_expected_lambda_body : Error<"expected body of lambda expression">;
 def warn_cxx98_compat_lambda : Warning<
   "lambda expressions are incompatible with C++98">,
   InGroup<CXX98Compat>, DefaultIgnore;
-def err_lambda_missing_parens : Error<
-  "lambda requires '()' before %select{'mutable'|return type|"
-  "attribute specifier|'constexpr'|'consteval'|'requires' clause}0">;
 def err_lambda_decl_specifier_repeated : Error<
   "%select{'mutable'|'constexpr'|'consteval'}0 cannot appear multiple times in a lambda declarator">;
 def err_lambda_capture_misplaced_ellipsis : Error<
@@ -963,6 +958,9 @@ def err_capture_default_first : Error<
   "capture default must be first">;
 def ext_decl_attrs_on_lambda : ExtWarn<
   "an attribute specifier sequence in this position is a C++2b extension">,
+  InGroup<CXX2b>;
+def ext_lambda_missing_parens : ExtWarn<
+  "lambda without a parameter clause is a C++2b extension">,
   InGroup<CXX2b>;
 def warn_cxx20_compat_decl_attrs_on_lambda : Warning<
   "an attribute specifier sequence in this position is incompatible with C++ "
@@ -1241,14 +1239,13 @@ def warn_pragma_expected_colon : Warning<
   "missing ':' after %0 - ignoring">, InGroup<IgnoredPragmas>;
 def warn_pragma_expected_predicate : Warning<
   "expected %select{'enable', 'disable', 'begin' or 'end'|'disable'}0 - ignoring">, InGroup<IgnoredPragmas>;
-def warn_pragma_begin_end_mismatch : Warning<
-  "OpenCL extension end directive mismatches begin directive - ignoring">, InGroup<IgnoredPragmas>;
 def warn_pragma_unknown_extension : Warning<
   "unknown OpenCL extension %0 - ignoring">, InGroup<IgnoredPragmas>;
 def warn_pragma_unsupported_extension : Warning<
   "unsupported OpenCL extension %0 - ignoring">, InGroup<IgnoredPragmas>;
 def warn_pragma_extension_is_core : Warning<
-  "OpenCL extension %0 is core feature or supported optional core feature - ignoring">, InGroup<DiagGroup<"pedantic-core-features">>, DefaultIgnore;
+  "OpenCL extension %0 is core feature or supported optional core feature - ignoring">,
+  InGroup<OpenCLCoreFeaturesDiagGroup>, DefaultIgnore;
 
 // OpenCL errors.
 def err_opencl_taking_function_address_parser : Error<
@@ -1315,7 +1312,15 @@ def warn_omp_unknown_assumption_clause_without_args
 def note_omp_assumption_clause_continue_here
     : Note<"the ignored tokens spans until here">;
 def err_omp_declare_target_unexpected_clause: Error<
-  "unexpected '%0' clause, only %select{'to' or 'link'|'to', 'link' or 'device_type'}1 clauses expected">;
+  "unexpected '%0' clause, only %select{'device_type'|'to' or 'link'|'to', 'link' or 'device_type'}1 clauses expected">;
+def err_omp_begin_declare_target_unexpected_implicit_to_clause: Error<
+  "unexpected '(', only 'to', 'link' or 'device_type' clauses expected for 'begin declare target' directive">;
+def err_omp_declare_target_unexpected_clause_after_implicit_to: Error<
+  "unexpected clause after an implicit 'to' clause">;
+def err_omp_declare_target_missing_to_or_link_clause: Error<
+  "expected at least one 'to' or 'link' clause">;
+def err_omp_declare_target_multiple : Error<
+  "%0 appears multiple times in clauses on the same declare target directive">;
 def err_omp_expected_clause: Error<
   "expected at least one clause on '#pragma omp %0' directive">;
 def err_omp_mapper_illegal_identifier : Error<

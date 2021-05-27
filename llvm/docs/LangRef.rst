@@ -432,10 +432,6 @@ added in the future:
 
     - On X86-64 the callee preserves all general purpose registers, except for
       RDI and RAX.
-"``swiftcc``" - This calling convention is used for Swift language.
-    - On X86-64 RCX and R8 are available for additional integer returns, and
-      XMM2 and XMM3 are available for additional FP/vector returns.
-    - On iOS platforms, we use AAPCS-VFP calling convention.
 "``tailcc``" - Tail callable calling convention
     This calling convention ensures that calls in tail position will always be
     tail call optimized. This calling convention is equivalent to fastcc,
@@ -444,6 +440,14 @@ added in the future:
     the GHC or the HiPE convention is used. <CodeGenerator.html#id80>`_ This
     calling convention does not support varargs and requires the prototype of
     all callees to exactly match the prototype of the function definition.
+"``swiftcc``" - This calling convention is used for Swift language.
+    - On X86-64 RCX and R8 are available for additional integer returns, and
+      XMM2 and XMM3 are available for additional FP/vector returns.
+    - On iOS platforms, we use AAPCS-VFP calling convention.
+"``swifttailcc``"
+    This calling convention is like ``swiftcc`` in most respects, but also the
+    callee pops the argument area of the stack so that mandatory tail calls are 
+    possible as in ``tailcc``.
 "``cfguard_checkcc``" - Windows Control Flow Guard (Check mechanism)
     This calling convention is used for the Control Flow Guard check function,
     calls to which can be inserted before indirect calls to check that the call
@@ -939,7 +943,7 @@ the COMDAT key's section is the largest:
 As a syntactic sugar the ``$name`` can be omitted if the name is the same as
 the global name:
 
-.. code-block:: text
+.. code-block:: llvm
 
   $foo = comdat any
   @foo = global i32 2, comdat
@@ -963,7 +967,7 @@ if a collision occurs in the symbol table.
 The combined use of COMDATS and section attributes may yield surprising results.
 For example:
 
-.. code-block:: text
+.. code-block:: llvm
 
    $foo = comdat any
    $bar = comdat any
@@ -1119,7 +1123,7 @@ Currently, only the following parameter attributes are defined:
 
 .. _attr_inalloca:
 
-``inalloca``
+``inalloca(<ty>)``
 
     The ``inalloca`` argument attribute allows the caller to take the
     address of outgoing stack arguments. An ``inalloca`` argument must
@@ -1142,6 +1146,9 @@ Currently, only the following parameter attributes are defined:
     space after an argument allocation and before its call site, but it
     must be cleared off with :ref:`llvm.stackrestore
     <int_stackrestore>`.
+
+    The inalloca attribute requires a type argument, which must be the
+    same as the pointee type of the argument.
 
     See :doc:`InAlloca` for more information on how to use this
     attribute.
@@ -1195,12 +1202,23 @@ Currently, only the following parameter attributes are defined:
     function, returning a pointer to allocated storage disjoint from the
     storage for any other object accessible to the caller.
 
+.. _nocapture:
+
 ``nocapture``
-    This indicates that the callee does not make any copies of the
-    pointer that outlive the callee itself in any form such as a pointer stored
-    in the memory or as a return value. This is not a valid
-    attribute for return values.  Addresses used in volatile operations
-    are considered to be captured.
+    This indicates that the callee does not :ref:`capture <pointercapture>` the
+    pointer. This is not a valid attribute for return values.
+    This attribute applies only to the particular copy of the pointer passed in
+    this argument. A caller could pass two copies of the same pointer with one
+    being annotated nocapture and the other not, and the callee could validly
+    capture through the non annotated parameter.
+
+.. code-block:: llvm
+
+    define void @f(i8* nocapture %a, i8* %b) {
+      ; (capture %b)
+    }
+
+    call void @f(i8* @glb, i8* @glb) ; well-defined
 
 ``nofree``
     This indicates that callee does not free the pointer argument. This is not
@@ -1264,6 +1282,12 @@ Currently, only the following parameter attributes are defined:
     a valid attribute for return values and can only be applied to one
     parameter.
 
+``swiftasync``
+    This indicates that the parameter is the asynchronous context parameter and
+    triggers the creation of a target-specific extended frame record to store
+    this pointer. This is not a valid attribute for return values and can only
+    be applied to one parameter.
+
 ``swifterror``
     This attribute is motivated to model and optimize Swift error handling. It
     can be applied to a parameter with pointer to pointer type or a
@@ -1296,6 +1320,15 @@ Currently, only the following parameter attributes are defined:
     representation contains any undefined or poison bits, the behavior is
     undefined. Note that this does not refer to padding introduced by the
     type's storage representation.
+
+``alignstack(<n>)``
+    This indicates the alignment that should be considered by the backend when
+    assigning this parameter to a stack slot during calling convention
+    lowering. The enforcement of the specified alignment is target-dependent,
+    as target-specific calling convention rules may override this value. This
+    attribute serves the purpose of carrying language specific alignment
+    information that is not mapped to base types in the backend (for example,
+    over-alignment specification through language attributes).
 
 .. _gc:
 
@@ -1506,6 +1539,16 @@ example:
     can prove that the function does not execute any convergent operations.
     Similarly, the optimizer may remove ``convergent`` on calls/invokes when it
     can prove that the call/invoke cannot call a convergent function.
+``"frame-pointer"``
+    This attribute tells the code generator whether the function
+    should keep the frame pointer. The code generator may emit the frame pointer
+    even if this attribute says the frame pointer can be eliminated.
+    The allowed string values are:
+
+     * ``"none"`` (default) - the frame pointer can be eliminated.
+     * ``"non-leaf"`` - the frame pointer should be kept if the function calls
+       other functions.
+     * ``"all"`` - the frame pointer should be kept.
 ``hot``
     This attribute indicates that this function is a hot spot of the program
     execution. The function will be optimized more aggressively and will be
@@ -1575,12 +1618,21 @@ example:
     call is dead after inlining.
 ``nofree``
     This function attribute indicates that the function does not, directly or
-    indirectly, call a memory-deallocation function (free, for example). As a
-    result, uncaptured pointers that are known to be dereferenceable prior to a
-    call to a function with the ``nofree`` attribute are still known to be
-    dereferenceable after the call (the capturing condition is necessary in
-    environments where the function might communicate the pointer to another thread
-    which then deallocates the memory).
+    transitively, call a memory-deallocation function (``free``, for example)
+    on a memory allocation which existed before the call.
+
+    As a result, uncaptured pointers that are known to be dereferenceable
+    prior to a call to a function with the ``nofree`` attribute are still
+    known to be dereferenceable after the call. The capturing condition is
+    necessary in environments where the function might communicate the
+    pointer to another thread which then deallocates the memory.  Alternatively,
+    ``nosync`` would ensure such communication cannot happen and even captured
+    pointers cannot be freed by the function.
+
+    A ``nofree`` function is explicitly allowed to free memory which it
+    allocated or (if not ``nosync``) arrange for another thread to free
+    memory on it's behalf.  As a result, perhaps surprisingly, a ``nofree``
+    function can return a pointer to a previously deallocated memory object.
 ``noimplicitfloat``
     This attributes disables implicit floating-point instructions.
 ``noinline``
@@ -1639,6 +1691,9 @@ example:
     trap or generate asynchronous exceptions. Exception handling schemes
     that are recognized by LLVM to handle asynchronous exceptions, such
     as SEH, will still provide their implementation defined semantics.
+``nosanitize_coverage``
+    This attribute indicates that SanitizerCoverage instrumentation is disabled
+    for this function.
 ``null_pointer_is_valid``
    If ``null_pointer_is_valid`` is set, then the ``null`` address
    in address-space 0 is considered to be a valid address for memory loads and
@@ -1992,6 +2047,11 @@ example:
     function does not satisfy this contract, the behavior is undefined.  This
     attribute does not apply transitively to callees, but does apply to call
     sites within the function. Note that `willreturn` implies `mustprogress`.
+``vscale_range(<min>[, <max>])``
+    This attribute indicates the minimum and maximum vscale value for the given
+    function. A value of 0 means unbounded. If the optional max value is omitted
+    then max is set to the value of min. If the attribute is not present, no
+    assumptions are made about the range of vscale.
 
 Call Site Attributes
 ----------------------
@@ -2640,6 +2700,79 @@ Consequently, type-based alias analysis, aka TBAA, aka
 which specialized optimization passes may use to implement type-based
 alias analysis.
 
+.. _pointercapture:
+
+Pointer Capture
+---------------
+
+Given a function call and a pointer that is passed as an argument or stored in
+the memory before the call, a pointer is *captured* by the call if it makes a
+copy of any part of the pointer that outlives the call.
+To be precise, a pointer is captured if one or more of the following conditions
+hold:
+
+1. The call stores any bit of the pointer carrying information into a place,
+   and the stored bits can be read from the place by the caller after this call
+   exits.
+
+.. code-block:: llvm
+
+    @glb  = global i8* null
+    @glb2 = global i8* null
+    @glb3 = global i8* null
+    @glbi = global i32 0
+
+    define i8* @f(i8* %a, i8* %b, i8* %c, i8* %d, i8* %e) {
+      store i8* %a, i8** @glb ; %a is captured by this call
+
+      store i8* %b,   i8** @glb2 ; %b isn't captured because the stored value is overwritten by the store below
+      store i8* null, i8** @glb2
+
+      store i8* %c,   i8** @glb3
+      call void @g() ; If @g makes a copy of %c that outlives this call (@f), %c is captured
+      store i8* null, i8** @glb3
+
+      %i = ptrtoint i8* %d to i64
+      %j = trunc i64 %i to i32
+      store i32 %j, i32* @glbi ; %d is captured
+
+      ret i8* %e ; %e is captured
+    }
+
+2. The call stores any bit of the pointer carrying information into a place,
+   and the stored bits can be safely read from the place by another thread via
+   synchronization.
+
+.. code-block:: llvm
+
+    @lock = global i1 true
+
+    define void @f(i8* %a) {
+      store i8* %a, i8** @glb
+      store atomic i1 false, i1* @lock release ; %a is captured because another thread can safely read @glb
+      store i8* null, i8** @glb
+      ret void
+    }
+
+3. The call's behavior depends on any bit of the pointer carrying information.
+
+.. code-block:: llvm
+
+    @glb = global i8 0
+
+    define void @f(i8* %a) {
+      %c = icmp eq i8* %a, @glb
+      br i1 %c, label %BB_EXIT, label %BB_CONTINUE ; escapes %a
+    BB_EXIT:
+      call void @exit()
+      unreachable
+    BB_CONTINUE:
+      ret void
+    }
+
+4. The pointer is used in a volatile access as its address.
+
+
 .. _volatile:
 
 Volatile Memory Accesses
@@ -3132,6 +3265,24 @@ The binary format of half, float, double, and fp128 correspond to the
 IEEE-754-2008 specifications for binary16, binary32, binary64, and binary128
 respectively.
 
+X86_amx Type
+""""""""""""
+
+:Overview:
+
+The x86_amx type represents a value held in an AMX tile register on an x86
+machine. The operations allowed on it are quite limited. Only few intrinsics
+are allowed: stride load and store, zero and dot product. No instruction is
+allowed for this type. There are no arguments, arrays, pointers, vectors
+or constants of this type.
+
+:Syntax:
+
+::
+
+      x86_amx
+
+
 X86_mmx Type
 """"""""""""
 
@@ -3169,11 +3320,17 @@ are target-specific.
 Note that LLVM does not permit pointers to void (``void*``) nor does it
 permit pointers to labels (``label*``). Use ``i8*`` instead.
 
+LLVM is in the process of transitioning to opaque pointers. Opaque pointers do
+not have a pointee type. Rather, instructions interacting through pointers
+specify the type of the underlying memory they are interacting with. Opaque
+pointers are still in the process of being worked on and are not complete.
+
 :Syntax:
 
 ::
 
       <type> *
+      ptr
 
 :Examples:
 
@@ -3182,7 +3339,11 @@ permit pointers to labels (``label*``). Use ``i8*`` instead.
 +-------------------------+--------------------------------------------------------------------------------------------------------------+
 | ``i32 (i32*) *``        | A :ref:`pointer <t_pointer>` to a :ref:`function <t_function>` that takes an ``i32*``, returning an ``i32``. |
 +-------------------------+--------------------------------------------------------------------------------------------------------------+
-| ``i32 addrspace(5)*``   | A :ref:`pointer <t_pointer>` to an ``i32`` value that resides in address space #5.                           |
+| ``i32 addrspace(5)*``   | A :ref:`pointer <t_pointer>` to an ``i32`` value that resides in address space 5.                            |
++-------------------------+--------------------------------------------------------------------------------------------------------------+
+| ``ptr``                 | An opaque pointer type to a value that resides in address space 0.                                           |
++-------------------------+--------------------------------------------------------------------------------------------------------------+
+| ``ptr addrspace(5)``    | An opaque pointer type to a value that resides in address space 5.                                           |
 +-------------------------+--------------------------------------------------------------------------------------------------------------+
 
 .. _t_vector:
@@ -3203,7 +3364,7 @@ vector length is unknown at compile time. Vector types are considered
 :Memory Layout:
 
 In general vector elements are laid out in memory in the same way as
-:ref:`array types <t_array>`. Such an anology works fine as long as the vector
+:ref:`array types <t_array>`. Such an analogy works fine as long as the vector
 elements are byte sized. However, when the elements of the vector aren't byte
 sized it gets a bit more complicated. One way to describe the layout is by
 describing what happens when a vector such as <N x iM> is bitcasted to an
@@ -3218,7 +3379,7 @@ element zero is put in the most significant bits.
 
 Using a vector such as ``<i4 1, i4 2, i4 3, i4 5>`` as an example, together
 with the analogy that we can replace a vector store by a bitcast followed by
-an integer store, we ge this for big endian:
+an integer store, we get this for big endian:
 
 .. code-block:: llvm
 
@@ -3255,7 +3416,7 @@ The same example for little endian:
 When ``<N*M>`` isn't evenly divisible by the byte size the exact memory layout
 is unspecified (just like it is for an integral type of the same size). This
 is because different targets could put the padding at different positions when
-the type size is smaller than the types store size.
+the type size is smaller than the type's store size.
 
 :Syntax:
 
@@ -3526,7 +3687,7 @@ represented by ``0xH`` followed by 4 hexadecimal digits. The bfloat 16-bit
 format is represented by ``0xR`` followed by 4 hexadecimal digits. All
 hexadecimal formats are big-endian (sign bit at the left).
 
-There are no constants of type x86_mmx.
+There are no constants of type x86_mmx and x86_amx.
 
 .. _complexconstants:
 
@@ -6866,6 +7027,24 @@ An example of module flags:
    contain a flag with the ID ``!"foo"`` that has the value '1' after linking is
    performed.
 
+Synthesized Functions Module Flags Metadata
+-------------------------------------------
+
+These metadata specify the default attributes synthesized functions should have.
+These metadata are currently respected by a few instrumentation passes, such as
+sanitizers.
+
+These metadata correspond to a few function attributes with significant code
+generation behaviors. Function attributes with just optimization purposes
+should not be listed because the performance impact of these synthesized
+functions is small.
+
+- "frame-pointer": **Max**. The value can be 0, 1, or 2. A synthesized function
+  will get the "frame-pointer" function attribute, with value being "none",
+  "non-leaf", or "all", respectively.
+- "uwtable": **Max**. The value can be 0 or 1. If the value is 1, a synthesized
+  function will get the ``uwtable`` function attribute.
+
 Objective-C Garbage Collection Module Flags Metadata
 ----------------------------------------------------
 
@@ -9395,8 +9574,9 @@ Overview:
 
 The '``alloca``' instruction allocates memory on the stack frame of the
 currently executing function, to be automatically released when this
-function returns to its caller. The object is always allocated in the
-address space for allocas indicated in the datalayout.
+function returns to its caller.  If the address space is not explicitly
+specified, the object is allocated in the alloca address space from the
+:ref:`datalayout string<langref_datalayout>`.
 
 Arguments:
 """"""""""
@@ -9426,6 +9606,10 @@ the function returns (either with the ``ret`` or ``resume`` instructions),
 the memory is reclaimed. Allocating zero bytes is legal, but the returned
 pointer may not be unique. The order in which memory is allocated (ie.,
 which way the stack grows) is not specified.
+
+Note that '``alloca``' outside of the alloca address space from the
+:ref:`datalayout string<langref_datalayout>` is meaningful only if the
+target has assigned it a semantics.
 
 If the returned pointer is used by :ref:`llvm.lifetime.start <int_lifestart>`,
 the returned object is initially dead.
@@ -9511,10 +9695,10 @@ as the ``MOVNT`` instruction on x86.
 The optional ``!invariant.load`` metadata must reference a single
 metadata name ``<empty_node>`` corresponding to a metadata node with no
 entries. If a load instruction tagged with the ``!invariant.load``
-metadata is executed, the optimizer may assume the memory location
-referenced by the load contains the same value at all points in the
-program where the memory location is known to be dereferenceable;
-otherwise, the behavior is undefined.
+metadata is executed, the memory location referenced by the load has
+to contain the same value at all points in the program where the
+memory location is dereferenceable; otherwise, the behavior is
+undefined.
 
 The optional ``!invariant.group`` metadata must reference a single metadata name
  ``<empty_node>`` corresponding to a metadata node with no entries.
@@ -9763,8 +9947,7 @@ this ``cmpxchg`` with other :ref:`volatile operations <volatile>`.
 
 The success and failure :ref:`ordering <ordering>` arguments specify how this
 ``cmpxchg`` synchronizes with other atomic operations. Both ordering parameters
-must be at least ``monotonic``, the ordering constraint on failure must be no
-stronger than that on success, and the failure ordering cannot be either
+must be at least ``monotonic``, the failure ordering cannot be either
 ``release`` or ``acq_rel``.
 
 A ``cmpxchg`` instruction can also take an optional
@@ -12067,6 +12250,88 @@ A ``gc.relocate`` is modeled as a ``readnone`` pure function.  It has no
 side effects since it is just a way to extract information about work
 done during the actual call modeled by the ``gc.statepoint``.
 
+.. _gc.get.pointer.base:
+
+'llvm.experimental.gc.get.pointer.base' Intrinsic
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Syntax:
+"""""""
+
+::
+
+      declare <pointer type>
+        @llvm.experimental.gc.get.pointer.base(
+          <pointer type> readnone nocapture %derived_ptr)
+          nounwind readnone willreturn
+
+Overview:
+"""""""""
+
+``gc.get.pointer.base`` for a derived pointer returns its base pointer.
+
+Operands:
+"""""""""
+
+The only argument is a pointer which is based on some object with
+an unknown offset from the base of said object.
+
+Semantics:
+""""""""""
+
+This intrinsic is used in the abstract machine model for GC to represent
+the base pointer for an arbitrary derived pointer.
+
+This intrinsic is inlined by the :ref:`RewriteStatepointsForGC` pass by
+replacing all uses of this callsite with the offset of a derived pointer from
+its base pointer value. The replacement is done as part of the lowering to the
+explicit statepoint model.
+
+The return pointer type must be the same as the type of the parameter.
+
+
+'llvm.experimental.gc.get.pointer.offset' Intrinsic
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Syntax:
+"""""""
+
+::
+
+      declare i64
+        @llvm.experimental.gc.get.pointer.offset(
+          <pointer type> readnone nocapture %derived_ptr)
+          nounwind readnone willreturn
+
+Overview:
+"""""""""
+
+``gc.get.pointer.offset`` for a derived pointer returns the offset from its
+base pointer.
+
+Operands:
+"""""""""
+
+The only argument is a pointer which is based on some object with
+an unknown offset from the base of said object.
+
+Semantics:
+""""""""""
+
+This intrinsic is used in the abstract machine model for GC to represent
+the offset of an arbitrary derived pointer from its base pointer.
+
+This intrinsic is inlined by the :ref:`RewriteStatepointsForGC` pass by
+replacing all uses of this callsite with the offset of a derived pointer from
+its base pointer value. The replacement is done as part of the lowering to the
+explicit statepoint model.
+
+Basically this call calculates difference between the derived pointer and its
+base pointer (see :ref:`gc.get.pointer.base`) both ptrtoint casted. But
+this cast done outside the :ref:`RewriteStatepointsForGC` pass could result
+in the pointers lost for further lowering from the abstract model to the
+explicit physical one.
+
 Code Generator Intrinsics
 -------------------------
 
@@ -12195,6 +12460,29 @@ Note that calling this intrinsic does not prevent function inlining or
 other aggressive transformations, so the value returned may not be that
 of the obvious source-language caller.
 
+'``llvm.swift.async.context.addr``' Intrinsic
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Syntax:
+"""""""
+
+::
+
+      declare i8** @llvm.swift.async.context.addr()
+
+Overview:
+"""""""""
+
+The '``llvm.swift.async.context.addr``' intrinsic returns a pointer to
+the part of the extended frame record containing the asynchronous
+context of a Swift execution.
+
+Semantics:
+""""""""""
+
+If the caller has a ``swiftasync`` parameter, that argument will initially
+be stored at the returned address. If not, it will be initialized to null.
+
 '``llvm.localescape``' and '``llvm.localrecover``' Intrinsics
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
@@ -12245,13 +12533,74 @@ The '``llvm.localescape``' intrinsic blocks inlining, as inlining changes where
 the escaped allocas are allocated, which would break attempts to use
 '``llvm.localrecover``'.
 
+'``llvm.seh.try.begin``' and '``llvm.seh.try.end``' Intrinsics
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Syntax:
+"""""""
+
+::
+
+      declare void @llvm.seh.try.begin()
+      declare void @llvm.seh.try.end()
+
+Overview:
+"""""""""
+
+The '``llvm.seh.try.begin``' and '``llvm.seh.try.end``' intrinsics mark
+the boundary of a _try region for Windows SEH Asynchrous Exception Handling.
+
+Semantics:
+""""""""""
+
+When a C-function is compiled with Windows SEH Asynchrous Exception option,
+-feh_asynch (aka MSVC -EHa), these two intrinsics are injected to mark _try
+boundary and to prevent potential exceptions from being moved across boundary.
+Any set of operations can then be confined to the region by reading their leaf
+inputs via volatile loads and writing their root outputs via volatile stores.
+
+'``llvm.seh.scope.begin``' and '``llvm.seh.scope.end``' Intrinsics
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+Syntax:
+"""""""
+
+::
+
+      declare void @llvm.seh.scope.begin()
+      declare void @llvm.seh.scope.end()
+
+Overview:
+"""""""""
+
+The '``llvm.seh.scope.begin``' and '``llvm.seh.scope.end``' intrinsics mark
+the boundary of a CPP object lifetime for Windows SEH Asynchrous Exception
+Handling (MSVC option -EHa).
+
+Semantics:
+""""""""""
+
+LLVM's ordinary exception-handling representation associates EH cleanups and
+handlers only with ``invoke``s, which normally correspond only to call sites.  To
+support arbitrary faulting instructions, it must be possible to recover the current
+EH scope for any instruction.  Turning every operation in LLVM that could fault
+into an ``invoke`` of a new, potentially-throwing intrinsic would require adding a
+large number of intrinsics, impede optimization of those operations, and make
+compilation slower by introducing many extra basic blocks.  These intrinsics can
+be used instead to mark the region protected by a cleanup, such as for a local
+C++ object with a non-trivial destructor.  ``llvm.seh.scope.begin`` is used to mark
+the start of the region; it is always called with ``invoke``, with the unwind block
+being the desired unwind destination for any potentially-throwing instructions
+within the region.  `llvm.seh.scope.end` is used to mark when the scope ends
+and the EH cleanup is no longer required (e.g. because the destructor is being
+called).
+
 .. _int_read_register:
 .. _int_read_volatile_register:
 .. _int_write_register:
 
-'``llvm.read_register``', '``llvm.read_volatile_register``', and
-'``llvm.write_register``' Intrinsics
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+'``llvm.read_register``', '``llvm.read_volatile_register``', and '``llvm.write_register``' Intrinsics
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 Syntax:
 """""""
@@ -16668,6 +17017,36 @@ The first two operands are vectors with the same type. The third argument
 the source/result vector. The ``imm`` is a signed integer constant in the range
 ``-VL <= imm < VL``. For values outside of this range the result is poison.
 
+'``llvm.experimental.stepvector``' Intrinsic
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+This is an overloaded intrinsic. You can use ``llvm.experimental.stepvector``
+to generate a vector whose lane values comprise the linear sequence
+<0, 1, 2, ...>. It is primarily intended for scalable vectors.
+
+::
+
+      declare <vscale x 4 x i32> @llvm.experimental.stepvector.nxv4i32()
+      declare <vscale x 8 x i16> @llvm.experimental.stepvector.nxv8i16()
+
+The '``llvm.experimental.stepvector``' intrinsics are used to create vectors
+of integers whose elements contain a linear sequence of values starting from 0
+with a step of 1.  This experimental intrinsic can only be used for vectors
+with integer elements that are at least 8 bits in size. If the sequence value
+exceeds the allowed limit for the element type then the result for that lane is
+undefined.
+
+These intrinsics work for both fixed and scalable vectors. While this intrinsic
+is marked as experimental, the recommended way to express this operation for
+fixed-width vectors is still to generate a constant vector instead.
+
+
+Arguments:
+""""""""""
+
+None.
+
+
 Matrix Intrinsics
 -----------------
 
@@ -17390,7 +17769,7 @@ Examples:
       ;; For all lanes below %evl, %r is lane-wise equivalent to %also.r
 
       %t = sdiv <4 x i32> %a, %b
-      %also.r = select <4 x ii> %mask, <4 x i32> %t, <4 x i32> undef
+      %also.r = select <4 x i1> %mask, <4 x i32> %t, <4 x i32> undef
 
 
 .. _int_vp_udiv:
@@ -17435,7 +17814,7 @@ Examples:
       ;; For all lanes below %evl, %r is lane-wise equivalent to %also.r
 
       %t = udiv <4 x i32> %a, %b
-      %also.r = select <4 x ii> %mask, <4 x i32> %t, <4 x i32> undef
+      %also.r = select <4 x i1> %mask, <4 x i32> %t, <4 x i32> undef
 
 
 
@@ -19100,7 +19479,11 @@ The quiet comparison operation performed by
 '``llvm.experimental.constrained.fcmp``' will only raise an exception
 if either operand is a SNAN.  The signaling comparison operation
 performed by '``llvm.experimental.constrained.fcmps``' will raise an
-exception if either operand is a NAN (QNAN or SNAN).
+exception if either operand is a NAN (QNAN or SNAN). Such an exception
+does not preclude a result being produced (e.g. exception might only
+set a flag), therefore the distinction between ordered and unordered
+comparisons is also relevant for the
+'``llvm.experimental.constrained.fcmps``' intrinsic.
 
 '``llvm.experimental.constrained.fmuladd``' Intrinsic
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^

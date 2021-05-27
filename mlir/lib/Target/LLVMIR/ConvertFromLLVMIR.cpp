@@ -269,10 +269,11 @@ private:
 
   /// Globals are inserted before the first function, if any.
   Block::iterator getGlobalInsertPt() {
-    auto i = module.getBody()->begin();
-    while (!isa<LLVMFuncOp, ModuleTerminatorOp>(i))
-      ++i;
-    return i;
+    auto it = module.getBody()->begin();
+    auto endIt = module.getBody()->end();
+    while (it != endIt && !isa<LLVMFuncOp>(it))
+      ++it;
+    return it;
   }
 
   /// Functions are always inserted before the module terminator.
@@ -474,9 +475,19 @@ GlobalOp Importer::processGlobal(llvm::GlobalVariable *GV) {
   Type type = processType(GV->getValueType());
   if (!type)
     return nullptr;
-  GlobalOp op = b.create<GlobalOp>(
-      UnknownLoc::get(context), type, GV->isConstant(),
-      convertLinkageFromLLVM(GV->getLinkage()), GV->getName(), valueAttr);
+
+  uint64_t alignment = 0;
+  llvm::MaybeAlign maybeAlign = GV->getAlign();
+  if (maybeAlign.hasValue()) {
+    llvm::Align align = maybeAlign.getValue();
+    alignment = align.value();
+  }
+
+  GlobalOp op =
+      b.create<GlobalOp>(UnknownLoc::get(context), type, GV->isConstant(),
+                         convertLinkageFromLLVM(GV->getLinkage()),
+                         GV->getName(), valueAttr, alignment);
+
   if (GV->hasInitializer() && !valueAttr) {
     Region &r = op.getInitializerRegion();
     currentEntryBlock = b.createBlock(&r);
@@ -486,6 +497,12 @@ GlobalOp Importer::processGlobal(llvm::GlobalVariable *GV) {
       return nullptr;
     b.create<ReturnOp>(op.getLoc(), ArrayRef<Value>({v}));
   }
+  if (GV->hasAtLeastLocalUnnamedAddr())
+    op.unnamed_addrAttr(UnnamedAddrAttr::get(
+        context, convertUnnamedAddrFromLLVM(GV->getUnnamedAddr())));
+  if (GV->hasSection())
+    op.sectionAttr(b.getStringAttr(GV->getSection()));
+
   return globals[GV] = op;
 }
 

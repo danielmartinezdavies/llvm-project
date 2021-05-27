@@ -114,6 +114,9 @@ class GIApplyKind;
 class GIApplyKindWithArgs;
 
 def register_matchinfo: GIDefMatchData<"Register">;
+def int64_matchinfo: GIDefMatchData<"int64_t">;
+def build_fn_matchinfo :
+GIDefMatchData<"std::function<void(MachineIRBuilder &)>">;
 
 def copy_prop : GICombineRule<
   (defs root:$d),
@@ -147,11 +150,12 @@ def combine_indexed_load_store : GICombineRule<
          [{ return Helper.matchCombineIndexedLoadStore(*${root}, ${matchinfo}); }]),
   (apply [{ Helper.applyCombineIndexedLoadStore(*${root}, ${matchinfo}); }])>;
 
+def opt_brcond_by_inverting_cond_matchdata : GIDefMatchData<"MachineInstr *">;
 def opt_brcond_by_inverting_cond : GICombineRule<
-  (defs root:$root),
+  (defs root:$root, opt_brcond_by_inverting_cond_matchdata:$matchinfo),
   (match (wip_match_opcode G_BR):$root,
-         [{ return Helper.matchOptBrCondByInvertingCond(*${root}); }]),
-  (apply [{ Helper.applyOptBrCondByInvertingCond(*${root}); }])>;
+         [{ return Helper.matchOptBrCondByInvertingCond(*${root}, ${matchinfo}); }]),
+  (apply [{ Helper.applyOptBrCondByInvertingCond(*${root}, ${matchinfo}); }])>;
 
 def ptr_add_immed_matchdata : GIDefMatchData<"PtrAddChain">;
 def ptr_add_immed_chain : GICombineRule<
@@ -560,13 +564,11 @@ def combine_insert_vec_elts_build_vector : GICombineRule<
     [{ return Helper.matchCombineInsertVecElts(*${root}, ${info}); }]),
   (apply [{ return Helper.applyCombineInsertVecElts(*${root}, ${info}); }])>;
 
-def load_or_combine_matchdata :
-GIDefMatchData<"std::function<void(MachineIRBuilder &)>">;
 def load_or_combine : GICombineRule<
-  (defs root:$root, load_or_combine_matchdata:$info),
+  (defs root:$root, build_fn_matchinfo:$info),
   (match (wip_match_opcode G_OR):$root,
     [{ return Helper.matchLoadOrCombine(*${root}, ${info}); }]),
-  (apply [{ return Helper.applyLoadOrCombine(*${root}, ${info}); }])>;
+  (apply [{ return Helper.applyBuildFn(*${root}, ${info}); }])>;
 
 def extend_through_phis_matchdata: GIDefMatchData<"MachineInstr*">;
 def extend_through_phis : GICombineRule<
@@ -598,6 +600,28 @@ def extract_vec_elt_combines : GICombineGroup<[
   extract_vec_elt_build_vec,
   extract_all_elts_from_build_vector]>;
 
+def funnel_shift_to_rotate : GICombineRule<
+  (defs root:$root),
+  (match (wip_match_opcode G_FSHL, G_FSHR):$root,
+    [{ return Helper.matchFunnelShiftToRotate(*${root}); }]),
+  (apply [{ Helper.applyFunnelShiftToRotate(*${root}); }])
+>;
+
+def rotate_out_of_range : GICombineRule<
+  (defs root:$root),
+  (match (wip_match_opcode G_ROTR, G_ROTL):$root,
+    [{ return Helper.matchRotateOutOfRange(*${root}); }]),
+  (apply [{ Helper.applyRotateOutOfRange(*${root}); }])
+>;
+
+def icmp_to_true_false_known_bits : GICombineRule<
+  (defs root:$d, int64_matchinfo:$matchinfo),
+  (match (wip_match_opcode G_ICMP):$d,
+         [{ return Helper.matchICmpToTrueFalseKnownBits(*${d}, ${matchinfo}); }]),
+  (apply [{ Helper.replaceInstWithConstant(*${d}, ${matchinfo}); }])>;
+
+def funnel_shift_combines : GICombineGroup<[funnel_shift_to_rotate]>;
+
 // FIXME: These should use the custom predicate feature once it lands.
 def undef_combines : GICombineGroup<[undef_to_fp_zero, undef_to_int_zero,
                                      undef_to_negative_one,
@@ -617,7 +641,7 @@ def const_combines : GICombineGroup<[constant_fp_op, const_ptradd_to_i2p]>;
 
 def known_bits_simplifications : GICombineGroup<[
   redundant_and, redundant_sext_inreg, redundant_or, urem_pow2_to_mask,
-  zext_trunc_fold]>;
+  zext_trunc_fold, icmp_to_true_false_known_bits]>;
 
 def width_reduction_combines : GICombineGroup<[reduce_shl_of_extend]>;
 
@@ -640,4 +664,11 @@ def all_combines : GICombineGroup<[trivial_combines, insert_vec_elt_combines,
     unmerge_zext_to_zext, trunc_ext_fold, trunc_shl,
     const_combines, xor_of_and_with_same_reg, ptr_add_with_zero,
     shift_immed_chain, shift_of_shifted_logic_chain, load_or_combine,
-    div_rem_to_divrem]>;
+    div_rem_to_divrem, funnel_shift_combines]>;
+
+// A combine group used to for prelegalizer combiners at -O0. The combines in
+// this group have been selected based on experiments to balance code size and
+// compile time performance.
+def optnone_combines : GICombineGroup<[trivial_combines,
+    ptr_add_immed_chain, combines_for_extload,
+    not_cmp_fold, opt_brcond_by_inverting_cond]>;

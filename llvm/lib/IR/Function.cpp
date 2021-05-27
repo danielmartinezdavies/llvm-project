@@ -60,6 +60,7 @@
 #include "llvm/IR/Value.h"
 #include "llvm/IR/ValueSymbolTable.h"
 #include "llvm/Support/Casting.h"
+#include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Compiler.h"
 #include "llvm/Support/ErrorHandling.h"
 #include <algorithm>
@@ -75,6 +76,10 @@ using ProfileCount = Function::ProfileCount;
 // Explicit instantiations of SymbolTableListTraits since some of the methods
 // are not in the public header file...
 template class llvm::SymbolTableListTraits<BasicBlock>;
+
+static cl::opt<unsigned> NonGlobalValueMaxNameSize(
+    "non-global-value-max-name-size", cl::Hidden, cl::init(1024),
+    cl::desc("Maximum size for the name of non-global values."));
 
 //===----------------------------------------------------------------------===//
 // Argument Implementation
@@ -162,6 +167,8 @@ static Type *getMemoryParamAllocType(AttributeSet ParamAttrs, Type *ArgTy) {
     return ByRefTy;
   if (Type *PreAllocTy = ParamAttrs.getPreallocatedType())
     return PreAllocTy;
+  if (Type *InAllocaTy = ParamAttrs.getInAllocaType())
+    return InAllocaTy;
 
   // FIXME: sret and inalloca always depends on pointee element type. It's also
   // possible for byval to miss it.
@@ -198,6 +205,10 @@ MaybeAlign Argument::getParamAlign() const {
   return getParent()->getParamAlign(getArgNo());
 }
 
+MaybeAlign Argument::getParamStackAlign() const {
+  return getParent()->getParamStackAlign(getArgNo());
+}
+
 Type *Argument::getParamByValType() const {
   assert(getType()->isPointerTy() && "Only pointers have byval types");
   return getParent()->getParamByValType(getArgNo());
@@ -211,6 +222,11 @@ Type *Argument::getParamStructRetType() const {
 Type *Argument::getParamByRefType() const {
   assert(getType()->isPointerTy() && "Only pointers have byref types");
   return getParent()->getParamByRefType(getArgNo());
+}
+
+Type *Argument::getParamInAllocaType() const {
+  assert(getType()->isPointerTy() && "Only pointers have inalloca types");
+  return getParent()->getParamInAllocaType(getArgNo());
 }
 
 uint64_t Argument::getDereferenceableBytes() const {
@@ -290,6 +306,12 @@ void Argument::removeAttr(Attribute::AttrKind Kind) {
   getParent()->removeParamAttr(getArgNo(), Kind);
 }
 
+void Argument::removeAttrs(const AttrBuilder &B) {
+  AttributeList AL = getParent()->getAttributes();
+  AL = AL.removeParamAttributes(Parent->getContext(), getArgNo(), B);
+  getParent()->setAttributes(AL);
+}
+
 bool Argument::hasAttribute(Attribute::AttrKind Kind) const {
   return getParent()->hasParamAttribute(getArgNo(), Kind);
 }
@@ -317,6 +339,29 @@ unsigned Function::getInstructionCount() const {
 Function *Function::Create(FunctionType *Ty, LinkageTypes Linkage,
                            const Twine &N, Module &M) {
   return Create(Ty, Linkage, M.getDataLayout().getProgramAddressSpace(), N, &M);
+}
+
+Function *Function::createWithDefaultAttr(FunctionType *Ty,
+                                          LinkageTypes Linkage,
+                                          unsigned AddrSpace, const Twine &N,
+                                          Module *M) {
+  auto *F = new Function(Ty, Linkage, AddrSpace, N, M);
+  AttrBuilder B;
+  if (M->getUwtable())
+    B.addAttribute(Attribute::UWTable);
+  switch (M->getFramePointer()) {
+  case FramePointerKind::None:
+    // 0 ("none") is the default.
+    break;
+  case FramePointerKind::NonLeaf:
+    B.addAttribute("frame-pointer", "non-leaf");
+    break;
+  case FramePointerKind::All:
+    B.addAttribute("frame-pointer", "all");
+    break;
+  }
+  F->addAttributes(AttributeList::FunctionIndex, B);
+  return F;
 }
 
 void Function::removeFromParent() {
@@ -351,7 +396,7 @@ Function::Function(FunctionType *Ty, LinkageTypes Linkage, unsigned AddrSpace,
 
   // We only need a symbol table for a function if the context keeps value names
   if (!getContext().shouldDiscardValueNames())
-    SymTab = std::make_unique<ValueSymbolTable>();
+    SymTab = std::make_unique<ValueSymbolTable>(NonGlobalValueMaxNameSize);
 
   // If the function has arguments, mark them as lazily built.
   if (Ty->getNumParams())
@@ -559,6 +604,12 @@ void Function::removeParamAttr(unsigned ArgNo, StringRef Kind) {
 void Function::removeParamAttrs(unsigned ArgNo, const AttrBuilder &Attrs) {
   AttributeList PAL = getAttributes();
   PAL = PAL.removeParamAttributes(getContext(), ArgNo, Attrs);
+  setAttributes(PAL);
+}
+
+void Function::removeParamUndefImplyingAttrs(unsigned ArgNo) {
+  AttributeList PAL = getAttributes();
+  PAL = PAL.removeParamUndefImplyingAttributes(getContext(), ArgNo);
   setAttributes(PAL);
 }
 

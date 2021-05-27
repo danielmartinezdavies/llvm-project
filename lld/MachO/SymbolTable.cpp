@@ -24,34 +24,55 @@ Symbol *SymbolTable::find(CachedHashStringRef cachedName) {
   return symVector[it->second];
 }
 
-std::pair<Symbol *, bool> SymbolTable::insert(StringRef name) {
+std::pair<Symbol *, bool> SymbolTable::insert(StringRef name,
+                                              const InputFile *file) {
   auto p = symMap.insert({CachedHashStringRef(name), (int)symVector.size()});
 
-  // Name already present in the symbol table.
-  if (!p.second)
-    return {symVector[p.first->second], false};
+  Symbol *sym;
+  if (!p.second) {
+    // Name already present in the symbol table.
+    sym = symVector[p.first->second];
+  } else {
+    // Name is a new symbol.
+    sym = reinterpret_cast<Symbol *>(make<SymbolUnion>());
+    symVector.push_back(sym);
+  }
 
-  // Name is a new symbol.
-  Symbol *sym = reinterpret_cast<Symbol *>(make<SymbolUnion>());
-  symVector.push_back(sym);
-  return {sym, true};
+  sym->isUsedInRegularObj |= !file || isa<ObjFile>(file);
+  return {sym, p.second};
 }
 
 Defined *SymbolTable::addDefined(StringRef name, InputFile *file,
-                                 InputSection *isec, uint32_t value,
-                                 bool isWeakDef, bool isPrivateExtern) {
+                                 InputSection *isec, uint64_t value,
+                                 uint64_t size, bool isWeakDef,
+                                 bool isPrivateExtern, bool isThumb,
+                                 bool isReferencedDynamically) {
   Symbol *s;
   bool wasInserted;
   bool overridesWeakDef = false;
-  std::tie(s, wasInserted) = insert(name);
+  std::tie(s, wasInserted) = insert(name, file);
+
+  assert(!isWeakDef || (isa<BitcodeFile>(file) && !isec) ||
+         (isa<ObjFile>(file) && file == isec->file));
 
   if (!wasInserted) {
     if (auto *defined = dyn_cast<Defined>(s)) {
       if (isWeakDef) {
-        // Both old and new symbol weak (e.g. inline function in two TUs):
-        // If one of them isn't private extern, the merged symbol isn't.
-        if (defined->isWeakDef())
+        if (defined->isWeakDef()) {
+          // Both old and new symbol weak (e.g. inline function in two TUs):
+          // If one of them isn't private extern, the merged symbol isn't.
           defined->privateExtern &= isPrivateExtern;
+          defined->referencedDynamically |= isReferencedDynamically;
+
+          // FIXME: Handle this for bitcode files.
+          // FIXME: We currently only do this if both symbols are weak.
+          //        We could do this if either is weak (but getting the
+          //        case where !isWeakDef && defined->isWeakDef() right
+          //        requires some care and testing).
+          if (isec)
+            isec->canOmitFromOutput = true;
+        }
+
         return defined;
       }
       if (!defined->isWeakDef())
@@ -65,9 +86,9 @@ Defined *SymbolTable::addDefined(StringRef name, InputFile *file,
     // of a name conflict, we fall through to the replaceSymbol() call below.
   }
 
-  Defined *defined =
-      replaceSymbol<Defined>(s, name, file, isec, value, isWeakDef,
-                             /*isExternal=*/true, isPrivateExtern);
+  Defined *defined = replaceSymbol<Defined>(
+      s, name, file, isec, value, size, isWeakDef, /*isExternal=*/true,
+      isPrivateExtern, isThumb, isReferencedDynamically);
   defined->overridesWeakDef = overridesWeakDef;
   return defined;
 }
@@ -76,7 +97,7 @@ Symbol *SymbolTable::addUndefined(StringRef name, InputFile *file,
                                   bool isWeakRef) {
   Symbol *s;
   bool wasInserted;
-  std::tie(s, wasInserted) = insert(name);
+  std::tie(s, wasInserted) = insert(name, file);
 
   RefState refState = isWeakRef ? RefState::Weak : RefState::Strong;
 
@@ -95,7 +116,7 @@ Symbol *SymbolTable::addCommon(StringRef name, InputFile *file, uint64_t size,
                                uint32_t align, bool isPrivateExtern) {
   Symbol *s;
   bool wasInserted;
-  std::tie(s, wasInserted) = insert(name);
+  std::tie(s, wasInserted) = insert(name, file);
 
   if (!wasInserted) {
     if (auto *common = dyn_cast<CommonSymbol>(s)) {
@@ -116,7 +137,7 @@ Symbol *SymbolTable::addDylib(StringRef name, DylibFile *file, bool isWeakDef,
                               bool isTlv) {
   Symbol *s;
   bool wasInserted;
-  std::tie(s, wasInserted) = insert(name);
+  std::tie(s, wasInserted) = insert(name, file);
 
   RefState refState = RefState::Unreferenced;
   if (!wasInserted) {
@@ -148,7 +169,7 @@ Symbol *SymbolTable::addLazy(StringRef name, ArchiveFile *file,
                              const object::Archive::Symbol &sym) {
   Symbol *s;
   bool wasInserted;
-  std::tie(s, wasInserted) = insert(name);
+  std::tie(s, wasInserted) = insert(name, file);
 
   if (wasInserted)
     replaceSymbol<LazySymbol>(s, file, sym);
@@ -158,28 +179,31 @@ Symbol *SymbolTable::addLazy(StringRef name, ArchiveFile *file,
 }
 
 Defined *SymbolTable::addSynthetic(StringRef name, InputSection *isec,
-                                   uint32_t value, bool isPrivateExtern,
-                                   bool includeInSymtab) {
-  Defined *s = addDefined(name, nullptr, isec, value,
-                          /*isWeakDef=*/false, isPrivateExtern);
+                                   uint64_t value, bool isPrivateExtern,
+                                   bool includeInSymtab,
+                                   bool referencedDynamically) {
+  Defined *s = addDefined(name, nullptr, isec, value, /*size=*/0,
+                          /*isWeakDef=*/false, isPrivateExtern,
+                          /*isThumb=*/false, referencedDynamically);
   s->includeInSymtab = includeInSymtab;
   return s;
 }
 
-void lld::macho::treatUndefinedSymbol(const Undefined &sym) {
-  auto message = [](const Undefined &sym) {
+void lld::macho::treatUndefinedSymbol(const Undefined &sym, StringRef source) {
+  auto message = [source, &sym]() {
     std::string message = "undefined symbol: " + toString(sym);
-    std::string fileName = toString(sym.getFile());
-    if (!fileName.empty())
-      message += "\n>>> referenced by " + fileName;
+    if (!source.empty())
+      message += "\n>>> referenced by " + source.str();
+    else
+      message += "\n>>> referenced by " + toString(sym.getFile());
     return message;
   };
   switch (config->undefinedSymbolTreatment) {
   case UndefinedSymbolTreatment::error:
-    error(message(sym));
+    error(message());
     break;
   case UndefinedSymbolTreatment::warning:
-    warn(message(sym));
+    warn(message());
     LLVM_FALLTHROUGH;
   case UndefinedSymbolTreatment::dynamic_lookup:
   case UndefinedSymbolTreatment::suppress:

@@ -8,6 +8,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "GISelMITest.h"
+#include "llvm/CodeGen/GlobalISel/LostDebugLocObserver.h"
 
 using namespace LegalizeActions;
 using namespace LegalizeMutations;
@@ -22,6 +23,162 @@ public:
   void createdInstr(MachineInstr &MI) override {}
   void erasingInstr(MachineInstr &MI) override {}
 };
+
+// Test G_ROTL/G_ROTR lowering.
+TEST_F(AArch64GISelMITest, LowerRotates) {
+  setUp();
+  if (!TM)
+    return;
+
+  // Declare your legalization info
+  DefineLegalizerInfo(A, {
+    getActionDefinitionsBuilder({G_ROTR, G_ROTL}).lower(); });
+
+  LLT S32 = LLT::scalar(32);
+  auto Src = B.buildTrunc(S32, Copies[0]);
+  auto Amt = B.buildTrunc(S32, Copies[1]);
+  auto ROTR = B.buildInstr(TargetOpcode::G_ROTR, {S32}, {Src, Amt});
+  auto ROTL = B.buildInstr(TargetOpcode::G_ROTL, {S32}, {Src, Amt});
+
+  AInfo Info(MF->getSubtarget());
+  DummyGISelObserver Observer;
+  LegalizerHelper Helper(*MF, Info, Observer, B);
+  // Perform Legalization
+  EXPECT_EQ(LegalizerHelper::LegalizeResult::Legalized,
+            Helper.lower(*ROTR, 0, S32));
+  EXPECT_EQ(LegalizerHelper::LegalizeResult::Legalized,
+            Helper.lower(*ROTL, 0, S32));
+
+  auto CheckStr = R"(
+  ; Check G_ROTR
+  CHECK: [[SRC:%[0-9]+]]:_(s32) = G_TRUNC
+  CHECK: [[AMT:%[0-9]+]]:_(s32) = G_TRUNC
+  CHECK: [[C:%[0-9]+]]:_(s32) = G_CONSTANT i32 0
+  CHECK: [[C1:%[0-9]+]]:_(s32) = G_CONSTANT i32 31
+  CHECK: [[SUB:%[0-9]+]]:_(s32) = G_SUB [[C]]:_, [[AMT]]:_
+  CHECK: [[AND:%[0-9]+]]:_(s32) = G_AND [[AMT]]:_, [[C1]]:_
+  CHECK: [[LSHR:%[0-9]+]]:_(s32) = G_LSHR [[SRC]]:_, [[AND]]:_(s32)
+  CHECK: [[AND1:%[0-9]+]]:_(s32) = G_AND [[SUB]]:_, [[C1]]:_
+  CHECK: [[SHL:%[0-9]+]]:_(s32) = G_SHL [[SRC]]:_, [[AND1]]:_(s32)
+  CHECK: G_OR [[LSHR]]:_, [[SHL]]:_
+
+  ; Check G_ROTL
+  CHECK: [[C:%[0-9]+]]:_(s32) = G_CONSTANT i32 0
+  CHECK: [[C1:%[0-9]+]]:_(s32) = G_CONSTANT i32 31
+  CHECK: [[SUB:%[0-9]+]]:_(s32) = G_SUB [[C]]:_, [[AMT]]:_
+  CHECK: [[AND:%[0-9]+]]:_(s32) = G_AND [[AMT]]:_, [[C1]]:_
+  CHECK: [[SHL:%[0-9]+]]:_(s32) = G_SHL [[SRC]]:_, [[AND]]:_(s32)
+  CHECK: [[AND1:%[0-9]+]]:_(s32) = G_AND [[SUB]]:_, [[C1]]:_
+  CHECK: [[LSHR:%[0-9]+]]:_(s32) = G_LSHR [[SRC]]:_, [[AND1]]:_(s32)
+  CHECK: G_OR [[SHL]]:_, [[LSHR]]:_
+  )";
+
+  // Check
+  EXPECT_TRUE(CheckMachineFunction(*MF, CheckStr)) << *MF;
+}
+
+// Test G_ROTL/G_ROTR non-pow2 lowering.
+TEST_F(AArch64GISelMITest, LowerRotatesNonPow2) {
+  setUp();
+  if (!TM)
+    return;
+
+  // Declare your legalization info
+  DefineLegalizerInfo(A, {
+    getActionDefinitionsBuilder({G_ROTR, G_ROTL}).lower(); });
+
+  LLT S24 = LLT::scalar(24);
+  auto Src = B.buildTrunc(S24, Copies[0]);
+  auto Amt = B.buildTrunc(S24, Copies[1]);
+  auto ROTR = B.buildInstr(TargetOpcode::G_ROTR, {S24}, {Src, Amt});
+  auto ROTL = B.buildInstr(TargetOpcode::G_ROTL, {S24}, {Src, Amt});
+
+  AInfo Info(MF->getSubtarget());
+  DummyGISelObserver Observer;
+  LegalizerHelper Helper(*MF, Info, Observer, B);
+  // Perform Legalization
+  EXPECT_EQ(LegalizerHelper::LegalizeResult::Legalized,
+            Helper.lower(*ROTR, 0, S24));
+  EXPECT_EQ(LegalizerHelper::LegalizeResult::Legalized,
+            Helper.lower(*ROTL, 0, S24));
+
+  auto CheckStr = R"(
+  ; Check G_ROTR
+  CHECK: [[SRC:%[0-9]+]]:_(s24) = G_TRUNC
+  CHECK: [[AMT:%[0-9]+]]:_(s24) = G_TRUNC
+  CHECK: [[C:%[0-9]+]]:_(s24) = G_CONSTANT i24 0
+  CHECK: [[C1:%[0-9]+]]:_(s24) = G_CONSTANT i24 23
+  CHECK: [[C2:%[0-9]+]]:_(s24) = G_CONSTANT i24 24
+  CHECK: [[UREM:%[0-9]+]]:_(s24) = G_UREM [[AMT]]:_, [[C2]]:_
+  CHECK: [[LSHR:%[0-9]+]]:_(s24) = G_LSHR [[SRC]]:_, [[UREM]]:_(s24)
+  CHECK: [[SUB:%[0-9]+]]:_(s24) = G_SUB [[C1]]:_, [[UREM]]:_
+  CHECK: [[C4:%[0-9]+]]:_(s24) = G_CONSTANT i24 1
+  CHECK: [[SHL:%[0-9]+]]:_(s24) = G_SHL [[SRC]]:_, [[C4]]:_(s24)
+  CHECK: [[SHL2:%[0-9]+]]:_(s24) = G_SHL [[SHL]]:_, [[SUB]]:_(s24)
+  CHECK: G_OR [[LSHR]]:_, [[SHL2]]:_
+
+  ; Check G_ROTL
+  CHECK: [[C:%[0-9]+]]:_(s24) = G_CONSTANT i24 0
+  CHECK: [[C1:%[0-9]+]]:_(s24) = G_CONSTANT i24 23
+  CHECK: [[C2:%[0-9]+]]:_(s24) = G_CONSTANT i24 24
+  CHECK: [[UREM:%[0-9]+]]:_(s24) = G_UREM [[AMT]]:_, [[C2]]:_
+  CHECK: [[SHL:%[0-9]+]]:_(s24) = G_SHL [[SRC]]:_, [[UREM]]:_(s24)
+  CHECK: [[SUB:%[0-9]+]]:_(s24) = G_SUB [[C1]]:_, [[UREM]]:_
+  CHECK: [[C4:%[0-9]+]]:_(s24) = G_CONSTANT i24 1
+  CHECK: [[LSHR:%[0-9]+]]:_(s24) = G_LSHR [[SRC]]:_, [[C4]]:_(s24)
+  CHECK: [[LSHR2:%[0-9]+]]:_(s24) = G_LSHR [[LSHR]]:_, [[SUB]]:_(s24)
+  CHECK: G_OR [[SHL]]:_, [[LSHR2]]:_
+  )";
+
+  // Check
+  EXPECT_TRUE(CheckMachineFunction(*MF, CheckStr)) << *MF;
+}
+
+// Test vector G_ROTR lowering.
+TEST_F(AArch64GISelMITest, LowerRotatesVector) {
+  setUp();
+  if (!TM)
+    return;
+
+  // Declare your legalization info
+  DefineLegalizerInfo(A, {
+    getActionDefinitionsBuilder({G_ROTR, G_ROTL}).lower(); });
+
+  LLT S32 = LLT::scalar(32);
+  LLT V4S32 = LLT::vector(4, S32);
+  auto SrcTrunc = B.buildTrunc(S32, Copies[0]);
+  auto Src = B.buildSplatVector(V4S32, SrcTrunc);
+  auto AmtTrunc = B.buildTrunc(S32, Copies[1]);
+  auto Amt = B.buildSplatVector(V4S32, AmtTrunc);
+  auto ROTR = B.buildInstr(TargetOpcode::G_ROTR, {V4S32}, {Src, Amt});
+
+  AInfo Info(MF->getSubtarget());
+  DummyGISelObserver Observer;
+  LegalizerHelper Helper(*MF, Info, Observer, B);
+  // Perform Legalization
+  EXPECT_EQ(LegalizerHelper::LegalizeResult::Legalized,
+            Helper.lower(*ROTR, 0, V4S32));
+
+  auto CheckStr = R"(
+  CHECK: [[SRCTRUNC:%[0-9]+]]:_(s32) = G_TRUNC
+  CHECK: [[SRC:%[0-9]+]]:_(<4 x s32>) = G_BUILD_VECTOR [[SRCTRUNC]]
+  CHECK: [[AMTTRUNC:%[0-9]+]]:_(s32) = G_TRUNC
+  CHECK: [[AMT:%[0-9]+]]:_(<4 x s32>) = G_BUILD_VECTOR [[AMTTRUNC]]
+  CHECK: [[C:%[0-9]+]]:_(s32) = G_CONSTANT i32 0
+  CHECK: [[ZERO:%[0-9]+]]:_(<4 x s32>) = G_BUILD_VECTOR [[C]]
+  CHECK: [[C1:%[0-9]+]]:_(s32) = G_CONSTANT i32 31
+  CHECK: [[VEC31:%[0-9]+]]:_(<4 x s32>) = G_BUILD_VECTOR [[C1]]
+  CHECK: [[SUB:%[0-9]+]]:_(<4 x s32>) = G_SUB [[ZERO]]:_, [[AMT]]:_
+  CHECK: [[AND:%[0-9]+]]:_(<4 x s32>) = G_AND [[AMT]]:_, [[VEC31]]:_
+  CHECK: [[LSHR:%[0-9]+]]:_(<4 x s32>) = G_LSHR [[SRC]]:_, [[AND]]:_(<4 x s32>)
+  CHECK: [[AND1:%[0-9]+]]:_(<4 x s32>) = G_AND [[SUB]]:_, [[VEC31]]:_
+  CHECK: [[SHL:%[0-9]+]]:_(<4 x s32>) = G_SHL [[SRC]]:_, [[AND1]]:_(<4 x s32>)
+  CHECK: G_OR [[LSHR]]:_, [[SHL]]:_
+  )";
+
+  // Check
+  EXPECT_TRUE(CheckMachineFunction(*MF, CheckStr)) << *MF;
+}
 
 // Test CTTZ expansion when CTTZ_ZERO_UNDEF is legal or custom,
 // in which case it becomes CTTZ_ZERO_UNDEF with select.
@@ -1861,11 +2018,12 @@ TEST_F(AArch64GISelMITest, LibcallFPExt) {
   AInfo Info(MF->getSubtarget());
   DummyGISelObserver Observer;
   LegalizerHelper Helper(*MF, Info, Observer, B);
+  LostDebugLocObserver DummyLocObserver("");
   EXPECT_EQ(LegalizerHelper::LegalizeResult::Legalized,
-              Helper.libcall(*MIBFPExt1));
+              Helper.libcall(*MIBFPExt1, DummyLocObserver));
 
   EXPECT_EQ(LegalizerHelper::LegalizeResult::Legalized,
-              Helper.libcall(*MIBFPExt2));
+              Helper.libcall(*MIBFPExt2, DummyLocObserver));
   auto CheckStr = R"(
   CHECK: [[TRUNC:%[0-9]+]]:_(s16) = G_TRUNC
   CHECK: $h0 = COPY [[TRUNC]]
@@ -1902,12 +2060,13 @@ TEST_F(AArch64GISelMITest, LibcallFPTrunc) {
       B.buildInstr(TargetOpcode::G_FPTRUNC, {S64}, {MIBMerge});
   AInfo Info(MF->getSubtarget());
   DummyGISelObserver Observer;
+  LostDebugLocObserver DummyLocObserver("");
   LegalizerHelper Helper(*MF, Info, Observer, B);
   EXPECT_EQ(LegalizerHelper::LegalizeResult::Legalized,
-            Helper.libcall(*MIBFPTrunc1));
+            Helper.libcall(*MIBFPTrunc1, DummyLocObserver));
 
   EXPECT_EQ(LegalizerHelper::LegalizeResult::Legalized,
-            Helper.libcall(*MIBFPTrunc2));
+            Helper.libcall(*MIBFPTrunc2, DummyLocObserver));
   auto CheckStr = R"(
   CHECK: [[TRUNC:%[0-9]+]]:_(s32) = G_TRUNC
   CHECK: $s0 = COPY [[TRUNC]]
@@ -1937,10 +2096,11 @@ TEST_F(AArch64GISelMITest, LibcallSimple) {
 
   AInfo Info(MF->getSubtarget());
   DummyGISelObserver Observer;
+  LostDebugLocObserver DummyLocObserver("");
   LegalizerHelper Helper(*MF, Info, Observer, B);
   // Make sure we do not crash anymore
   EXPECT_EQ(LegalizerHelper::LegalizeResult::UnableToLegalize,
-            Helper.libcall(*MIBFADD));
+            Helper.libcall(*MIBFADD, DummyLocObserver));
 }
 
 TEST_F(AArch64GISelMITest, LibcallSRem) {
@@ -1968,14 +2128,15 @@ TEST_F(AArch64GISelMITest, LibcallSRem) {
 
   AInfo Info(MF->getSubtarget());
   DummyGISelObserver Observer;
+  LostDebugLocObserver DummyLocObserver("");
   LegalizerHelper Helper(*MF, Info, Observer, B);
 
   EXPECT_EQ(LegalizerHelper::LegalizeResult::Legalized,
-            Helper.libcall(*MIBSRem32));
+            Helper.libcall(*MIBSRem32, DummyLocObserver));
   EXPECT_EQ(LegalizerHelper::LegalizeResult::Legalized,
-            Helper.libcall(*MIBSRem64));
+            Helper.libcall(*MIBSRem64, DummyLocObserver));
   EXPECT_EQ(LegalizerHelper::LegalizeResult::Legalized,
-            Helper.libcall(*MIBSRem128));
+            Helper.libcall(*MIBSRem128, DummyLocObserver));
 
   auto CheckStr = R"(
   CHECK: [[COPY:%[0-9]+]]:_(s64) = COPY
@@ -2025,14 +2186,15 @@ TEST_F(AArch64GISelMITest, LibcallURem) {
 
   AInfo Info(MF->getSubtarget());
   DummyGISelObserver Observer;
+  LostDebugLocObserver DummyLocObserver("");
   LegalizerHelper Helper(*MF, Info, Observer, B);
 
   EXPECT_EQ(LegalizerHelper::LegalizeResult::Legalized,
-            Helper.libcall(*MIBURem32));
+            Helper.libcall(*MIBURem32, DummyLocObserver));
   EXPECT_EQ(LegalizerHelper::LegalizeResult::Legalized,
-            Helper.libcall(*MIBURem64));
+            Helper.libcall(*MIBURem64, DummyLocObserver));
   EXPECT_EQ(LegalizerHelper::LegalizeResult::Legalized,
-            Helper.libcall(*MIBURem128));
+            Helper.libcall(*MIBURem128, DummyLocObserver));
 
   const auto *CheckStr = R"(
   CHECK: [[COPY:%[0-9]+]]:_(s64) = COPY
@@ -2083,14 +2245,15 @@ TEST_F(AArch64GISelMITest, LibcallCtlzZeroUndef) {
 
   AInfo Info(MF->getSubtarget());
   DummyGISelObserver Observer;
+  LostDebugLocObserver DummyLocObserver("");
   LegalizerHelper Helper(*MF, Info, Observer, B);
 
   EXPECT_EQ(LegalizerHelper::LegalizeResult::Legalized,
-            Helper.libcall(*MIBCtlz32));
+            Helper.libcall(*MIBCtlz32, DummyLocObserver));
   EXPECT_EQ(LegalizerHelper::LegalizeResult::Legalized,
-            Helper.libcall(*MIBCtlz64));
+            Helper.libcall(*MIBCtlz64, DummyLocObserver));
   EXPECT_EQ(LegalizerHelper::LegalizeResult::Legalized,
-            Helper.libcall(*MIBCtlz128));
+            Helper.libcall(*MIBCtlz128, DummyLocObserver));
 
   const auto *CheckStr = R"(
   CHECK: [[COPY:%[0-9]+]]:_(s64) = COPY
@@ -2134,14 +2297,15 @@ TEST_F(AArch64GISelMITest, LibcallFAdd) {
 
   AInfo Info(MF->getSubtarget());
   DummyGISelObserver Observer;
+  LostDebugLocObserver DummyLocObserver("");
   LegalizerHelper Helper(*MF, Info, Observer, B);
 
   EXPECT_EQ(LegalizerHelper::LegalizeResult::Legalized,
-            Helper.libcall(*MIBAdd32));
+            Helper.libcall(*MIBAdd32, DummyLocObserver));
   EXPECT_EQ(LegalizerHelper::LegalizeResult::Legalized,
-            Helper.libcall(*MIBAdd64));
+            Helper.libcall(*MIBAdd64, DummyLocObserver));
   EXPECT_EQ(LegalizerHelper::LegalizeResult::Legalized,
-            Helper.libcall(*MIBAdd128));
+            Helper.libcall(*MIBAdd128, DummyLocObserver));
 
   const auto *CheckStr = R"(
   CHECK: [[COPY:%[0-9]+]]:_(s64) = COPY
@@ -2186,14 +2350,15 @@ TEST_F(AArch64GISelMITest, LibcallFSub) {
 
   AInfo Info(MF->getSubtarget());
   DummyGISelObserver Observer;
+  LostDebugLocObserver DummyLocObserver("");
   LegalizerHelper Helper(*MF, Info, Observer, B);
 
   EXPECT_EQ(LegalizerHelper::LegalizeResult::Legalized,
-            Helper.libcall(*MIBSub32));
+            Helper.libcall(*MIBSub32, DummyLocObserver));
   EXPECT_EQ(LegalizerHelper::LegalizeResult::Legalized,
-            Helper.libcall(*MIBSub64));
+            Helper.libcall(*MIBSub64, DummyLocObserver));
   EXPECT_EQ(LegalizerHelper::LegalizeResult::Legalized,
-            Helper.libcall(*MIBSub128));
+            Helper.libcall(*MIBSub128, DummyLocObserver));
 
   const auto *CheckStr = R"(
   CHECK: [[COPY:%[0-9]+]]:_(s64) = COPY
@@ -2239,13 +2404,14 @@ TEST_F(AArch64GISelMITest, LibcallFMul) {
   AInfo Info(MF->getSubtarget());
   DummyGISelObserver Observer;
   LegalizerHelper Helper(*MF, Info, Observer, B);
+  LostDebugLocObserver DummyLocObserver("");
 
   EXPECT_EQ(LegalizerHelper::LegalizeResult::Legalized,
-            Helper.libcall(*MIBMul32));
+            Helper.libcall(*MIBMul32, DummyLocObserver));
   EXPECT_EQ(LegalizerHelper::LegalizeResult::Legalized,
-            Helper.libcall(*MIBMul64));
+            Helper.libcall(*MIBMul64, DummyLocObserver));
   EXPECT_EQ(LegalizerHelper::LegalizeResult::Legalized,
-            Helper.libcall(*MIBMul128));
+            Helper.libcall(*MIBMul128, DummyLocObserver));
 
   const auto *CheckStr = R"(
   CHECK: [[COPY:%[0-9]+]]:_(s64) = COPY
@@ -2290,14 +2456,15 @@ TEST_F(AArch64GISelMITest, LibcallFDiv) {
 
   AInfo Info(MF->getSubtarget());
   DummyGISelObserver Observer;
+  LostDebugLocObserver DummyLocObserver("");
   LegalizerHelper Helper(*MF, Info, Observer, B);
 
   EXPECT_EQ(LegalizerHelper::LegalizeResult::Legalized,
-            Helper.libcall(*MIBDiv32));
+            Helper.libcall(*MIBDiv32, DummyLocObserver));
   EXPECT_EQ(LegalizerHelper::LegalizeResult::Legalized,
-            Helper.libcall(*MIBDiv64));
+            Helper.libcall(*MIBDiv64, DummyLocObserver));
   EXPECT_EQ(LegalizerHelper::LegalizeResult::Legalized,
-            Helper.libcall(*MIBDiv128));
+            Helper.libcall(*MIBDiv128, DummyLocObserver));
 
   const auto *CheckStr = R"(
   CHECK: [[COPY:%[0-9]+]]:_(s64) = COPY
@@ -2340,14 +2507,15 @@ TEST_F(AArch64GISelMITest, LibcallFExp) {
 
   AInfo Info(MF->getSubtarget());
   DummyGISelObserver Observer;
+  LostDebugLocObserver DummyLocObserver("");
   LegalizerHelper Helper(*MF, Info, Observer, B);
 
   EXPECT_EQ(LegalizerHelper::LegalizeResult::Legalized,
-            Helper.libcall(*MIBExp32));
+            Helper.libcall(*MIBExp32, DummyLocObserver));
   EXPECT_EQ(LegalizerHelper::LegalizeResult::Legalized,
-            Helper.libcall(*MIBExp64));
+            Helper.libcall(*MIBExp64, DummyLocObserver));
   EXPECT_EQ(LegalizerHelper::LegalizeResult::Legalized,
-            Helper.libcall(*MIBExp128));
+            Helper.libcall(*MIBExp128, DummyLocObserver));
 
   const auto *CheckStr = R"(
   CHECK: [[COPY:%[0-9]+]]:_(s64) = COPY
@@ -2387,14 +2555,15 @@ TEST_F(AArch64GISelMITest, LibcallFExp2) {
 
   AInfo Info(MF->getSubtarget());
   DummyGISelObserver Observer;
+  LostDebugLocObserver DummyLocObserver("");
   LegalizerHelper Helper(*MF, Info, Observer, B);
 
   EXPECT_EQ(LegalizerHelper::LegalizeResult::Legalized,
-            Helper.libcall(*MIBExp232));
+            Helper.libcall(*MIBExp232, DummyLocObserver));
   EXPECT_EQ(LegalizerHelper::LegalizeResult::Legalized,
-            Helper.libcall(*MIBExp264));
+            Helper.libcall(*MIBExp264, DummyLocObserver));
   EXPECT_EQ(LegalizerHelper::LegalizeResult::Legalized,
-            Helper.libcall(*MIBExp2128));
+            Helper.libcall(*MIBExp2128, DummyLocObserver));
 
   const auto *CheckStr = R"(
   CHECK: [[COPY:%[0-9]+]]:_(s64) = COPY
@@ -2434,14 +2603,15 @@ TEST_F(AArch64GISelMITest, LibcallFRem) {
 
   AInfo Info(MF->getSubtarget());
   DummyGISelObserver Observer;
+  LostDebugLocObserver DummyLocObserver("");
   LegalizerHelper Helper(*MF, Info, Observer, B);
 
   EXPECT_EQ(LegalizerHelper::LegalizeResult::Legalized,
-            Helper.libcall(*MIBFRem32));
+            Helper.libcall(*MIBFRem32, DummyLocObserver));
   EXPECT_EQ(LegalizerHelper::LegalizeResult::Legalized,
-            Helper.libcall(*MIBFRem64));
+            Helper.libcall(*MIBFRem64, DummyLocObserver));
   EXPECT_EQ(LegalizerHelper::LegalizeResult::Legalized,
-            Helper.libcall(*MIBFRem128));
+            Helper.libcall(*MIBFRem128, DummyLocObserver));
 
   const auto *CheckStr = R"(
   CHECK: [[COPY:%[0-9]+]]:_(s64) = COPY
@@ -2481,14 +2651,15 @@ TEST_F(AArch64GISelMITest, LibcallFPow) {
 
   AInfo Info(MF->getSubtarget());
   DummyGISelObserver Observer;
+  LostDebugLocObserver DummyLocObserver("");
   LegalizerHelper Helper(*MF, Info, Observer, B);
 
   EXPECT_EQ(LegalizerHelper::LegalizeResult::Legalized,
-            Helper.libcall(*MIBPow32));
+            Helper.libcall(*MIBPow32, DummyLocObserver));
   EXPECT_EQ(LegalizerHelper::LegalizeResult::Legalized,
-            Helper.libcall(*MIBPow64));
+            Helper.libcall(*MIBPow64, DummyLocObserver));
   EXPECT_EQ(LegalizerHelper::LegalizeResult::Legalized,
-            Helper.libcall(*MIBPow128));
+            Helper.libcall(*MIBPow128, DummyLocObserver));
 
   const auto *CheckStr = R"(
   CHECK: [[COPY:%[0-9]+]]:_(s64) = COPY
@@ -2529,14 +2700,15 @@ TEST_F(AArch64GISelMITest, LibcallFMa) {
 
   AInfo Info(MF->getSubtarget());
   DummyGISelObserver Observer;
+  LostDebugLocObserver DummyLocObserver("");
   LegalizerHelper Helper(*MF, Info, Observer, B);
 
   EXPECT_EQ(LegalizerHelper::LegalizeResult::Legalized,
-            Helper.libcall(*MIBMa32));
+            Helper.libcall(*MIBMa32, DummyLocObserver));
   EXPECT_EQ(LegalizerHelper::LegalizeResult::Legalized,
-            Helper.libcall(*MIBMa64));
+            Helper.libcall(*MIBMa64, DummyLocObserver));
   EXPECT_EQ(LegalizerHelper::LegalizeResult::Legalized,
-            Helper.libcall(*MIBMa128));
+            Helper.libcall(*MIBMa128, DummyLocObserver));
 
   const auto *CheckStr = R"(
   CHECK: [[COPY:%[0-9]+]]:_(s64) = COPY
@@ -2577,13 +2749,14 @@ TEST_F(AArch64GISelMITest, LibcallFCeil) {
   AInfo Info(MF->getSubtarget());
   DummyGISelObserver Observer;
   LegalizerHelper Helper(*MF, Info, Observer, B);
+  LostDebugLocObserver DummyLocObserver("");
 
   EXPECT_EQ(LegalizerHelper::LegalizeResult::Legalized,
-            Helper.libcall(*MIBCeil32));
+            Helper.libcall(*MIBCeil32, DummyLocObserver));
   EXPECT_EQ(LegalizerHelper::LegalizeResult::Legalized,
-            Helper.libcall(*MIBCeil64));
+            Helper.libcall(*MIBCeil64, DummyLocObserver));
   EXPECT_EQ(LegalizerHelper::LegalizeResult::Legalized,
-            Helper.libcall(*MIBCeil128));
+            Helper.libcall(*MIBCeil128, DummyLocObserver));
 
   const auto *CheckStr = R"(
   CHECK: [[COPY:%[0-9]+]]:_(s64) = COPY
@@ -2624,13 +2797,14 @@ TEST_F(AArch64GISelMITest, LibcallFFloor) {
   AInfo Info(MF->getSubtarget());
   DummyGISelObserver Observer;
   LegalizerHelper Helper(*MF, Info, Observer, B);
+  LostDebugLocObserver DummyLocObserver("");
 
   EXPECT_EQ(LegalizerHelper::LegalizeResult::Legalized,
-            Helper.libcall(*MIBFloor32));
+            Helper.libcall(*MIBFloor32, DummyLocObserver));
   EXPECT_EQ(LegalizerHelper::LegalizeResult::Legalized,
-            Helper.libcall(*MIBFloor64));
+            Helper.libcall(*MIBFloor64, DummyLocObserver));
   EXPECT_EQ(LegalizerHelper::LegalizeResult::Legalized,
-            Helper.libcall(*MIBFloor128));
+            Helper.libcall(*MIBFloor128, DummyLocObserver));
 
   const auto *CheckStr = R"(
   CHECK: [[COPY:%[0-9]+]]:_(s64) = COPY
@@ -2671,13 +2845,14 @@ TEST_F(AArch64GISelMITest, LibcallFMinNum) {
   AInfo Info(MF->getSubtarget());
   DummyGISelObserver Observer;
   LegalizerHelper Helper(*MF, Info, Observer, B);
+  LostDebugLocObserver DummyLocObserver("");
 
   EXPECT_EQ(LegalizerHelper::LegalizeResult::Legalized,
-            Helper.libcall(*MIBMin32));
+            Helper.libcall(*MIBMin32, DummyLocObserver));
   EXPECT_EQ(LegalizerHelper::LegalizeResult::Legalized,
-            Helper.libcall(*MIBMin64));
+            Helper.libcall(*MIBMin64, DummyLocObserver));
   EXPECT_EQ(LegalizerHelper::LegalizeResult::Legalized,
-            Helper.libcall(*MIBMin128));
+            Helper.libcall(*MIBMin128, DummyLocObserver));
 
   const auto *CheckStr = R"(
   CHECK: [[COPY:%[0-9]+]]:_(s64) = COPY
@@ -2721,13 +2896,14 @@ TEST_F(AArch64GISelMITest, LibcallFMaxNum) {
   AInfo Info(MF->getSubtarget());
   DummyGISelObserver Observer;
   LegalizerHelper Helper(*MF, Info, Observer, B);
+  LostDebugLocObserver DummyLocObserver("");
 
   EXPECT_EQ(LegalizerHelper::LegalizeResult::Legalized,
-            Helper.libcall(*MIBMax32));
+            Helper.libcall(*MIBMax32, DummyLocObserver));
   EXPECT_EQ(LegalizerHelper::LegalizeResult::Legalized,
-            Helper.libcall(*MIBMax64));
+            Helper.libcall(*MIBMax64, DummyLocObserver));
   EXPECT_EQ(LegalizerHelper::LegalizeResult::Legalized,
-            Helper.libcall(*MIBMax128));
+            Helper.libcall(*MIBMax128, DummyLocObserver));
 
   const auto *CheckStr = R"(
   CHECK: [[COPY:%[0-9]+]]:_(s64) = COPY
@@ -2771,13 +2947,14 @@ TEST_F(AArch64GISelMITest, LibcallFSqrt) {
   AInfo Info(MF->getSubtarget());
   DummyGISelObserver Observer;
   LegalizerHelper Helper(*MF, Info, Observer, B);
+  LostDebugLocObserver DummyLocObserver("");
 
   EXPECT_EQ(LegalizerHelper::LegalizeResult::Legalized,
-            Helper.libcall(*MIBSqrt32));
+            Helper.libcall(*MIBSqrt32, DummyLocObserver));
   EXPECT_EQ(LegalizerHelper::LegalizeResult::Legalized,
-            Helper.libcall(*MIBSqrt64));
+            Helper.libcall(*MIBSqrt64, DummyLocObserver));
   EXPECT_EQ(LegalizerHelper::LegalizeResult::Legalized,
-            Helper.libcall(*MIBSqrt128));
+            Helper.libcall(*MIBSqrt128, DummyLocObserver));
 
   const auto *CheckStr = R"(
   CHECK: [[COPY:%[0-9]+]]:_(s64) = COPY
@@ -2818,13 +2995,14 @@ TEST_F(AArch64GISelMITest, LibcallFRint) {
   AInfo Info(MF->getSubtarget());
   DummyGISelObserver Observer;
   LegalizerHelper Helper(*MF, Info, Observer, B);
+  LostDebugLocObserver DummyLocObserver("");
 
   EXPECT_EQ(LegalizerHelper::LegalizeResult::Legalized,
-            Helper.libcall(*MIBRint32));
+            Helper.libcall(*MIBRint32, DummyLocObserver));
   EXPECT_EQ(LegalizerHelper::LegalizeResult::Legalized,
-            Helper.libcall(*MIBRint64));
+            Helper.libcall(*MIBRint64, DummyLocObserver));
   EXPECT_EQ(LegalizerHelper::LegalizeResult::Legalized,
-            Helper.libcall(*MIBRint128));
+            Helper.libcall(*MIBRint128, DummyLocObserver));
 
   const auto *CheckStr = R"(
   CHECK: [[COPY:%[0-9]+]]:_(s64) = COPY
@@ -2868,13 +3046,14 @@ TEST_F(AArch64GISelMITest, LibcallFNearbyInt) {
   AInfo Info(MF->getSubtarget());
   DummyGISelObserver Observer;
   LegalizerHelper Helper(*MF, Info, Observer, B);
+  LostDebugLocObserver DummyLocObserver("");
 
   EXPECT_EQ(LegalizerHelper::LegalizeResult::Legalized,
-            Helper.libcall(*MIBNearbyInt32));
+            Helper.libcall(*MIBNearbyInt32, DummyLocObserver));
   EXPECT_EQ(LegalizerHelper::LegalizeResult::Legalized,
-            Helper.libcall(*MIBNearbyInt64));
+            Helper.libcall(*MIBNearbyInt64, DummyLocObserver));
   EXPECT_EQ(LegalizerHelper::LegalizeResult::Legalized,
-            Helper.libcall(*MIBNearbyInt128));
+            Helper.libcall(*MIBNearbyInt128, DummyLocObserver));
 
   const auto *CheckStr = R"(
   CHECK: [[COPY:%[0-9]+]]:_(s64) = COPY

@@ -67,7 +67,7 @@ struct WasmDataSegment {
   uint32_t InitFlags;
   uint64_t Offset;
   uint32_t Alignment;
-  uint32_t LinkerFlags;
+  uint32_t LinkingFlags;
   SmallVector<char, 4> Data;
 };
 
@@ -528,6 +528,7 @@ void WasmObjectWriter::recordRelocation(MCAssembler &Asm,
   }
 
   if (Type == wasm::R_WASM_TABLE_INDEX_REL_SLEB ||
+      Type == wasm::R_WASM_TABLE_INDEX_REL_SLEB64 ||
       Type == wasm::R_WASM_TABLE_INDEX_SLEB ||
       Type == wasm::R_WASM_TABLE_INDEX_SLEB64 ||
       Type == wasm::R_WASM_TABLE_INDEX_I32 ||
@@ -536,11 +537,11 @@ void WasmObjectWriter::recordRelocation(MCAssembler &Asm,
     // We require the function table to have already been defined.
     auto TableName = "__indirect_function_table";
     MCSymbolWasm *Sym = cast_or_null<MCSymbolWasm>(Ctx.lookupSymbol(TableName));
-    if (!Sym || !Sym->isFunctionTable()) {
-      Ctx.reportError(
-          Fixup.getLoc(),
-          "symbol '__indirect_function_table' is not a function table");
+    if (!Sym) {
+      report_fatal_error("missing indirect function table symbol");
     } else {
+      if (!Sym->isFunctionTable())
+        report_fatal_error("__indirect_function_table symbol has wrong type");
       // Ensure that __indirect_function_table reaches the output.
       Sym->setNoStrip();
       Asm.registerSymbol(*Sym);
@@ -590,6 +591,7 @@ WasmObjectWriter::getProvisionalValue(const WasmRelocationEntry &RelEntry,
 
   switch (RelEntry.Type) {
   case wasm::R_WASM_TABLE_INDEX_REL_SLEB:
+  case wasm::R_WASM_TABLE_INDEX_REL_SLEB64:
   case wasm::R_WASM_TABLE_INDEX_SLEB:
   case wasm::R_WASM_TABLE_INDEX_SLEB64:
   case wasm::R_WASM_TABLE_INDEX_I32:
@@ -598,7 +600,8 @@ WasmObjectWriter::getProvisionalValue(const WasmRelocationEntry &RelEntry,
     const MCSymbolWasm *Base =
         cast<MCSymbolWasm>(Layout.getBaseSymbol(*RelEntry.Symbol));
     assert(Base->isFunction());
-    if (RelEntry.Type == wasm::R_WASM_TABLE_INDEX_REL_SLEB)
+    if (RelEntry.Type == wasm::R_WASM_TABLE_INDEX_REL_SLEB ||
+        RelEntry.Type == wasm::R_WASM_TABLE_INDEX_REL_SLEB64)
       return TableIndices[Base] - InitialTableOffset;
     else
       return TableIndices[Base];
@@ -742,6 +745,7 @@ void WasmObjectWriter::applyRelocations(
       writePatchableSLEB<5>(Stream, Value, Offset);
       break;
     case wasm::R_WASM_TABLE_INDEX_SLEB64:
+    case wasm::R_WASM_TABLE_INDEX_REL_SLEB64:
     case wasm::R_WASM_MEMORY_ADDR_SLEB64:
     case wasm::R_WASM_MEMORY_ADDR_REL_SLEB64:
       writePatchableSLEB<10>(Stream, Value, Offset);
@@ -899,7 +903,7 @@ void WasmObjectWriter::writeTableSection(ArrayRef<wasm::WasmTable> Tables) {
   for (const wasm::WasmTable &Table : Tables) {
     encodeULEB128(Table.Type.ElemType, W->OS);
     encodeULEB128(Table.Type.Limits.Flags, W->OS);
-    encodeULEB128(Table.Type.Limits.Initial, W->OS);
+    encodeULEB128(Table.Type.Limits.Minimum, W->OS);
     if (Table.Type.Limits.Flags & wasm::WASM_LIMITS_FLAG_HAS_MAX)
       encodeULEB128(Table.Type.Limits.Maximum, W->OS);
   }
@@ -1133,7 +1137,7 @@ void WasmObjectWriter::writeLinkingMetaDataSection(
     for (const WasmDataSegment &Segment : DataSegments) {
       writeString(Segment.Name);
       encodeULEB128(Segment.Alignment, W->OS);
-      encodeULEB128(Segment.LinkerFlags, W->OS);
+      encodeULEB128(Segment.LinkingFlags, W->OS);
     }
     endSection(SubSection);
   }
@@ -1338,12 +1342,7 @@ void WasmObjectWriter::prepareImports(
         Import.Module = WS.getImportModule();
         Import.Field = WS.getImportName();
         Import.Kind = wasm::WASM_EXTERNAL_TABLE;
-        wasm::ValType ElemType = WS.getTableType();
-        Import.Table.ElemType = uint8_t(ElemType);
-        // FIXME: Extend table type to include limits? For now we don't specify
-        // a min or max which does not place any restrictions on the size of the
-        // imported table.
-        Import.Table.Limits = {wasm::WASM_LIMITS_FLAG_NONE, 0, 0};
+        Import.Table = WS.getTableType();
         Imports.push_back(Import);
         assert(WasmIndices.count(&WS) == 0);
         WasmIndices[&WS] = NumTableImports++;
@@ -1445,7 +1444,7 @@ uint64_t WasmObjectWriter::writeOneObject(MCAssembler &Asm,
       Segment.Section = &Section;
       addData(Segment.Data, Section);
       Segment.Alignment = Log2_32(Section.getAlignment());
-      Segment.LinkerFlags = 0;
+      Segment.LinkingFlags = Section.getSegmentFlags();
       DataSize += Segment.Data.size();
       Section.setSegmentIndex(SegmentIndex);
 
@@ -1626,9 +1625,7 @@ uint64_t WasmObjectWriter::writeOneObject(MCAssembler &Asm,
         if (WS.isDefined()) {
           wasm::WasmTable Table;
           Table.Index = NumTableImports + Tables.size();
-          Table.Type.ElemType = static_cast<uint8_t>(WS.getTableType());
-          // FIXME: Work on custom limits is ongoing
-          Table.Type.Limits = {wasm::WASM_LIMITS_FLAG_NONE, 0, 0};
+          Table.Type = WS.getTableType();
           assert(WasmIndices.count(&WS) == 0);
           WasmIndices[&WS] = Table.Index;
           Tables.push_back(Table);
@@ -1764,7 +1761,8 @@ uint64_t WasmObjectWriter::writeOneObject(MCAssembler &Asm,
           Rel.Type != wasm::R_WASM_TABLE_INDEX_I64 &&
           Rel.Type != wasm::R_WASM_TABLE_INDEX_SLEB &&
           Rel.Type != wasm::R_WASM_TABLE_INDEX_SLEB64 &&
-          Rel.Type != wasm::R_WASM_TABLE_INDEX_REL_SLEB)
+          Rel.Type != wasm::R_WASM_TABLE_INDEX_REL_SLEB &&
+          Rel.Type != wasm::R_WASM_TABLE_INDEX_REL_SLEB64)
         return;
       assert(Rel.Symbol->isFunction());
       const MCSymbolWasm *Base =

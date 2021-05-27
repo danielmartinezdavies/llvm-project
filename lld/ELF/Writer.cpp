@@ -19,6 +19,7 @@
 #include "Symbols.h"
 #include "SyntheticSections.h"
 #include "Target.h"
+#include "lld/Common/Arrays.h"
 #include "lld/Common/Filesystem.h"
 #include "lld/Common/Memory.h"
 #include "lld/Common/Strings.h"
@@ -2005,6 +2006,10 @@ template <class ELFT> void Writer<ELFT>::finalizeSections() {
     in.iplt->addSymbols();
 
   if (config->unresolvedSymbolsInShlib != UnresolvedPolicy::Ignore) {
+    auto diagnose =
+        config->unresolvedSymbolsInShlib == UnresolvedPolicy::ReportError
+            ? errorOrWarn
+            : warn;
     // Error on undefined symbols in a shared object, if all of its DT_NEEDED
     // entries are seen. These cases would otherwise lead to runtime errors
     // reported by the dynamic linker.
@@ -2012,23 +2017,18 @@ template <class ELFT> void Writer<ELFT>::finalizeSections() {
     // ld.bfd traces all DT_NEEDED to emulate the logic of the dynamic linker to
     // catch more cases. That is too much for us. Our approach resembles the one
     // used in ld.gold, achieves a good balance to be useful but not too smart.
-    for (SharedFile *file : sharedFiles)
-      file->allNeededIsKnown =
+    for (SharedFile *file : sharedFiles) {
+      bool allNeededIsKnown =
           llvm::all_of(file->dtNeeded, [&](StringRef needed) {
             return symtab->soNames.count(needed);
           });
-
-    for (Symbol *sym : symtab->symbols())
-      if (sym->isUndefined() && !sym->isWeak())
-        if (auto *f = dyn_cast_or_null<SharedFile>(sym->file))
-          if (f->allNeededIsKnown) {
-            auto diagnose = config->unresolvedSymbolsInShlib ==
-                                    UnresolvedPolicy::ReportError
-                                ? errorOrWarn
-                                : warn;
-            diagnose(toString(f) + ": undefined reference to " +
-                     toString(*sym) + " [--no-allow-shlib-undefined]");
-          }
+      if (!allNeededIsKnown)
+        continue;
+      for (Symbol *sym : file->requiredSymbols)
+        if (sym->isUndefined() && !sym->isWeak())
+          diagnose(toString(file) + ": undefined reference to " +
+                   toString(*sym) + " [--no-allow-shlib-undefined]");
+    }
   }
 
   {
@@ -2970,19 +2970,6 @@ template <class ELFT> void Writer<ELFT>::writeSections() {
   for (OutputSection *sec : outputSections)
     if (sec->type != SHT_REL && sec->type != SHT_RELA)
       sec->writeTo<ELFT>(Out::bufferStart + sec->offset);
-}
-
-// Split one uint8 array into small pieces of uint8 arrays.
-static std::vector<ArrayRef<uint8_t>> split(ArrayRef<uint8_t> arr,
-                                            size_t chunkSize) {
-  std::vector<ArrayRef<uint8_t>> ret;
-  while (arr.size() > chunkSize) {
-    ret.push_back(arr.take_front(chunkSize));
-    arr = arr.drop_front(chunkSize);
-  }
-  if (!arr.empty())
-    ret.push_back(arr);
-  return ret;
 }
 
 // Computes a hash value of Data using a given hash function.

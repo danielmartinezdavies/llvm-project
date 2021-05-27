@@ -8,7 +8,6 @@
 
 #include "mlir/Transforms/Bufferize.h"
 #include "PassDetail.h"
-#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/Passes.h"
 #include "mlir/Dialect/SCF/SCF.h"
 #include "mlir/Dialect/SCF/Transforms.h"
@@ -25,7 +24,7 @@ struct SCFBufferizePass : public SCFBufferizeBase<SCFBufferizePass> {
     auto *context = &getContext();
 
     BufferizeTypeConverter typeConverter;
-    OwningRewritePatternList patterns(context);
+    RewritePatternSet patterns(context);
     ConversionTarget target(*context);
 
     populateBufferizeMaterializationLegality(target);

@@ -117,6 +117,7 @@ class MTBUF_Real <MTBUF_Pseudo ps> :
   let Constraints        = ps.Constraints;
   let DisableEncoding    = ps.DisableEncoding;
   let TSFlags            = ps.TSFlags;
+  let SchedRW            = ps.SchedRW;
 
   bits<12> offset;
   bits<5>  cpol;
@@ -331,6 +332,7 @@ class MUBUF_Pseudo <string opName, dag outs, dag ins,
   bits<4> elements    = 0;
   bits<1> has_sccb    = 1;
   bits<1> sccb_value  = 0;
+  bits<1> IsBufferInv = 0;
 }
 
 class MUBUF_Real <MUBUF_Pseudo ps> :
@@ -347,6 +349,7 @@ class MUBUF_Real <MUBUF_Pseudo ps> :
   let DisableEncoding      = ps.DisableEncoding;
   let TSFlags              = ps.TSFlags;
   let UseNamedOperandTable = ps.UseNamedOperandTable;
+  let SchedRW              = ps.SchedRW;
 
   bits<12> offset;
   bits<5>  cpol;
@@ -372,7 +375,8 @@ class MUBUF_Invalidate <string opName, SDPatternOperator node = null_frag> :
   let mayLoad = 0;
   let mayStore = 0;
 
-  // Set everything to 0.
+  let IsBufferInv = 1;
+  // Set everything else to 0.
   let offen       = 0;
   let idxen       = 0;
   let addr64      = 0;
@@ -2604,7 +2608,10 @@ let SubtargetPredicate = HasPackedD16VMem in {
 def MUBUFInfoTable : GenericTable {
   let FilterClass = "MUBUF_Pseudo";
   let CppTypeName = "MUBUFInfo";
-  let Fields = ["Opcode", "BaseOpcode", "elements", "has_vaddr", "has_srsrc", "has_soffset"];
+  let Fields = [
+    "Opcode", "BaseOpcode", "elements", "has_vaddr", "has_srsrc", "has_soffset",
+    "IsBufferInv"
+  ];
 
   let PrimaryKey = ["Opcode"];
   let PrimaryKeyName = "getMUBUFOpcodeHelper";

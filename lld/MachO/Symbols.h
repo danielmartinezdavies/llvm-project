@@ -43,7 +43,7 @@ public:
 
   virtual ~Symbol() {}
 
-  Kind kind() const { return static_cast<Kind>(symbolKind); }
+  Kind kind() const { return symbolKind; }
 
   StringRef getName() const {
     if (nameSize == (uint32_t)-1)
@@ -72,6 +72,16 @@ public:
   // Whether this symbol is in the StubsSection.
   bool isInStubs() const { return stubsIndex != UINT32_MAX; }
 
+  uint64_t getStubVA() const;
+  uint64_t getGotVA() const;
+  uint64_t getTlvVA() const;
+  uint64_t resolveBranchVA() const {
+    assert(isa<Defined>(this) || isa<DylibSymbol>(this));
+    return isInStubs() ? getStubVA() : getVA();
+  }
+  uint64_t resolveGotVA() const { return isInGot() ? getGotVA() : getVA(); }
+  uint64_t resolveTlvVA() const { return isInGot() ? getTlvVA() : getVA(); }
+
   // The index of this symbol in the GOT or the TLVPointer section, depending
   // on whether it is a thread-local. A given symbol cannot be referenced by
   // both these sections at once.
@@ -85,21 +95,32 @@ public:
 
 protected:
   Symbol(Kind k, StringRefZ name, InputFile *file)
-      : symbolKind(k), nameData(name.data), nameSize(name.size), file(file) {}
+      : symbolKind(k), nameData(name.data), nameSize(name.size), file(file),
+        isUsedInRegularObj(!file || isa<ObjFile>(file)) {}
 
   Kind symbolKind;
   const char *nameData;
   mutable uint32_t nameSize;
   InputFile *file;
+
+public:
+  // True if this symbol was referenced by a regular (non-bitcode) object.
+  bool isUsedInRegularObj;
 };
 
 class Defined : public Symbol {
 public:
-  Defined(StringRefZ name, InputFile *file, InputSection *isec, uint32_t value,
-          bool isWeakDef, bool isExternal, bool isPrivateExtern)
-      : Symbol(DefinedKind, name, file), isec(isec), value(value),
+  Defined(StringRefZ name, InputFile *file, InputSection *isec, uint64_t value,
+          uint64_t size, bool isWeakDef, bool isExternal, bool isPrivateExtern,
+          bool isThumb, bool isReferencedDynamically)
+      : Symbol(DefinedKind, name, file), isec(isec), value(value), size(size),
         overridesWeakDef(false), privateExtern(isPrivateExtern),
-        includeInSymtab(true), weakDef(isWeakDef), external(isExternal) {}
+        includeInSymtab(true), thumb(isThumb),
+        referencedDynamically(isReferencedDynamically), weakDef(isWeakDef),
+        external(isExternal) {
+    if (isec)
+      isec->numRefs++;
+  }
 
   bool isWeakDef() const override { return weakDef; }
   bool isExternalWeakDef() const {
@@ -117,15 +138,25 @@ public:
 
   static bool classof(const Symbol *s) { return s->kind() == DefinedKind; }
 
-  InputFile *file;
   InputSection *isec;
-  uint32_t value;
+  // Contains the offset from the containing subsection. Note that this is
+  // different from nlist::n_value, which is the absolute address of the symbol.
+  uint64_t value;
+  // size is only calculated for regular (non-bitcode) symbols.
+  uint64_t size;
 
   bool overridesWeakDef : 1;
   // Whether this symbol should appear in the output binary's export trie.
   bool privateExtern : 1;
   // Whether this symbol should appear in the output symbol table.
   bool includeInSymtab : 1;
+  // Only relevant when compiling for Thumb-supporting arm32 archs.
+  bool thumb : 1;
+  // Symbols marked referencedDynamically won't be removed from the output's
+  // symbol table by tools like strip. In theory, this could be set on arbitrary
+  // symbols in input object files. In practice, it's used solely for the
+  // synthetic __mh_execute_header symbol.
+  bool referencedDynamically : 1;
 
 private:
   const bool weakDef : 1;
@@ -192,6 +223,7 @@ public:
       : Symbol(DylibKind, name, file), refState(refState), weakDef(isWeakDef),
         tlv(isTlv) {}
 
+  uint64_t getVA() const override;
   bool isWeakDef() const override { return weakDef; }
   bool isWeakRef() const override { return refState == RefState::Weak; }
   bool isReferenced() const { return refState != RefState::Unreferenced; }
@@ -239,14 +271,17 @@ union SymbolUnion {
 };
 
 template <typename T, typename... ArgT>
-T *replaceSymbol(Symbol *s, ArgT &&... arg) {
+T *replaceSymbol(Symbol *s, ArgT &&...arg) {
   static_assert(sizeof(T) <= sizeof(SymbolUnion), "SymbolUnion too small");
   static_assert(alignof(T) <= alignof(SymbolUnion),
                 "SymbolUnion not aligned enough");
   assert(static_cast<Symbol *>(static_cast<T *>(nullptr)) == nullptr &&
          "Not a Symbol");
 
-  return new (s) T(std::forward<ArgT>(arg)...);
+  bool isUsedInRegularObj = s->isUsedInRegularObj;
+  T *sym = new (s) T(std::forward<ArgT>(arg)...);
+  sym->isUsedInRegularObj |= isUsedInRegularObj;
+  return sym;
 }
 
 } // namespace macho

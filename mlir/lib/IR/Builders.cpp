@@ -120,6 +120,12 @@ DenseIntElementsAttr Builder::getI64VectorAttr(ArrayRef<int64_t> values) {
       values);
 }
 
+DenseIntElementsAttr Builder::getIndexVectorAttr(ArrayRef<int64_t> values) {
+  return DenseIntElementsAttr::get(
+      VectorType::get(static_cast<int64_t>(values.size()), getIndexType()),
+      values);
+}
+
 DenseIntElementsAttr Builder::getI32TensorAttr(ArrayRef<int32_t> values) {
   return DenseIntElementsAttr::get(
       RankedTensorType::get(static_cast<int64_t>(values.size()),
@@ -365,13 +371,13 @@ Operation *OpBuilder::insert(Operation *op) {
 /// end of it. The block is inserted at the provided insertion point of
 /// 'parent'.
 Block *OpBuilder::createBlock(Region *parent, Region::iterator insertPt,
-                              TypeRange argTypes) {
+                              TypeRange argTypes, ArrayRef<Location> locs) {
   assert(parent && "expected valid parent region");
   if (insertPt == Region::iterator())
     insertPt = parent->end();
 
   Block *b = new Block();
-  b->addArguments(argTypes);
+  b->addArguments(argTypes, locs);
   parent->getBlocks().insert(insertPt, b);
   setInsertionPointToEnd(b);
 
@@ -382,10 +388,11 @@ Block *OpBuilder::createBlock(Region *parent, Region::iterator insertPt,
 
 /// Add new block with 'argTypes' arguments and set the insertion point to the
 /// end of it.  The block is placed before 'insertBefore'.
-Block *OpBuilder::createBlock(Block *insertBefore, TypeRange argTypes) {
+Block *OpBuilder::createBlock(Block *insertBefore, TypeRange argTypes,
+                              ArrayRef<Location> locs) {
   assert(insertBefore && "expected valid insertion block");
   return createBlock(insertBefore->getParent(), Region::iterator(insertBefore),
-                     argTypes);
+                     argTypes, locs);
 }
 
 /// Create an operation given the fields represented as an OperationState.

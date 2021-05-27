@@ -161,7 +161,7 @@ struct ExpressionFormatParameterisedFixture
     return (Twine(Prefix) + Twine(Num)).str();
   }
 
-  void checkWildcardRegexCharMatchFailure(StringRef Chars) const {
+  void checkPerCharWildcardRegexMatchFailure(StringRef Chars) const {
     for (auto C : Chars) {
       std::string Str = addBasePrefix(StringRef(&C, 1));
       EXPECT_FALSE(WildcardRegex.match(Str));
@@ -259,9 +259,9 @@ TEST_P(ExpressionFormatParameterisedFixture, FormatGetWildcardRegex) {
   if (AllowHex) {
     LongNumberStr = addBasePrefix(AcceptedHexOnlyDigits);
     checkWildcardRegexMatch(LongNumberStr, 16);
-    checkWildcardRegexCharMatchFailure(RefusedHexOnlyDigits);
+    checkPerCharWildcardRegexMatchFailure(RefusedHexOnlyDigits);
   }
-  checkWildcardRegexCharMatchFailure(FirstInvalidCharDigits);
+  checkPerCharWildcardRegexMatchFailure(FirstInvalidCharDigits);
 
   // Check leading zeros are only accepted if number of digits is less than the
   // precision.
@@ -330,7 +330,7 @@ TEST_P(ExpressionFormatParameterisedFixture, FormatBoolOperator) {
   EXPECT_TRUE(bool(Format));
 }
 
-INSTANTIATE_TEST_CASE_P(
+INSTANTIATE_TEST_SUITE_P(
     AllowedExplicitExpressionFormat, ExpressionFormatParameterisedFixture,
     ::testing::Values(
         std::make_tuple(ExpressionFormat::Kind::Unsigned, 0, false),
@@ -355,7 +355,7 @@ INSTANTIATE_TEST_CASE_P(
         std::make_tuple(ExpressionFormat::Kind::HexUpper, 16, true),
 
         std::make_tuple(ExpressionFormat::Kind::Unsigned, 20, false),
-        std::make_tuple(ExpressionFormat::Kind::Signed, 20, false)), );
+        std::make_tuple(ExpressionFormat::Kind::Signed, 20, false)));
 
 TEST_F(FileCheckTest, NoFormatProperties) {
   ExpressionFormat NoFormat(ExpressionFormat::Kind::NoFormat);
@@ -1343,6 +1343,9 @@ TEST_F(FileCheckTest, ParsePattern) {
   // Collision with numeric variable.
   EXPECT_TRUE(Tester.parsePattern("[[FOO:]]"));
 
+  // Invalid use of string variable.
+  EXPECT_TRUE(Tester.parsePattern("[[FOO-BAR]]"));
+
   // Valid use of string variable.
   EXPECT_FALSE(Tester.parsePattern("[[BAR]]"));
 
@@ -1442,8 +1445,10 @@ TEST_F(FileCheckTest, Match) {
                        Succeeded());
   Tester.initNextPattern();
   // Match with substitution failure.
-  ASSERT_FALSE(Tester.parsePattern("[[#UNKNOWN]]"));
-  expectUndefErrors({"UNKNOWN"}, Tester.match("FOO").takeError());
+  ASSERT_FALSE(Tester.parsePattern("[[#UNKNOWN1+UNKNOWN2]]"));
+  expectSameErrors<ErrorDiagnostic>(
+      {"undefined variable: UNKNOWN1", "undefined variable: UNKNOWN2"},
+      Tester.match("FOO").takeError());
   Tester.initNextPattern();
   // Check that @LINE matches the later (given the calls to initNextPattern())
   // line number.

@@ -36,9 +36,12 @@ DEFINE_C_API_STRUCT(MlirExecutionEngine, void);
 /// expected to be "translatable" to LLVM IR (only contains operations in
 /// dialects that implement the `LLVMTranslationDialectInterface`). The module
 /// ownership stays with the client and can be destroyed as soon as the call
-/// returns.
-/// TODO: figure out options (optimization level, etc.).
-MLIR_CAPI_EXPORTED MlirExecutionEngine mlirExecutionEngineCreate(MlirModule op);
+/// returns. `optLevel` is the optimization level to be used for transformation
+/// and code generation. LLVM passes at `optLevel` are run before code
+/// generation.
+/// TODO: figure out other options.
+MLIR_CAPI_EXPORTED MlirExecutionEngine mlirExecutionEngineCreate(MlirModule op,
+                                                                 int optLevel);
 
 /// Destroy an ExecutionEngine instance.
 MLIR_CAPI_EXPORTED void mlirExecutionEngineDestroy(MlirExecutionEngine jit);
@@ -60,6 +63,17 @@ MLIR_CAPI_EXPORTED MlirLogicalResult mlirExecutionEngineInvokePacked(
 /// if the name can't be looked-up.
 MLIR_CAPI_EXPORTED void *mlirExecutionEngineLookup(MlirExecutionEngine jit,
                                                    MlirStringRef name);
+
+/// Register a symbol with the jit: this symbol will be accessible to the jitted
+/// code.
+MLIR_CAPI_EXPORTED void
+mlirExecutionEngineRegisterSymbol(MlirExecutionEngine jit, MlirStringRef name,
+                                  void *sym);
+
+/// Dump as an object in `fileName`.
+MLIR_CAPI_EXPORTED void
+mlirExecutionEngineDumpToObjectFile(MlirExecutionEngine jit,
+                                    MlirStringRef fileName);
 
 #ifdef __cplusplus
 }

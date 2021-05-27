@@ -235,7 +235,7 @@ public:
   Attrs GetAttrs();
   Attrs EndAttrs();
   bool SetPassNameOn(Symbol &);
-  bool SetBindNameOn(Symbol &);
+  void SetBindNameOn(Symbol &);
   void Post(const parser::LanguageBindingSpec &);
   bool Pre(const parser::IntentSpec &);
   bool Pre(const parser::Pass &);
@@ -681,7 +681,9 @@ public:
   bool isAbstract() const;
 
 protected:
-  GenericDetails &GetGenericDetails();
+  Symbol &GetGenericSymbol() {
+    return DEREF(genericInfo_.top().symbol);
+  }
   // Add to generic the symbol for the subprogram with the same name
   void CheckGenericProcedures(Symbol &);
 
@@ -744,8 +746,11 @@ private:
     std::optional<SourceName> source;
   } funcInfo_;
 
+  // Edits an existing symbol created for earlier calls to a subprogram or ENTRY
+  // so that it can be replaced by a later definition.
+  bool HandlePreviousCalls(const parser::Name &, Symbol &, Symbol::Flag);
   // Create a subprogram symbol in the current scope and push a new scope.
-  void CheckExtantExternal(const parser::Name &, Symbol::Flag);
+  void CheckExtantProc(const parser::Name &, Symbol::Flag);
   Symbol &PushSubprogramScope(const parser::Name &, Symbol::Flag);
   Symbol *GetSpecificFromGeneric(const parser::Name &);
   SubprogramDetails &PostSubprogramStmt(const parser::Name &);
@@ -1527,21 +1532,26 @@ bool AttrsVisitor::SetPassNameOn(Symbol &symbol) {
   return true;
 }
 
-bool AttrsVisitor::SetBindNameOn(Symbol &symbol) {
-  if (!bindName_) {
-    return false;
+void AttrsVisitor::SetBindNameOn(Symbol &symbol) {
+  if (!attrs_ || !attrs_->test(Attr::BIND_C)) {
+    return;
   }
-  std::visit(
-      common::visitors{
-          [&](EntityDetails &x) { x.set_bindName(std::move(bindName_)); },
-          [&](ObjectEntityDetails &x) { x.set_bindName(std::move(bindName_)); },
-          [&](ProcEntityDetails &x) { x.set_bindName(std::move(bindName_)); },
-          [&](SubprogramDetails &x) { x.set_bindName(std::move(bindName_)); },
-          [&](CommonBlockDetails &x) { x.set_bindName(std::move(bindName_)); },
-          [](auto &) { common::die("unexpected bind name"); },
-      },
-      symbol.details());
-  return true;
+  std::optional<std::string> label{evaluate::GetScalarConstantValue<
+      evaluate::Type<TypeCategory::Character, 1>>(bindName_)};
+  // 18.9.2(2): discard leading and trailing blanks, ignore if all blank
+  if (label) {
+    auto first{label->find_first_not_of(" ")};
+    if (first == std::string::npos) {
+      // Empty NAME= means no binding at all (18.10.2p2)
+      Say(currStmtSource().value(), "Blank binding label ignored"_en_US);
+      return;
+    }
+    auto last{label->find_last_not_of(" ")};
+    label = label->substr(first, last - first + 1);
+  } else {
+    label = parser::ToLowerCaseLetters(symbol.name().ToString());
+  }
+  symbol.SetBindName(std::move(*label));
 }
 
 void AttrsVisitor::Post(const parser::LanguageBindingSpec &x) {
@@ -2228,7 +2238,7 @@ const DeclTypeSpec *ScopeHandler::GetImplicitType(
     if (const DerivedTypeSpec * derived{type->AsDerived()}) {
       // Resolve any forward-referenced derived type; a quick no-op else.
       auto &instantiatable{*const_cast<DerivedTypeSpec *>(derived)};
-      instantiatable.Instantiate(currScope(), context());
+      instantiatable.Instantiate(currScope());
     }
   }
   return type;
@@ -2674,9 +2684,6 @@ bool InterfaceVisitor::isGeneric() const {
 bool InterfaceVisitor::isAbstract() const {
   return !genericInfo_.empty() && GetGenericInfo().isAbstract;
 }
-GenericDetails &InterfaceVisitor::GetGenericDetails() {
-  return GetGenericInfo().symbol->get<GenericDetails>();
-}
 
 void InterfaceVisitor::AddSpecificProcs(
     const std::list<parser::Name> &names, ProcedureKind kind) {
@@ -2878,7 +2885,9 @@ void SubprogramVisitor::Post(const parser::ImplicitPart &) {
   if (funcInfo_.parsedType) {
     messageHandler().set_currStmtSource(funcInfo_.source);
     if (const auto *type{ProcessTypeSpec(*funcInfo_.parsedType, true)}) {
-      funcInfo_.resultSymbol->SetType(*type);
+      if (!context().HasError(funcInfo_.resultSymbol)) {
+        funcInfo_.resultSymbol->SetType(*type);
+      }
     }
   }
   funcInfo_ = {};
@@ -2938,11 +2947,16 @@ void SubprogramVisitor::Post(const parser::FunctionStmt &stmt) {
     funcResultName = &name;
   }
   // add function result to function scope
-  EntityDetails funcResultDetails;
-  funcResultDetails.set_funcResult(true);
-  funcInfo_.resultSymbol =
-      &MakeSymbol(*funcResultName, std::move(funcResultDetails));
-  details.set_result(*funcInfo_.resultSymbol);
+  if (details.isFunction()) {
+    CHECK(context().HasError(currScope().symbol()));
+  } else {
+    // add function result to function scope
+    EntityDetails funcResultDetails;
+    funcResultDetails.set_funcResult(true);
+    funcInfo_.resultSymbol =
+        &MakeSymbol(*funcResultName, std::move(funcResultDetails));
+    details.set_result(*funcInfo_.resultSymbol);
+  }
 
   // C1560.
   if (funcInfo_.resultName && funcInfo_.resultName->source == name.source) {
@@ -3069,7 +3083,10 @@ void SubprogramVisitor::Post(const parser::EntryStmt &stmt) {
                 }},
             dummy->details());
       } else {
-        dummy = &MakeSymbol(*dummyName, EntityDetails(true));
+        dummy = &MakeSymbol(*dummyName, EntityDetails{true});
+        if (inExecutionPart_) {
+          ApplyImplicitRules(*dummy);
+        }
       }
       entryDetails.add_dummyArg(*dummy);
     } else {
@@ -3084,22 +3101,12 @@ void SubprogramVisitor::Post(const parser::EntryStmt &stmt) {
 
   Symbol::Flag subpFlag{
       inFunction ? Symbol::Flag::Function : Symbol::Flag::Subroutine};
-  CheckExtantExternal(name, subpFlag);
   Scope &outer{inclusiveScope.parent()}; // global or module scope
+  if (outer.IsModule() && !attrs.test(Attr::PRIVATE)) {
+    attrs.set(Attr::PUBLIC);
+  }
   if (Symbol * extant{FindSymbol(outer, name)}) {
-    if (extant->has<ProcEntityDetails>()) {
-      if (!extant->test(subpFlag)) {
-        Say2(name,
-            subpFlag == Symbol::Flag::Function
-                ? "'%s' was previously called as a subroutine"_err_en_US
-                : "'%s' was previously called as a function"_err_en_US,
-            *extant, "Previous call of '%s'"_en_US);
-      }
-      if (extant->attrs().test(Attr::PRIVATE)) {
-        attrs.set(Attr::PRIVATE);
-      }
-      outer.erase(extant->name());
-    } else {
+    if (!HandlePreviousCalls(name, *extant, subpFlag)) {
       if (outer.IsGlobal()) {
         Say2(name, "'%s' is already defined as a global identifier"_err_en_US,
             *extant, "Previous definition of '%s'"_en_US);
@@ -3109,14 +3116,8 @@ void SubprogramVisitor::Post(const parser::EntryStmt &stmt) {
       return;
     }
   }
-  if (outer.IsModule() && !attrs.test(Attr::PRIVATE)) {
-    attrs.set(Attr::PUBLIC);
-  }
   Symbol &entrySymbol{MakeSymbol(outer, name.source, attrs)};
   entrySymbol.set_details(std::move(entryDetails));
-  if (outer.IsGlobal()) {
-    MakeExternal(entrySymbol);
-  }
   SetBindNameOn(entrySymbol);
   entrySymbol.set(subpFlag);
   Resolve(name, entrySymbol);
@@ -3176,19 +3177,37 @@ bool SubprogramVisitor::BeginSubprogram(
 
 void SubprogramVisitor::EndSubprogram() { PopScope(); }
 
-void SubprogramVisitor::CheckExtantExternal(
+bool SubprogramVisitor::HandlePreviousCalls(
+    const parser::Name &name, Symbol &symbol, Symbol::Flag subpFlag) {
+  if (const auto *proc{symbol.detailsIf<ProcEntityDetails>()}; proc &&
+      !proc->isDummy() &&
+      !symbol.attrs().HasAny(Attrs{Attr::INTRINSIC, Attr::POINTER})) {
+    // There's a symbol created for previous calls to this subprogram or
+    // ENTRY's name.  We have to replace that symbol in situ to avoid the
+    // obligation to rewrite symbol pointers in the parse tree.
+    if (!symbol.test(subpFlag)) {
+      Say2(name,
+          subpFlag == Symbol::Flag::Function
+              ? "'%s' was previously called as a subroutine"_err_en_US
+              : "'%s' was previously called as a function"_err_en_US,
+          symbol, "Previous call of '%s'"_en_US);
+    }
+    EntityDetails entity;
+    if (proc->type()) {
+      entity.set_type(*proc->type());
+    }
+    symbol.details() = std::move(entity);
+    return true;
+  } else {
+    return symbol.has<UnknownDetails>() || symbol.has<SubprogramNameDetails>();
+  }
+}
+
+void SubprogramVisitor::CheckExtantProc(
     const parser::Name &name, Symbol::Flag subpFlag) {
   if (auto *prev{FindSymbol(name)}) {
-    if (prev->attrs().test(Attr::EXTERNAL) && prev->has<ProcEntityDetails>()) {
-      // this subprogram was previously called, now being declared
-      if (!prev->test(subpFlag)) {
-        Say2(name,
-            subpFlag == Symbol::Flag::Function
-                ? "'%s' was previously called as a subroutine"_err_en_US
-                : "'%s' was previously called as a function"_err_en_US,
-            *prev, "Previous call of '%s'"_en_US);
-      }
-      EraseSymbol(name);
+    if (!IsDummy(*prev) && !HandlePreviousCalls(name, *prev, subpFlag)) {
+      SayAlreadyDeclared(name, *prev);
     }
   }
 }
@@ -3197,7 +3216,7 @@ Symbol &SubprogramVisitor::PushSubprogramScope(
     const parser::Name &name, Symbol::Flag subpFlag) {
   auto *symbol{GetSpecificFromGeneric(name)};
   if (!symbol) {
-    CheckExtantExternal(name, subpFlag);
+    CheckExtantProc(name, subpFlag);
     symbol = &MakeSymbol(name, SubprogramDetails{});
   }
   symbol->set(subpFlag);
@@ -3212,7 +3231,13 @@ Symbol &SubprogramVisitor::PushSubprogramScope(
       MakeExternal(*symbol);
     }
     if (isGeneric()) {
-      GetGenericDetails().AddSpecificProc(*symbol, name.source);
+      Symbol &genericSymbol{GetGenericSymbol()};
+      if (genericSymbol.has<GenericDetails>()) {
+        genericSymbol.get<GenericDetails>().AddSpecificProc(
+            *symbol, name.source);
+      } else {
+        CHECK(context().HasError(genericSymbol));
+      }
     }
     set_inheritFromParent(false);
   }
@@ -3248,7 +3273,12 @@ Symbol *SubprogramVisitor::GetSpecificFromGeneric(const parser::Name &name) {
       if (!specific) {
         specific =
             &currScope().MakeSymbol(name.source, Attrs{}, SubprogramDetails{});
-        details->set_specific(Resolve(name, *specific));
+        if (details->derivedType()) {
+          // A specific procedure with the same name as a derived type
+          SayAlreadyDeclared(name, *details->derivedType());
+        } else {
+          details->set_specific(Resolve(name, *specific));
+        }
       } else if (isGeneric()) {
         SayAlreadyDeclared(name, *specific);
       }
@@ -3903,7 +3933,7 @@ void DeclarationVisitor::Post(const parser::DerivedTypeSpec &x) {
     } else {
       auto restorer{
           GetFoldingContext().messages().SetLocation(currStmtSource().value())};
-      derived.Instantiate(currScope(), context());
+      derived.Instantiate(currScope());
     }
     SetDeclTypeSpec(type);
   }
@@ -6799,7 +6829,7 @@ void ResolveNamesVisitor::FinishSpecificationParts(const ProgramTree &node) {
 void ResolveNamesVisitor::FinishDerivedTypeInstantiation(Scope &scope) {
   CHECK(scope.IsDerivedType() && !scope.symbol());
   if (DerivedTypeSpec * spec{scope.derivedTypeSpec()}) {
-    spec->Instantiate(currScope(), context());
+    spec->Instantiate(currScope());
     const Symbol &origTypeSymbol{spec->typeSymbol()};
     if (const Scope * origTypeScope{origTypeSymbol.scope()}) {
       CHECK(origTypeScope->IsDerivedType() &&

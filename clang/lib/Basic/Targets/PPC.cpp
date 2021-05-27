@@ -56,6 +56,8 @@ bool PPCTargetInfo::handleTargetFeatures(std::vector<std::string> &Features,
       HasP10Vector = true;
     } else if (Feature == "+pcrelative-memops") {
       HasPCRelativeMemops = true;
+    } else if (Feature == "+prefix-instrs") {
+      HasPrefixInstrs = true;
     } else if (Feature == "+spe" || Feature == "+efpu2") {
       HasSPE = true;
       LongDoubleWidth = LongDoubleAlign = 64;
@@ -66,8 +68,10 @@ bool PPCTargetInfo::handleTargetFeatures(std::vector<std::string> &Features,
       PairedVectorMemops = true;
     } else if (Feature == "+mma") {
       HasMMA = true;
-    } else if (Feature == "+rop-protection") {
-      HasROPProtection = true;
+    } else if (Feature == "+rop-protect") {
+      HasROPProtect = true;
+    } else if (Feature == "+privileged") {
+      HasPrivileged = true;
     }
     // TODO: Finish this list and add an assert that we've handled them
     // all.
@@ -195,8 +199,10 @@ void PPCTargetInfo::getTargetDefines(const LangOptions &Opts,
     Builder.defineMacro("__POWER9_VECTOR__");
   if (HasMMA)
     Builder.defineMacro("__MMA__");
-  if (HasROPProtection)
-    Builder.defineMacro("__ROP_PROTECTION__");
+  if (HasROPProtect)
+    Builder.defineMacro("__ROP_PROTECT__");
+  if (HasPrivileged)
+    Builder.defineMacro("__PRIVILEGED__");
   if (HasP10Vector)
     Builder.defineMacro("__POWER10_VECTOR__");
   if (HasPCRelativeMemops)
@@ -325,8 +331,10 @@ bool PPCTargetInfo::initFeatureMap(
                         .Case("pwr8", true)
                         .Default(false);
 
-  // ROP Protection is off by default.
-  Features["rop-protection"] = false;
+  // ROP Protect is off by default.
+  Features["rop-protect"] = false;
+  // Privileged instructions are off by default.
+  Features["privileged"] = false;
 
   Features["spe"] = llvm::StringSwitch<bool>(CPU)
                         .Case("8548", true)
@@ -365,9 +373,15 @@ bool PPCTargetInfo::initFeatureMap(
   }
 
   if (!(ArchDefs & ArchDefinePwr8) &&
-      llvm::find(FeaturesVec, "+rop-protection") != FeaturesVec.end()) {
-    // We can turn on ROP Protection on Power 8 and above.
-    Diags.Report(diag::err_opt_not_valid_with_opt) << "-mrop-protection" << CPU;
+      llvm::find(FeaturesVec, "+rop-protect") != FeaturesVec.end()) {
+    // We can turn on ROP Protect on Power 8 and above.
+    Diags.Report(diag::err_opt_not_valid_with_opt) << "-mrop-protect" << CPU;
+    return false;
+  }
+
+  if (!(ArchDefs & ArchDefinePwr8) &&
+      llvm::find(FeaturesVec, "+privileged") != FeaturesVec.end()) {
+    Diags.Report(diag::err_opt_not_valid_with_opt) << "-mprivileged" << CPU;
     return false;
   }
 
@@ -382,6 +396,7 @@ void PPCTargetInfo::addP10SpecificFeatures(
   Features["mma"] = true;
   Features["power10-vector"] = true;
   Features["pcrelative-memops"] = true;
+  Features["prefix-instrs"] = true;
   return;
 }
 
@@ -407,9 +422,11 @@ bool PPCTargetInfo::hasFeature(StringRef Feature) const {
       .Case("paired-vector-memops", PairedVectorMemops)
       .Case("power10-vector", HasP10Vector)
       .Case("pcrelative-memops", HasPCRelativeMemops)
+      .Case("prefix-instrs", HasPrefixInstrs)
       .Case("spe", HasSPE)
       .Case("mma", HasMMA)
-      .Case("rop-protection", HasROPProtection)
+      .Case("rop-protect", HasROPProtect)
+      .Case("privileged", HasPrivileged)
       .Default(false);
 }
 
@@ -438,6 +455,8 @@ void PPCTargetInfo::setFeatureEnabled(llvm::StringMap<bool> &Features,
       Features["power8-vector"] = Features["power9-vector"] = true;
     if (Name == "pcrel")
       Features["pcrelative-memops"] = true;
+    else if (Name == "prefixed")
+      Features["prefix-instrs"] = true;
     else
       Features[Name] = true;
   } else {
@@ -458,6 +477,8 @@ void PPCTargetInfo::setFeatureEnabled(llvm::StringMap<bool> &Features,
           Features["power10-vector"] = false;
     if (Name == "pcrel")
       Features["pcrelative-memops"] = false;
+    else if (Name == "prefixed")
+      Features["prefix-instrs"] = false;
     else
       Features[Name] = false;
   }
@@ -540,17 +561,17 @@ ArrayRef<TargetInfo::AddlRegName> PPCTargetInfo::getGCCAddlRegNames() const {
 }
 
 static constexpr llvm::StringLiteral ValidCPUNames[] = {
-    {"generic"}, {"440"},     {"450"},       {"601"},     {"602"},
-    {"603"},     {"603e"},    {"603ev"},     {"604"},     {"604e"},
-    {"620"},     {"630"},     {"g3"},        {"7400"},    {"g4"},
-    {"7450"},    {"g4+"},     {"750"},       {"8548"},    {"970"},
-    {"g5"},      {"a2"},      {"e500"},      {"e500mc"},  {"e5500"},
-    {"power3"},  {"pwr3"},    {"power4"},    {"pwr4"},    {"power5"},
-    {"pwr5"},    {"power5x"}, {"pwr5x"},     {"power6"},  {"pwr6"},
-    {"power6x"}, {"pwr6x"},   {"power7"},    {"pwr7"},    {"power8"},
-    {"pwr8"},    {"power9"},  {"pwr9"},      {"power10"}, {"pwr10"},
-    {"powerpc"}, {"ppc"},     {"powerpc64"}, {"ppc64"},   {"powerpc64le"},
-    {"ppc64le"}, {"future"}};
+    {"generic"},     {"440"},     {"450"},    {"601"},       {"602"},
+    {"603"},         {"603e"},    {"603ev"},  {"604"},       {"604e"},
+    {"620"},         {"630"},     {"g3"},     {"7400"},      {"g4"},
+    {"7450"},        {"g4+"},     {"750"},    {"8548"},      {"970"},
+    {"g5"},          {"a2"},      {"e500"},   {"e500mc"},    {"e5500"},
+    {"power3"},      {"pwr3"},    {"power4"}, {"pwr4"},      {"power5"},
+    {"pwr5"},        {"power5x"}, {"pwr5x"},  {"power6"},    {"pwr6"},
+    {"power6x"},     {"pwr6x"},   {"power7"}, {"pwr7"},      {"power8"},
+    {"pwr8"},        {"power9"},  {"pwr9"},   {"power10"},   {"pwr10"},
+    {"powerpc"},     {"ppc"},     {"ppc32"},  {"powerpc64"}, {"ppc64"},
+    {"powerpc64le"}, {"ppc64le"}, {"future"}};
 
 bool PPCTargetInfo::isValidCPUName(StringRef Name) const {
   return llvm::find(ValidCPUNames, Name) != std::end(ValidCPUNames);

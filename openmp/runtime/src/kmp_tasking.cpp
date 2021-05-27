@@ -1221,6 +1221,7 @@ kmp_task_t *__kmp_task_alloc(ident_t *loc_ref, kmp_int32 gtid,
                 gtid, loc_ref, *((kmp_int32 *)flags), sizeof_kmp_task_t,
                 sizeof_shareds, task_entry));
 
+  KMP_DEBUG_ASSERT(parent_task);
   if (parent_task->td_flags.final) {
     if (flags->merged_if0) {
     }
@@ -1682,10 +1683,8 @@ kmp_int32 __kmpc_omp_task_parts(ident_t *loc_ref, kmp_int32 gtid,
   if (UNLIKELY(ompt_enabled.enabled)) {
     parent = new_taskdata->td_parent;
     if (ompt_enabled.ompt_callback_task_create) {
-      ompt_data_t task_data = ompt_data_none;
       ompt_callbacks.ompt_callback(ompt_callback_task_create)(
-          parent ? &(parent->ompt_task_info.task_data) : &task_data,
-          parent ? &(parent->ompt_task_info.frame) : NULL,
+          &(parent->ompt_task_info.task_data), &(parent->ompt_task_info.frame),
           &(new_taskdata->ompt_task_info.task_data), ompt_task_explicit, 0,
           OMPT_GET_RETURN_ADDRESS(0));
     }
@@ -1782,10 +1781,9 @@ kmp_int32 __kmpc_omp_task(ident_t *loc_ref, kmp_int32 gtid,
             OMPT_GET_FRAME_ADDRESS(0);
       }
       if (ompt_enabled.ompt_callback_task_create) {
-        ompt_data_t task_data = ompt_data_none;
         ompt_callbacks.ompt_callback(ompt_callback_task_create)(
-            parent ? &(parent->ompt_task_info.task_data) : &task_data,
-            parent ? &(parent->ompt_task_info.frame) : NULL,
+            &(parent->ompt_task_info.task_data),
+            &(parent->ompt_task_info.frame),
             &(new_taskdata->ompt_task_info.task_data),
             ompt_task_explicit | TASK_TYPE_DETAILS_FORMAT(new_taskdata), 0,
             OMPT_LOAD_RETURN_ADDRESS(gtid));
@@ -1845,10 +1843,8 @@ kmp_int32 __kmp_omp_taskloop_task(ident_t *loc_ref, kmp_int32 gtid,
     if (!parent->ompt_task_info.frame.enter_frame.ptr)
       parent->ompt_task_info.frame.enter_frame.ptr = OMPT_GET_FRAME_ADDRESS(0);
     if (ompt_enabled.ompt_callback_task_create) {
-      ompt_data_t task_data = ompt_data_none;
       ompt_callbacks.ompt_callback(ompt_callback_task_create)(
-          parent ? &(parent->ompt_task_info.task_data) : &task_data,
-          parent ? &(parent->ompt_task_info.frame) : NULL,
+          &(parent->ompt_task_info.task_data), &(parent->ompt_task_info.frame),
           &(new_taskdata->ompt_task_info.task_data),
           ompt_task_explicit | TASK_TYPE_DETAILS_FORMAT(new_taskdata), 0,
           codeptr_ra);
@@ -1873,7 +1869,7 @@ template <bool ompt>
 static kmp_int32 __kmpc_omp_taskwait_template(ident_t *loc_ref, kmp_int32 gtid,
                                               void *frame_address,
                                               void *return_address) {
-  kmp_taskdata_t *taskdata;
+  kmp_taskdata_t *taskdata = nullptr;
   kmp_info_t *thread;
   int thread_finished = FALSE;
   KMP_SET_THREAD_STATE_BLOCK(TASKWAIT);
@@ -2007,7 +2003,7 @@ kmp_int32 __kmpc_omp_taskwait(ident_t *loc_ref, kmp_int32 gtid) {
 
 // __kmpc_omp_taskyield: switch to a different task
 kmp_int32 __kmpc_omp_taskyield(ident_t *loc_ref, kmp_int32 gtid, int end_part) {
-  kmp_taskdata_t *taskdata;
+  kmp_taskdata_t *taskdata = NULL;
   kmp_info_t *thread;
   int thread_finished = FALSE;
 
@@ -2501,6 +2497,7 @@ void __kmpc_taskgroup(ident_t *loc, int gtid) {
   tg_new->parent = taskdata->td_taskgroup;
   tg_new->reduce_data = NULL;
   tg_new->reduce_num_data = 0;
+  tg_new->gomp_data = NULL;
   taskdata->td_taskgroup = tg_new;
 
 #if OMPT_SUPPORT && OMPT_OPTIONAL
@@ -2533,7 +2530,7 @@ void __kmpc_end_taskgroup(ident_t *loc, int gtid) {
   kmp_team_t *team;
   ompt_data_t my_task_data;
   ompt_data_t my_parallel_data;
-  void *codeptr;
+  void *codeptr = nullptr;
   if (UNLIKELY(ompt_enabled.enabled)) {
     team = thread->th.th_team;
     my_task_data = taskdata->ompt_task_info.task_data;
@@ -2599,7 +2596,8 @@ void __kmpc_end_taskgroup(ident_t *loc, int gtid) {
   }
   KMP_DEBUG_ASSERT(taskgroup->count == 0);
 
-  if (taskgroup->reduce_data != NULL) { // need to reduce?
+  if (taskgroup->reduce_data != NULL &&
+      !taskgroup->gomp_data) { // need to reduce?
     int cnt;
     void *reduce_data;
     kmp_team_t *t = thread->th.th_team;
@@ -3593,8 +3591,7 @@ void __kmp_task_team_setup(kmp_info_t *this_thr, kmp_team_t *team, int always) {
     KA_TRACE(20, ("__kmp_task_team_setup: Primary T#%d created new task_team %p"
                   " for team %d at parity=%d\n",
                   __kmp_gtid_from_thread(this_thr),
-                  team->t.t_task_team[this_thr->th.th_task_state],
-                  ((team != NULL) ? team->t.t_id : -1),
+                  team->t.t_task_team[this_thr->th.th_task_state], team->t.t_id,
                   this_thr->th.th_task_state));
   }
 
@@ -3607,14 +3604,14 @@ void __kmp_task_team_setup(kmp_info_t *this_thr, kmp_team_t *team, int always) {
   // for serialized teams.
   if (team->t.t_nproc > 1) {
     int other_team = 1 - this_thr->th.th_task_state;
+    KMP_DEBUG_ASSERT(other_team >= 0 && other_team < 2);
     if (team->t.t_task_team[other_team] == NULL) { // setup other team as well
       team->t.t_task_team[other_team] =
           __kmp_allocate_task_team(this_thr, team);
       KA_TRACE(20, ("__kmp_task_team_setup: Primary T#%d created second new "
                     "task_team %p for team %d at parity=%d\n",
                     __kmp_gtid_from_thread(this_thr),
-                    team->t.t_task_team[other_team],
-                    ((team != NULL) ? team->t.t_id : -1), other_team));
+                    team->t.t_task_team[other_team], team->t.t_id, other_team));
     } else { // Leave the old task team struct in place for the upcoming region;
       // adjust as needed
       kmp_task_team_t *task_team = team->t.t_task_team[other_team];
@@ -3632,8 +3629,7 @@ void __kmp_task_team_setup(kmp_info_t *this_thr, kmp_team_t *team, int always) {
       KA_TRACE(20, ("__kmp_task_team_setup: Primary T#%d reset next task_team "
                     "%p for team %d at parity=%d\n",
                     __kmp_gtid_from_thread(this_thr),
-                    team->t.t_task_team[other_team],
-                    ((team != NULL) ? team->t.t_id : -1), other_team));
+                    team->t.t_task_team[other_team], team->t.t_id, other_team));
     }
   }
 
@@ -3676,7 +3672,7 @@ void __kmp_task_team_sync(kmp_info_t *this_thr, kmp_team_t *team) {
            ("__kmp_task_team_sync: Thread T#%d task team switched to task_team "
             "%p from Team #%d (parity=%d)\n",
             __kmp_gtid_from_thread(this_thr), this_thr->th.th_task_team,
-            ((team != NULL) ? team->t.t_id : -1), this_thr->th.th_task_state));
+            team->t.t_id, this_thr->th.th_task_state));
 }
 
 // __kmp_task_team_wait: Primary thread waits for outstanding tasks after the

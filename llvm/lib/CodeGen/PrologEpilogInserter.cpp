@@ -399,7 +399,8 @@ static void assignCalleeSavedSpillSlots(MachineFunction &F,
 
   const TargetFrameLowering *TFI = F.getSubtarget().getFrameLowering();
   MachineFrameInfo &MFI = F.getFrameInfo();
-  if (!TFI->assignCalleeSavedSpillSlots(F, RegInfo, CSI)) {
+  if (!TFI->assignCalleeSavedSpillSlots(F, RegInfo, CSI, MinCSFrameIndex,
+                                        MaxCSFrameIndex)) {
     // If target doesn't implement this, use generic code.
 
     if (CSI.empty())
@@ -436,7 +437,7 @@ static void assignCalleeSavedSpillSlots(MachineFunction &F,
       unsigned Size = RegInfo->getSpillSize(*RC);
       if (FixedSlot == FixedSpillSlots + NumFixedSpillSlots) {
         // Nope, just spill it anywhere convenient.
-        Align Alignment(RegInfo->getSpillAlignment(*RC));
+        Align Alignment = RegInfo->getSpillAlign(*RC);
         // We may not be able to satisfy the desired alignment specification of
         // the TargetRegisterClass if the stack alignment is smaller. Use the
         // min.
@@ -677,10 +678,12 @@ computeFreeStackSlots(MachineFrameInfo &MFI, bool StackGrowsDown,
     // StackSlot scavenging is only implemented for the default stack.
     if (MFI.getStackID(i) == TargetStackID::Default)
       AllocatedFrameSlots.push_back(i);
-  // Add callee-save objects.
-  for (int i = MinCSFrameIndex; i <= (int)MaxCSFrameIndex; ++i)
-    if (MFI.getStackID(i) == TargetStackID::Default)
-      AllocatedFrameSlots.push_back(i);
+  // Add callee-save objects if there are any.
+  if (MinCSFrameIndex <= MaxCSFrameIndex) {
+    for (int i = MinCSFrameIndex; i <= (int)MaxCSFrameIndex; ++i)
+      if (MFI.getStackID(i) == TargetStackID::Default)
+        AllocatedFrameSlots.push_back(i);
+  }
 
   for (int i : AllocatedFrameSlots) {
     // These are converted from int64_t, but they should always fit in int
@@ -833,7 +836,7 @@ void PEI::calculateFrameObjectOffsets(MachineFunction &MF) {
 
   // First assign frame offsets to stack objects that are used to spill
   // callee saved registers.
-  if (StackGrowsDown) {
+  if (StackGrowsDown && MaxCSFrameIndex >= MinCSFrameIndex) {
     for (unsigned i = MinCSFrameIndex; i <= MaxCSFrameIndex; ++i) {
       if (MFI.getStackID(i) !=
           TargetStackID::Default) // Only allocate objects on the default stack.
@@ -877,10 +880,9 @@ void PEI::calculateFrameObjectOffsets(MachineFunction &MF) {
   // incoming stack pointer if a frame pointer is required and is closer
   // to the incoming rather than the final stack pointer.
   const TargetRegisterInfo *RegInfo = MF.getSubtarget().getRegisterInfo();
-  bool EarlyScavengingSlots = (TFI.hasFP(MF) &&
-                               TFI.isFPCloseToIncomingSP() &&
+  bool EarlyScavengingSlots = (TFI.hasFP(MF) && TFI.isFPCloseToIncomingSP() &&
                                RegInfo->useFPForScavengingIndex(MF) &&
-                               !RegInfo->needsStackRealignment(MF));
+                               !RegInfo->hasStackRealignment(MF));
   if (RS && EarlyScavengingSlots) {
     SmallVector<int, 2> SFIs;
     RS->getScavengingFrameIndices(SFIs);
@@ -1063,7 +1065,7 @@ void PEI::calculateFrameObjectOffsets(MachineFunction &MF) {
     // value.
     Align StackAlign;
     if (MFI.adjustsStack() || MFI.hasVarSizedObjects() ||
-        (RegInfo->needsStackRealignment(MF) && MFI.getObjectIndexEnd() != 0))
+        (RegInfo->hasStackRealignment(MF) && MFI.getObjectIndexEnd() != 0))
       StackAlign = TFI.getStackAlign();
     else
       StackAlign = TFI.getTransientStackAlign();
@@ -1077,7 +1079,8 @@ void PEI::calculateFrameObjectOffsets(MachineFunction &MF) {
     // If we have increased the offset to fulfill the alignment constrants,
     // then the scavenging spill slots may become harder to reach from the
     // stack pointer, float them so they stay close.
-    if (OffsetBeforeAlignment != Offset && RS && !EarlyScavengingSlots) {
+    if (StackGrowsDown && OffsetBeforeAlignment != Offset && RS &&
+        !EarlyScavengingSlots) {
       SmallVector<int, 2> SFIs;
       RS->getScavengingFrameIndices(SFIs);
       LLVM_DEBUG(if (!SFIs.empty()) llvm::dbgs()
@@ -1265,6 +1268,9 @@ void PEI::replaceFrameIndices(MachineBasicBlock *BB, MachineFunction &MF,
           DIExpr = DIExpression::appendOpsToArg(DIExpr, Ops, DebugOpIndex);
         }
         MI.getDebugExpressionOp().setMetadata(DIExpr);
+        continue;
+      } else if (MI.isDebugPHI()) {
+        // Allow stack ref to continue onwards.
         continue;
       }
 

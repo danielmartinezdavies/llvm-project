@@ -674,7 +674,8 @@ public:
     // Create `llvm.mlir.global` with initializer region containing one block.
     auto global = rewriter.create<LLVM::GlobalOp>(
         UnknownLoc::get(context), structType, /*isConstant=*/true,
-        LLVM::Linkage::External, executionModeInfoName, Attribute());
+        LLVM::Linkage::External, executionModeInfoName, Attribute(),
+        /*alignment=*/0);
     Location loc = global.getLoc();
     Region &region = global.getInitializerRegion();
     Block *block = rewriter.createBlock(&region);
@@ -752,7 +753,8 @@ public:
                        ? LLVM::Linkage::Private
                        : LLVM::Linkage::External;
     rewriter.replaceOpWithNewOp<LLVM::GlobalOp>(
-        op, dstType, isConstant, linkage, op.sym_name(), Attribute());
+        op, dstType, isConstant, linkage, op.sym_name(), Attribute(),
+        /*alignment=*/0);
     return success();
   }
 };
@@ -1358,7 +1360,7 @@ public:
   matchAndRewrite(spirv::ModuleEndOp moduleEndOp, ArrayRef<Value> operands,
                   ConversionPatternRewriter &rewriter) const override {
 
-    rewriter.replaceOpWithNewOp<ModuleTerminatorOp>(moduleEndOp);
+    rewriter.eraseOp(moduleEndOp);
     return success();
   }
 };
@@ -1385,8 +1387,8 @@ void mlir::populateSPIRVToLLVMTypeConversion(LLVMTypeConverter &typeConverter) {
 }
 
 void mlir::populateSPIRVToLLVMConversionPatterns(
-    LLVMTypeConverter &typeConverter, OwningRewritePatternList &patterns) {
-  patterns.insert<
+    LLVMTypeConverter &typeConverter, RewritePatternSet &patterns) {
+  patterns.add<
       // Arithmetic ops
       DirectConversionPattern<spirv::IAddOp, LLVM::AddOp>,
       DirectConversionPattern<spirv::IMulOp, LLVM::MulOp>,
@@ -1499,13 +1501,13 @@ void mlir::populateSPIRVToLLVMConversionPatterns(
 }
 
 void mlir::populateSPIRVToLLVMFunctionConversionPatterns(
-    LLVMTypeConverter &typeConverter, OwningRewritePatternList &patterns) {
-  patterns.insert<FuncConversionPattern>(patterns.getContext(), typeConverter);
+    LLVMTypeConverter &typeConverter, RewritePatternSet &patterns) {
+  patterns.add<FuncConversionPattern>(patterns.getContext(), typeConverter);
 }
 
 void mlir::populateSPIRVToLLVMModuleConversionPatterns(
-    LLVMTypeConverter &typeConverter, OwningRewritePatternList &patterns) {
-  patterns.insert<ModuleConversionPattern, ModuleEndConversionPattern>(
+    LLVMTypeConverter &typeConverter, RewritePatternSet &patterns) {
+  patterns.add<ModuleConversionPattern, ModuleEndConversionPattern>(
       patterns.getContext(), typeConverter);
 }
 

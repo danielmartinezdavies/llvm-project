@@ -25,10 +25,12 @@ include "TestInterfaces.td"
 def Test_Dialect : Dialect {
   let name = "test";
   let cppNamespace = "::mlir::test";
+  let hasCanonicalizer = 1;
   let hasConstantMaterializer = 1;
   let hasOperationAttrVerify = 1;
   let hasRegionArgAttrVerify = 1;
   let hasRegionResultAttrVerify = 1;
+  let hasOperationInterfaceFallback = 1;
   let dependentDialects = ["::mlir::DLTIDialect"];
 
   let extraClassDeclaration = [{
@@ -39,6 +41,18 @@ def Test_Dialect : Dialect {
                              Type type) const override;
     void printAttribute(Attribute attr,
                         DialectAsmPrinter &printer) const override;
+
+    // Provides a custom printing/parsing for some operations.
+    Optional<ParseOpHook>
+      getParseOperationHook(StringRef opName) const override;
+    LogicalResult printOperation(Operation *op,
+                                 OpAsmPrinter &printer) const override;
+
+    ~TestDialect();
+  private:
+    // Storage for a custom fallback interface.
+    void *fallbackEffectOpInterfaces;
+
   }];
 }
 
@@ -321,6 +335,22 @@ def SizedRegionOp : TEST_Op<"sized_region_op", []> {
 }
 
 //===----------------------------------------------------------------------===//
+// NoTerminator Operation
+//===----------------------------------------------------------------------===//
+
+def SingleNoTerminatorOp : TEST_Op<"single_no_terminator_op", GraphRegionNoTerminator.traits> {
+  let regions = (region SizedRegion<1>:$my_region);
+
+  let assemblyFormat = "attr-dict `:` $my_region";
+}
+
+def VariadicNoTerminatorOp : TEST_Op<"variadic_no_terminator_op", GraphRegionNoTerminator.traits> {
+  let regions = (region VariadicRegion<SizedRegion<1>>:$my_regions);
+
+  let assemblyFormat = "attr-dict `:` $my_regions";
+}
+
+//===----------------------------------------------------------------------===//
 // Test Call Interfaces
 //===----------------------------------------------------------------------===//
 
@@ -520,7 +550,8 @@ def IndexElementsAttrOp : TEST_Op<"indexElementsAttr"> {
 }
 
 def OpWithInferTypeInterfaceOp : TEST_Op<"op_with_infer_type_if", [
-    DeclareOpInterfaceMethods<InferTypeOpInterface>]> {
+    DeclareOpInterfaceMethods<InferTypeOpInterface,
+        ["inferReturnTypeComponents"]>]> {
   let arguments = (ins AnyTensor, AnyTensor);
   let results = (outs AnyTensor);
 }
@@ -529,6 +560,13 @@ def OpWithShapedTypeInferTypeInterfaceOp : TEST_Op<"op_with_shaped_type_infer_ty
       InferTensorTypeWithReify.traits> {
   let arguments = (ins AnyTensor, AnyTensor);
   let results = (outs AnyTensor);
+}
+
+def OpWithResultShapePerDimInterfaceOp : TEST_Op<"op_with_result_shape_per_dim_interface",
+      [DeclareOpInterfaceMethods<InferShapedTypeOpInterface,
+           ["reifyReturnTypeShapesPerResultDim"]>]> {
+  let arguments = (ins AnyRankedTensor:$operand1, AnyRankedTensor:$operand2);
+  let results = (outs AnyRankedTensor:$result1, AnyRankedTensor:$result2);
 }
 
 def IsNotScalar : Constraint<CPred<"$0.getType().getRank() != 0">>;
@@ -800,6 +838,20 @@ def : Pattern<(OpNativeCodeCall3 $input),
               [(NativeCodeCall<"createOpI($_builder, $_loc, $0)"> $input),
                (OpK)]>;
 
+def OpNativeCodeCall4 : TEST_Op<"native_code_call4"> {
+  let arguments = (ins AnyType:$input1);
+  let results = (outs I32:$output1, I32:$output2);
+}
+def OpNativeCodeCall5 : TEST_Op<"native_code_call5"> {
+  let arguments = (ins I32:$input1, I32:$input2);
+  let results = (outs I32:$output1, I32:$output2);
+}
+
+def GetFirstI32Result : NativeCodeCall<"success(getFirstI32Result($_self, $0))">;
+def BindNativeCodeCallResult : NativeCodeCall<"bindNativeCodeCallResult($0)">;
+def : Pat<(OpNativeCodeCall4 (GetFirstI32Result $ret)),
+          (OpNativeCodeCall5 (BindNativeCodeCallResult:$native $ret), $native)>;
+
 // Test AllAttrConstraintsOf.
 def OpAllAttrConstraint1 : TEST_Op<"all_attr_constraint_of1"> {
   let arguments = (ins I64ArrayAttr:$attr);
@@ -913,6 +965,11 @@ def TestPassthroughFold : TEST_Op<"passthrough_fold"> {
   let arguments = (ins AnyType:$op);
   let results = (outs AnyType);
   let hasFolder = 1;
+}
+
+def TestDialectCanonicalizerOp : TEST_Op<"dialect_canonicalizable"> {
+  let arguments = (ins);
+  let results = (outs I32);
 }
 
 //===----------------------------------------------------------------------===//
@@ -1271,6 +1328,11 @@ def TestRecursiveRewriteOp : TEST_Op<"recursive_rewrite"> {
   let arguments = (ins I64Attr:$depth);
   let assemblyFormat = "$depth attr-dict";
 }
+
+// Test legalization pattern: this op will be erase and will also erase the
+// producer of its operand.
+def BlackHoleOp : TEST_Op<"blackhole">,
+  Arguments<(ins AnyType)>;
 
 //===----------------------------------------------------------------------===//
 // Test Type Legalization
@@ -1645,6 +1707,11 @@ def FormatOptionalEnumAttr : TEST_Op<"format_optional_enum_attr"> {
   let assemblyFormat = "($attr^)? attr-dict";
 }
 
+def FormatOptionalWithElse : TEST_Op<"format_optional_else"> {
+  let arguments = (ins UnitAttr:$isFirstBranchPresent);
+  let assemblyFormat = "(`then` $isFirstBranchPresent^):(`else`)? attr-dict";
+}
+
 //===----------------------------------------------------------------------===//
 // Custom Directives
 
@@ -1818,8 +1885,8 @@ def CopyOp : TEST_Op<"copy", [CopyOpInterface]> {
   let description = [{
     Represents a copy operation.
   }];
-  let arguments = (ins Res<AnyMemRef, "", [MemRead]>:$source,
-                   Res<AnyMemRef, "", [MemWrite]>:$target);
+  let arguments = (ins Res<AnyRankedOrUnrankedMemRef, "", [MemRead]>:$source,
+                   Res<AnyRankedOrUnrankedMemRef, "", [MemWrite]>:$target);
   let assemblyFormat = [{
     `(` $source `,` $target `)` `:` `(` type($source) `,` type($target) `)`
      attr-dict
@@ -1854,7 +1921,8 @@ class BufferBasedOpBase<string mnemonic, list<OpTrait> traits>
   let description = [{
     A buffer based operation, that uses memRefs as input and output.
   }];
-  let arguments = (ins AnyMemRef:$input, AnyMemRef:$output);
+  let arguments = (ins AnyRankedOrUnrankedMemRef:$input,
+                       AnyRankedOrUnrankedMemRef:$output);
 }
 
 def BufferBasedOp : BufferBasedOpBase<"buffer_based", []>{

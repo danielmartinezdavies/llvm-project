@@ -8,6 +8,7 @@
 
 #include "SemanticHighlighting.h"
 #include "FindTarget.h"
+#include "HeuristicResolver.h"
 #include "ParsedAST.h"
 #include "Protocol.h"
 #include "SourceCode.h"
@@ -64,8 +65,10 @@ bool canHighlightName(DeclarationName Name) {
   llvm_unreachable("invalid name kind");
 }
 
-llvm::Optional<HighlightingKind> kindForType(const Type *TP);
-llvm::Optional<HighlightingKind> kindForDecl(const NamedDecl *D) {
+llvm::Optional<HighlightingKind> kindForType(const Type *TP,
+                                             const HeuristicResolver *Resolver);
+llvm::Optional<HighlightingKind>
+kindForDecl(const NamedDecl *D, const HeuristicResolver *Resolver) {
   if (auto *USD = dyn_cast<UsingShadowDecl>(D)) {
     if (auto *Target = USD->getTargetDecl())
       D = Target;
@@ -76,7 +79,8 @@ llvm::Optional<HighlightingKind> kindForDecl(const NamedDecl *D) {
   }
   if (auto *TD = dyn_cast<TypedefNameDecl>(D)) {
     // We try to highlight typedefs as their underlying type.
-    if (auto K = kindForType(TD->getUnderlyingType().getTypePtrOrNull()))
+    if (auto K =
+            kindForType(TD->getUnderlyingType().getTypePtrOrNull(), Resolver))
       return K;
     // And fallback to a generic kind if this fails.
     return HighlightingKind::Typedef;
@@ -133,19 +137,27 @@ llvm::Optional<HighlightingKind> kindForDecl(const NamedDecl *D) {
     return HighlightingKind::TemplateParameter;
   if (isa<ConceptDecl>(D))
     return HighlightingKind::Concept;
+  if (const auto *UUVD = dyn_cast<UnresolvedUsingValueDecl>(D)) {
+    auto Targets = Resolver->resolveUsingValueDecl(UUVD);
+    if (!Targets.empty()) {
+      return kindForDecl(Targets[0], Resolver);
+    }
+    return HighlightingKind::Unknown;
+  }
   return llvm::None;
 }
-llvm::Optional<HighlightingKind> kindForType(const Type *TP) {
+llvm::Optional<HighlightingKind>
+kindForType(const Type *TP, const HeuristicResolver *Resolver) {
   if (!TP)
     return llvm::None;
   if (TP->isBuiltinType()) // Builtins are special, they do not have decls.
     return HighlightingKind::Primitive;
   if (auto *TD = dyn_cast<TemplateTypeParmType>(TP))
-    return kindForDecl(TD->getDecl());
+    return kindForDecl(TD->getDecl(), Resolver);
   if (isa<ObjCObjectPointerType>(TP))
     return HighlightingKind::Class;
   if (auto *TD = TP->getAsTagDecl())
-    return kindForDecl(TD);
+    return kindForDecl(TD, Resolver);
   return llvm::None;
 }
 
@@ -228,6 +240,12 @@ bool isAbstract(const Decl *D) {
   return false;
 }
 
+bool isDependent(const Decl *D) {
+  if (isa<UnresolvedUsingValueDecl>(D))
+    return true;
+  return false;
+}
+
 // For a macro usage `DUMP(foo)`, we want:
 //  - DUMP --> "macro"
 //  - foo --> "variable".
@@ -294,7 +312,7 @@ public:
   HighlightingToken &addToken(SourceLocation Loc, HighlightingKind Kind) {
     Loc = getHighlightableSpellingToken(Loc, SourceMgr);
     if (Loc.isInvalid())
-      return Dummy;
+      return InvalidHighlightingToken;
     const auto *Tok = TB.spelledTokenAt(Loc);
     assert(Tok);
     return addToken(
@@ -390,12 +408,16 @@ public:
     return WithInactiveLines;
   }
 
+  const HeuristicResolver *getResolver() const { return Resolver; }
+
 private:
   const syntax::TokenBuffer &TB;
   const SourceManager &SourceMgr;
   const LangOptions &LangOpts;
   std::vector<HighlightingToken> Tokens;
-  HighlightingToken Dummy; // returned from addToken(InvalidLoc)
+  const HeuristicResolver *Resolver;
+  // returned from addToken(InvalidLoc)
+  HighlightingToken InvalidHighlightingToken;
 };
 
 llvm::Optional<HighlightingModifier> scopeModifier(const NamedDecl *D) {
@@ -446,7 +468,7 @@ public:
   CollectExtraHighlightings(HighlightingsBuilder &H) : H(H) {}
 
   bool VisitDecltypeTypeLoc(DecltypeTypeLoc L) {
-    if (auto K = kindForType(L.getTypePtr())) {
+    if (auto K = kindForType(L.getTypePtr(), H.getResolver())) {
       auto &Tok = H.addToken(L.getBeginLoc(), *K)
                       .addModifier(HighlightingModifier::Deduced);
       if (auto Mod = scopeModifier(L.getTypePtr()))
@@ -459,7 +481,8 @@ public:
     auto *AT = D->getType()->getContainedAutoType();
     if (!AT)
       return true;
-    if (auto K = kindForType(AT->getDeducedType().getTypePtrOrNull())) {
+    if (auto K = kindForType(AT->getDeducedType().getTypePtrOrNull(),
+                             H.getResolver())) {
       auto &Tok = H.addToken(D->getTypeSpecStartLoc(), *K)
                       .addModifier(HighlightingModifier::Deduced);
       if (auto Mod = scopeModifier(AT->getDeducedType().getTypePtrOrNull()))
@@ -600,7 +623,7 @@ std::vector<HighlightingToken> getSemanticHighlightings(ParsedAST &AST) {
         for (const NamedDecl *Decl : R.Targets) {
           if (!canHighlightName(Decl->getDeclName()))
             continue;
-          auto Kind = kindForDecl(Decl);
+          auto Kind = kindForDecl(Decl, AST.getHeuristicResolver());
           if (!Kind)
             continue;
           auto &Tok = Builder.addToken(R.NameLoc, *Kind);
@@ -618,9 +641,14 @@ std::vector<HighlightingToken> getSemanticHighlightings(ParsedAST &AST) {
             Tok.addModifier(HighlightingModifier::Static);
           if (isAbstract(Decl))
             Tok.addModifier(HighlightingModifier::Abstract);
+          if (isDependent(Decl))
+            Tok.addModifier(HighlightingModifier::DependentName);
           if (Decl->isDeprecated())
             Tok.addModifier(HighlightingModifier::Deprecated);
-          if (R.IsDecl)
+          // Do not treat an UnresolvedUsingValueDecl as a declaration.
+          // It's more common to think of it as a reference to the
+          // underlying declaration.
+          if (R.IsDecl && !isa<UnresolvedUsingValueDecl>(Decl))
             Tok.addModifier(HighlightingModifier::Declaration);
         }
       },

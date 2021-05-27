@@ -124,7 +124,6 @@ private:
 /// some runtime API, including __cxa_atexit, dlopen, and dlclose.
 class GenericLLVMIRPlatformSupport : public LLJIT::PlatformSupport {
 public:
-  // GenericLLVMIRPlatform &P) : P(P) {
   GenericLLVMIRPlatformSupport(LLJIT &J)
       : J(J), InitFunctionPrefix(J.mangle("__orc_init_func.")) {
 
@@ -894,6 +893,28 @@ private:
   std::map<std::thread::id, std::unique_ptr<std::string>> dlErrorMsgs;
 };
 
+/// Inactive Platform Support
+///
+/// Explicitly disables platform support. JITDylibs are not scanned for special
+/// init/deinit symbols. No runtime API interposes are injected.
+class InactivePlatformSupport : public LLJIT::PlatformSupport {
+public:
+  InactivePlatformSupport() = default;
+
+  Error initialize(JITDylib &JD) override {
+    LLVM_DEBUG(dbgs() << "InactivePlatformSupport: no initializers running for "
+                      << JD.getName() << "\n");
+    return Error::success();
+  }
+
+  Error deinitialize(JITDylib &JD) override {
+    LLVM_DEBUG(
+        dbgs() << "InactivePlatformSupport: no deinitializers running for "
+               << JD.getName() << "\n");
+    return Error::success();
+  }
+};
+
 } // end anonymous namespace
 
 namespace llvm {
@@ -1105,20 +1126,16 @@ LLJIT::LLJIT(LLJITBuilderState &S, Error &Err)
     InitHelperTransformLayer->setCloneToNewContextOnEmit(true);
     CompileThreads =
         std::make_unique<ThreadPool>(hardware_concurrency(S.NumCompileThreads));
-    ES->setDispatchMaterialization(
-        [this](std::unique_ptr<MaterializationUnit> MU,
-               std::unique_ptr<MaterializationResponsibility> MR) {
-          // FIXME: We should be able to use move-capture here, but ThreadPool's
-          // AsyncTaskTys are std::functions rather than unique_functions
-          // (because MSVC's std::packaged_tasks don't support move-only types).
-          // Fix this when all the above gets sorted out.
-          CompileThreads->async(
-              [UnownedMU = MU.release(), UnownedMR = MR.release()]() mutable {
-                std::unique_ptr<MaterializationUnit> MU(UnownedMU);
-                std::unique_ptr<MaterializationResponsibility> MR(UnownedMR);
-                MU->materialize(std::move(MR));
-              });
-        });
+    ES->setDispatchTask([this](std::unique_ptr<Task> T) {
+      // FIXME: We should be able to use move-capture here, but ThreadPool's
+      // AsyncTaskTys are std::functions rather than unique_functions
+      // (because MSVC's std::packaged_tasks don't support move-only types).
+      // Fix this when all the above gets sorted out.
+      CompileThreads->async([UnownedT = T.release()]() mutable {
+        std::unique_ptr<Task> T(UnownedT);
+        T->run();
+      });
+    });
   }
 
   if (S.SetUpPlatform)
@@ -1162,6 +1179,13 @@ Error setUpMachOPlatform(LLJIT &J) {
   if (!MP)
     return MP.takeError();
   J.setPlatformSupport(std::move(*MP));
+  return Error::success();
+}
+
+Error setUpInactivePlatform(LLJIT &J) {
+  LLVM_DEBUG(
+      { dbgs() << "Explicitly deactivated platform support for LLJIT\n"; });
+  J.setPlatformSupport(std::make_unique<InactivePlatformSupport>());
   return Error::success();
 }
 

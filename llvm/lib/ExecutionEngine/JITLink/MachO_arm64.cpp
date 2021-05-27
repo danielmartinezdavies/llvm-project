@@ -12,8 +12,8 @@
 
 #include "llvm/ExecutionEngine/JITLink/MachO_arm64.h"
 
-#include "BasicGOTAndStubsBuilder.h"
 #include "MachOLinkGraphBuilder.h"
+#include "PerGraphGOTAndPLTStubsBuilder.h"
 
 #define DEBUG_TYPE "jitlink"
 
@@ -405,16 +405,16 @@ private:
   unsigned NumSymbols = 0;
 };
 
-class MachO_arm64_GOTAndStubsBuilder
-    : public BasicGOTAndStubsBuilder<MachO_arm64_GOTAndStubsBuilder> {
+class PerGraphGOTAndPLTStubsBuilder_MachO_arm64
+    : public PerGraphGOTAndPLTStubsBuilder<
+          PerGraphGOTAndPLTStubsBuilder_MachO_arm64> {
 public:
-  MachO_arm64_GOTAndStubsBuilder(LinkGraph &G)
-      : BasicGOTAndStubsBuilder<MachO_arm64_GOTAndStubsBuilder>(G) {}
+  using PerGraphGOTAndPLTStubsBuilder<
+      PerGraphGOTAndPLTStubsBuilder_MachO_arm64>::PerGraphGOTAndPLTStubsBuilder;
 
   bool isGOTEdgeToFix(Edge &E) const {
-    return (E.getKind() == GOTPage21 || E.getKind() == GOTPageOffset12 ||
-            E.getKind() == PointerToGOT) &&
-           E.getTarget().isExternal();
+    return E.getKind() == GOTPage21 || E.getKind() == GOTPageOffset12 ||
+           E.getKind() == PointerToGOT;
   }
 
   Symbol &createGOTEntry(Symbol &Target) {
@@ -439,16 +439,16 @@ public:
     return E.getKind() == Branch26 && !E.getTarget().isDefined();
   }
 
-  Symbol &createStub(Symbol &Target) {
+  Symbol &createPLTStub(Symbol &Target) {
     auto &StubContentBlock =
         G.createContentBlock(getStubsSection(), getStubBlockContent(), 0, 1, 0);
     // Re-use GOT entries for stub targets.
-    auto &GOTEntrySymbol = getGOTEntrySymbol(Target);
+    auto &GOTEntrySymbol = getGOTEntry(Target);
     StubContentBlock.addEdge(LDRLiteral19, 0, GOTEntrySymbol, 0);
     return G.addAnonymousSymbol(StubContentBlock, 0, 8, true, false);
   }
 
-  void fixExternalBranchEdge(Edge &E, Symbol &Stub) {
+  void fixPLTEdge(Edge &E, Symbol &Stub) {
     assert(E.getKind() == Branch26 && "Not a Branch32 edge?");
     assert(E.getAddend() == 0 && "Branch32 edge has non-zero addend?");
     E.setTarget(Stub);
@@ -470,14 +470,13 @@ private:
     return *StubsSection;
   }
 
-  StringRef getGOTEntryBlockContent() {
-    return StringRef(reinterpret_cast<const char *>(NullGOTEntryContent),
-                     sizeof(NullGOTEntryContent));
+  ArrayRef<char> getGOTEntryBlockContent() {
+    return {reinterpret_cast<const char *>(NullGOTEntryContent),
+            sizeof(NullGOTEntryContent)};
   }
 
-  StringRef getStubBlockContent() {
-    return StringRef(reinterpret_cast<const char *>(StubContent),
-                     sizeof(StubContent));
+  ArrayRef<char> getStubBlockContent() {
+    return {reinterpret_cast<const char *>(StubContent), sizeof(StubContent)};
   }
 
   static const uint8_t NullGOTEntryContent[8];
@@ -486,9 +485,10 @@ private:
   Section *StubsSection = nullptr;
 };
 
-const uint8_t MachO_arm64_GOTAndStubsBuilder::NullGOTEntryContent[8] = {
-    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
-const uint8_t MachO_arm64_GOTAndStubsBuilder::StubContent[8] = {
+const uint8_t
+    PerGraphGOTAndPLTStubsBuilder_MachO_arm64::NullGOTEntryContent[8] = {
+        0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00};
+const uint8_t PerGraphGOTAndPLTStubsBuilder_MachO_arm64::StubContent[8] = {
     0x10, 0x00, 0x00, 0x58, // LDR x16, <literal>
     0x00, 0x02, 0x1f, 0xd6  // BR  x16
 };
@@ -525,10 +525,10 @@ private:
     return 0;
   }
 
-  Error applyFixup(LinkGraph &G, Block &B, const Edge &E,
-                   char *BlockWorkingMem) const {
+  Error applyFixup(LinkGraph &G, Block &B, const Edge &E) const {
     using namespace support;
 
+    char *BlockWorkingMem = B.getAlreadyMutableContent().data();
     char *FixupPtr = BlockWorkingMem + E.getOffset();
     JITTargetAddress FixupAddress = B.getAddress() + E.getOffset();
 
@@ -684,10 +684,8 @@ void link_MachO_arm64(std::unique_ptr<LinkGraph> G,
       Config.PrePrunePasses.push_back(markAllSymbolsLive);
 
     // Add an in-place GOT/Stubs pass.
-    Config.PostPrunePasses.push_back([](LinkGraph &G) -> Error {
-      MachO_arm64_GOTAndStubsBuilder(G).run();
-      return Error::success();
-    });
+    Config.PostPrunePasses.push_back(
+        PerGraphGOTAndPLTStubsBuilder_MachO_arm64::asPass);
   }
 
   if (auto Err = Ctx->modifyPassConfig(*G, Config))

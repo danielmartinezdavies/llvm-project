@@ -486,6 +486,15 @@ MachineInstrBuilder MachineIRBuilder::buildAnyExtOrTrunc(const DstOp &Res,
   return buildExtOrTrunc(TargetOpcode::G_ANYEXT, Res, Op);
 }
 
+MachineInstrBuilder MachineIRBuilder::buildZExtInReg(const DstOp &Res,
+                                                     const SrcOp &Op,
+                                                     int64_t ImmOp) {
+  LLT ResTy = Res.getLLTTy(*getMRI());
+  auto Mask = buildConstant(
+      ResTy, APInt::getLowBitsSet(ResTy.getScalarSizeInBits(), ImmOp));
+  return buildAnd(Res, Op, Mask);
+}
+
 MachineInstrBuilder MachineIRBuilder::buildCast(const DstOp &Dst,
                                                 const SrcOp &Src) {
   LLT SrcTy = Src.getLLTTy(*getMRI());
@@ -669,10 +678,11 @@ MachineInstrBuilder MachineIRBuilder::buildShuffleVector(const DstOp &Res,
   assert(Src1Ty.getNumElements() + Src2Ty.getNumElements() >= Mask.size());
   assert(DstTy.getElementType() == Src1Ty.getElementType() &&
          DstTy.getElementType() == Src2Ty.getElementType());
+  (void)DstTy;
   (void)Src1Ty;
   (void)Src2Ty;
   ArrayRef<int> MaskAlloc = getMF().allocateShuffleMask(Mask);
-  return buildInstr(TargetOpcode::G_SHUFFLE_VECTOR, {DstTy}, {Src1, Src2})
+  return buildInstr(TargetOpcode::G_SHUFFLE_VECTOR, {Res}, {Src1, Src2})
       .addShuffleMask(MaskAlloc);
 }
 

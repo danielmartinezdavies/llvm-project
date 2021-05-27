@@ -188,7 +188,17 @@ SmallVector<Value, 4> LinalgOp::createFlatListOfOperandDims(OpBuilder &b,
   for (Value v : getShapedOperands()) {
     ShapedType t = v.getType().template cast<ShapedType>();
     for (unsigned i = 0, e = t.getRank(); i < e; ++i)
-      res.push_back(b.create<memref::DimOp>(loc, v, i));
+      res.push_back(b.createOrFold<memref::DimOp>(loc, v, i));
+  }
+  return res;
+}
+
+SmallVector<int64_t, 4> LinalgOp::createFlatListOfOperandStaticDims() {
+  SmallVector<int64_t, 4> res;
+  for (Value v : getShapedOperands()) {
+    ShapedType t = v.getType().template cast<ShapedType>();
+    assert(t.hasStaticShape() && "expected operands to have static shapes");
+    llvm::append_range(res, t.getShape());
   }
   return res;
 }
@@ -207,6 +217,19 @@ SmallVector<Range, 4> LinalgOp::createLoopRanges(OpBuilder &b, Location loc) {
         continue;
       res[d.getPosition()] = Range{zeroVal, viewSizes[idx], oneVal};
     }
+  }
+  return res;
+}
+
+SmallVector<int64_t, 4> LinalgOp::computeStaticLoopSizes() {
+  AffineMap map = getLoopsToShapesMap();
+  unsigned numDims = map.getNumDims(), numRes = map.getNumResults();
+  SmallVector<int64_t, 4> allShapeSizes = createFlatListOfOperandStaticDims();
+  SmallVector<int64_t, 4> res(numDims, 0);
+  for (unsigned idx = 0; idx < numRes; ++idx) {
+    auto result = map.getResult(idx);
+    if (auto d = result.dyn_cast<AffineDimExpr>())
+      res[d.getPosition()] = allShapeSizes[idx];
   }
   return res;
 }
@@ -234,57 +257,58 @@ private:
   llvm::SmallSet<unsigned, 4> positions;
 };
 
-Optional<Value> LinalgOp::inferResultDimFromInputShapes(OpBuilder &b,
-                                                        Location loc,
-                                                        unsigned resultIdx,
-                                                        unsigned dim) {
+LogicalResult LinalgOp::reifyReturnTypeShapesPerResultDim(
+    OpBuilder &b, SmallVectorImpl<SmallVector<Value>> &reifiedReturnShapes) {
   // An example that helps understand the logic below.
   // Consider the following expression O(i+j, j) += A(i,k) * B(k, j)
   // We want to express the shape of dim 0 of O in terms of shape of the inputs.
   // This is achieved as follows.
   //   loopsToShapesMap = (d0, d1, d2) -> (d0, d2, d2, d1, d0 + d1, d1)
-  //   subMapOfResultDim = (d0, d1, d2) -> (d0 + d1)
+  //   subMapOfResultShapes = (d0, d1, d2) -> (d0 + d1, d1)
   //   shapesToLoopsMap = (d0, d2, d2, d3, d4, d5) -> (d0, d3, d2)
-  //   resultFromFromInputDim = subMapOfResultDim.compose(shapesToLoopMap)
-  //     = (d0, d1, d2, d3, d4, d5) -> (d0 + d1)
+  //   resultShapesFromInputShapes = subMapOfResultDim.compose(shapesToLoopMap)
+  //     = (d0, d1, d2, d3, d4, d5) -> (d0 + d1, d1)
   AffineMap loopsToShapesMap = getLoopsToShapesMap();
 
   // Find the position in the above map that represents the shape of the
   // result:dim being inferred.
-  Optional<unsigned> resultDimSubMapPos =
-      getResultValueDimPositionInLoopsToShapeMap(resultIdx, dim);
-  if (!resultDimSubMapPos)
-    return {};
+  auto resultShapesSubMapPos = getResultsPositionInLoopsToShapeMap();
 
   /// From loopsToShapesMap extract the submap that represents the shape of the
-  /// (resultIdx, dim) needed
-  AffineMap loopToResultDimShapeMap =
-      loopsToShapesMap.getSubMap(*resultDimSubMapPos);
-  AffineMap operandShapesToResultDimMap =
-      loopToResultDimShapeMap.compose(getShapesToLoopsMap());
+  /// (resultIdx, dim) needed.
+  SmallVector<unsigned, 4> resultPosRange =
+      llvm::to_vector<4>(llvm::seq<unsigned>(resultShapesSubMapPos.first,
+                                             resultShapesSubMapPos.second));
+  AffineMap loopToResultsShapeMap = loopsToShapesMap.getSubMap(resultPosRange);
+  AffineMap resultShapesFromInputShapesMap =
+      loopToResultsShapeMap.compose(getShapesToLoopsMap());
 
   // Check that the result dim map does not contain the positions corresponding
   // to the outputs.
   llvm::SmallSet<unsigned, 4> outputDims;
-  unsigned outputDimPosStart =
-      getResultValueDimPositionInLoopsToShapeMap(0, 0).getValue();
-  unsigned outputDimPosEnd =
-      getResultValueDimPositionInLoopsToShapeMap(getNumOutputs() - 1,
-                                                 getOutputOpOperands()
-                                                         .back()
-                                                         .get()
-                                                         .getType()
-                                                         .cast<ShapedType>()
-                                                         .getRank() -
-                                                     1)
-          .getValue();
-  llvm::for_each(llvm::seq<unsigned>(outputDimPosStart, outputDimPosEnd),
+  llvm::for_each(resultPosRange,
                  [&outputDims](unsigned dim) { outputDims.insert(dim); });
   HasAffineDimExprVisitor checkDimExpr(outputDims);
-  if (checkDimExpr.visit(operandShapesToResultDimMap.getResult(0)))
-    return llvm::None;
-  return applyMapToValues(b, loc, operandShapesToResultDimMap,
-                          createFlatListOfOperandDims(b, loc))[0];
+  Location loc = getOperation()->getLoc();
+  auto allResultDimValues =
+      applyMapToValues(b, loc, resultShapesFromInputShapesMap,
+                       createFlatListOfOperandDims(b, loc));
+  unsigned pos = 0;
+  ArrayRef<AffineExpr> shapeExprs = resultShapesFromInputShapesMap.getResults();
+  for (auto resultIdx : llvm::seq<unsigned>(0, getNumOutputs())) {
+    ShapedType resultType = getOutputShapedType(resultIdx);
+    SmallVector<Value> shapes;
+    for (unsigned dim : llvm::seq<unsigned>(0, resultType.getRank())) {
+      if (checkDimExpr.visit(shapeExprs[pos]))
+        shapes.push_back(
+            b.createOrFold<memref::DimOp>(loc, getOutput(resultIdx), dim));
+      else
+        shapes.push_back(allResultDimValues[pos]);
+      pos++;
+    }
+    reifiedReturnShapes.emplace_back(std::move(shapes));
+  }
+  return success();
 }
 
 LogicalResult mlir::linalg::detail::verifyStructuredOpInterface(Operation *op) {
@@ -430,6 +454,69 @@ LogicalResult mlir::linalg::detail::verifyStructuredOpInterface(Operation *op) {
              << " to match element type of corresponding shaped operand ("
              << std::get<0>(it).getElementType() << ")";
     ++idx;
+  }
+
+  // Check if given shapes match to inferred shapes.
+  Optional<SmallVector<int64_t, 4>> endLoopRangeValues =
+      linalgOp.getStaticLoopRanges();
+  if (!endLoopRangeValues)
+    return linalgOp.emitError("unable to find loop range for operation");
+  SmallVector<int64_t, 4> startLoopRangeValues((*endLoopRangeValues).size(), 0);
+
+  // Verify only static cases since we can't get exact dimension sizes and loop
+  // ranges for dynamic cases in this stage.
+  if (llvm::none_of(*endLoopRangeValues, [](int64_t &range) {
+        return range == ShapedType::kDynamicSize;
+      })) {
+    for (int64_t &range : *endLoopRangeValues)
+      range -= 1;
+    for (const auto &en : llvm::enumerate(linalgOp.getShapedOperandTypes())) {
+      auto startIndices =
+          indexingMaps[en.index()].compose(startLoopRangeValues);
+      auto endIndices = indexingMaps[en.index()].compose(*endLoopRangeValues);
+      for (auto j : llvm::seq<unsigned>(0, en.value().getRank())) {
+
+        // Ignore dynamic dimension or the case that the dimension size is 0
+        auto shapedDimSize = en.value().getDimSize(j);
+        if (en.value().isDynamicDim(j) || shapedDimSize == 0)
+          continue;
+
+        // The first index or last index should be the maximum or the minimum in
+        // the inferred index ranges since the range is increasing or
+        // decreasing. The size of dimensions of shaped operands and the maximum
+        // value + 1 in the inferred range should be the same. But, for now we
+        // check if the inferred ranges are in boundary of shaped operands' size
+        // or not in case that Affine Expressions are complicated such as d0 * 3
+        // + d1 since it is not easy to handle the issues.
+        // Found the case that this solution can't check, for example, (d0, d1)
+        // -> (d1 - d0)
+        auto inferredDimSize = std::max(startIndices[j], endIndices[j]) + 1;
+        if (std::min(startIndices[j], endIndices[j]) < 0) {
+          std::string mapStr;
+          {
+            llvm::raw_string_ostream os(mapStr);
+            os << indexingMaps[en.index()];
+          }
+          return linalgOp.emitError(
+                     "unexpected result less than 0 at expression #")
+                 << j << " in " << mapStr;
+        }
+        if (indexingMaps[en.index()].getResult(j).dyn_cast<AffineDimExpr>()) {
+          if (inferredDimSize != shapedDimSize) {
+            return linalgOp.emitOpError("inferred shaped operand #")
+                   << en.index() << " has shape's dimension #" << j << " to be "
+                   << inferredDimSize << ", but found " << shapedDimSize;
+          }
+        } else {
+          if (inferredDimSize > shapedDimSize) {
+            return linalgOp.emitOpError("inferred shaped operand #")
+                   << en.index() << " has shape's dimension #" << j
+                   << " to be greater than or equal to " << inferredDimSize
+                   << ", but found " << shapedDimSize;
+          }
+        }
+      }
+    }
   }
 
   return success();

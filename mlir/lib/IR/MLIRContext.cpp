@@ -28,6 +28,7 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SetVector.h"
+#include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/StringSet.h"
 #include "llvm/ADT/Twine.h"
 #include "llvm/Support/Allocator.h"
@@ -331,6 +332,7 @@ public:
   UnitAttr unitAttr;
   UnknownLoc unknownLocAttr;
   DictionaryAttr emptyDictionaryAttr;
+  StringAttr emptyStringAttr;
 
 public:
   MLIRContextImpl() : identifiers(identifierAllocator) {}
@@ -399,6 +401,8 @@ MLIRContext::MLIRContext(const DialectRegistry &registry)
   impl->unitAttr = AttributeUniquer::get<UnitAttr>(this);
   /// The empty dictionary attribute.
   impl->emptyDictionaryAttr = DictionaryAttr::getEmptyUnchecked(this);
+  /// The empty string attribute.
+  impl->emptyStringAttr = StringAttr::getEmptyStringAttrUnchecked(this);
 
   // Register the affine storage objects with the uniquer.
   impl->affineUniquer
@@ -695,13 +699,15 @@ const AbstractOperation *AbstractOperation::lookup(StringRef opName,
 
 void AbstractOperation::insert(
     StringRef name, Dialect &dialect, TypeID typeID,
-    ParseAssemblyFn parseAssembly, PrintAssemblyFn printAssembly,
-    VerifyInvariantsFn verifyInvariants, FoldHookFn foldHook,
-    GetCanonicalizationPatternsFn getCanonicalizationPatterns,
-    detail::InterfaceMap &&interfaceMap, HasTraitFn hasTrait) {
-  AbstractOperation opInfo(
-      name, dialect, typeID, parseAssembly, printAssembly, verifyInvariants,
-      foldHook, getCanonicalizationPatterns, std::move(interfaceMap), hasTrait);
+    ParseAssemblyFn &&parseAssembly, PrintAssemblyFn &&printAssembly,
+    VerifyInvariantsFn &&verifyInvariants, FoldHookFn &&foldHook,
+    GetCanonicalizationPatternsFn &&getCanonicalizationPatterns,
+    detail::InterfaceMap &&interfaceMap, HasTraitFn &&hasTrait) {
+  AbstractOperation opInfo(name, dialect, typeID, std::move(parseAssembly),
+                           std::move(printAssembly),
+                           std::move(verifyInvariants), std::move(foldHook),
+                           std::move(getCanonicalizationPatterns),
+                           std::move(interfaceMap), std::move(hasTrait));
 
   auto &impl = dialect.getContext()->getImpl();
   assert(impl.multiThreadedExecutionContext == 0 &&
@@ -716,16 +722,18 @@ void AbstractOperation::insert(
 
 AbstractOperation::AbstractOperation(
     StringRef name, Dialect &dialect, TypeID typeID,
-    ParseAssemblyFn parseAssembly, PrintAssemblyFn printAssembly,
-    VerifyInvariantsFn verifyInvariants, FoldHookFn foldHook,
-    GetCanonicalizationPatternsFn getCanonicalizationPatterns,
-    detail::InterfaceMap &&interfaceMap, HasTraitFn hasTrait)
+    ParseAssemblyFn &&parseAssembly, PrintAssemblyFn &&printAssembly,
+    VerifyInvariantsFn &&verifyInvariants, FoldHookFn &&foldHook,
+    GetCanonicalizationPatternsFn &&getCanonicalizationPatterns,
+    detail::InterfaceMap &&interfaceMap, HasTraitFn &&hasTrait)
     : name(Identifier::get(name, dialect.getContext())), dialect(dialect),
       typeID(typeID), interfaceMap(std::move(interfaceMap)),
-      foldHookFn(foldHook),
-      getCanonicalizationPatternsFn(getCanonicalizationPatterns),
-      hasTraitFn(hasTrait), parseAssemblyFn(parseAssembly),
-      printAssemblyFn(printAssembly), verifyInvariantsFn(verifyInvariants) {}
+      foldHookFn(std::move(foldHook)),
+      getCanonicalizationPatternsFn(std::move(getCanonicalizationPatterns)),
+      hasTraitFn(std::move(hasTrait)),
+      parseAssemblyFn(std::move(parseAssembly)),
+      printAssemblyFn(std::move(printAssembly)),
+      verifyInvariantsFn(std::move(verifyInvariants)) {}
 
 //===----------------------------------------------------------------------===//
 // AbstractType
@@ -922,6 +930,11 @@ UnknownLoc UnknownLoc::get(MLIRContext *context) {
 /// Return empty dictionary.
 DictionaryAttr DictionaryAttr::getEmpty(MLIRContext *context) {
   return context->getImpl().emptyDictionaryAttr;
+}
+
+/// Return an empty string.
+StringAttr StringAttr::get(MLIRContext *context) {
+  return context->getImpl().emptyStringAttr;
 }
 
 //===----------------------------------------------------------------------===//

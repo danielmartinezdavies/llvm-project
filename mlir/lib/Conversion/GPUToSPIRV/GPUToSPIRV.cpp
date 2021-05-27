@@ -195,7 +195,7 @@ lowerAsEntryFunction(gpu::GPUFuncOp funcOp, TypeConverter &typeConverter,
       rewriter.getFunctionType(signatureConverter.getConvertedTypes(),
                                llvm::None));
   for (const auto &namedAttr : funcOp->getAttrs()) {
-    if (namedAttr.first == impl::getTypeAttrName() ||
+    if (namedAttr.first == function_like_impl::getTypeAttrName() ||
         namedAttr.first == SymbolTable::getSymbolAttrName())
       continue;
     newFuncOp->setAttr(namedAttr.first, namedAttr.second);
@@ -208,8 +208,13 @@ lowerAsEntryFunction(gpu::GPUFuncOp funcOp, TypeConverter &typeConverter,
     return nullptr;
   rewriter.eraseOp(funcOp);
 
-  if (failed(spirv::setABIAttrs(newFuncOp, entryPointInfo, argABIInfo)))
-    return nullptr;
+  // Set the attributes for argument and the function.
+  StringRef argABIAttrName = spirv::getInterfaceVarABIAttrName();
+  for (auto argIndex : llvm::seq<unsigned>(0, argABIInfo.size())) {
+    newFuncOp.setArgAttr(argIndex, argABIAttrName, argABIInfo[argIndex]);
+  }
+  newFuncOp->setAttr(spirv::getEntryPointABIAttrName(), entryPointInfo);
+
   return newFuncOp;
 }
 
@@ -330,9 +335,9 @@ namespace {
 }
 
 void mlir::populateGPUToSPIRVPatterns(SPIRVTypeConverter &typeConverter,
-                                      OwningRewritePatternList &patterns) {
+                                      RewritePatternSet &patterns) {
   populateWithGenerated(patterns);
-  patterns.insert<
+  patterns.add<
       GPUFuncOpConversion, GPUModuleConversion, GPUReturnOpConversion,
       LaunchConfigConversion<gpu::BlockIdOp, spirv::BuiltIn::WorkgroupId>,
       LaunchConfigConversion<gpu::GridDimOp, spirv::BuiltIn::NumWorkgroups>,

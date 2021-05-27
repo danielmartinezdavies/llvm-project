@@ -26,6 +26,7 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/Twine.h"
+#include "llvm/Analysis/CFG.h"
 #include "llvm/Analysis/CallGraph.h"
 #include "llvm/Analysis/CallGraphSCCPass.h"
 #include "llvm/Analysis/LazyCallGraph.h"
@@ -37,6 +38,7 @@
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/DerivedTypes.h"
+#include "llvm/IR/Dominators.h"
 #include "llvm/IR/Function.h"
 #include "llvm/IR/GlobalValue.h"
 #include "llvm/IR/GlobalVariable.h"
@@ -647,32 +649,34 @@ void CoroCloner::replaceSwiftErrorOps() {
 }
 
 void CoroCloner::salvageDebugInfo() {
-  SmallVector<DbgDeclareInst *, 8> Worklist;
+  SmallVector<DbgVariableIntrinsic *, 8> Worklist;
   SmallDenseMap<llvm::Value *, llvm::AllocaInst *, 4> DbgPtrAllocaCache;
   for (auto &BB : *NewF)
     for (auto &I : BB)
-      if (auto *DDI = dyn_cast<DbgDeclareInst>(&I))
-        Worklist.push_back(DDI);
-  for (DbgDeclareInst *DDI : Worklist)
-    coro::salvageDebugInfo(DbgPtrAllocaCache, DDI);
+      if (auto *DVI = dyn_cast<DbgVariableIntrinsic>(&I))
+        Worklist.push_back(DVI);
+  for (DbgVariableIntrinsic *DVI : Worklist)
+    coro::salvageDebugInfo(DbgPtrAllocaCache, DVI, Shape.ReuseFrameSlot);
 
   // Remove all salvaged dbg.declare intrinsics that became
   // either unreachable or stale due to the CoroSplit transformation.
+  DominatorTree DomTree(*NewF);
   auto IsUnreachableBlock = [&](BasicBlock *BB) {
-    return BB->hasNPredecessors(0) && BB != &NewF->getEntryBlock();
+    return !isPotentiallyReachable(&NewF->getEntryBlock(), BB, nullptr,
+                                   &DomTree);
   };
-  for (DbgDeclareInst *DDI : Worklist) {
-    if (IsUnreachableBlock(DDI->getParent()))
-      DDI->eraseFromParent();
-    else if (dyn_cast_or_null<AllocaInst>(DDI->getAddress())) {
+  for (DbgVariableIntrinsic *DVI : Worklist) {
+    if (IsUnreachableBlock(DVI->getParent()))
+      DVI->eraseFromParent();
+    else if (dyn_cast_or_null<AllocaInst>(DVI->getVariableLocationOp(0))) {
       // Count all non-debuginfo uses in reachable blocks.
       unsigned Uses = 0;
-      for (auto *User : DDI->getAddress()->users())
+      for (auto *User : DVI->getVariableLocationOp(0)->users())
         if (auto *I = dyn_cast<Instruction>(User))
           if (!isa<AllocaInst>(I) && !IsUnreachableBlock(I->getParent()))
             ++Uses;
       if (!Uses)
-        DDI->eraseFromParent();
+        DVI->eraseFromParent();
     }
   }
 }
@@ -846,6 +850,9 @@ void CoroCloner::create() {
 
   CloneFunctionInto(NewF, &OrigF, VMap,
                     CloneFunctionChangeType::LocalChangesOnly, Returns);
+
+  auto &Context = NewF->getContext();
+
   // For async functions / continuations, adjust the scope line of the
   // clone to the line number of the suspend point. The scope line is
   // associated with all pre-prologue instructions. This avoids a jump
@@ -855,14 +862,23 @@ void CoroCloner::create() {
     if (ActiveSuspend)
       if (auto DL = ActiveSuspend->getDebugLoc())
         SP->setScopeLine(DL->getLine());
+    // Update the linkage name to reflect the modified symbol name. It
+    // is necessary to update the linkage name in Swift, since the
+    // mangling changes for resume functions. It might also be the
+    // right thing to do in C++, but due to a limitation in LLVM's
+    // AsmPrinter we can only do this if the function doesn't have an
+    // abstract specification, since the DWARF backend expects the
+    // abstract specification to contain the linkage name and asserts
+    // that they are identical.
+    if (!SP->getDeclaration() && SP->getUnit() &&
+        SP->getUnit()->getSourceLanguage() == dwarf::DW_LANG_Swift)
+      SP->replaceLinkageName(MDString::get(Context, NewF->getName()));
   }
 
   NewF->setLinkage(savedLinkage);
   NewF->setVisibility(savedVisibility);
   NewF->setUnnamedAddr(savedUnnamedAddr);
   NewF->setDLLStorageClass(savedDLLStorageClass);
-
-  auto &Context = NewF->getContext();
 
   // Replace the attributes of the new function:
   auto OrigAttrs = NewF->getAttributes();

@@ -18,6 +18,7 @@
 #include "AMDGPURegisterBankInfo.h"
 #include "AMDGPUTargetMachine.h"
 #include "SIMachineFunctionInfo.h"
+#include "Utils/AMDGPUBaseInfo.h"
 #include "llvm/CodeGen/GlobalISel/GISelKnownBits.h"
 #include "llvm/CodeGen/GlobalISel/InstructionSelectorImpl.h"
 #include "llvm/CodeGen/GlobalISel/MIPatternMatch.h"
@@ -1500,8 +1501,8 @@ bool AMDGPUInstructionSelector::selectImageIntrinsic(
   const bool IsA16 = (Flags & 1) != 0;
   const bool IsG16 = (Flags & 2) != 0;
 
-  // A16 implies 16 bit gradients
-  if (IsA16 && !IsG16)
+  // A16 implies 16 bit gradients if subtarget doesn't support G16
+  if (IsA16 && !STI.hasG16() && !IsG16)
     return false;
 
   unsigned DMask = 0;
@@ -1647,8 +1648,10 @@ bool AMDGPUInstructionSelector::selectImageIntrinsic(
       unsigned SubReg = Is64 ? AMDGPU::sub0_sub1 : AMDGPU::sub0;
 
       MIB.addDef(TmpReg);
-      BuildMI(*MBB, &MI, DL, TII.get(AMDGPU::COPY), VDataOut)
-        .addReg(TmpReg, RegState::Kill, SubReg);
+      if (!MRI->use_empty(VDataOut)) {
+        BuildMI(*MBB, &MI, DL, TII.get(AMDGPU::COPY), VDataOut)
+            .addReg(TmpReg, RegState::Kill, SubReg);
+      }
 
     } else {
       MIB.addDef(VDataOut); // vdata output
@@ -1689,6 +1692,38 @@ bool AMDGPUInstructionSelector::selectImageIntrinsic(
   if (BaseOpcode->HasD16)
     MIB.addImm(IsD16 ? -1 : 0);
 
+  if (IsTexFail) {
+    // An image load instruction with TFE/LWE only conditionally writes to its
+    // result registers. Initialize them to zero so that we always get well
+    // defined result values.
+    assert(VDataOut && !VDataIn);
+    Register Tied = MRI->cloneVirtualRegister(VDataOut);
+    Register Zero = MRI->createVirtualRegister(&AMDGPU::VGPR_32RegClass);
+    BuildMI(*MBB, *MIB, DL, TII.get(AMDGPU::V_MOV_B32_e32), Zero)
+      .addImm(0);
+    auto Parts = TRI.getRegSplitParts(MRI->getRegClass(Tied), 4);
+    if (STI.usePRTStrictNull()) {
+      // With enable-prt-strict-null enabled, initialize all result registers to
+      // zero.
+      auto RegSeq =
+          BuildMI(*MBB, *MIB, DL, TII.get(AMDGPU::REG_SEQUENCE), Tied);
+      for (auto Sub : Parts)
+        RegSeq.addReg(Zero).addImm(Sub);
+    } else {
+      // With enable-prt-strict-null disabled, only initialize the extra TFE/LWE
+      // result register.
+      Register Undef = MRI->createVirtualRegister(&AMDGPU::VGPR_32RegClass);
+      BuildMI(*MBB, *MIB, DL, TII.get(AMDGPU::IMPLICIT_DEF), Undef);
+      auto RegSeq =
+          BuildMI(*MBB, *MIB, DL, TII.get(AMDGPU::REG_SEQUENCE), Tied);
+      for (auto Sub : Parts.drop_back(1))
+        RegSeq.addReg(Undef).addImm(Sub);
+      RegSeq.addReg(Zero).addImm(Parts.back());
+    }
+    MIB.addReg(Tied, RegState::Implicit);
+    MIB->tieOperands(0, MIB->getNumOperands() - 1);
+  }
+
   MI.eraseFromParent();
   return constrainSelectedInstRegOperands(*MIB, TII, TRI, RBI);
 }
@@ -1716,7 +1751,7 @@ bool AMDGPUInstructionSelector::selectG_INTRINSIC_W_SIDE_EFFECTS(
   case Intrinsic::amdgcn_s_barrier:
     return selectSBarrier(I);
   case Intrinsic::amdgcn_global_atomic_fadd:
-    return selectGlobalAtomicFaddIntrinsic(I);
+    return selectGlobalAtomicFadd(I, I.getOperand(2), I.getOperand(3));
   default: {
     return selectImpl(I, *CoverageInfo);
   }
@@ -2319,6 +2354,13 @@ void AMDGPUInstructionSelector::initM0(MachineInstr &I) const {
 
 bool AMDGPUInstructionSelector::selectG_LOAD_STORE_ATOMICRMW(
   MachineInstr &I) const {
+  if (I.getOpcode() == TargetOpcode::G_ATOMICRMW_FADD) {
+    const LLT PtrTy = MRI->getType(I.getOperand(1).getReg());
+    unsigned AS = PtrTy.getAddressSpace();
+    if (AS == AMDGPUAS::GLOBAL_ADDRESS)
+      return selectGlobalAtomicFadd(I, I.getOperand(1), I.getOperand(2));
+  }
+
   initM0(I);
   return selectImpl(I, *CoverageInfo);
 }
@@ -2960,11 +3002,14 @@ bool AMDGPUInstructionSelector::selectAMDGPU_BUFFER_ATOMIC_FADD(
   return true;
 }
 
-bool AMDGPUInstructionSelector::selectGlobalAtomicFaddIntrinsic(
-  MachineInstr &MI) const{
+bool AMDGPUInstructionSelector::selectGlobalAtomicFadd(
+  MachineInstr &MI, MachineOperand &AddrOp, MachineOperand &DataOp) const {
 
-  if (STI.hasGFX90AInsts())
+  if (STI.hasGFX90AInsts()) {
+    // gfx90a adds return versions of the global atomic fadd instructions so no
+    // special handling is required.
     return selectImpl(MI, *CoverageInfo);
+  }
 
   MachineBasicBlock *MBB = MI.getParent();
   const DebugLoc &DL = MI.getDebugLoc();
@@ -2981,9 +3026,9 @@ bool AMDGPUInstructionSelector::selectGlobalAtomicFaddIntrinsic(
   // FIXME: This is only needed because tablegen requires number of dst operands
   // in match and replace pattern to be the same. Otherwise patterns can be
   // exported from SDag path.
-  auto Addr = selectFlatOffsetImpl<true>(MI.getOperand(2));
+  auto Addr = selectFlatOffsetImpl(AddrOp, SIInstrFlags::FlatGlobal);
 
-  Register Data = MI.getOperand(3).getReg();
+  Register Data = DataOp.getReg();
   const unsigned Opc = MRI->getType(Data).isVector() ?
     AMDGPU::GLOBAL_ATOMIC_PK_ADD_F16 : AMDGPU::GLOBAL_ATOMIC_ADD_F32;
   auto MIB = BuildMI(*MBB, &MI, DL, TII.get(Opc))
@@ -3395,9 +3440,9 @@ AMDGPUInstructionSelector::selectSmrdSgpr(MachineOperand &Root) const {
   }};
 }
 
-template <bool Signed>
 std::pair<Register, int>
-AMDGPUInstructionSelector::selectFlatOffsetImpl(MachineOperand &Root) const {
+AMDGPUInstructionSelector::selectFlatOffsetImpl(MachineOperand &Root,
+                                                uint64_t FlatVariant) const {
   MachineInstr *MI = Root.getParent();
 
   auto Default = std::make_pair(Root.getReg(), 0);
@@ -3413,7 +3458,7 @@ AMDGPUInstructionSelector::selectFlatOffsetImpl(MachineOperand &Root) const {
     return Default;
 
   unsigned AddrSpace = (*MI->memoperands_begin())->getAddrSpace();
-  if (!TII.isLegalFLATOffset(ConstOffset, AddrSpace, Signed))
+  if (!TII.isLegalFLATOffset(ConstOffset, AddrSpace, FlatVariant))
     return Default;
 
   return std::make_pair(PtrBase, ConstOffset);
@@ -3421,7 +3466,7 @@ AMDGPUInstructionSelector::selectFlatOffsetImpl(MachineOperand &Root) const {
 
 InstructionSelector::ComplexRendererFns
 AMDGPUInstructionSelector::selectFlatOffset(MachineOperand &Root) const {
-  auto PtrWithOffset = selectFlatOffsetImpl<false>(Root);
+  auto PtrWithOffset = selectFlatOffsetImpl(Root, SIInstrFlags::FLAT);
 
   return {{
       [=](MachineInstrBuilder &MIB) { MIB.addReg(PtrWithOffset.first); },
@@ -3430,8 +3475,18 @@ AMDGPUInstructionSelector::selectFlatOffset(MachineOperand &Root) const {
 }
 
 InstructionSelector::ComplexRendererFns
-AMDGPUInstructionSelector::selectFlatOffsetSigned(MachineOperand &Root) const {
-  auto PtrWithOffset = selectFlatOffsetImpl<true>(Root);
+AMDGPUInstructionSelector::selectGlobalOffset(MachineOperand &Root) const {
+  auto PtrWithOffset = selectFlatOffsetImpl(Root, SIInstrFlags::FlatGlobal);
+
+  return {{
+      [=](MachineInstrBuilder &MIB) { MIB.addReg(PtrWithOffset.first); },
+      [=](MachineInstrBuilder &MIB) { MIB.addImm(PtrWithOffset.second); },
+  }};
+}
+
+InstructionSelector::ComplexRendererFns
+AMDGPUInstructionSelector::selectScratchOffset(MachineOperand &Root) const {
+  auto PtrWithOffset = selectFlatOffsetImpl(Root, SIInstrFlags::FlatScratch);
 
   return {{
       [=](MachineInstrBuilder &MIB) { MIB.addReg(PtrWithOffset.first); },
@@ -3470,39 +3525,56 @@ AMDGPUInstructionSelector::selectGlobalSAddr(MachineOperand &Root) const {
   std::tie(PtrBase, ConstOffset) = getPtrBaseWithConstantOffset(Addr, *MRI);
 
   if (ConstOffset != 0) {
-    if (TII.isLegalFLATOffset(ConstOffset, AMDGPUAS::GLOBAL_ADDRESS, true)) {
+    if (TII.isLegalFLATOffset(ConstOffset, AMDGPUAS::GLOBAL_ADDRESS,
+                              SIInstrFlags::FlatGlobal)) {
       Addr = PtrBase;
       ImmOffset = ConstOffset;
-    } else if (ConstOffset > 0) {
+    } else {
       auto PtrBaseDef = getDefSrcRegIgnoringCopies(PtrBase, *MRI);
       if (!PtrBaseDef)
         return None;
 
       if (isSGPR(PtrBaseDef->Reg)) {
-        // Offset is too large.
-        //
-        // saddr + large_offset -> saddr + (voffset = large_offset & ~MaxOffset)
-        //                         + (large_offset & MaxOffset);
-        int64_t SplitImmOffset, RemainderOffset;
-        std::tie(SplitImmOffset, RemainderOffset)
-          = TII.splitFlatOffset(ConstOffset, AMDGPUAS::GLOBAL_ADDRESS, true);
+        if (ConstOffset > 0) {
+          // Offset is too large.
+          //
+          // saddr + large_offset -> saddr +
+          //                         (voffset = large_offset & ~MaxOffset) +
+          //                         (large_offset & MaxOffset);
+          int64_t SplitImmOffset, RemainderOffset;
+          std::tie(SplitImmOffset, RemainderOffset) = TII.splitFlatOffset(
+              ConstOffset, AMDGPUAS::GLOBAL_ADDRESS, SIInstrFlags::FlatGlobal);
 
-        if (isUInt<32>(RemainderOffset)) {
-          MachineInstr *MI = Root.getParent();
-          MachineBasicBlock *MBB = MI->getParent();
-          Register HighBits
-            = MRI->createVirtualRegister(&AMDGPU::VGPR_32RegClass);
+          if (isUInt<32>(RemainderOffset)) {
+            MachineInstr *MI = Root.getParent();
+            MachineBasicBlock *MBB = MI->getParent();
+            Register HighBits =
+                MRI->createVirtualRegister(&AMDGPU::VGPR_32RegClass);
 
-          BuildMI(*MBB, MI, MI->getDebugLoc(), TII.get(AMDGPU::V_MOV_B32_e32),
-                  HighBits)
-            .addImm(RemainderOffset);
+            BuildMI(*MBB, MI, MI->getDebugLoc(), TII.get(AMDGPU::V_MOV_B32_e32),
+                    HighBits)
+                .addImm(RemainderOffset);
 
-          return {{
-            [=](MachineInstrBuilder &MIB) { MIB.addReg(PtrBase); },  // saddr
-            [=](MachineInstrBuilder &MIB) { MIB.addReg(HighBits); }, // voffset
-            [=](MachineInstrBuilder &MIB) { MIB.addImm(SplitImmOffset); },
-          }};
+            return {{
+                [=](MachineInstrBuilder &MIB) { MIB.addReg(PtrBase); }, // saddr
+                [=](MachineInstrBuilder &MIB) {
+                  MIB.addReg(HighBits);
+                }, // voffset
+                [=](MachineInstrBuilder &MIB) { MIB.addImm(SplitImmOffset); },
+            }};
+          }
         }
+
+        // We are adding a 64 bit SGPR and a constant. If constant bus limit
+        // is 1 we would need to perform 1 or 2 extra moves for each half of
+        // the constant and it is better to do a scalar add and then issue a
+        // single VALU instruction to materialize zero. Otherwise it is less
+        // instructions to perform VALU adds with immediates or inline literals.
+        unsigned NumLiterals =
+            !TII.isInlineConstant(APInt(32, ConstOffset & 0xffffffff)) +
+            !TII.isInlineConstant(APInt(32, ConstOffset >> 32));
+        if (STI.getConstantBusLimit(AMDGPU::V_ADD_U32_e64) > NumLiterals)
+          return None;
       }
     }
   }
@@ -3512,57 +3584,50 @@ AMDGPUInstructionSelector::selectGlobalSAddr(MachineOperand &Root) const {
     return None;
 
   // Match the variable offset.
-  if (AddrDef->MI->getOpcode() != AMDGPU::G_PTR_ADD) {
-    // FIXME: We should probably have folded COPY (G_IMPLICIT_DEF) earlier, and
-    // drop this.
-    if (AddrDef->MI->getOpcode() == AMDGPU::G_IMPLICIT_DEF ||
-        AddrDef->MI->getOpcode() == AMDGPU::G_CONSTANT)
-      return None;
+  if (AddrDef->MI->getOpcode() == AMDGPU::G_PTR_ADD) {
+    // Look through the SGPR->VGPR copy.
+    Register SAddr =
+        getSrcRegIgnoringCopies(AddrDef->MI->getOperand(1).getReg(), *MRI);
 
-    // It's cheaper to materialize a single 32-bit zero for vaddr than the two
-    // moves required to copy a 64-bit SGPR to VGPR.
-    const Register SAddr = AddrDef->Reg;
-    if (!isSGPR(SAddr))
-      return None;
+    if (SAddr && isSGPR(SAddr)) {
+      Register PtrBaseOffset = AddrDef->MI->getOperand(2).getReg();
 
-    MachineInstr *MI = Root.getParent();
-    MachineBasicBlock *MBB = MI->getParent();
-    Register VOffset = MRI->createVirtualRegister(&AMDGPU::VGPR_32RegClass);
-
-    BuildMI(*MBB, MI, MI->getDebugLoc(), TII.get(AMDGPU::V_MOV_B32_e32),
-            VOffset)
-      .addImm(0);
-
-    return {{
-        [=](MachineInstrBuilder &MIB) { MIB.addReg(SAddr); },    // saddr
-        [=](MachineInstrBuilder &MIB) { MIB.addReg(VOffset); },  // voffset
-        [=](MachineInstrBuilder &MIB) { MIB.addImm(ImmOffset); } // offset
-    }};
+      // It's possible voffset is an SGPR here, but the copy to VGPR will be
+      // inserted later.
+      if (Register VOffset = matchZeroExtendFromS32(*MRI, PtrBaseOffset)) {
+        return {{[=](MachineInstrBuilder &MIB) { // saddr
+                   MIB.addReg(SAddr);
+                 },
+                 [=](MachineInstrBuilder &MIB) { // voffset
+                   MIB.addReg(VOffset);
+                 },
+                 [=](MachineInstrBuilder &MIB) { // offset
+                   MIB.addImm(ImmOffset);
+                 }}};
+      }
+    }
   }
 
-  // Look through the SGPR->VGPR copy.
-  Register SAddr =
-    getSrcRegIgnoringCopies(AddrDef->MI->getOperand(1).getReg(), *MRI);
-  if (!SAddr || !isSGPR(SAddr))
+  // FIXME: We should probably have folded COPY (G_IMPLICIT_DEF) earlier, and
+  // drop this.
+  if (AddrDef->MI->getOpcode() == AMDGPU::G_IMPLICIT_DEF ||
+      AddrDef->MI->getOpcode() == AMDGPU::G_CONSTANT || !isSGPR(AddrDef->Reg))
     return None;
 
-  Register PtrBaseOffset = AddrDef->MI->getOperand(2).getReg();
+  // It's cheaper to materialize a single 32-bit zero for vaddr than the two
+  // moves required to copy a 64-bit SGPR to VGPR.
+  MachineInstr *MI = Root.getParent();
+  MachineBasicBlock *MBB = MI->getParent();
+  Register VOffset = MRI->createVirtualRegister(&AMDGPU::VGPR_32RegClass);
 
-  // It's possible voffset is an SGPR here, but the copy to VGPR will be
-  // inserted later.
-  Register VOffset = matchZeroExtendFromS32(*MRI, PtrBaseOffset);
-  if (!VOffset)
-    return None;
+  BuildMI(*MBB, MI, MI->getDebugLoc(), TII.get(AMDGPU::V_MOV_B32_e32), VOffset)
+      .addImm(0);
 
-  return {{[=](MachineInstrBuilder &MIB) { // saddr
-             MIB.addReg(SAddr);
-           },
-           [=](MachineInstrBuilder &MIB) { // voffset
-             MIB.addReg(VOffset);
-           },
-           [=](MachineInstrBuilder &MIB) { // offset
-             MIB.addImm(ImmOffset);
-           }}};
+  return {{
+      [=](MachineInstrBuilder &MIB) { MIB.addReg(AddrDef->Reg); }, // saddr
+      [=](MachineInstrBuilder &MIB) { MIB.addReg(VOffset); },      // voffset
+      [=](MachineInstrBuilder &MIB) { MIB.addImm(ImmOffset); }     // offset
+  }};
 }
 
 InstructionSelector::ComplexRendererFns
@@ -3577,7 +3642,8 @@ AMDGPUInstructionSelector::selectScratchSAddr(MachineOperand &Root) const {
   std::tie(PtrBase, ConstOffset) = getPtrBaseWithConstantOffset(Addr, *MRI);
 
   if (ConstOffset != 0 &&
-      TII.isLegalFLATOffset(ConstOffset, AMDGPUAS::PRIVATE_ADDRESS, true)) {
+      TII.isLegalFLATOffset(ConstOffset, AMDGPUAS::PRIVATE_ADDRESS,
+                            SIInstrFlags::FlatScratch)) {
     Addr = PtrBase;
     ImmOffset = ConstOffset;
   }

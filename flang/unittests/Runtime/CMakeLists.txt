@@ -18,16 +18,6 @@ target_link_libraries(RuntimeTesting
   ${llvm_libs}
 )
 
-add_flang_nongtest_unittest(format
-  RuntimeTesting
-  FortranRuntime
-)
-
-add_flang_nongtest_unittest(hello
-  RuntimeTesting
-  FortranRuntime
-)
-
 # This test is not run by default as it requires input.
 add_executable(external-hello-world
   external-hello.cpp
@@ -42,7 +32,7 @@ add_flang_nongtest_unittest(external-io
   FortranRuntime
 )
 
-add_flang_nongtest_unittest(list-input
+add_flang_nongtest_unittest(buffer
   RuntimeTesting
   FortranRuntime
 )

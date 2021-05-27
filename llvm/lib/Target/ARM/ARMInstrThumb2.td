@@ -63,6 +63,12 @@ def t2_so_reg : Operand<i32>,    // reg imm
   let MIOperandInfo = (ops rGPR, i32imm);
 }
 
+// Same as above, but only matching on a single use node.
+def t2_so_reg_oneuse : Operand<i32>,
+                       ComplexPattern<i32, 2,
+                                      "SelectShiftImmShifterOperandOneUse",
+                                      [shl,srl,sra,rotr]>;
+
 // t2_so_imm_not_XFORM - Return the complement of a t2_so_imm value
 def t2_so_imm_not_XFORM : SDNodeXForm<imm, [{
   return CurDAG->getTargetConstant(~((uint32_t)N->getZExtValue()), SDLoc(N),
@@ -2677,7 +2683,7 @@ def : T2Pat<(ARMusat (sra GPRnopc:$Rn, asr_imm:$shft), imm0_31:$pos),
 defm t2LSL  : T2I_sh_ir<0b00, "lsl", imm1_31, shl>;
 defm t2LSR  : T2I_sh_ir<0b01, "lsr", imm_sr,  srl>;
 defm t2ASR  : T2I_sh_ir<0b10, "asr", imm_sr,  sra>;
-defm t2ROR  : T2I_sh_ir<0b11, "ror", imm0_31, rotr>;
+defm t2ROR  : T2I_sh_ir<0b11, "ror", imm1_31, rotr>;
 
 // LSL #0 is actually MOV, and has slightly different permitted registers to
 // LSL with non-zero shift
@@ -2849,6 +2855,12 @@ let Constraints = "$src = $Rd" in {
 defm t2ORN  : T2I_bin_irs<0b0011, "orn",
                           IIC_iBITi, IIC_iBITr, IIC_iBITsi,
                           BinOpFrag<(or node:$LHS, (not node:$RHS))>, 0, "">;
+def : t2InstAlias<"orn${s}${p}.w $Rd, $Rn, $imm",
+   (t2ORNri rGPR:$Rd, rGPR:$Rn, t2_so_imm:$imm, pred:$p, cc_out:$s)>;
+def : t2InstAlias<"orn${s}${p}.w $Rd, $Rn, $Rm",
+   (t2ORNrr rGPR:$Rd, rGPR:$Rn, rGPR:$Rm, pred:$p, cc_out:$s)>;
+def : t2InstAlias<"orn${s}${p}.w $Rd, $Rn, $ShiftedRm",
+   (t2ORNrs rGPR:$Rd, rGPR:$Rn, t2_so_reg:$ShiftedRm, pred:$p, cc_out:$s)>;
 
 /// T2I_un_irs - Defines a set of (op reg, {so_imm|r|so_reg}) patterns for a
 /// unary operation that produces a value. These are predicable and can be
@@ -3371,8 +3383,8 @@ def : T2Pat<(ARMcmpZ  GPRnopc:$lhs, t2_so_imm:$imm),
             (t2CMPri  GPRnopc:$lhs, t2_so_imm:$imm)>;
 def : T2Pat<(ARMcmpZ  GPRnopc:$lhs, rGPR:$rhs),
             (t2CMPrr  GPRnopc:$lhs, rGPR:$rhs)>;
-def : T2Pat<(ARMcmpZ  GPRnopc:$lhs, t2_so_reg:$rhs),
-            (t2CMPrs  GPRnopc:$lhs, t2_so_reg:$rhs)>;
+def : T2Pat<(ARMcmpZ  GPRnopc:$lhs, t2_so_reg_oneuse:$rhs),
+            (t2CMPrs  GPRnopc:$lhs, t2_so_reg_oneuse:$rhs)>;
 
 let isCompare = 1, Defs = [CPSR] in {
    // shifted imm
@@ -5058,8 +5070,8 @@ def : t2InstAlias<"rev16${p} $Rd, $Rm", (t2REV16 rGPR:$Rd, rGPR:$Rm, pred:$p)>;
 def : t2InstAlias<"revsh${p} $Rd, $Rm", (t2REVSH rGPR:$Rd, rGPR:$Rm, pred:$p)>;
 
 
-// Alias for RSB without the ".w" optional width specifier, and with optional
-// implied destination register.
+// Alias for RSB with and without the ".w" optional width specifier, with and
+// without explicit destination register.
 def : t2InstAlias<"rsb${s}${p} $Rd, $Rn, $imm",
            (t2RSBri rGPR:$Rd, rGPR:$Rn, t2_so_imm:$imm, pred:$p, cc_out:$s)>;
 def : t2InstAlias<"rsb${s}${p} $Rdn, $imm",
@@ -5068,6 +5080,13 @@ def : t2InstAlias<"rsb${s}${p} $Rdn, $Rm",
            (t2RSBrr rGPR:$Rdn, rGPR:$Rdn, rGPR:$Rm, pred:$p, cc_out:$s)>;
 def : t2InstAlias<"rsb${s}${p} $Rdn, $ShiftedRm",
            (t2RSBrs rGPR:$Rdn, rGPR:$Rdn, t2_so_reg:$ShiftedRm, pred:$p,
+                    cc_out:$s)>;
+def : t2InstAlias<"rsb${s}${p}.w $Rdn, $Rm",
+           (t2RSBrr rGPR:$Rdn, rGPR:$Rdn, rGPR:$Rm, pred:$p, cc_out:$s)>;
+def : t2InstAlias<"rsb${s}${p}.w $Rd, $Rn, $Rm",
+           (t2RSBrr rGPR:$Rd, rGPR:$Rn, rGPR:$Rm, pred:$p, cc_out:$s)>;
+def : t2InstAlias<"rsb${s}${p}.w $Rd, $Rn, $ShiftedRm",
+           (t2RSBrs rGPR:$Rd, rGPR:$Rn, t2_so_reg:$ShiftedRm, pred:$p,
                     cc_out:$s)>;
 
 // SSAT/USAT optional shift operand.

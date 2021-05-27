@@ -54,10 +54,10 @@ void GPUToSPIRVPass::runOnOperation() {
 
   auto targetAttr = spirv::lookupTargetEnvOrDefault(module);
   std::unique_ptr<ConversionTarget> target =
-      spirv::SPIRVConversionTarget::get(targetAttr);
+      SPIRVConversionTarget::get(targetAttr);
 
   SPIRVTypeConverter typeConverter(targetAttr);
-  OwningRewritePatternList patterns(context);
+  RewritePatternSet patterns(context);
   populateGPUToSPIRVPatterns(typeConverter, patterns);
   populateStandardToSPIRVPatterns(typeConverter, patterns);
 

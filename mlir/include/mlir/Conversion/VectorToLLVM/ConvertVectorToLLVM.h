@@ -24,7 +24,7 @@ struct LowerVectorToLLVMOptions {
   LowerVectorToLLVMOptions()
       : reassociateFPReductions(false), enableIndexOptimizations(true),
         enableArmNeon(false), enableArmSVE(false), enableAMX(false),
-        enableAVX512(false) {}
+        enableX86Vector(false) {}
 
   LowerVectorToLLVMOptions &setReassociateFPReductions(bool b) {
     reassociateFPReductions = b;
@@ -46,8 +46,8 @@ struct LowerVectorToLLVMOptions {
     enableAMX = b;
     return *this;
   }
-  LowerVectorToLLVMOptions &setEnableAVX512(bool b) {
-    enableAVX512 = b;
+  LowerVectorToLLVMOptions &setEnableX86Vector(bool b) {
+    enableX86Vector = b;
     return *this;
   }
 
@@ -56,19 +56,19 @@ struct LowerVectorToLLVMOptions {
   bool enableArmNeon;
   bool enableArmSVE;
   bool enableAMX;
-  bool enableAVX512;
+  bool enableX86Vector;
 };
 
 /// Collect a set of patterns to convert from Vector contractions to LLVM Matrix
 /// Intrinsics. To lower to assembly, the LLVM flag -lower-matrix-intrinsics
 /// will be needed when invoking LLVM.
-void populateVectorToLLVMMatrixConversionPatterns(
-    LLVMTypeConverter &converter, OwningRewritePatternList &patterns);
+void populateVectorToLLVMMatrixConversionPatterns(LLVMTypeConverter &converter,
+                                                  RewritePatternSet &patterns);
 
 /// Collect a set of patterns to convert from the Vector dialect to LLVM.
 void populateVectorToLLVMConversionPatterns(
-    LLVMTypeConverter &converter, OwningRewritePatternList &patterns,
-    bool reassociateFPReductions = false, bool enableIndexOptimizations = true);
+    LLVMTypeConverter &converter, RewritePatternSet &patterns,
+    bool reassociateFPReductions = false);
 
 /// Create a pass to convert vector operations to the LLVMIR dialect.
 std::unique_ptr<OperationPass<ModuleOp>> createConvertVectorToLLVMPass(

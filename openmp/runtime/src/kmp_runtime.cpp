@@ -4055,12 +4055,12 @@ static void __kmp_initialize_info(kmp_info_t *this_thr, kmp_team_t *team,
   /* this_thr->th.th_info.ds.ds_gtid is setup in
      kmp_allocate_thread/create_worker.
      this_thr->th.th_serial_team is setup in __kmp_allocate_thread */
-  kmp_info_t *master = team->t.t_threads[0];
   KMP_DEBUG_ASSERT(this_thr != NULL);
   KMP_DEBUG_ASSERT(this_thr->th.th_serial_team);
   KMP_DEBUG_ASSERT(team);
   KMP_DEBUG_ASSERT(team->t.t_threads);
   KMP_DEBUG_ASSERT(team->t.t_dispatch);
+  kmp_info_t *master = team->t.t_threads[0];
   KMP_DEBUG_ASSERT(master);
   KMP_DEBUG_ASSERT(master->th.th_root);
 
@@ -4588,6 +4588,9 @@ __kmp_set_thread_affinity_mask_full_tmp(kmp_affin_mask_t *old_mask) {
 // thread's partition, and binds each worker to a thread in their partition.
 // The primary thread's partition should already include its current binding.
 static void __kmp_partition_places(kmp_team_t *team, int update_master_only) {
+  // Do not partition places for the hidden helper team
+  if (KMP_HIDDEN_HELPER_TEAM(team))
+    return;
   // Copy the primary thread's place partition to the team struct
   kmp_info_t *master_th = team->t.t_threads[0];
   KMP_DEBUG_ASSERT(master_th != NULL);
@@ -5751,7 +5754,7 @@ void *__kmp_launch_thread(kmp_info_t *this_thr) {
   }
 
 #if OMPT_SUPPORT
-  ompt_data_t *thread_data;
+  ompt_data_t *thread_data = nullptr;
   if (ompt_enabled.enabled) {
     thread_data = &(this_thr->th.ompt_thread_info.thread_data);
     *thread_data = ompt_data_none;

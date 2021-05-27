@@ -33,11 +33,11 @@ void SCFToSPIRVPass::runOnOperation() {
 
   auto targetAttr = spirv::lookupTargetEnvOrDefault(module);
   std::unique_ptr<ConversionTarget> target =
-      spirv::SPIRVConversionTarget::get(targetAttr);
+      SPIRVConversionTarget::get(targetAttr);
 
   SPIRVTypeConverter typeConverter(targetAttr);
   ScfToSPIRVContext scfContext;
-  OwningRewritePatternList patterns(context);
+  RewritePatternSet patterns(context);
   populateSCFToSPIRVPatterns(typeConverter, scfContext, patterns);
   populateStandardToSPIRVPatterns(typeConverter, patterns);
   populateBuiltinFuncToSPIRVPatterns(typeConverter, patterns);

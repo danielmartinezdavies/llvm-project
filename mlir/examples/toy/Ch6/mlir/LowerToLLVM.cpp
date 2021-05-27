@@ -139,7 +139,8 @@ private:
           IntegerType::get(builder.getContext(), 8), value.size());
       global = builder.create<LLVM::GlobalOp>(loc, type, /*isConstant=*/true,
                                               LLVM::Linkage::Internal, name,
-                                              builder.getStringAttr(value));
+                                              builder.getStringAttr(value),
+                                              /*alignment=*/0);
     }
 
     // Get the pointer to the first character in the global string.
@@ -174,7 +175,7 @@ void ToyToLLVMLoweringPass::runOnOperation() {
   // final target for this lowering. For this lowering, we are only targeting
   // the LLVM dialect.
   LLVMConversionTarget target(getContext());
-  target.addLegalOp<ModuleOp, ModuleTerminatorOp>();
+  target.addLegalOp<ModuleOp>();
 
   // During this lowering, we will also be lowering the MemRef types, that are
   // currently being operated on, to a representation in LLVM. To perform this
@@ -191,14 +192,14 @@ void ToyToLLVMLoweringPass::runOnOperation() {
   // lowerings. Transitive lowering, or A->B->C lowering, is when multiple
   // patterns must be applied to fully transform an illegal operation into a
   // set of legal ones.
-  OwningRewritePatternList patterns;
-  populateAffineToStdConversionPatterns(patterns, &getContext());
-  populateLoopToStdConversionPatterns(patterns, &getContext());
+  RewritePatternSet patterns(&getContext());
+  populateAffineToStdConversionPatterns(patterns);
+  populateLoopToStdConversionPatterns(patterns);
   populateStdToLLVMConversionPatterns(typeConverter, patterns);
 
   // The only remaining operation to lower from the `toy` dialect, is the
   // PrintOp.
-  patterns.insert<PrintOpLowering>(&getContext());
+  patterns.add<PrintOpLowering>(&getContext());
 
   // We want to completely lower to LLVM, so we use a `FullConversion`. This
   // ensures that only legal operations will remain after the conversion.

@@ -118,10 +118,12 @@ class Parser : public CodeCompletionHandler {
   /// Ident_super - IdentifierInfo for "super", to support fast
   /// comparison.
   IdentifierInfo *Ident_super;
-  /// Ident_vector, Ident_bool - cached IdentifierInfos for "vector" and
-  /// "bool" fast comparison.  Only present if AltiVec or ZVector are enabled.
+  /// Ident_vector, Ident_bool, Ident_Bool - cached IdentifierInfos for "vector"
+  /// and "bool" fast comparison.  Only present if AltiVec or ZVector are
+  /// enabled.
   IdentifierInfo *Ident_vector;
   IdentifierInfo *Ident_bool;
+  IdentifierInfo *Ident_Bool;
   /// Ident_pixel - cached IdentifierInfos for "pixel" fast comparison.
   /// Only present if AltiVec enabled.
   IdentifierInfo *Ident_pixel;
@@ -879,6 +881,7 @@ private:
 
     if (Tok.getIdentifierInfo() != Ident_vector &&
         Tok.getIdentifierInfo() != Ident_bool &&
+        Tok.getIdentifierInfo() != Ident_Bool &&
         (!getLangOpts().AltiVec || Tok.getIdentifierInfo() != Ident_pixel))
       return false;
 
@@ -1572,27 +1575,6 @@ private:
 
   //===--------------------------------------------------------------------===//
   // C99 6.9: External Definitions.
-  struct ParsedAttributesWithRange : ParsedAttributes {
-    ParsedAttributesWithRange(AttributeFactory &factory)
-      : ParsedAttributes(factory) {}
-
-    void clear() {
-      ParsedAttributes::clear();
-      Range = SourceRange();
-    }
-
-    SourceRange Range;
-  };
-  struct ParsedAttributesViewWithRange : ParsedAttributesView {
-    ParsedAttributesViewWithRange() : ParsedAttributesView() {}
-    void clearListOnly() {
-      ParsedAttributesView::clearListOnly();
-      Range = SourceRange();
-    }
-
-    SourceRange Range;
-  };
-
   DeclGroupPtrTy ParseExternalDeclaration(ParsedAttributesWithRange &attrs,
                                           ParsingDeclSpec *DS = nullptr);
   bool isDeclarationAfterDeclarator();
@@ -2639,7 +2621,8 @@ private:
   // which standard permits but we don't supported yet, for example, attributes
   // appertain to decl specifiers.
   void ProhibitCXX11Attributes(ParsedAttributesWithRange &Attrs,
-                               unsigned DiagID);
+                               unsigned DiagID,
+                               bool DiagnoseEmptyAttrs = false);
 
   /// Skip C++11 and C2x attributes and return the end location of the
   /// last one.
@@ -2724,17 +2707,50 @@ private:
       D.takeAttributes(attrs, endLoc);
     }
   }
-  bool MaybeParseGNUAttributes(ParsedAttributes &attrs,
-                               SourceLocation *endLoc = nullptr,
+
+  /// Parses GNU-style attributes and returns them without source range
+  /// information.
+  ///
+  /// This API is discouraged. Use the version that takes a
+  /// ParsedAttributesWithRange instead.
+  bool MaybeParseGNUAttributes(ParsedAttributes &Attrs,
+                               SourceLocation *EndLoc = nullptr,
                                LateParsedAttrList *LateAttrs = nullptr) {
     if (Tok.is(tok::kw___attribute)) {
-      ParseGNUAttributes(attrs, endLoc, LateAttrs);
+      ParsedAttributesWithRange AttrsWithRange(AttrFactory);
+      ParseGNUAttributes(Attrs, EndLoc, LateAttrs);
+      Attrs.takeAllFrom(AttrsWithRange);
       return true;
     }
     return false;
   }
-  void ParseGNUAttributes(ParsedAttributes &attrs,
-                          SourceLocation *endLoc = nullptr,
+
+  bool MaybeParseGNUAttributes(ParsedAttributesWithRange &Attrs,
+                               SourceLocation *EndLoc = nullptr,
+                               LateParsedAttrList *LateAttrs = nullptr) {
+    if (Tok.is(tok::kw___attribute)) {
+      ParseGNUAttributes(Attrs, EndLoc, LateAttrs);
+      return true;
+    }
+    return false;
+  }
+
+  /// Parses GNU-style attributes and returns them without source range
+  /// information.
+  ///
+  /// This API is discouraged. Use the version that takes a
+  /// ParsedAttributesWithRange instead.
+  void ParseGNUAttributes(ParsedAttributes &Attrs,
+                          SourceLocation *EndLoc = nullptr,
+                          LateParsedAttrList *LateAttrs = nullptr,
+                          Declarator *D = nullptr) {
+    ParsedAttributesWithRange AttrsWithRange(AttrFactory);
+    ParseGNUAttributes(AttrsWithRange, EndLoc, LateAttrs, D);
+    Attrs.takeAllFrom(AttrsWithRange);
+  }
+
+  void ParseGNUAttributes(ParsedAttributesWithRange &Attrs,
+                          SourceLocation *EndLoc = nullptr,
                           LateParsedAttrList *LateAttrs = nullptr,
                           Declarator *D = nullptr);
   void ParseGNUAttributeArgs(IdentifierInfo *AttrName,
@@ -3168,10 +3184,12 @@ private:
   /// Parse 'omp end assumes' directive.
   void ParseOpenMPEndAssumesDirective(SourceLocation Loc);
 
-  /// Parse clauses for '#pragma omp declare target'.
-  DeclGroupPtrTy ParseOMPDeclareTargetClauses();
+  /// Parse clauses for '#pragma omp [begin] declare target'.
+  void ParseOMPDeclareTargetClauses(Sema::DeclareTargetContextInfo &DTCI);
+
   /// Parse '#pragma omp end declare target'.
-  void ParseOMPEndDeclareTargetDirective(OpenMPDirectiveKind DKind,
+  void ParseOMPEndDeclareTargetDirective(OpenMPDirectiveKind BeginDKind,
+                                         OpenMPDirectiveKind EndDKind,
                                          SourceLocation Loc);
 
   /// Skip tokens until a `annot_pragma_openmp_end` was found. Emit a warning if

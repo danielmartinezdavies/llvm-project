@@ -38,7 +38,6 @@
 #define DEBUG_TYPE "LoopUtils"
 
 using namespace mlir;
-using llvm::SetVector;
 using llvm::SmallMapVector;
 
 namespace {
@@ -403,7 +402,7 @@ LogicalResult mlir::affineForOpBodySkew(AffineForOp forOp,
 
       if (res) {
         // Simplify/canonicalize the affine.for.
-        OwningRewritePatternList patterns(res.getContext());
+        RewritePatternSet patterns(res.getContext());
         AffineForOp::getCanonicalizationPatterns(patterns, res.getContext());
         bool erased;
         (void)applyOpPatternsAndFold(res, std::move(patterns), &erased);
@@ -1268,8 +1267,9 @@ LogicalResult mlir::loopUnrollByFactor(scf::ForOp forOp,
 
   // Create epilogue clean up loop starting at 'upperBoundUnrolled'.
   if (generateEpilogueLoop) {
-    OpBuilder epilogueBuilder(forOp->getBlock(),
-                              std::next(Block::iterator(forOp)));
+    OpBuilder epilogueBuilder(forOp->getContext());
+    epilogueBuilder.setInsertionPoint(forOp->getBlock(),
+                                      std::next(Block::iterator(forOp)));
     auto epilogueForOp = cast<scf::ForOp>(epilogueBuilder.clone(*forOp));
     epilogueForOp.setLowerBound(upperBoundUnrolled);
 

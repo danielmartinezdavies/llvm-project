@@ -358,6 +358,8 @@ namespace clang {
     ExpectedType VisitDecltypeType(const DecltypeType *T);
     ExpectedType VisitUnaryTransformType(const UnaryTransformType *T);
     ExpectedType VisitAutoType(const AutoType *T);
+    ExpectedType VisitDeducedTemplateSpecializationType(
+        const DeducedTemplateSpecializationType *T);
     ExpectedType VisitInjectedClassNameType(const InjectedClassNameType *T);
     // FIXME: DependentDecltypeType
     ExpectedType VisitRecordType(const RecordType *T);
@@ -1374,6 +1376,20 @@ ExpectedType ASTNodeImporter::VisitAutoType(const AutoType *T) {
       *ToDeducedTypeOrErr, T->getKeyword(), /*IsDependent*/false,
       /*IsPack=*/false, cast_or_null<ConceptDecl>(*ToTypeConstraintConcept),
       ToTemplateArgs);
+}
+
+ExpectedType ASTNodeImporter::VisitDeducedTemplateSpecializationType(
+    const DeducedTemplateSpecializationType *T) {
+  // FIXME: Make sure that the "to" context supports C++17!
+  Expected<TemplateName> ToTemplateNameOrErr = import(T->getTemplateName());
+  if (!ToTemplateNameOrErr)
+    return ToTemplateNameOrErr.takeError();
+  ExpectedType ToDeducedTypeOrErr = import(T->getDeducedType());
+  if (!ToDeducedTypeOrErr)
+    return ToDeducedTypeOrErr.takeError();
+
+  return Importer.getToContext().getDeducedTemplateSpecializationType(
+      *ToTemplateNameOrErr, *ToDeducedTypeOrErr, T->isDependentType());
 }
 
 ExpectedType ASTNodeImporter::VisitInjectedClassNameType(
@@ -2716,7 +2732,20 @@ ExpectedDecl ASTNodeImporter::VisitEnumDecl(EnumDecl *D) {
   D2->setBraceRange(ToBraceRange);
   D2->setAccess(D->getAccess());
   D2->setLexicalDeclContext(LexicalDC);
-  LexicalDC->addDeclInternal(D2);
+  addDeclToContexts(D, D2);
+
+  if (MemberSpecializationInfo *MemberInfo = D->getMemberSpecializationInfo()) {
+    TemplateSpecializationKind SK = MemberInfo->getTemplateSpecializationKind();
+    EnumDecl *FromInst = D->getInstantiatedFromMemberEnum();
+    if (Expected<EnumDecl *> ToInstOrErr = import(FromInst))
+      D2->setInstantiationOfMemberEnum(*ToInstOrErr, SK);
+    else
+      return ToInstOrErr.takeError();
+    if (ExpectedSLoc POIOrErr = import(MemberInfo->getPointOfInstantiation()))
+      D2->getMemberSpecializationInfo()->setPointOfInstantiation(*POIOrErr);
+    else
+      return POIOrErr.takeError();
+  }
 
   // Import the definition
   if (D->isCompleteDefinition())
@@ -3428,11 +3457,13 @@ ExpectedDecl ASTNodeImporter::VisitFunctionDecl(FunctionDecl *D) {
   } else if (auto *Guide = dyn_cast<CXXDeductionGuideDecl>(D)) {
     ExplicitSpecifier ESpec =
         importExplicitSpecifier(Err, Guide->getExplicitSpecifier());
+    CXXConstructorDecl *Ctor =
+        importChecked(Err, Guide->getCorrespondingConstructor());
     if (Err)
       return std::move(Err);
     if (GetImportedOrCreateDecl<CXXDeductionGuideDecl>(
             ToFunction, D, Importer.getToContext(), DC, ToInnerLocStart, ESpec,
-            NameInfo, T, TInfo, ToEndLoc))
+            NameInfo, T, TInfo, ToEndLoc, Ctor))
       return ToFunction;
     cast<CXXDeductionGuideDecl>(ToFunction)
         ->setIsCopyDeductionCandidate(Guide->isCopyDeductionCandidate());
@@ -3632,6 +3663,10 @@ ExpectedDecl ASTNodeImporter::VisitFieldDecl(FieldDecl *D) {
   auto ToInitializer = importChecked(Err, D->getInClassInitializer());
   if (Err)
     return std::move(Err);
+  const Type *ToCapturedVLAType = nullptr;
+  if (Error Err = Importer.importInto(
+          ToCapturedVLAType, cast_or_null<Type>(D->getCapturedVLAType())))
+    return std::move(Err);
 
   FieldDecl *ToField;
   if (GetImportedOrCreateDecl(ToField, D, Importer.getToContext(), DC,
@@ -3645,6 +3680,8 @@ ExpectedDecl ASTNodeImporter::VisitFieldDecl(FieldDecl *D) {
   if (ToInitializer)
     ToField->setInClassInitializer(ToInitializer);
   ToField->setImplicit(D->isImplicit());
+  if (ToCapturedVLAType)
+    ToField->setCapturedVLAType(cast<VariableArrayType>(ToCapturedVLAType));
   LexicalDC->addDeclInternal(ToField);
   return ToField;
 }
@@ -5066,6 +5103,11 @@ ExpectedDecl ASTNodeImporter::VisitObjCPropertyDecl(ObjCPropertyDecl *D) {
   auto FoundDecls = Importer.findDeclsInToCtx(DC, Name);
   for (auto *FoundDecl : FoundDecls) {
     if (auto *FoundProp = dyn_cast<ObjCPropertyDecl>(FoundDecl)) {
+      // Instance and class properties can share the same name but are different
+      // declarations.
+      if (FoundProp->isInstanceProperty() != D->isInstanceProperty())
+        continue;
+
       // Check property types.
       if (!Importer.IsStructurallyEquivalent(D->getType(),
                                              FoundProp->getType())) {
@@ -8168,28 +8210,37 @@ ASTImporter::Import(ExprWithCleanups::CleanupObject From) {
   return make_error<ImportError>(ImportError::UnsupportedConstruct);
 }
 
-Expected<QualType> ASTImporter::Import(QualType FromT) {
-  if (FromT.isNull())
-    return QualType{};
-
-  const Type *FromTy = FromT.getTypePtr();
+Expected<const Type *> ASTImporter::Import(const Type *FromT) {
+  if (!FromT)
+    return FromT;
 
   // Check whether we've already imported this type.
-  llvm::DenseMap<const Type *, const Type *>::iterator Pos
-    = ImportedTypes.find(FromTy);
+  llvm::DenseMap<const Type *, const Type *>::iterator Pos =
+      ImportedTypes.find(FromT);
   if (Pos != ImportedTypes.end())
-    return ToContext.getQualifiedType(Pos->second, FromT.getLocalQualifiers());
+    return Pos->second;
 
   // Import the type
   ASTNodeImporter Importer(*this);
-  ExpectedType ToTOrErr = Importer.Visit(FromTy);
+  ExpectedType ToTOrErr = Importer.Visit(FromT);
   if (!ToTOrErr)
     return ToTOrErr.takeError();
 
   // Record the imported type.
-  ImportedTypes[FromTy] = (*ToTOrErr).getTypePtr();
+  ImportedTypes[FromT] = ToTOrErr->getTypePtr();
 
-  return ToContext.getQualifiedType(*ToTOrErr, FromT.getLocalQualifiers());
+  return ToTOrErr->getTypePtr();
+}
+
+Expected<QualType> ASTImporter::Import(QualType FromT) {
+  if (FromT.isNull())
+    return QualType{};
+
+  Expected<const Type *> ToTyOrErr = Import(FromT.getTypePtr());
+  if (!ToTyOrErr)
+    return ToTyOrErr.takeError();
+
+  return ToContext.getQualifiedType(*ToTyOrErr, FromT.getLocalQualifiers());
 }
 
 Expected<TypeSourceInfo *> ASTImporter::Import(TypeSourceInfo *FromTSI) {
@@ -8334,7 +8385,11 @@ Expected<Decl *> ASTImporter::Import(Decl *FromD) {
       // traverse of the 'to' context).
       auto PosF = ImportedFromDecls.find(ToD);
       if (PosF != ImportedFromDecls.end()) {
-        SharedState->removeDeclFromLookup(ToD);
+        // In the case of TypedefNameDecl we create the Decl first and only
+        // then we import and set its DeclContext. So, the DC might not be set
+        // when we reach here.
+        if (ToD->getDeclContext())
+          SharedState->removeDeclFromLookup(ToD);
         ImportedFromDecls.erase(PosF);
       }
 

@@ -64,6 +64,7 @@ extern "C" LLVM_EXTERNAL_VISIBILITY void LLVMInitializeX86Target() {
   PassRegistry &PR = *PassRegistry::getPassRegistry();
   initializeX86LowerAMXIntrinsicsLegacyPassPass(PR);
   initializeX86LowerAMXTypeLegacyPassPass(PR);
+  initializeX86PreAMXConfigPassPass(PR);
   initializeGlobalISel(PR);
   initializeWinEHStatePassPass(PR);
   initializeFixupBWInstPassPass(PR);
@@ -74,6 +75,7 @@ extern "C" LLVM_EXTERNAL_VISIBILITY void LLVMInitializeX86Target() {
   initializeX86CallFrameOptimizationPass(PR);
   initializeX86CmovConverterPassPass(PR);
   initializeX86TileConfigPass(PR);
+  initializeX86FastTileConfigPass(PR);
   initializeX86LowerTileCopyPass(PR);
   initializeX86ExpandPseudoPass(PR);
   initializeX86ExecutionDomainFixPass(PR);
@@ -261,7 +263,7 @@ X86TargetMachine::getSubtargetImpl(const Function &F) const {
     StringRef Val = PreferVecWidthAttr.getValueAsString();
     unsigned Width;
     if (!Val.getAsInteger(0, Width)) {
-      Key += "prefer-vector-width=";
+      Key += 'p';
       Key += Val;
       PreferVectorWidthOverride = Width;
     }
@@ -274,7 +276,7 @@ X86TargetMachine::getSubtargetImpl(const Function &F) const {
     StringRef Val = MinLegalVecWidthAttr.getValueAsString();
     unsigned Width;
     if (!Val.getAsInteger(0, Width)) {
-      Key += "min-legal-vector-width=";
+      Key += 'm';
       Key += Val;
       RequiredVectorWidth = Width;
     }
@@ -284,7 +286,6 @@ X86TargetMachine::getSubtargetImpl(const Function &F) const {
   Key += CPU;
 
   // Add tune CPU to the Key.
-  Key += "tune=";
   Key += TuneCPU;
 
   // Keep track of the start of the feature portion of the string.
@@ -295,8 +296,7 @@ X86TargetMachine::getSubtargetImpl(const Function &F) const {
   // function before we can generate a subtarget. We also need to use
   // it as a key for the subtarget since that can be the only difference
   // between two functions.
-  bool SoftFloat =
-      F.getFnAttribute("use-soft-float").getValueAsString() == "true";
+  bool SoftFloat = F.getFnAttribute("use-soft-float").getValueAsBool();
   // If the soft float attribute is set on the function turn on the soft float
   // subtarget feature.
   if (SoftFloat)
@@ -379,6 +379,7 @@ public:
   bool addPreISel() override;
   void addMachineSSAOptimization() override;
   void addPreRegAlloc() override;
+  bool addPostFastRegAllocRewrite() override;
   void addPostRegAlloc() override;
   void addPreEmitPass() override;
   void addPreEmitPass2() override;
@@ -417,6 +418,9 @@ void X86PassConfig::addIRPasses() {
   // based on the option level and option attribute.
   addPass(createX86LowerAMXIntrinsicsPass());
   addPass(createX86LowerAMXTypePass());
+
+  if (TM->getOptLevel() == CodeGenOpt::None)
+    addPass(createX86PreAMXConfigPass());
 
   TargetPassConfig::addIRPasses();
 
@@ -583,6 +587,11 @@ void X86PassConfig::addPreEmitPass2() {
     addPass(createEHContGuardCatchretPass());
   }
   addPass(createX86LoadValueInjectionRetHardeningPass());
+}
+
+bool X86PassConfig::addPostFastRegAllocRewrite() {
+  addPass(createX86FastTileConfigPass());
+  return true;
 }
 
 bool X86PassConfig::addPreRewrite() {

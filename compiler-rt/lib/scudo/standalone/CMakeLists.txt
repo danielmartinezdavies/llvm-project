@@ -1,7 +1,4 @@
 add_compiler_rt_component(scudo_standalone)
-if (COMPILER_RT_HAS_GWP_ASAN)
-  add_dependencies(scudo_standalone gwp_asan)
-endif()
 
 include_directories(../.. include)
 
@@ -10,6 +7,7 @@ set(SCUDO_CFLAGS)
 list(APPEND SCUDO_CFLAGS
   -Werror=conversion
   -Wall
+  -g
   -nostdinc++)
 
 # Remove -stdlib= which is unused when passing -nostdinc++.
@@ -24,15 +22,8 @@ append_list_if(COMPILER_RT_HAS_WNO_PEDANTIC -Wno-pedantic SCUDO_CFLAGS)
 # FIXME: find cleaner way to agree with GWPAsan flags
 append_list_if(COMPILER_RT_HAS_FNO_LTO_FLAG -fno-lto SCUDO_CFLAGS)
 
-if (COMPILER_RT_HAS_GWP_ASAN)
-  append_list_if(COMPILER_RT_HAS_OMIT_FRAME_POINTER_FLAG -fno-omit-frame-pointer
-                SCUDO_CFLAGS)
-  append_list_if(COMPILER_RT_HAS_OMIT_FRAME_POINTER_FLAG
-                -mno-omit-leaf-frame-pointer SCUDO_CFLAGS)
-endif() # COMPILER_RT_HAS_GWP_ASAN
-
 if(COMPILER_RT_DEBUG)
-  list(APPEND SCUDO_CFLAGS -O0)
+  list(APPEND SCUDO_CFLAGS -O0 -DSCUDO_DEBUG=1)
 else()
   list(APPEND SCUDO_CFLAGS -O3)
 endif()
@@ -61,13 +52,14 @@ set(SCUDO_HEADERS
   checksum.h
   chunk.h
   combined.h
-  flags.h
   flags_parser.h
+  flags.h
   fuchsia.h
   internal_defs.h
   linux.h
   list.h
   local_cache.h
+  memtag.h
   mutex.h
   platform.h
   primary32.h
@@ -79,9 +71,9 @@ set(SCUDO_HEADERS
   size_class_map.h
   stats.h
   string_utils.h
-  tsd.h
   tsd_exclusive.h
   tsd_shared.h
+  tsd.h
   vector.h
   wrappers_c_checks.h
   wrappers_c.h
@@ -91,10 +83,10 @@ set(SCUDO_HEADERS
 
 set(SCUDO_SOURCES
   checksum.cpp
-  crc32_hw.cpp
   common.cpp
-  flags.cpp
+  crc32_hw.cpp
   flags_parser.cpp
+  flags.cpp
   fuchsia.cpp
   linux.cpp
   release.cpp
@@ -124,9 +116,13 @@ set(SCUDO_SOURCES_CXX_WRAPPERS
 set(SCUDO_OBJECT_LIBS)
 
 if (COMPILER_RT_HAS_GWP_ASAN)
+  add_dependencies(scudo_standalone gwp_asan)
   list(APPEND SCUDO_OBJECT_LIBS
-       RTGwpAsan RTGwpAsanBacktraceLibc RTGwpAsanSegvHandler)
-  list(APPEND SCUDO_CFLAGS -DGWP_ASAN_HOOKS)
+       RTGwpAsan RTGwpAsanBacktraceLibc RTGwpAsanSegvHandler
+       RTGwpAsanOptionsParser)
+
+  list(APPEND SCUDO_CFLAGS -DGWP_ASAN_HOOKS -fno-omit-frame-pointer
+                           -mno-omit-leaf-frame-pointer)
 endif()
 
 set(SCUDO_LINK_LIBS)
@@ -166,7 +162,6 @@ if(COMPILER_RT_HAS_SCUDO_STANDALONE)
     SOURCES ${SCUDO_SOURCES_CXX_WRAPPERS}
     ADDITIONAL_HEADERS ${SCUDO_HEADERS}
     CFLAGS ${SCUDO_CFLAGS}
-    OBJECT_LIBS ${SCUDO_OBJECT_LIBS}
     PARENT_TARGET scudo_standalone)
 
   add_compiler_rt_runtime(clang_rt.scudo_standalone

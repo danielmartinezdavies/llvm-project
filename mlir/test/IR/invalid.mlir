@@ -24,10 +24,6 @@ func @illegalmemrefelementtype(memref<?xtensor<i8>>) -> () // expected-error {{i
 func @illegalunrankedmemrefelementtype(memref<*xtensor<i8>>) -> () // expected-error {{invalid memref element type}}
 
 // -----
-
-func @indexvector(vector<4 x index>) -> () // expected-error {{vector elements must be int or float type}}
-
-// -----
 // Test no map in memref type.
 func @memrefs(memref<2x4xi8, >) // expected-error {{expected list element}}
 
@@ -104,6 +100,12 @@ func @memref_zero_stride(memref<42x42xi8, offset: ?, strides: [0, ?]>) // expect
 
 // -----
 
+func @tensor_encoding_mismatch(%arg0: tensor<8xi32, "enc">) -> (tensor<8xi32>) { // expected-note {{prior use here}}
+  return %arg0: tensor<8xi32> // expected-error {{use of value '%arg0' expects different type than prior uses: 'tensor<8xi32>' vs 'tensor<8xi32, "enc">'}}
+}
+
+// -----
+
 func @bad_branch() {
 ^bb12:
   br ^missing  // expected-error {{reference to an undefined block}}
@@ -120,7 +122,7 @@ func @block_redef() {
 
 // -----
 
-func @no_terminator() {   // expected-error {{block with no terminator}}
+func @no_terminator() {   // expected-error {{empty block: expect at least a terminator}}
 ^bb40:
   return
 ^bb41:
@@ -387,7 +389,7 @@ func @succ_arg_type_mismatch() {
 
 // Test no nested vector.
 func @vectors(vector<1 x vector<1xi32>>, vector<2x4xf32>)
-// expected-error@-1 {{vector elements must be int or float type}}
+// expected-error@-1 {{vector elements must be int/index/float type}}
 
 // -----
 

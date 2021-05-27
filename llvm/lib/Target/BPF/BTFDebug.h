@@ -187,7 +187,7 @@ public:
   uint32_t getSize() override {
     return BTFTypeBase::getSize() + BTF::BTFDataSecVarSize * Vars.size();
   }
-  void addVar(uint32_t Id, const MCSymbol *Sym, uint32_t Size) {
+  void addDataSecEntry(uint32_t Id, const MCSymbol *Sym, uint32_t Size) {
     Vars.push_back(std::make_tuple(Id, Sym, Size));
   }
   std::string getName() { return Name; }
@@ -320,8 +320,9 @@ class BTFDebug : public DebugHandlerBase {
   /// Populating unprocessed type on demand.
   unsigned populateType(const DIType *Ty);
 
-  /// Process relocation instructions.
-  void processReloc(const MachineOperand &MO);
+  /// Process global variables referenced by relocation instructions
+  /// and extern function references.
+  void processGlobalValue(const MachineOperand &MO);
 
   /// Emit common header of .BTF and .BTF.ext sections.
   void emitCommonHeader();

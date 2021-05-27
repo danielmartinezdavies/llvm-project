@@ -81,7 +81,7 @@ def read_packet(f, verbose=False, trace_file=None):
         # Decode the JSON bytes into a python dictionary
         return json.loads(json_str)
 
-    return None
+    raise Exception("unexpected malformed message from lldb-vscode: " + line)
 
 
 def packet_type_is(packet, packet_type):
@@ -113,6 +113,7 @@ class DebugCommunication(object):
         self.initialize_body = None
         self.thread_stop_reasons = {}
         self.breakpoint_events = []
+        self.progress_events = []
         self.sequence = 1
         self.threads = None
         self.recv_thread.start()
@@ -224,6 +225,13 @@ class DebugCommunication(object):
                 # in tests.
                 self.breakpoint_events.append(packet)
                 # no need to add 'breakpoint' event packets to our packets list
+                return keepGoing
+            elif event.startswith('progress'):
+                # Progress events come in as 'progressStart', 'progressUpdate',
+                # and 'progressEnd' events. Keep these around in case test
+                # cases want to verify them.
+                self.progress_events.append(packet)
+                # No need to add 'progress' event packets to our packets list.
                 return keepGoing
 
         elif packet_type == 'response':
@@ -486,7 +494,7 @@ class DebugCommunication(object):
                        initCommands=None, preRunCommands=None,
                        stopCommands=None, exitCommands=None,
                        attachCommands=None, terminateCommands=None,
-                       coreFile=None):
+                       coreFile=None, postRunCommands=None):
         args_dict = {}
         if pid is not None:
             args_dict['pid'] = pid
@@ -511,6 +519,8 @@ class DebugCommunication(object):
             args_dict['attachCommands'] = attachCommands
         if coreFile:
             args_dict['coreFile'] = coreFile
+        if postRunCommands:
+            args_dict['postRunCommands'] = postRunCommands
         command_dict = {
             'command': 'attach',
             'type': 'request',
@@ -613,7 +623,8 @@ class DebugCommunication(object):
                        stopCommands=None, exitCommands=None,
                        terminateCommands=None ,sourcePath=None,
                        debuggerRoot=None, launchCommands=None, sourceMap=None,
-                       runInTerminal=False, expectFailure=False):
+                       runInTerminal=False, expectFailure=False,
+                       postRunCommands=None):
         args_dict = {
             'program': program
         }
@@ -654,6 +665,8 @@ class DebugCommunication(object):
             args_dict['sourceMap'] = sourceMap
         if runInTerminal:
             args_dict['runInTerminal'] = runInTerminal
+        if postRunCommands:
+            args_dict['postRunCommands'] = postRunCommands
         command_dict = {
             'command': 'launch',
             'type': 'request',
@@ -915,10 +928,13 @@ class DebugCommunication(object):
 
 
 class DebugAdaptor(DebugCommunication):
-    def __init__(self, executable=None, port=None, init_commands=[], log_file=None):
+    def __init__(self, executable=None, port=None, init_commands=[], log_file=None, env=None):
         self.process = None
         if executable is not None:
             adaptor_env = os.environ.copy()
+            if env is not None:
+                adaptor_env.update(env)
+
             if log_file:
                 adaptor_env['LLDBVSCODE_LOG'] = log_file
             self.process = subprocess.Popen([executable],

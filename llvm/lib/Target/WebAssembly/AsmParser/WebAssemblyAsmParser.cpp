@@ -16,6 +16,8 @@
 #include "MCTargetDesc/WebAssemblyMCTargetDesc.h"
 #include "MCTargetDesc/WebAssemblyTargetStreamer.h"
 #include "TargetInfo/WebAssemblyTargetInfo.h"
+#include "Utils/WebAssemblyTypeUtilities.h"
+#include "Utils/WebAssemblyUtilities.h"
 #include "WebAssembly.h"
 #include "llvm/MC/MCContext.h"
 #include "llvm/MC/MCExpr.h"
@@ -168,6 +170,11 @@ struct WebAssemblyOperand : public MCParsedAsmOperand {
     }
   }
 };
+
+// Perhaps this should go somewhere common.
+static wasm::WasmLimits DefaultLimits() {
+  return {wasm::WASM_LIMITS_FLAG_NONE, 0, 0};
+}
 
 static MCSymbolWasm *GetOrCreateFunctionTableSymbol(MCContext &Ctx,
                                                     const StringRef &Name) {
@@ -340,45 +347,9 @@ public:
     return Name;
   }
 
-  Optional<wasm::ValType> parseType(const StringRef &Type) {
-    // FIXME: can't use StringSwitch because wasm::ValType doesn't have a
-    // "invalid" value.
-    if (Type == "i32")
-      return wasm::ValType::I32;
-    if (Type == "i64")
-      return wasm::ValType::I64;
-    if (Type == "f32")
-      return wasm::ValType::F32;
-    if (Type == "f64")
-      return wasm::ValType::F64;
-    if (Type == "v128" || Type == "i8x16" || Type == "i16x8" ||
-        Type == "i32x4" || Type == "i64x2" || Type == "f32x4" ||
-        Type == "f64x2")
-      return wasm::ValType::V128;
-    if (Type == "funcref")
-      return wasm::ValType::FUNCREF;
-    if (Type == "externref")
-      return wasm::ValType::EXTERNREF;
-    return Optional<wasm::ValType>();
-  }
-
-  WebAssembly::BlockType parseBlockType(StringRef ID) {
-    // Multivalue block types are handled separately in parseSignature
-    return StringSwitch<WebAssembly::BlockType>(ID)
-        .Case("i32", WebAssembly::BlockType::I32)
-        .Case("i64", WebAssembly::BlockType::I64)
-        .Case("f32", WebAssembly::BlockType::F32)
-        .Case("f64", WebAssembly::BlockType::F64)
-        .Case("v128", WebAssembly::BlockType::V128)
-        .Case("funcref", WebAssembly::BlockType::Funcref)
-        .Case("externref", WebAssembly::BlockType::Externref)
-        .Case("void", WebAssembly::BlockType::Void)
-        .Default(WebAssembly::BlockType::Invalid);
-  }
-
   bool parseRegTypeList(SmallVectorImpl<wasm::ValType> &Types) {
     while (Lexer.is(AsmToken::Identifier)) {
-      auto Type = parseType(Lexer.getTok().getString());
+      auto Type = WebAssembly::parseType(Lexer.getTok().getString());
       if (!Type)
         return error("unknown type: ", Lexer.getTok());
       Types.push_back(Type.getValue());
@@ -473,18 +444,33 @@ public:
     return false;
   }
 
-  WebAssembly::HeapType parseHeapType(StringRef Id) {
-    return StringSwitch<WebAssembly::HeapType>(Id)
-        .Case("extern", WebAssembly::HeapType::Externref)
-        .Case("func", WebAssembly::HeapType::Funcref)
-        .Default(WebAssembly::HeapType::Invalid);
-  }
-
   void addBlockTypeOperand(OperandVector &Operands, SMLoc NameLoc,
                            WebAssembly::BlockType BT) {
     Operands.push_back(std::make_unique<WebAssemblyOperand>(
         WebAssemblyOperand::Integer, NameLoc, NameLoc,
         WebAssemblyOperand::IntOp{static_cast<int64_t>(BT)}));
+  }
+
+  bool parseLimits(wasm::WasmLimits *Limits) {
+    auto Tok = Lexer.getTok();
+    if (!Tok.is(AsmToken::Integer))
+      return error("Expected integer constant, instead got: ", Tok);
+    int64_t Val = Tok.getIntVal();
+    assert(Val >= 0);
+    Limits->Minimum = Val;
+    Parser.Lex();
+
+    if (isNext(AsmToken::Comma)) {
+      Limits->Flags |= wasm::WASM_LIMITS_FLAG_HAS_MAX;
+      auto Tok = Lexer.getTok();
+      if (!Tok.is(AsmToken::Integer))
+        return error("Expected integer constant, instead got: ", Tok);
+      int64_t Val = Tok.getIntVal();
+      assert(Val >= 0);
+      Limits->Maximum = Val;
+      Parser.Lex();
+    }
+    return false;
   }
 
   bool parseFunctionTableOperand(std::unique_ptr<WebAssemblyOperand> *Op) {
@@ -649,13 +635,13 @@ public:
         auto &Id = Lexer.getTok();
         if (ExpectBlockType) {
           // Assume this identifier is a block_type.
-          auto BT = parseBlockType(Id.getString());
+          auto BT = WebAssembly::parseBlockType(Id.getString());
           if (BT == WebAssembly::BlockType::Invalid)
             return error("Unknown block type: ", Id);
           addBlockTypeOperand(Operands, NameLoc, BT);
           Parser.Lex();
         } else if (ExpectHeapType) {
-          auto HeapType = parseHeapType(Id.getString());
+          auto HeapType = WebAssembly::parseHeapType(Id.getString());
           if (HeapType == WebAssembly::HeapType::Invalid) {
             return error("Expected a heap type: ", Id);
           }
@@ -792,7 +778,7 @@ public:
       auto TypeName = expectIdent();
       if (TypeName.empty())
         return true;
-      auto Type = parseType(TypeName);
+      auto Type = WebAssembly::parseType(TypeName);
       if (!Type)
         return error("Unknown type in .globaltype directive: ", TypeTok);
       // Optional mutable modifier. Default to mutable for historical reasons.
@@ -819,24 +805,31 @@ public:
     }
 
     if (DirectiveID.getString() == ".tabletype") {
+      // .tabletype SYM, ELEMTYPE[, MINSIZE[, MAXSIZE]]
       auto SymName = expectIdent();
       if (SymName.empty())
         return true;
       if (expect(AsmToken::Comma, ","))
         return true;
-      auto TypeTok = Lexer.getTok();
-      auto TypeName = expectIdent();
-      if (TypeName.empty())
+
+      auto ElemTypeTok = Lexer.getTok();
+      auto ElemTypeName = expectIdent();
+      if (ElemTypeName.empty())
         return true;
-      auto Type = parseType(TypeName);
-      if (!Type)
-        return error("Unknown type in .tabletype directive: ", TypeTok);
+      Optional<wasm::ValType> ElemType = WebAssembly::parseType(ElemTypeName);
+      if (!ElemType)
+        return error("Unknown type in .tabletype directive: ", ElemTypeTok);
+
+      wasm::WasmLimits Limits = DefaultLimits();
+      if (isNext(AsmToken::Comma) && parseLimits(&Limits))
+        return true;
 
       // Now that we have the name and table type, we can actually create the
       // symbol
       auto WasmSym = cast<MCSymbolWasm>(Ctx.getOrCreateSymbol(SymName));
       WasmSym->setType(wasm::WASM_SYMBOL_TYPE_TABLE);
-      WasmSym->setTableType(Type.getValue());
+      wasm::WasmTableType Type = {uint8_t(ElemType.getValue()), Limits};
+      WasmSym->setTableType(Type);
       TOut.emitTableType(WasmSym);
       return expect(AsmToken::EndOfStatement, "EOL");
     }
@@ -1077,7 +1070,7 @@ public:
     if (Group)
       WasmSym->setComdat(true);
     auto *WS =
-        getContext().getWasmSection(SecName, SectionKind::getText(), Group,
+        getContext().getWasmSection(SecName, SectionKind::getText(), 0, Group,
                                     MCContext::GenericSectionID, nullptr);
     getStreamer().SwitchSection(WS);
     // Also generate DWARF for this section if requested.
