@@ -267,7 +267,8 @@ namespace clang {
 					for (const auto &Error : DiagConsumer.take()) {
 						ErrorText += Error.Message.Message + "\n";
 					}
-					llvm::report_fatal_error(ErrorText);
+                                        llvm::StringRef sr(ErrorText);
+					llvm::report_fatal_error(sr);
 				}
 
 				tooling::Replacements Fixes;

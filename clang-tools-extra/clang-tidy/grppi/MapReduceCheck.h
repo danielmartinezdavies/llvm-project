@@ -105,7 +105,7 @@ namespace clang {
 				const Expr *original;
 			};
 
-			class Prep : public PPCallbacks {
+			/*class Prep : public PPCallbacks {
 				public:
 				Prep(const SourceManager &SM) : SM(SM) {}
 
@@ -121,7 +121,7 @@ namespace clang {
 				}
 
 				const SourceManager &SM;
-			};
+			};*/
 
 
 			class Pattern {
@@ -785,11 +785,11 @@ namespace clang {
 
 				void registerMatchers(ast_matchers::MatchFinder *Finder) override;
 
-				void registerPPCallbacks(const SourceManager &SM, Preprocessor *PP,
+				/*void registerPPCallbacks(const SourceManager &SM, Preprocessor *PP,
 										 Preprocessor *ModuleExpanderPP) override {
 					std::unique_ptr<Prep> prep_callback(new Prep(SM));
 					PP->addPPCallbacks(std::move(prep_callback));
-				}
+				}*/
 
 				void storeOptions(ClangTidyOptions::OptionMap &Opts) override;
 
