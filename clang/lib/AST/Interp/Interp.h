@@ -13,8 +13,6 @@
 #ifndef LLVM_CLANG_AST_INTERP_INTERP_H
 #define LLVM_CLANG_AST_INTERP_INTERP_H
 
-#include <limits>
-#include <vector>
 #include "Function.h"
 #include "InterpFrame.h"
 #include "InterpStack.h"
@@ -30,6 +28,9 @@
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/APSInt.h"
 #include "llvm/Support/Endian.h"
+#include <limits>
+#include <type_traits>
+#include <vector>
 
 namespace clang {
 namespace interp {
@@ -37,7 +38,7 @@ namespace interp {
 using APInt = llvm::APInt;
 using APSInt = llvm::APSInt;
 
-/// Convers a value to an APValue.
+/// Convert a value to an APValue.
 template <typename T> bool ReturnValue(const T &V, APValue &R) {
   R = V.toAPValue();
   return true;
@@ -49,7 +50,7 @@ bool CheckExtern(InterpState &S, CodePtr OpPC, const Pointer &Ptr);
 /// Checks if the array is offsetable.
 bool CheckArray(InterpState &S, CodePtr OpPC, const Pointer &Ptr);
 
-/// Checks if a pointer is live and accesible.
+/// Checks if a pointer is live and accessible.
 bool CheckLive(InterpState &S, CodePtr OpPC, const Pointer &Ptr,
                AccessKinds AK);
 /// Checks if a pointer is null.
@@ -118,7 +119,8 @@ bool AddSubMulHelper(InterpState &S, CodePtr OpPC, unsigned Bits, const T &LHS,
   const Expr *E = S.Current->getExpr(OpPC);
   QualType Type = E->getType();
   if (S.checkingForUndefinedBehavior()) {
-    auto Trunc = Value.trunc(Result.bitWidth()).toString(10);
+    SmallString<32> Trunc;
+    Value.trunc(Result.bitWidth()).toString(Trunc, 10);
     auto Loc = E->getExprLoc();
     S.report(Loc, diag::warn_integer_constant_overflow) << Trunc << Type;
     return true;
@@ -150,6 +152,36 @@ bool Mul(InterpState &S, CodePtr OpPC) {
   const T &LHS = S.Stk.pop<T>();
   const unsigned Bits = RHS.bitWidth() * 2;
   return AddSubMulHelper<T, T::mul, std::multiplies>(S, OpPC, Bits, LHS, RHS);
+}
+
+//===----------------------------------------------------------------------===//
+// Inv
+//===----------------------------------------------------------------------===//
+
+template <PrimType Name, class T = typename PrimConv<Name>::T>
+bool Inv(InterpState &S, CodePtr OpPC) {
+  using BoolT = PrimConv<PT_Bool>::T;
+  const T &Val = S.Stk.pop<T>();
+  const unsigned Bits = Val.bitWidth();
+  Boolean R;
+  Boolean::inv(BoolT::from(Val, Bits), &R);
+
+  S.Stk.push<BoolT>(R);
+  return true;
+}
+
+//===----------------------------------------------------------------------===//
+// Neg
+//===----------------------------------------------------------------------===//
+
+template <PrimType Name, class T = typename PrimConv<Name>::T>
+bool Neg(InterpState &S, CodePtr OpPC) {
+  const T &Val = S.Stk.pop<T>();
+  T Result;
+  T::neg(Val, &Result);
+
+  S.Stk.push<T>(Result);
+  return true;
 }
 
 //===----------------------------------------------------------------------===//
@@ -946,6 +978,23 @@ inline bool ExpandPtr(InterpState &S, CodePtr OpPC) {
   const Pointer &Ptr = S.Stk.pop<Pointer>();
   S.Stk.push<Pointer>(Ptr.expand());
   return true;
+}
+
+//===----------------------------------------------------------------------===//
+// Read opcode arguments
+//===----------------------------------------------------------------------===//
+
+template <typename T>
+inline std::enable_if_t<!std::is_pointer<T>::value, T> ReadArg(InterpState &S,
+                                                               CodePtr &OpPC) {
+  return OpPC.read<T>();
+}
+
+template <typename T>
+inline std::enable_if_t<std::is_pointer<T>::value, T> ReadArg(InterpState &S,
+                                                              CodePtr &OpPC) {
+  uint32_t ID = OpPC.read<uint32_t>();
+  return reinterpret_cast<T>(S.P.getNativePointer(ID));
 }
 
 /// Interpreter entry point.

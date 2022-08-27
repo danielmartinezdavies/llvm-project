@@ -1,11 +1,11 @@
 # Exclude tests from libMLIR.so
 add_mlir_library(MLIRTestTransforms
+  TestCommutativityUtils.cpp
   TestConstantFold.cpp
+  TestControlFlowSink.cpp
   TestInlining.cpp
-  TestLoopFusion.cpp
-  TestLoopMapping.cpp
-  TestLoopParametricTiling.cpp
-  TestLoopUnrolling.cpp
+  TestIntRangeInference.cpp
+  TestTopologicalSort.cpp
 
   EXCLUDE_FROM_LIBMLIR
 
@@ -13,9 +13,14 @@ add_mlir_library(MLIRTestTransforms
   ${MLIR_MAIN_INCLUDE_DIR}/mlir/Transforms
 
   LINK_LIBS PUBLIC
+  MLIRAnalysis
+  MLIRInferIntRangeInterface
   MLIRTestDialect
   MLIRTransforms
   )
 
-include_directories(${CMAKE_CURRENT_SOURCE_DIR}/../Dialect/Test)
-include_directories(${CMAKE_CURRENT_BINARY_DIR}/../Dialect/Test)
+target_include_directories(MLIRTestTransforms
+  PRIVATE
+  ${CMAKE_CURRENT_SOURCE_DIR}/../Dialect/Test
+  ${CMAKE_CURRENT_BINARY_DIR}/../Dialect/Test
+  )

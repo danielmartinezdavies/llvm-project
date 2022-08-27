@@ -24,7 +24,9 @@
 #include "llvm/MC/MCRegisterInfo.h"
 #include "llvm/MC/MCStreamer.h"
 #include "llvm/MC/MCSubtargetInfo.h"
+#include "llvm/MC/MCSymbol.h"
 #include "llvm/MC/MCTargetOptionsCommandFlags.h"
+#include "llvm/MC/TargetRegistry.h"
 #include "llvm/Option/Arg.h"
 #include "llvm/Option/ArgList.h"
 #include "llvm/Option/Option.h"
@@ -36,11 +38,12 @@
 #include "llvm/Support/InitLLVM.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Path.h"
+#include "llvm/Support/Process.h"
 #include "llvm/Support/SourceMgr.h"
-#include "llvm/Support/TargetRegistry.h"
 #include "llvm/Support/TargetSelect.h"
 #include "llvm/Support/ToolOutputFile.h"
 #include "llvm/Support/WithColor.h"
+#include <ctime>
 
 using namespace llvm;
 using namespace llvm::opt;
@@ -60,7 +63,7 @@ enum ID {
 #include "Opts.inc"
 #undef PREFIX
 
-static const opt::OptTable::Info InfoTable[] = {
+const opt::OptTable::Info InfoTable[] = {
 #define OPTION(PREFIX, NAME, ID, KIND, GROUP, ALIAS, ALIASARGS, FLAGS, PARAM,  \
                HELPTEXT, METAVAR, VALUES)                                      \
   {                                                                            \
@@ -129,8 +132,31 @@ static int AssembleInput(StringRef ProgName, const Target *TheTarget,
                          MCAsmInfo &MAI, MCSubtargetInfo &STI,
                          MCInstrInfo &MCII, MCTargetOptions &MCOptions,
                          const opt::ArgList &InputArgs) {
+  struct tm TM;
+  time_t Timestamp;
+  if (InputArgs.hasArg(OPT_timestamp)) {
+    StringRef TimestampStr = InputArgs.getLastArgValue(OPT_timestamp);
+    int64_t IntTimestamp;
+    if (TimestampStr.getAsInteger(10, IntTimestamp)) {
+      WithColor::error(errs(), ProgName)
+          << "invalid timestamp '" << TimestampStr
+          << "'; must be expressed in seconds since the UNIX epoch.\n";
+      return 1;
+    }
+    Timestamp = IntTimestamp;
+  } else {
+    Timestamp = time(nullptr);
+  }
+  if (InputArgs.hasArg(OPT_utc)) {
+    // Not thread-safe.
+    TM = *gmtime(&Timestamp);
+  } else {
+    // Not thread-safe.
+    TM = *localtime(&Timestamp);
+  }
+
   std::unique_ptr<MCAsmParser> Parser(
-      createMCMasmParser(SrcMgr, Ctx, Str, MAI, 0));
+      createMCMasmParser(SrcMgr, Ctx, Str, MAI, TM, 0));
   std::unique_ptr<MCTargetAsmParser> TAP(
       TheTarget->createMCAsmParser(STI, *Parser, MCII, MCOptions));
 
@@ -182,7 +208,10 @@ int main(int Argc, char **Argv) {
   std::string InputFilename;
   for (auto *Arg : InputArgs.filtered(OPT_INPUT)) {
     std::string ArgString = Arg->getAsString(InputArgs);
-    if (ArgString == "-" || StringRef(ArgString).endswith(".asm")) {
+    bool IsFile = false;
+    std::error_code IsFileEC =
+        llvm::sys::fs::is_regular_file(ArgString, IsFile);
+    if (ArgString == "-" || IsFile) {
       if (!InputFilename.empty()) {
         WithColor::warning(errs(), ProgName)
             << "does not support multiple assembly files in one command; "
@@ -192,7 +221,7 @@ int main(int Argc, char **Argv) {
     } else {
       std::string Diag;
       raw_string_ostream OS(Diag);
-      OS << "invalid option '" << ArgString << "'";
+      OS << ArgString << ": " << IsFileEC.message();
 
       std::string Nearest;
       if (T.findNearest(ArgString, Nearest) < 2)
@@ -208,7 +237,7 @@ int main(int Argc, char **Argv) {
           << "does not support multiple assembly files in one command; "
           << "ignoring '" << InputFilename << "'\n";
     }
-    InputFilename = Arg->getAsString(InputArgs);
+    InputFilename = Arg->getValue();
   }
 
   for (auto *Arg : InputArgs.filtered(OPT_unsupported_Group)) {
@@ -217,9 +246,16 @@ int main(int Argc, char **Argv) {
         << "' option\n";
   }
 
+  if (InputArgs.hasArg(OPT_debug)) {
+    DebugFlag = true;
+  }
+  for (auto *Arg : InputArgs.filtered(OPT_debug_only)) {
+    setCurrentDebugTypes(Arg->getValues().data(), Arg->getNumValues());
+  }
+
   if (InputArgs.hasArg(OPT_help)) {
     std::string Usage = llvm::formatv("{0} [ /options ] file", ProgName).str();
-    T.PrintHelp(outs(), Usage.c_str(), "LLVM MASM Assembler",
+    T.printHelp(outs(), Usage.c_str(), "LLVM MASM Assembler",
                 /*ShowHidden=*/false);
     return 0;
   } else if (InputFilename.empty()) {
@@ -263,8 +299,21 @@ int main(int Argc, char **Argv) {
   SrcMgr.AddNewSourceBuffer(std::move(*BufferPtr), SMLoc());
 
   // Record the location of the include directories so that the lexer can find
-  // it later.
-  SrcMgr.setIncludeDirs(InputArgs.getAllArgValues(OPT_include_path));
+  // included files later.
+  std::vector<std::string> IncludeDirs =
+      InputArgs.getAllArgValues(OPT_include_path);
+  if (!InputArgs.hasArg(OPT_ignore_include_envvar)) {
+    if (llvm::Optional<std::string> IncludeEnvVar =
+            llvm::sys::Process::GetEnv("INCLUDE")) {
+      SmallVector<StringRef, 8> Dirs;
+      StringRef(*IncludeEnvVar)
+          .split(Dirs, ";", /*MaxSplit=*/-1, /*KeepEmpty=*/false);
+      IncludeDirs.reserve(IncludeDirs.size() + Dirs.size());
+      for (StringRef Dir : Dirs)
+        IncludeDirs.push_back(Dir.str());
+    }
+  }
+  SrcMgr.setIncludeDirs(IncludeDirs);
 
   std::unique_ptr<MCRegisterInfo> MRI(TheTarget->createMCRegInfo(TripleName));
   assert(MRI && "Unable to create target register info!");
@@ -338,7 +387,7 @@ int main(int Argc, char **Argv) {
     // Set up the AsmStreamer.
     std::unique_ptr<MCCodeEmitter> CE;
     if (InputArgs.hasArg(OPT_show_encoding))
-      CE.reset(TheTarget->createMCCodeEmitter(*MCII, *MRI, Ctx));
+      CE.reset(TheTarget->createMCCodeEmitter(*MCII, Ctx));
 
     std::unique_ptr<MCAsmBackend> MAB(
         TheTarget->createMCAsmBackend(*STI, *MRI, MCOptions));
@@ -356,7 +405,7 @@ int main(int Argc, char **Argv) {
       OS = BOS.get();
     }
 
-    MCCodeEmitter *CE = TheTarget->createMCCodeEmitter(*MCII, *MRI, Ctx);
+    MCCodeEmitter *CE = TheTarget->createMCCodeEmitter(*MCII, Ctx);
     MCAsmBackend *MAB = TheTarget->createMCAsmBackend(*STI, *MRI, MCOptions);
     Str.reset(TheTarget->createMCObjectStreamer(
         TheTriple, Ctx, std::unique_ptr<MCAsmBackend>(MAB),

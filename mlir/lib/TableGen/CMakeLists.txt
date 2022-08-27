@@ -13,12 +13,13 @@ llvm_add_library(MLIRTableGen STATIC
   Attribute.cpp
   AttrOrTypeDef.cpp
   Builder.cpp
+  Class.cpp
   Constraint.cpp
   Dialect.cpp
   Format.cpp
+  GenInfo.cpp
   Interfaces.cpp
   Operator.cpp
-  OpClass.cpp
   Pass.cpp
   Pattern.cpp
   Predicate.cpp

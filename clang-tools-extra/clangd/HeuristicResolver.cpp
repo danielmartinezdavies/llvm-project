@@ -16,6 +16,7 @@ namespace clangd {
 
 // Convenience lambdas for use as the 'Filter' parameter of
 // HeuristicResolver::resolveDependentMember().
+const auto NoFilter = [](const NamedDecl *D) { return true; };
 const auto NonStaticFilter = [](const NamedDecl *D) {
   return D->isCXXInstanceMember();
 };
@@ -58,9 +59,8 @@ const Type *HeuristicResolver::getPointeeType(const Type *T) const {
   if (!T)
     return nullptr;
 
-  if (T->isPointerType()) {
-    return T->getAs<PointerType>()->getPointeeType().getTypePtrOrNull();
-  }
+  if (T->isPointerType())
+    return T->castAs<PointerType>()->getPointeeType().getTypePtrOrNull();
 
   // Try to handle smart pointer types.
 
@@ -90,6 +90,28 @@ const Type *HeuristicResolver::getPointeeType(const Type *T) const {
 
 std::vector<const NamedDecl *> HeuristicResolver::resolveMemberExpr(
     const CXXDependentScopeMemberExpr *ME) const {
+  // If the expression has a qualifier, first try resolving the member
+  // inside the qualifier's type.
+  // Note that we cannot use a NonStaticFilter in either case, for a couple
+  // of reasons:
+  //   1. It's valid to access a static member using instance member syntax,
+  //      e.g. `instance.static_member`.
+  //   2. We can sometimes get a CXXDependentScopeMemberExpr for static
+  //      member syntax too, e.g. if `X::static_member` occurs inside
+  //      an instance method, it's represented as a CXXDependentScopeMemberExpr
+  //      with `this` as the base expression as `X` as the qualifier
+  //      (which could be valid if `X` names a base class after instantiation).
+  if (NestedNameSpecifier *NNS = ME->getQualifier()) {
+    if (const Type *QualifierType = resolveNestedNameSpecifierToType(NNS)) {
+      auto Decls =
+          resolveDependentMember(QualifierType, ME->getMember(), NoFilter);
+      if (!Decls.empty())
+        return Decls;
+    }
+  }
+
+  // If that didn't yield any results, try resolving the member inside
+  // the expression's base type.
   const Type *BaseType = ME->getBaseType().getTypePtrOrNull();
   if (ME->isArrow()) {
     BaseType = getPointeeType(BaseType);
@@ -98,14 +120,14 @@ std::vector<const NamedDecl *> HeuristicResolver::resolveMemberExpr(
     return {};
   if (const auto *BT = BaseType->getAs<BuiltinType>()) {
     // If BaseType is the type of a dependent expression, it's just
-    // represented as BultinType::Dependent which gives us no information. We
-    // can get further by analyzing the depedent expression.
+    // represented as BuiltinType::Dependent which gives us no information. We
+    // can get further by analyzing the dependent expression.
     Expr *Base = ME->isImplicitAccess() ? nullptr : ME->getBase();
     if (Base && BT->getKind() == BuiltinType::Dependent) {
       BaseType = resolveExprToType(Base);
     }
   }
-  return resolveDependentMember(BaseType, ME->getMember(), NonStaticFilter);
+  return resolveDependentMember(BaseType, ME->getMember(), NoFilter);
 }
 
 std::vector<const NamedDecl *> HeuristicResolver::resolveDeclRefExpr(

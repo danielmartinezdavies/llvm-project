@@ -1,4 +1,4 @@
-; RUN: opt < %s -tailcallelim -verify-dom-info -S | FileCheck %s
+; RUN: opt < %s -passes=tailcallelim -verify-dom-info -S | FileCheck %s
 
 declare void @noarg()
 declare void @use(i32*)
@@ -48,7 +48,7 @@ endif.0:		; preds = %entry
 define i32 @test3(i32 %c) {
 ; CHECK: i32 @test3
 ; CHECK: tailrecurse:
-; CHECK: %ret.tr = phi i32 [ undef, %entry ], [ %current.ret.tr, %else ]
+; CHECK: %ret.tr = phi i32 [ poison, %entry ], [ %current.ret.tr, %else ]
 ; CHECK: %ret.known.tr = phi i1 [ false, %entry ], [ true, %else ]
 ; CHECK: else:
 ; CHECK-NOT: call
@@ -215,11 +215,11 @@ entry:
 define void @test13() {
 ; CHECK-LABEL: @test13
 ; CHECK: tail call void @bar(%struct.foo* byval(%struct.foo) %f)
-; CHECK: tail call void @bar(%struct.foo* null)
+; CHECK: tail call void @bar(%struct.foo* byval(%struct.foo) null)
 entry:
   %f = alloca %struct.foo
   call void @bar(%struct.foo* byval(%struct.foo) %f)
-  call void @bar(%struct.foo* null)
+  call void @bar(%struct.foo* byval(%struct.foo) null)
   ret void
 }
 

@@ -52,7 +52,7 @@ void CompileUnit::DumpSymbolContext(Stream *s) {
 
 void CompileUnit::GetDescription(Stream *s,
                                  lldb::DescriptionLevel level) const {
-  const char *language = Language::GetNameForLanguageType(m_language);
+  const char *language = GetCachedLanguage();
   *s << "id = " << (const UserID &)*this << ", file = \""
      << this->GetPrimaryFile() << "\", language = \"" << language << '"';
 }
@@ -63,7 +63,7 @@ void CompileUnit::ForeachFunction(
   sorted_functions.reserve(m_functions_by_uid.size());
   for (auto &p : m_functions_by_uid)
     sorted_functions.push_back(p.second);
-  llvm::sort(sorted_functions.begin(), sorted_functions.end(),
+  llvm::sort(sorted_functions,
              [](const lldb::FunctionSP &a, const lldb::FunctionSP &b) {
                return a->GetID() < b->GetID();
              });
@@ -97,12 +97,18 @@ lldb::FunctionSP CompileUnit::FindFunction(
   return {};
 }
 
+const char *CompileUnit::GetCachedLanguage() const {
+  if (m_flags.IsClear(flagsParsedLanguage))
+    return "<not loaded>";
+  return Language::GetNameForLanguageType(m_language);
+}
+
 // Dump the current contents of this object. No functions that cause on demand
 // parsing of functions, globals, statics are called, so this is a good
 // function to call to get an idea of the current contents of the CompileUnit
 // object.
 void CompileUnit::Dump(Stream *s, bool show_context) const {
-  const char *language = Language::GetNameForLanguageType(m_language);
+  const char *language = GetCachedLanguage();
 
   s->Printf("%p: ", static_cast<const void *>(this));
   s->Indent();
@@ -175,6 +181,10 @@ void CompileUnit::SetSupportFiles(const FileSpecList &support_files) {
   m_support_files = support_files;
 }
 
+void CompileUnit::SetSupportFiles(FileSpecList &&support_files) {
+  m_support_files = std::move(support_files);
+}
+
 DebugMacros *CompileUnit::GetDebugMacros() {
   if (m_debug_macros_sp.get() == nullptr) {
     if (m_flags.IsClear(flagsParsedDebugMacros)) {
@@ -206,10 +216,11 @@ VariableListSP CompileUnit::GetVariableList(bool can_create) {
   return m_variables;
 }
 
-std::vector<uint32_t> FindFileIndexes(const FileSpecList &files, const FileSpec &file) {
+std::vector<uint32_t> FindFileIndexes(const FileSpecList &files,
+                                      const FileSpec &file) {
   std::vector<uint32_t> result;
   uint32_t idx = -1;
-  while ((idx = files.FindFileIndex(idx + 1, file, /*full=*/true)) !=
+  while ((idx = files.FindCompatibleIndex(idx + 1, file)) !=
          UINT32_MAX)
     result.push_back(idx);
   return result;
@@ -220,7 +231,8 @@ uint32_t CompileUnit::FindLineEntry(uint32_t start_idx, uint32_t line,
                                     LineEntry *line_entry_ptr) {
   if (!file_spec_ptr)
     file_spec_ptr = &GetPrimaryFile();
-  std::vector<uint32_t> file_indexes = FindFileIndexes(GetSupportFiles(), *file_spec_ptr);
+  std::vector<uint32_t> file_indexes = FindFileIndexes(GetSupportFiles(),
+                                                       *file_spec_ptr);
   if (file_indexes.empty())
     return UINT32_MAX;
 
@@ -239,13 +251,12 @@ void CompileUnit::ResolveSymbolContext(
     const SourceLocationSpec &src_location_spec,
     SymbolContextItem resolve_scope, SymbolContextList &sc_list) {
   const FileSpec file_spec = src_location_spec.GetFileSpec();
-  const uint32_t line = src_location_spec.GetLine().getValueOr(0);
+  const uint32_t line = src_location_spec.GetLine().value_or(0);
   const bool check_inlines = src_location_spec.GetCheckInlines();
 
   // First find all of the file indexes that match our "file_spec". If
   // "file_spec" has an empty directory, then only compare the basenames when
   // finding file indexes
-  std::vector<uint32_t> file_indexes;
   bool file_spec_matches_cu_file_spec =
       FileSpec::Match(file_spec, this->GetPrimaryFile());
 
@@ -266,16 +277,14 @@ void CompileUnit::ResolveSymbolContext(
     return;
   }
 
-  uint32_t file_idx =
-      GetSupportFiles().FindFileIndex(0, file_spec, true);
-  while (file_idx != UINT32_MAX) {
-    file_indexes.push_back(file_idx);
-    file_idx = GetSupportFiles().FindFileIndex(file_idx + 1, file_spec, true);
-  }
-
+  std::vector<uint32_t> file_indexes = FindFileIndexes(GetSupportFiles(),
+                                                       file_spec);
   const size_t num_file_indexes = file_indexes.size();
   if (num_file_indexes == 0)
     return;
+
+  // Found a matching source file in this compile unit load its debug info.
+  GetModule()->GetSymbolFile()->SetLoadDebugInfoEnabled();
 
   LineTable *line_table = sc.comp_unit->GetLineTable();
 
@@ -302,15 +311,20 @@ void CompileUnit::ResolveSymbolContext(
     line_idx = line_table->FindLineEntryIndexByFileIndex(
         0, file_indexes, src_location_spec, &line_entry);
   }
-  
+
   // If "exact == true", then "found_line" will be the same as "line". If
   // "exact == false", the "found_line" will be the closest line entry
   // with a line number greater than "line" and we will use this for our
   // subsequent line exact matches below.
   const bool inlines = false;
   const bool exact = true;
-  SourceLocationSpec found_entry(line_entry.file, line_entry.line,
-                                 line_entry.column, inlines, exact);
+  const llvm::Optional<uint16_t> column =
+      src_location_spec.GetColumn()
+          ? llvm::Optional<uint16_t>(line_entry.column)
+          : llvm::None;
+
+  SourceLocationSpec found_entry(line_entry.file, line_entry.line, column,
+                                 inlines, exact);
 
   while (line_idx != UINT32_MAX) {
     // If they only asked for the line entry, then we're done, we can

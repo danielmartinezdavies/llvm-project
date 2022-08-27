@@ -1,27 +1,27 @@
 // REQUIRES: amdgpu-registered-target
-// RUN: %clang_cc1 -triple amdgcn-amd-amdhsa -fcuda-is-device -x hip %s \
+// RUN: %clang_cc1 -no-opaque-pointers -triple amdgcn-amd-amdhsa -fcuda-is-device -x hip %s \
 // RUN:   -std=c++17 -O3 -mllvm -amdgpu-internalize-symbols -emit-llvm -o - \
 // RUN:   | FileCheck -check-prefix=DEV %s
-// RUN: %clang_cc1 -triple x86_64-unknown-linux-gnu -x hip %s \
+// RUN: %clang_cc1 -no-opaque-pointers -triple x86_64-unknown-linux-gnu -x hip %s \
 // RUN:   -std=c++17 -O3 -emit-llvm -o - | FileCheck -check-prefix=HOST %s
 
 // Negative tests.
 
-// RUN: %clang_cc1 -triple amdgcn-amd-amdhsa -fcuda-is-device -x hip %s \
+// RUN: %clang_cc1 -no-opaque-pointers -triple amdgcn-amd-amdhsa -fcuda-is-device -x hip %s \
 // RUN:   -std=c++17 -O3 -mllvm -amdgpu-internalize-symbols -emit-llvm -o - \
 // RUN:   | FileCheck -check-prefix=DEV-NEG %s
-// RUN: %clang_cc1 -triple x86_64-unknown-linux-gnu -x hip %s \
+// RUN: %clang_cc1 -no-opaque-pointers -triple x86_64-unknown-linux-gnu -x hip %s \
 // RUN:   -std=c++17 -O3 -emit-llvm -o - | FileCheck -check-prefix=HOST-NEG %s
 
 #include "Inputs/cuda.h"
 
-// Check device variables used by neither host nor device functioins are not kept.
-
-// DEV-NEG-NOT: @v1
+// DEV-DAG: @v1
 __device__ int v1;
 
-// DEV-NEG-NOT: @v2
+// DEV-DAG: @v2
 __constant__ int v2;
+
+// Check device variables used by neither host nor device functioins are not kept.
 
 // DEV-NEG-NOT: @_ZL2v3
 static __device__ int v3;

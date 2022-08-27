@@ -15,7 +15,7 @@
 #define MLIR_DIALECT_SPIRV_IR_NON_UNIFORM_OPS
 
 class SPV_GroupNonUniformArithmeticOp<string mnemonic, Type type,
-      list<OpTrait> traits = []> : SPV_Op<mnemonic, traits> {
+      list<Trait> traits = []> : SPV_Op<mnemonic, traits> {
 
   let arguments = (ins
     SPV_ScopeAttr:$execution_scope,
@@ -27,11 +27,6 @@ class SPV_GroupNonUniformArithmeticOp<string mnemonic, Type type,
   let results = (outs
     SPV_ScalarOrVectorOf<type>:$result
   );
-
-  let parser = [{ return parseGroupNonUniformArithmeticOp(parser, result); }];
-  let printer = [{ printGroupNonUniformArithmeticOp(getOperation(), p); }];
-  let verifier = [{ return ::verifyGroupNonUniformArithmeticOp(getOperation()); }];
-
 }
 
 // -----
@@ -75,7 +70,7 @@ def SPV_GroupNonUniformBallotOp : SPV_Op<"GroupNonUniformBallot", []> {
 
   let availability = [
     MinVersion<SPV_V_1_3>,
-    MaxVersion<SPV_V_1_5>,
+    MaxVersion<SPV_V_1_6>,
     Extension<[]>,
     Capability<[SPV_C_GroupNonUniformBallot]>
   ];
@@ -145,7 +140,7 @@ def SPV_GroupNonUniformBroadcastOp : SPV_Op<"GroupNonUniformBroadcast",
 
   let availability = [
     MinVersion<SPV_V_1_3>,
-    MaxVersion<SPV_V_1_5>,
+    MaxVersion<SPV_V_1_6>,
     Extension<[]>,
     Capability<[SPV_C_GroupNonUniformBallot]>
   ];
@@ -195,7 +190,7 @@ def SPV_GroupNonUniformElectOp : SPV_Op<"GroupNonUniformElect", []> {
 
   let availability = [
     MinVersion<SPV_V_1_3>,
-    MaxVersion<SPV_V_1_5>,
+    MaxVersion<SPV_V_1_6>,
     Extension<[]>,
     Capability<[SPV_C_GroupNonUniform]>
   ];
@@ -207,8 +202,6 @@ def SPV_GroupNonUniformElectOp : SPV_Op<"GroupNonUniformElect", []> {
   let results = (outs
     SPV_Bool:$result
   );
-
-  let builders = [OpBuilder<(ins "spirv::Scope")>];
 
   let assemblyFormat = "$execution_scope attr-dict `:` type($result)";
 }
@@ -264,7 +257,7 @@ def SPV_GroupNonUniformFAddOp : SPV_GroupNonUniformArithmeticOp<"GroupNonUniform
 
   let availability = [
     MinVersion<SPV_V_1_3>,
-    MaxVersion<SPV_V_1_5>,
+    MaxVersion<SPV_V_1_6>,
     Extension<[]>,
     Capability<[SPV_C_GroupNonUniformArithmetic, SPV_C_GroupNonUniformClustered, SPV_C_GroupNonUniformPartitionedNV]>
   ];
@@ -324,7 +317,7 @@ def SPV_GroupNonUniformFMaxOp : SPV_GroupNonUniformArithmeticOp<"GroupNonUniform
 
   let availability = [
     MinVersion<SPV_V_1_3>,
-    MaxVersion<SPV_V_1_5>,
+    MaxVersion<SPV_V_1_6>,
     Extension<[]>,
     Capability<[SPV_C_GroupNonUniformArithmetic, SPV_C_GroupNonUniformClustered, SPV_C_GroupNonUniformPartitionedNV]>
   ];
@@ -384,7 +377,7 @@ def SPV_GroupNonUniformFMinOp : SPV_GroupNonUniformArithmeticOp<"GroupNonUniform
 
   let availability = [
     MinVersion<SPV_V_1_3>,
-    MaxVersion<SPV_V_1_5>,
+    MaxVersion<SPV_V_1_6>,
     Extension<[]>,
     Capability<[SPV_C_GroupNonUniformArithmetic, SPV_C_GroupNonUniformClustered, SPV_C_GroupNonUniformPartitionedNV]>
   ];
@@ -441,7 +434,7 @@ def SPV_GroupNonUniformFMulOp : SPV_GroupNonUniformArithmeticOp<"GroupNonUniform
 
   let availability = [
     MinVersion<SPV_V_1_3>,
-    MaxVersion<SPV_V_1_5>,
+    MaxVersion<SPV_V_1_6>,
     Extension<[]>,
     Capability<[SPV_C_GroupNonUniformArithmetic, SPV_C_GroupNonUniformClustered, SPV_C_GroupNonUniformPartitionedNV]>
   ];
@@ -496,7 +489,7 @@ def SPV_GroupNonUniformIAddOp : SPV_GroupNonUniformArithmeticOp<"GroupNonUniform
 
   let availability = [
     MinVersion<SPV_V_1_3>,
-    MaxVersion<SPV_V_1_5>,
+    MaxVersion<SPV_V_1_6>,
     Extension<[]>,
     Capability<[SPV_C_GroupNonUniformArithmetic, SPV_C_GroupNonUniformClustered, SPV_C_GroupNonUniformPartitionedNV]>
   ];
@@ -551,7 +544,7 @@ def SPV_GroupNonUniformIMulOp : SPV_GroupNonUniformArithmeticOp<"GroupNonUniform
 
   let availability = [
     MinVersion<SPV_V_1_3>,
-    MaxVersion<SPV_V_1_5>,
+    MaxVersion<SPV_V_1_6>,
     Extension<[]>,
     Capability<[SPV_C_GroupNonUniformArithmetic, SPV_C_GroupNonUniformClustered, SPV_C_GroupNonUniformPartitionedNV]>
   ];
@@ -608,7 +601,7 @@ def SPV_GroupNonUniformSMaxOp : SPV_GroupNonUniformArithmeticOp<"GroupNonUniform
 
   let availability = [
     MinVersion<SPV_V_1_3>,
-    MaxVersion<SPV_V_1_5>,
+    MaxVersion<SPV_V_1_6>,
     Extension<[]>,
     Capability<[SPV_C_GroupNonUniformArithmetic, SPV_C_GroupNonUniformClustered, SPV_C_GroupNonUniformPartitionedNV]>
   ];
@@ -665,7 +658,7 @@ def SPV_GroupNonUniformSMinOp : SPV_GroupNonUniformArithmeticOp<"GroupNonUniform
 
   let availability = [
     MinVersion<SPV_V_1_3>,
-    MaxVersion<SPV_V_1_5>,
+    MaxVersion<SPV_V_1_6>,
     Extension<[]>,
     Capability<[SPV_C_GroupNonUniformArithmetic, SPV_C_GroupNonUniformClustered, SPV_C_GroupNonUniformPartitionedNV]>
   ];
@@ -723,7 +716,7 @@ def SPV_GroupNonUniformUMaxOp : SPV_GroupNonUniformArithmeticOp<"GroupNonUniform
 
   let availability = [
     MinVersion<SPV_V_1_3>,
-    MaxVersion<SPV_V_1_5>,
+    MaxVersion<SPV_V_1_6>,
     Extension<[]>,
     Capability<[SPV_C_GroupNonUniformArithmetic, SPV_C_GroupNonUniformClustered, SPV_C_GroupNonUniformPartitionedNV]>
   ];
@@ -781,7 +774,7 @@ def SPV_GroupNonUniformUMinOp : SPV_GroupNonUniformArithmeticOp<"GroupNonUniform
 
   let availability = [
     MinVersion<SPV_V_1_3>,
-    MaxVersion<SPV_V_1_5>,
+    MaxVersion<SPV_V_1_6>,
     Extension<[]>,
     Capability<[SPV_C_GroupNonUniformArithmetic, SPV_C_GroupNonUniformClustered, SPV_C_GroupNonUniformPartitionedNV]>
   ];

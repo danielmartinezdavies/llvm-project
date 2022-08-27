@@ -1,4 +1,4 @@
-! RUN: %S/test_errors.sh %s %t %flang_fc1
+! RUN: %python %S/test_errors.py %s %flang_fc1
 
 ! When a module subprogram has the MODULE prefix the following must match
 ! with the corresponding separate module procedure interface body:
@@ -72,10 +72,10 @@ contains
   end
   module subroutine s9(x, y, z, w)
     character(len=4) :: x
-    !ERROR: Dummy argument 'y' has type CHARACTER(KIND=1,LEN=5_4); the corresponding argument in the interface body has type CHARACTER(KIND=1,LEN=4_4)
+    !ERROR: Dummy argument 'y' has type CHARACTER(KIND=1,LEN=5_8); the corresponding argument in the interface body has type CHARACTER(KIND=1,LEN=4_8)
     character(len=5) :: y
     character(len=*) :: z
-    !ERROR: Dummy argument 'w' has type CHARACTER(KIND=1,LEN=4_4); the corresponding argument in the interface body has type CHARACTER(KIND=1,LEN=*)
+    !ERROR: Dummy argument 'w' has type CHARACTER(KIND=1,LEN=4_8); the corresponding argument in the interface body has type CHARACTER(KIND=1,LEN=*)
     character(len=4) :: w
   end
 end
@@ -149,9 +149,11 @@ submodule(m2b) sm2b
   character(*), parameter :: suffix = "_xxx"
 contains
   !ERROR: Module subprogram 's1' has a binding label but the corresponding interface body does not
+  !ERROR: Module subprogram 's1' and its corresponding interface body are not both BIND(C)
   module subroutine s1() bind(c, name="s1")
   end
   !ERROR: Module subprogram 's2' does not have a binding label but the corresponding interface body does
+  !ERROR: Module subprogram 's2' and its corresponding interface body are not both BIND(C)
   module subroutine s2()
   end
   !ERROR: Module subprogram 's3' has binding label 's3_xxx' but the corresponding interface body has 's3'

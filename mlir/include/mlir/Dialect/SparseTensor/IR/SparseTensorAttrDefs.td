@@ -9,6 +9,7 @@
 #ifndef SPARSETENSOR_ATTRDEFS
 #define SPARSETENSOR_ATTRDEFS
 
+include "mlir/IR/AttrTypeBase.td"
 include "mlir/Dialect/SparseTensor/IR/SparseTensorBase.td"
 include "mlir/IR/TensorEncoding.td"
 
@@ -23,58 +24,97 @@ def SparseTensorEncodingAttr : SparseTensor_Attr<"SparseTensorEncoding",
   let mnemonic = "encoding";
 
   let description = [{
-    An attribute to encode "TACO"-style information (see tensor-compiler.org)
-    on sparsity properties of tensors. The encoding is eventually used by a
-    `sparse compiler` pass to generate sparse code fully automatically
-    for all tensor expressions that involve tensors with a sparse encoding.
-    Compiler passes that run before this sparse compiler pass need to be
+    An attribute to encode TACO-style information on sparsity properties
+    of tensors. The encoding is eventually used by a **sparse compiler**
+    pass to generate sparse code fully automatically for all tensor
+    expressions that involve tensors with a sparse encoding. Compiler
+    passes that run before this sparse compiler pass need to be
     aware of the semantics of tensor types with such an encoding.
+
+    The attribute consists of the following fields.
+    - Dimension level type for each dimension of a tensor type:
+        - **dense** : dimension is dense, all entries along this dimension
+	  are stored.
+        - **compressed** : dimension is sparse, only nonzeros along this dimensions
+	  are stored, without duplicates, i.e., compressed (unique).
+    - Dimension ordering on the indices of this tensor type. Unlike dense
+      storage, most sparse storage schemes do not provide fast random access.
+      This affine map specifies the order of dimensions that should be supported
+      by the sparse storage scheme. For example, for a 2-d tensor, "(i,j) -> (i,j)"
+      requests row-wise storage and "(i,j) -> (j,i)" requests column-wise storage.
+    - The required bit width for "pointer" storage (integral offsets into
+      the sparse storage scheme). A narrow width reduces the memory footprint
+      of overhead storage, as long as the width suffices to define the total
+      required range (viz. the maximum number of stored entries over all indirection
+      dimensions). The choices are `8`, `16`, `32`, `64`, or `0` for a native width.
+    - The required bit width for "index" storage (elements of the coordinates of
+      stored entries). A narrow width reduces the memory footprint of overhead
+      storage, as long as the width suffices to define the total required range
+      (viz. the maximum value of each tensor index over all dimensions). The
+      choices are `8`, `16`, `32`, `64`, or `0` for a native width.
+
+    Examples:
+
+    ```mlir
+    // Sparse vector.
+    #SparseVector = #sparse_tensor.encoding<{
+      dimLevelType = [ "compressed" ]
+    }>
+    ... tensor<?xf32, #SparseVector> ...
+
+    // Doubly compressed sparse column storage with specific bitwidths.
+    #DCSC = #sparse_tensor.encoding<{
+      dimLevelType = [ "compressed", "compressed" ],
+      dimOrdering = affine_map<(i,j) -> (j,i)>,
+      pointerBitWidth = 32,
+      indexBitWidth = 8
+    }>
+    ... tensor<8x8xf64, #DCSC> ...
+    ```
   }];
 
   // Data in sparse tensor encoding.
   let parameters = (
     ins
     // A dimension level type for each dimension of a tensor type.
-    // The choices are `dense` (dimension should be stored in its entirety),
-    // `compressed` (only non-zero regions or elements should be stored),
-    // or `singleton` (no sibling elements for parent).
     ArrayRefParameter<
       "SparseTensorEncodingAttr::DimLevelType",
-      "Per-dimension level type"
+      "Per-dimension level type (dense or compressed)"
       >: $dimLevelType,
     // A dimension order on the indices of this tensor type.
-    // Unlike dense storage, most sparse storage schemes do not provide
-    // fast random access. This affine map specifies the order of
-    // dimensions that should be support by the sparse storage scheme
-    // (e.g. (i,j) -> (i,j) requests 2-d row-wise and (i,j) -> (j,i)
-    // requests 2-d column-wise storage).
     // TODO: block structure with higher-dim inputs
     "AffineMap":$dimOrdering,
-    // The required bit width for pointer storage. A narrow width reduces
-    // the memory footprint of overhead storage, as long as the width
-    // suffices to define the total required range (viz. the maximum
-    // number of stored entries over all indirection dimensions). The choices
-    // are `8`, `16`, `32`, `64`, or `0` for a native width.
+    // The required bit width for pointer storage.
     "unsigned":$pointerBitWidth,
-    // The required bit width for index storage. A narrow width reduces
-    // the memory footprint of overhead storage, as long as the width
-    // suffices to define the total required range (viz. the maximum
-    // value of each tensor index over all dimensions). The choices are `8`,
-    // `16`, `32`, `64`, or `0` for a native width.
+    // The required bit width for index storage.
     "unsigned":$indexBitWidth
   );
 
   let genVerifyDecl = 1;
+  let hasCustomAssemblyFormat = 1;
 
   let extraClassDeclaration = [{
-    // Dimension level types that define sparse tensors:
-    //   Dense      - dimension is dense, every entry is stored
-    //   Compressed - dimension is sparse, only nonzeros are stored
-    //   Singleton  - dimension contains single coordinate, no siblings
+    // Dimension level types.
     enum class DimLevelType {
-      Dense, Compressed, Singleton
+      Dense, Compressed
     };
   }];
 }
+
+def IsSparseTensorPred
+  : CPred<"!!::mlir::sparse_tensor::getSparseTensorEncoding($_self)">;
+
+// The following four follow the same idiom as `TensorOf`, `AnyTensor`,
+// `RankedTensorOf`, `AnyRankedTensor`.
+
+class SparseTensorOf<list<Type> allowedTypes>
+  : TensorOf<allowedTypes, [IsSparseTensorPred], "sparse tensor">;
+
+def AnySparseTensor : SparseTensorOf<[AnyType]>;
+
+class RankedSparseTensorOf<list<Type> allowedTypes>
+  : RankedTensorOf<allowedTypes, [IsSparseTensorPred], "ranked sparse tensor">;
+
+def AnyRankedSparseTensor : RankedSparseTensorOf<[AnyType]>;
 
 #endif // SPARSETENSOR_ATTRDEFS

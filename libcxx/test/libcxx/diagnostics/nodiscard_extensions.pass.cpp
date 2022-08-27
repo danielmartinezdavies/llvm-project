@@ -1,4 +1,3 @@
-// -*- C++ -*-
 //===----------------------------------------------------------------------===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
@@ -8,21 +7,23 @@
 //===----------------------------------------------------------------------===//
 
 // Test that entities declared [[nodiscard]] as at extension by libc++, are
-// only actually declared such when _LIBCPP_ENABLE_NODISCARD is specified.
+// only actually declared such when _LIBCPP_ENABLE_NODISCARD_EXT is specified.
 
 // This test intentionally leaks memory, so it is unsupported under ASAN.
 // UNSUPPORTED: asan
 
-// AppleClang9 and GCC 5 don't support C++17's implicitly synthesized
-// deduction guides from existing ctors, needed by default_searcher() below.
-// UNSUPPORTED: apple-clang-9
-// UNSUPPORTED: gcc-5
-
 // All entities to which libc++ applies [[nodiscard]] as an extension should
-// be tested here and in nodiscard_extensions.fail.cpp. They should also
+// be tested here and in nodiscard_extensions.verify.cpp. They should also
 // be listed in `UsingLibcxx.rst` in the documentation for the extension.
 
+// Disable any builtin recognition of std::* in the compiler, that might also
+// trigger -Wunused-value warnings.
+// ADDITIONAL_COMPILE_FLAGS: -fno-builtin
+
+// ADDITIONAL_COMPILE_FLAGS: -D_LIBCPP_DISABLE_DEPRECATION_WARNINGS
+
 #include <algorithm>
+#include <bit> // bit_cast
 #include <cstddef> // to_integer
 #include <functional> // identity
 #include <iterator>
@@ -170,13 +171,13 @@ void test_template_cast_wrappers(LV&& lv, RV&& rv) {
 
 void test_nontemplate_cast_wrappers()
 {
-#if TEST_STD_VER >= 17
+#if TEST_STD_VER > 14
   std::byte b{42};
   std::to_integer<int>(b);
 #endif
 
-#if TEST_STD_VER >= 20
-  // std::bit_cast<unsigned int>(42);
+#if TEST_STD_VER > 17
+  std::bit_cast<unsigned int>(42);
 #endif
 
 #if TEST_STD_VER > 20

@@ -6,8 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "mlir/Dialect/GPU/Passes.h"
-
+#include "mlir/Dialect/GPU/Transforms/Passes.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Target/LLVMIR/Dialect/ROCDL/ROCDLToLLVMIRTranslation.h"
 #include "mlir/Target/LLVMIR/Export.h"
@@ -20,6 +19,12 @@ namespace {
 class TestSerializeToHsacoPass
     : public PassWrapper<TestSerializeToHsacoPass, gpu::SerializeToBlobPass> {
 public:
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(TestSerializeToHsacoPass)
+
+  StringRef getArgument() const final { return "test-gpu-to-hsaco"; }
+  StringRef getDescription() const final {
+    return "Lower GPU kernel function to HSAco binary annotations";
+  }
   TestSerializeToHsacoPass();
 
 private:
@@ -52,17 +57,15 @@ namespace mlir {
 namespace test {
 // Register test pass to serialize GPU module to a HSAco binary annotation.
 void registerTestGpuSerializeToHsacoPass() {
-  PassRegistration<TestSerializeToHsacoPass> registerSerializeToHsaco(
-      "test-gpu-to-hsaco",
-      "Lower GPU kernel function to HSAco binary annotations", [] {
-        // Initialize LLVM AMDGPU backend.
-        LLVMInitializeAMDGPUTarget();
-        LLVMInitializeAMDGPUTargetInfo();
-        LLVMInitializeAMDGPUTargetMC();
-        LLVMInitializeAMDGPUAsmPrinter();
+  PassRegistration<TestSerializeToHsacoPass>([] {
+    // Initialize LLVM AMDGPU backend.
+    LLVMInitializeAMDGPUTarget();
+    LLVMInitializeAMDGPUTargetInfo();
+    LLVMInitializeAMDGPUTargetMC();
+    LLVMInitializeAMDGPUAsmPrinter();
 
-        return std::make_unique<TestSerializeToHsacoPass>();
-      });
+    return std::make_unique<TestSerializeToHsacoPass>();
+  });
 }
 } // namespace test
 } // namespace mlir

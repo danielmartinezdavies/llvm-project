@@ -13,21 +13,22 @@
 define <2 x i64> @loadext_2i8_to_2i64(i8* %p0) {
 ; SSE2-LABEL: @loadext_2i8_to_2i64(
 ; SSE2-NEXT:    [[P1:%.*]] = getelementptr inbounds i8, i8* [[P0:%.*]], i64 1
-; SSE2-NEXT:    [[TMP1:%.*]] = bitcast i8* [[P0]] to <2 x i8>*
-; SSE2-NEXT:    [[TMP2:%.*]] = load <2 x i8>, <2 x i8>* [[TMP1]], align 1
-; SSE2-NEXT:    [[TMP3:%.*]] = zext <2 x i8> [[TMP2]] to <2 x i64>
-; SSE2-NEXT:    ret <2 x i64> [[TMP3]]
+; SSE2-NEXT:    [[I0:%.*]] = load i8, i8* [[P0]], align 1
+; SSE2-NEXT:    [[I1:%.*]] = load i8, i8* [[P1]], align 1
+; SSE2-NEXT:    [[X0:%.*]] = zext i8 [[I0]] to i64
+; SSE2-NEXT:    [[X1:%.*]] = zext i8 [[I1]] to i64
+; SSE2-NEXT:    [[V0:%.*]] = insertelement <2 x i64> poison, i64 [[X0]], i32 0
+; SSE2-NEXT:    [[V1:%.*]] = insertelement <2 x i64> [[V0]], i64 [[X1]], i32 1
+; SSE2-NEXT:    ret <2 x i64> [[V1]]
 ;
 ; SLM-LABEL: @loadext_2i8_to_2i64(
-; SLM-NEXT:    [[P1:%.*]] = getelementptr inbounds i8, i8* [[P0:%.*]], i64 1
-; SLM-NEXT:    [[TMP1:%.*]] = bitcast i8* [[P0]] to <2 x i8>*
+; SLM-NEXT:    [[TMP1:%.*]] = bitcast i8* [[P0:%.*]] to <2 x i8>*
 ; SLM-NEXT:    [[TMP2:%.*]] = load <2 x i8>, <2 x i8>* [[TMP1]], align 1
 ; SLM-NEXT:    [[TMP3:%.*]] = zext <2 x i8> [[TMP2]] to <2 x i64>
 ; SLM-NEXT:    ret <2 x i64> [[TMP3]]
 ;
 ; AVX-LABEL: @loadext_2i8_to_2i64(
-; AVX-NEXT:    [[P1:%.*]] = getelementptr inbounds i8, i8* [[P0:%.*]], i64 1
-; AVX-NEXT:    [[TMP1:%.*]] = bitcast i8* [[P0]] to <2 x i8>*
+; AVX-NEXT:    [[TMP1:%.*]] = bitcast i8* [[P0:%.*]] to <2 x i8>*
 ; AVX-NEXT:    [[TMP2:%.*]] = load <2 x i8>, <2 x i8>* [[TMP1]], align 1
 ; AVX-NEXT:    [[TMP3:%.*]] = zext <2 x i8> [[TMP2]] to <2 x i64>
 ; AVX-NEXT:    ret <2 x i64> [[TMP3]]
@@ -44,28 +45,19 @@ define <2 x i64> @loadext_2i8_to_2i64(i8* %p0) {
 
 define <4 x i32> @loadext_4i8_to_4i32(i8* %p0) {
 ; SSE2-LABEL: @loadext_4i8_to_4i32(
-; SSE2-NEXT:    [[P1:%.*]] = getelementptr inbounds i8, i8* [[P0:%.*]], i64 1
-; SSE2-NEXT:    [[P2:%.*]] = getelementptr inbounds i8, i8* [[P0]], i64 2
-; SSE2-NEXT:    [[P3:%.*]] = getelementptr inbounds i8, i8* [[P0]], i64 3
-; SSE2-NEXT:    [[TMP1:%.*]] = bitcast i8* [[P0]] to <4 x i8>*
+; SSE2-NEXT:    [[TMP1:%.*]] = bitcast i8* [[P0:%.*]] to <4 x i8>*
 ; SSE2-NEXT:    [[TMP2:%.*]] = load <4 x i8>, <4 x i8>* [[TMP1]], align 1
 ; SSE2-NEXT:    [[TMP3:%.*]] = zext <4 x i8> [[TMP2]] to <4 x i32>
 ; SSE2-NEXT:    ret <4 x i32> [[TMP3]]
 ;
 ; SLM-LABEL: @loadext_4i8_to_4i32(
-; SLM-NEXT:    [[P1:%.*]] = getelementptr inbounds i8, i8* [[P0:%.*]], i64 1
-; SLM-NEXT:    [[P2:%.*]] = getelementptr inbounds i8, i8* [[P0]], i64 2
-; SLM-NEXT:    [[P3:%.*]] = getelementptr inbounds i8, i8* [[P0]], i64 3
-; SLM-NEXT:    [[TMP1:%.*]] = bitcast i8* [[P0]] to <4 x i8>*
+; SLM-NEXT:    [[TMP1:%.*]] = bitcast i8* [[P0:%.*]] to <4 x i8>*
 ; SLM-NEXT:    [[TMP2:%.*]] = load <4 x i8>, <4 x i8>* [[TMP1]], align 1
 ; SLM-NEXT:    [[TMP3:%.*]] = zext <4 x i8> [[TMP2]] to <4 x i32>
 ; SLM-NEXT:    ret <4 x i32> [[TMP3]]
 ;
 ; AVX-LABEL: @loadext_4i8_to_4i32(
-; AVX-NEXT:    [[P1:%.*]] = getelementptr inbounds i8, i8* [[P0:%.*]], i64 1
-; AVX-NEXT:    [[P2:%.*]] = getelementptr inbounds i8, i8* [[P0]], i64 2
-; AVX-NEXT:    [[P3:%.*]] = getelementptr inbounds i8, i8* [[P0]], i64 3
-; AVX-NEXT:    [[TMP1:%.*]] = bitcast i8* [[P0]] to <4 x i8>*
+; AVX-NEXT:    [[TMP1:%.*]] = bitcast i8* [[P0:%.*]] to <4 x i8>*
 ; AVX-NEXT:    [[TMP2:%.*]] = load <4 x i8>, <4 x i8>* [[TMP1]], align 1
 ; AVX-NEXT:    [[TMP3:%.*]] = zext <4 x i8> [[TMP2]] to <4 x i32>
 ; AVX-NEXT:    ret <4 x i32> [[TMP3]]
@@ -90,28 +82,19 @@ define <4 x i32> @loadext_4i8_to_4i32(i8* %p0) {
 
 define <4 x i64> @loadext_4i8_to_4i64(i8* %p0) {
 ; SSE2-LABEL: @loadext_4i8_to_4i64(
-; SSE2-NEXT:    [[P1:%.*]] = getelementptr inbounds i8, i8* [[P0:%.*]], i64 1
-; SSE2-NEXT:    [[P2:%.*]] = getelementptr inbounds i8, i8* [[P0]], i64 2
-; SSE2-NEXT:    [[P3:%.*]] = getelementptr inbounds i8, i8* [[P0]], i64 3
-; SSE2-NEXT:    [[TMP1:%.*]] = bitcast i8* [[P0]] to <4 x i8>*
+; SSE2-NEXT:    [[TMP1:%.*]] = bitcast i8* [[P0:%.*]] to <4 x i8>*
 ; SSE2-NEXT:    [[TMP2:%.*]] = load <4 x i8>, <4 x i8>* [[TMP1]], align 1
 ; SSE2-NEXT:    [[TMP3:%.*]] = zext <4 x i8> [[TMP2]] to <4 x i64>
 ; SSE2-NEXT:    ret <4 x i64> [[TMP3]]
 ;
 ; SLM-LABEL: @loadext_4i8_to_4i64(
-; SLM-NEXT:    [[P1:%.*]] = getelementptr inbounds i8, i8* [[P0:%.*]], i64 1
-; SLM-NEXT:    [[P2:%.*]] = getelementptr inbounds i8, i8* [[P0]], i64 2
-; SLM-NEXT:    [[P3:%.*]] = getelementptr inbounds i8, i8* [[P0]], i64 3
-; SLM-NEXT:    [[TMP1:%.*]] = bitcast i8* [[P0]] to <4 x i8>*
+; SLM-NEXT:    [[TMP1:%.*]] = bitcast i8* [[P0:%.*]] to <4 x i8>*
 ; SLM-NEXT:    [[TMP2:%.*]] = load <4 x i8>, <4 x i8>* [[TMP1]], align 1
 ; SLM-NEXT:    [[TMP3:%.*]] = zext <4 x i8> [[TMP2]] to <4 x i64>
 ; SLM-NEXT:    ret <4 x i64> [[TMP3]]
 ;
 ; AVX-LABEL: @loadext_4i8_to_4i64(
-; AVX-NEXT:    [[P1:%.*]] = getelementptr inbounds i8, i8* [[P0:%.*]], i64 1
-; AVX-NEXT:    [[P2:%.*]] = getelementptr inbounds i8, i8* [[P0]], i64 2
-; AVX-NEXT:    [[P3:%.*]] = getelementptr inbounds i8, i8* [[P0]], i64 3
-; AVX-NEXT:    [[TMP1:%.*]] = bitcast i8* [[P0]] to <4 x i8>*
+; AVX-NEXT:    [[TMP1:%.*]] = bitcast i8* [[P0:%.*]] to <4 x i8>*
 ; AVX-NEXT:    [[TMP2:%.*]] = load <4 x i8>, <4 x i8>* [[TMP1]], align 1
 ; AVX-NEXT:    [[TMP3:%.*]] = zext <4 x i8> [[TMP2]] to <4 x i64>
 ; AVX-NEXT:    ret <4 x i64> [[TMP3]]
@@ -136,40 +119,19 @@ define <4 x i64> @loadext_4i8_to_4i64(i8* %p0) {
 
 define <8 x i16> @loadext_8i8_to_8i16(i8* %p0) {
 ; SSE2-LABEL: @loadext_8i8_to_8i16(
-; SSE2-NEXT:    [[P1:%.*]] = getelementptr inbounds i8, i8* [[P0:%.*]], i64 1
-; SSE2-NEXT:    [[P2:%.*]] = getelementptr inbounds i8, i8* [[P0]], i64 2
-; SSE2-NEXT:    [[P3:%.*]] = getelementptr inbounds i8, i8* [[P0]], i64 3
-; SSE2-NEXT:    [[P4:%.*]] = getelementptr inbounds i8, i8* [[P0]], i64 4
-; SSE2-NEXT:    [[P5:%.*]] = getelementptr inbounds i8, i8* [[P0]], i64 5
-; SSE2-NEXT:    [[P6:%.*]] = getelementptr inbounds i8, i8* [[P0]], i64 6
-; SSE2-NEXT:    [[P7:%.*]] = getelementptr inbounds i8, i8* [[P0]], i64 7
-; SSE2-NEXT:    [[TMP1:%.*]] = bitcast i8* [[P0]] to <8 x i8>*
+; SSE2-NEXT:    [[TMP1:%.*]] = bitcast i8* [[P0:%.*]] to <8 x i8>*
 ; SSE2-NEXT:    [[TMP2:%.*]] = load <8 x i8>, <8 x i8>* [[TMP1]], align 1
 ; SSE2-NEXT:    [[TMP3:%.*]] = zext <8 x i8> [[TMP2]] to <8 x i16>
 ; SSE2-NEXT:    ret <8 x i16> [[TMP3]]
 ;
 ; SLM-LABEL: @loadext_8i8_to_8i16(
-; SLM-NEXT:    [[P1:%.*]] = getelementptr inbounds i8, i8* [[P0:%.*]], i64 1
-; SLM-NEXT:    [[P2:%.*]] = getelementptr inbounds i8, i8* [[P0]], i64 2
-; SLM-NEXT:    [[P3:%.*]] = getelementptr inbounds i8, i8* [[P0]], i64 3
-; SLM-NEXT:    [[P4:%.*]] = getelementptr inbounds i8, i8* [[P0]], i64 4
-; SLM-NEXT:    [[P5:%.*]] = getelementptr inbounds i8, i8* [[P0]], i64 5
-; SLM-NEXT:    [[P6:%.*]] = getelementptr inbounds i8, i8* [[P0]], i64 6
-; SLM-NEXT:    [[P7:%.*]] = getelementptr inbounds i8, i8* [[P0]], i64 7
-; SLM-NEXT:    [[TMP1:%.*]] = bitcast i8* [[P0]] to <8 x i8>*
+; SLM-NEXT:    [[TMP1:%.*]] = bitcast i8* [[P0:%.*]] to <8 x i8>*
 ; SLM-NEXT:    [[TMP2:%.*]] = load <8 x i8>, <8 x i8>* [[TMP1]], align 1
 ; SLM-NEXT:    [[TMP3:%.*]] = zext <8 x i8> [[TMP2]] to <8 x i16>
 ; SLM-NEXT:    ret <8 x i16> [[TMP3]]
 ;
 ; AVX-LABEL: @loadext_8i8_to_8i16(
-; AVX-NEXT:    [[P1:%.*]] = getelementptr inbounds i8, i8* [[P0:%.*]], i64 1
-; AVX-NEXT:    [[P2:%.*]] = getelementptr inbounds i8, i8* [[P0]], i64 2
-; AVX-NEXT:    [[P3:%.*]] = getelementptr inbounds i8, i8* [[P0]], i64 3
-; AVX-NEXT:    [[P4:%.*]] = getelementptr inbounds i8, i8* [[P0]], i64 4
-; AVX-NEXT:    [[P5:%.*]] = getelementptr inbounds i8, i8* [[P0]], i64 5
-; AVX-NEXT:    [[P6:%.*]] = getelementptr inbounds i8, i8* [[P0]], i64 6
-; AVX-NEXT:    [[P7:%.*]] = getelementptr inbounds i8, i8* [[P0]], i64 7
-; AVX-NEXT:    [[TMP1:%.*]] = bitcast i8* [[P0]] to <8 x i8>*
+; AVX-NEXT:    [[TMP1:%.*]] = bitcast i8* [[P0:%.*]] to <8 x i8>*
 ; AVX-NEXT:    [[TMP2:%.*]] = load <8 x i8>, <8 x i8>* [[TMP1]], align 1
 ; AVX-NEXT:    [[TMP3:%.*]] = zext <8 x i8> [[TMP2]] to <8 x i16>
 ; AVX-NEXT:    ret <8 x i16> [[TMP3]]
@@ -210,40 +172,19 @@ define <8 x i16> @loadext_8i8_to_8i16(i8* %p0) {
 
 define <8 x i32> @loadext_8i8_to_8i32(i8* %p0) {
 ; SSE2-LABEL: @loadext_8i8_to_8i32(
-; SSE2-NEXT:    [[P1:%.*]] = getelementptr inbounds i8, i8* [[P0:%.*]], i64 1
-; SSE2-NEXT:    [[P2:%.*]] = getelementptr inbounds i8, i8* [[P0]], i64 2
-; SSE2-NEXT:    [[P3:%.*]] = getelementptr inbounds i8, i8* [[P0]], i64 3
-; SSE2-NEXT:    [[P4:%.*]] = getelementptr inbounds i8, i8* [[P0]], i64 4
-; SSE2-NEXT:    [[P5:%.*]] = getelementptr inbounds i8, i8* [[P0]], i64 5
-; SSE2-NEXT:    [[P6:%.*]] = getelementptr inbounds i8, i8* [[P0]], i64 6
-; SSE2-NEXT:    [[P7:%.*]] = getelementptr inbounds i8, i8* [[P0]], i64 7
-; SSE2-NEXT:    [[TMP1:%.*]] = bitcast i8* [[P0]] to <8 x i8>*
+; SSE2-NEXT:    [[TMP1:%.*]] = bitcast i8* [[P0:%.*]] to <8 x i8>*
 ; SSE2-NEXT:    [[TMP2:%.*]] = load <8 x i8>, <8 x i8>* [[TMP1]], align 1
 ; SSE2-NEXT:    [[TMP3:%.*]] = zext <8 x i8> [[TMP2]] to <8 x i32>
 ; SSE2-NEXT:    ret <8 x i32> [[TMP3]]
 ;
 ; SLM-LABEL: @loadext_8i8_to_8i32(
-; SLM-NEXT:    [[P1:%.*]] = getelementptr inbounds i8, i8* [[P0:%.*]], i64 1
-; SLM-NEXT:    [[P2:%.*]] = getelementptr inbounds i8, i8* [[P0]], i64 2
-; SLM-NEXT:    [[P3:%.*]] = getelementptr inbounds i8, i8* [[P0]], i64 3
-; SLM-NEXT:    [[P4:%.*]] = getelementptr inbounds i8, i8* [[P0]], i64 4
-; SLM-NEXT:    [[P5:%.*]] = getelementptr inbounds i8, i8* [[P0]], i64 5
-; SLM-NEXT:    [[P6:%.*]] = getelementptr inbounds i8, i8* [[P0]], i64 6
-; SLM-NEXT:    [[P7:%.*]] = getelementptr inbounds i8, i8* [[P0]], i64 7
-; SLM-NEXT:    [[TMP1:%.*]] = bitcast i8* [[P0]] to <8 x i8>*
+; SLM-NEXT:    [[TMP1:%.*]] = bitcast i8* [[P0:%.*]] to <8 x i8>*
 ; SLM-NEXT:    [[TMP2:%.*]] = load <8 x i8>, <8 x i8>* [[TMP1]], align 1
 ; SLM-NEXT:    [[TMP3:%.*]] = zext <8 x i8> [[TMP2]] to <8 x i32>
 ; SLM-NEXT:    ret <8 x i32> [[TMP3]]
 ;
 ; AVX-LABEL: @loadext_8i8_to_8i32(
-; AVX-NEXT:    [[P1:%.*]] = getelementptr inbounds i8, i8* [[P0:%.*]], i64 1
-; AVX-NEXT:    [[P2:%.*]] = getelementptr inbounds i8, i8* [[P0]], i64 2
-; AVX-NEXT:    [[P3:%.*]] = getelementptr inbounds i8, i8* [[P0]], i64 3
-; AVX-NEXT:    [[P4:%.*]] = getelementptr inbounds i8, i8* [[P0]], i64 4
-; AVX-NEXT:    [[P5:%.*]] = getelementptr inbounds i8, i8* [[P0]], i64 5
-; AVX-NEXT:    [[P6:%.*]] = getelementptr inbounds i8, i8* [[P0]], i64 6
-; AVX-NEXT:    [[P7:%.*]] = getelementptr inbounds i8, i8* [[P0]], i64 7
-; AVX-NEXT:    [[TMP1:%.*]] = bitcast i8* [[P0]] to <8 x i8>*
+; AVX-NEXT:    [[TMP1:%.*]] = bitcast i8* [[P0:%.*]] to <8 x i8>*
 ; AVX-NEXT:    [[TMP2:%.*]] = load <8 x i8>, <8 x i8>* [[TMP1]], align 1
 ; AVX-NEXT:    [[TMP3:%.*]] = zext <8 x i8> [[TMP2]] to <8 x i32>
 ; AVX-NEXT:    ret <8 x i32> [[TMP3]]
@@ -284,64 +225,19 @@ define <8 x i32> @loadext_8i8_to_8i32(i8* %p0) {
 
 define <16 x i16> @loadext_16i8_to_16i16(i8* %p0) {
 ; SSE2-LABEL: @loadext_16i8_to_16i16(
-; SSE2-NEXT:    [[P1:%.*]] = getelementptr inbounds i8, i8* [[P0:%.*]], i64 1
-; SSE2-NEXT:    [[P2:%.*]] = getelementptr inbounds i8, i8* [[P0]], i64 2
-; SSE2-NEXT:    [[P3:%.*]] = getelementptr inbounds i8, i8* [[P0]], i64 3
-; SSE2-NEXT:    [[P4:%.*]] = getelementptr inbounds i8, i8* [[P0]], i64 4
-; SSE2-NEXT:    [[P5:%.*]] = getelementptr inbounds i8, i8* [[P0]], i64 5
-; SSE2-NEXT:    [[P6:%.*]] = getelementptr inbounds i8, i8* [[P0]], i64 6
-; SSE2-NEXT:    [[P7:%.*]] = getelementptr inbounds i8, i8* [[P0]], i64 7
-; SSE2-NEXT:    [[P8:%.*]] = getelementptr inbounds i8, i8* [[P0]], i64 8
-; SSE2-NEXT:    [[P9:%.*]] = getelementptr inbounds i8, i8* [[P0]], i64 9
-; SSE2-NEXT:    [[P10:%.*]] = getelementptr inbounds i8, i8* [[P0]], i64 10
-; SSE2-NEXT:    [[P11:%.*]] = getelementptr inbounds i8, i8* [[P0]], i64 11
-; SSE2-NEXT:    [[P12:%.*]] = getelementptr inbounds i8, i8* [[P0]], i64 12
-; SSE2-NEXT:    [[P13:%.*]] = getelementptr inbounds i8, i8* [[P0]], i64 13
-; SSE2-NEXT:    [[P14:%.*]] = getelementptr inbounds i8, i8* [[P0]], i64 14
-; SSE2-NEXT:    [[P15:%.*]] = getelementptr inbounds i8, i8* [[P0]], i64 15
-; SSE2-NEXT:    [[TMP1:%.*]] = bitcast i8* [[P0]] to <16 x i8>*
+; SSE2-NEXT:    [[TMP1:%.*]] = bitcast i8* [[P0:%.*]] to <16 x i8>*
 ; SSE2-NEXT:    [[TMP2:%.*]] = load <16 x i8>, <16 x i8>* [[TMP1]], align 1
 ; SSE2-NEXT:    [[TMP3:%.*]] = zext <16 x i8> [[TMP2]] to <16 x i16>
 ; SSE2-NEXT:    ret <16 x i16> [[TMP3]]
 ;
 ; SLM-LABEL: @loadext_16i8_to_16i16(
-; SLM-NEXT:    [[P1:%.*]] = getelementptr inbounds i8, i8* [[P0:%.*]], i64 1
-; SLM-NEXT:    [[P2:%.*]] = getelementptr inbounds i8, i8* [[P0]], i64 2
-; SLM-NEXT:    [[P3:%.*]] = getelementptr inbounds i8, i8* [[P0]], i64 3
-; SLM-NEXT:    [[P4:%.*]] = getelementptr inbounds i8, i8* [[P0]], i64 4
-; SLM-NEXT:    [[P5:%.*]] = getelementptr inbounds i8, i8* [[P0]], i64 5
-; SLM-NEXT:    [[P6:%.*]] = getelementptr inbounds i8, i8* [[P0]], i64 6
-; SLM-NEXT:    [[P7:%.*]] = getelementptr inbounds i8, i8* [[P0]], i64 7
-; SLM-NEXT:    [[P8:%.*]] = getelementptr inbounds i8, i8* [[P0]], i64 8
-; SLM-NEXT:    [[P9:%.*]] = getelementptr inbounds i8, i8* [[P0]], i64 9
-; SLM-NEXT:    [[P10:%.*]] = getelementptr inbounds i8, i8* [[P0]], i64 10
-; SLM-NEXT:    [[P11:%.*]] = getelementptr inbounds i8, i8* [[P0]], i64 11
-; SLM-NEXT:    [[P12:%.*]] = getelementptr inbounds i8, i8* [[P0]], i64 12
-; SLM-NEXT:    [[P13:%.*]] = getelementptr inbounds i8, i8* [[P0]], i64 13
-; SLM-NEXT:    [[P14:%.*]] = getelementptr inbounds i8, i8* [[P0]], i64 14
-; SLM-NEXT:    [[P15:%.*]] = getelementptr inbounds i8, i8* [[P0]], i64 15
-; SLM-NEXT:    [[TMP1:%.*]] = bitcast i8* [[P0]] to <16 x i8>*
+; SLM-NEXT:    [[TMP1:%.*]] = bitcast i8* [[P0:%.*]] to <16 x i8>*
 ; SLM-NEXT:    [[TMP2:%.*]] = load <16 x i8>, <16 x i8>* [[TMP1]], align 1
 ; SLM-NEXT:    [[TMP3:%.*]] = zext <16 x i8> [[TMP2]] to <16 x i16>
 ; SLM-NEXT:    ret <16 x i16> [[TMP3]]
 ;
 ; AVX-LABEL: @loadext_16i8_to_16i16(
-; AVX-NEXT:    [[P1:%.*]] = getelementptr inbounds i8, i8* [[P0:%.*]], i64 1
-; AVX-NEXT:    [[P2:%.*]] = getelementptr inbounds i8, i8* [[P0]], i64 2
-; AVX-NEXT:    [[P3:%.*]] = getelementptr inbounds i8, i8* [[P0]], i64 3
-; AVX-NEXT:    [[P4:%.*]] = getelementptr inbounds i8, i8* [[P0]], i64 4
-; AVX-NEXT:    [[P5:%.*]] = getelementptr inbounds i8, i8* [[P0]], i64 5
-; AVX-NEXT:    [[P6:%.*]] = getelementptr inbounds i8, i8* [[P0]], i64 6
-; AVX-NEXT:    [[P7:%.*]] = getelementptr inbounds i8, i8* [[P0]], i64 7
-; AVX-NEXT:    [[P8:%.*]] = getelementptr inbounds i8, i8* [[P0]], i64 8
-; AVX-NEXT:    [[P9:%.*]] = getelementptr inbounds i8, i8* [[P0]], i64 9
-; AVX-NEXT:    [[P10:%.*]] = getelementptr inbounds i8, i8* [[P0]], i64 10
-; AVX-NEXT:    [[P11:%.*]] = getelementptr inbounds i8, i8* [[P0]], i64 11
-; AVX-NEXT:    [[P12:%.*]] = getelementptr inbounds i8, i8* [[P0]], i64 12
-; AVX-NEXT:    [[P13:%.*]] = getelementptr inbounds i8, i8* [[P0]], i64 13
-; AVX-NEXT:    [[P14:%.*]] = getelementptr inbounds i8, i8* [[P0]], i64 14
-; AVX-NEXT:    [[P15:%.*]] = getelementptr inbounds i8, i8* [[P0]], i64 15
-; AVX-NEXT:    [[TMP1:%.*]] = bitcast i8* [[P0]] to <16 x i8>*
+; AVX-NEXT:    [[TMP1:%.*]] = bitcast i8* [[P0:%.*]] to <16 x i8>*
 ; AVX-NEXT:    [[TMP2:%.*]] = load <16 x i8>, <16 x i8>* [[TMP1]], align 1
 ; AVX-NEXT:    [[TMP3:%.*]] = zext <16 x i8> [[TMP2]] to <16 x i16>
 ; AVX-NEXT:    ret <16 x i16> [[TMP3]]
@@ -418,22 +314,19 @@ define <16 x i16> @loadext_16i8_to_16i16(i8* %p0) {
 
 define <2 x i64> @loadext_2i16_to_2i64(i16* %p0) {
 ; SSE2-LABEL: @loadext_2i16_to_2i64(
-; SSE2-NEXT:    [[P1:%.*]] = getelementptr inbounds i16, i16* [[P0:%.*]], i64 1
-; SSE2-NEXT:    [[TMP1:%.*]] = bitcast i16* [[P0]] to <2 x i16>*
+; SSE2-NEXT:    [[TMP1:%.*]] = bitcast i16* [[P0:%.*]] to <2 x i16>*
 ; SSE2-NEXT:    [[TMP2:%.*]] = load <2 x i16>, <2 x i16>* [[TMP1]], align 1
 ; SSE2-NEXT:    [[TMP3:%.*]] = zext <2 x i16> [[TMP2]] to <2 x i64>
 ; SSE2-NEXT:    ret <2 x i64> [[TMP3]]
 ;
 ; SLM-LABEL: @loadext_2i16_to_2i64(
-; SLM-NEXT:    [[P1:%.*]] = getelementptr inbounds i16, i16* [[P0:%.*]], i64 1
-; SLM-NEXT:    [[TMP1:%.*]] = bitcast i16* [[P0]] to <2 x i16>*
+; SLM-NEXT:    [[TMP1:%.*]] = bitcast i16* [[P0:%.*]] to <2 x i16>*
 ; SLM-NEXT:    [[TMP2:%.*]] = load <2 x i16>, <2 x i16>* [[TMP1]], align 1
 ; SLM-NEXT:    [[TMP3:%.*]] = zext <2 x i16> [[TMP2]] to <2 x i64>
 ; SLM-NEXT:    ret <2 x i64> [[TMP3]]
 ;
 ; AVX-LABEL: @loadext_2i16_to_2i64(
-; AVX-NEXT:    [[P1:%.*]] = getelementptr inbounds i16, i16* [[P0:%.*]], i64 1
-; AVX-NEXT:    [[TMP1:%.*]] = bitcast i16* [[P0]] to <2 x i16>*
+; AVX-NEXT:    [[TMP1:%.*]] = bitcast i16* [[P0:%.*]] to <2 x i16>*
 ; AVX-NEXT:    [[TMP2:%.*]] = load <2 x i16>, <2 x i16>* [[TMP1]], align 1
 ; AVX-NEXT:    [[TMP3:%.*]] = zext <2 x i16> [[TMP2]] to <2 x i64>
 ; AVX-NEXT:    ret <2 x i64> [[TMP3]]
@@ -450,28 +343,19 @@ define <2 x i64> @loadext_2i16_to_2i64(i16* %p0) {
 
 define <4 x i32> @loadext_4i16_to_4i32(i16* %p0) {
 ; SSE2-LABEL: @loadext_4i16_to_4i32(
-; SSE2-NEXT:    [[P1:%.*]] = getelementptr inbounds i16, i16* [[P0:%.*]], i64 1
-; SSE2-NEXT:    [[P2:%.*]] = getelementptr inbounds i16, i16* [[P0]], i64 2
-; SSE2-NEXT:    [[P3:%.*]] = getelementptr inbounds i16, i16* [[P0]], i64 3
-; SSE2-NEXT:    [[TMP1:%.*]] = bitcast i16* [[P0]] to <4 x i16>*
+; SSE2-NEXT:    [[TMP1:%.*]] = bitcast i16* [[P0:%.*]] to <4 x i16>*
 ; SSE2-NEXT:    [[TMP2:%.*]] = load <4 x i16>, <4 x i16>* [[TMP1]], align 1
 ; SSE2-NEXT:    [[TMP3:%.*]] = zext <4 x i16> [[TMP2]] to <4 x i32>
 ; SSE2-NEXT:    ret <4 x i32> [[TMP3]]
 ;
 ; SLM-LABEL: @loadext_4i16_to_4i32(
-; SLM-NEXT:    [[P1:%.*]] = getelementptr inbounds i16, i16* [[P0:%.*]], i64 1
-; SLM-NEXT:    [[P2:%.*]] = getelementptr inbounds i16, i16* [[P0]], i64 2
-; SLM-NEXT:    [[P3:%.*]] = getelementptr inbounds i16, i16* [[P0]], i64 3
-; SLM-NEXT:    [[TMP1:%.*]] = bitcast i16* [[P0]] to <4 x i16>*
+; SLM-NEXT:    [[TMP1:%.*]] = bitcast i16* [[P0:%.*]] to <4 x i16>*
 ; SLM-NEXT:    [[TMP2:%.*]] = load <4 x i16>, <4 x i16>* [[TMP1]], align 1
 ; SLM-NEXT:    [[TMP3:%.*]] = zext <4 x i16> [[TMP2]] to <4 x i32>
 ; SLM-NEXT:    ret <4 x i32> [[TMP3]]
 ;
 ; AVX-LABEL: @loadext_4i16_to_4i32(
-; AVX-NEXT:    [[P1:%.*]] = getelementptr inbounds i16, i16* [[P0:%.*]], i64 1
-; AVX-NEXT:    [[P2:%.*]] = getelementptr inbounds i16, i16* [[P0]], i64 2
-; AVX-NEXT:    [[P3:%.*]] = getelementptr inbounds i16, i16* [[P0]], i64 3
-; AVX-NEXT:    [[TMP1:%.*]] = bitcast i16* [[P0]] to <4 x i16>*
+; AVX-NEXT:    [[TMP1:%.*]] = bitcast i16* [[P0:%.*]] to <4 x i16>*
 ; AVX-NEXT:    [[TMP2:%.*]] = load <4 x i16>, <4 x i16>* [[TMP1]], align 1
 ; AVX-NEXT:    [[TMP3:%.*]] = zext <4 x i16> [[TMP2]] to <4 x i32>
 ; AVX-NEXT:    ret <4 x i32> [[TMP3]]
@@ -496,28 +380,19 @@ define <4 x i32> @loadext_4i16_to_4i32(i16* %p0) {
 
 define <4 x i64> @loadext_4i16_to_4i64(i16* %p0) {
 ; SSE2-LABEL: @loadext_4i16_to_4i64(
-; SSE2-NEXT:    [[P1:%.*]] = getelementptr inbounds i16, i16* [[P0:%.*]], i64 1
-; SSE2-NEXT:    [[P2:%.*]] = getelementptr inbounds i16, i16* [[P0]], i64 2
-; SSE2-NEXT:    [[P3:%.*]] = getelementptr inbounds i16, i16* [[P0]], i64 3
-; SSE2-NEXT:    [[TMP1:%.*]] = bitcast i16* [[P0]] to <4 x i16>*
+; SSE2-NEXT:    [[TMP1:%.*]] = bitcast i16* [[P0:%.*]] to <4 x i16>*
 ; SSE2-NEXT:    [[TMP2:%.*]] = load <4 x i16>, <4 x i16>* [[TMP1]], align 1
 ; SSE2-NEXT:    [[TMP3:%.*]] = zext <4 x i16> [[TMP2]] to <4 x i64>
 ; SSE2-NEXT:    ret <4 x i64> [[TMP3]]
 ;
 ; SLM-LABEL: @loadext_4i16_to_4i64(
-; SLM-NEXT:    [[P1:%.*]] = getelementptr inbounds i16, i16* [[P0:%.*]], i64 1
-; SLM-NEXT:    [[P2:%.*]] = getelementptr inbounds i16, i16* [[P0]], i64 2
-; SLM-NEXT:    [[P3:%.*]] = getelementptr inbounds i16, i16* [[P0]], i64 3
-; SLM-NEXT:    [[TMP1:%.*]] = bitcast i16* [[P0]] to <4 x i16>*
+; SLM-NEXT:    [[TMP1:%.*]] = bitcast i16* [[P0:%.*]] to <4 x i16>*
 ; SLM-NEXT:    [[TMP2:%.*]] = load <4 x i16>, <4 x i16>* [[TMP1]], align 1
 ; SLM-NEXT:    [[TMP3:%.*]] = zext <4 x i16> [[TMP2]] to <4 x i64>
 ; SLM-NEXT:    ret <4 x i64> [[TMP3]]
 ;
 ; AVX-LABEL: @loadext_4i16_to_4i64(
-; AVX-NEXT:    [[P1:%.*]] = getelementptr inbounds i16, i16* [[P0:%.*]], i64 1
-; AVX-NEXT:    [[P2:%.*]] = getelementptr inbounds i16, i16* [[P0]], i64 2
-; AVX-NEXT:    [[P3:%.*]] = getelementptr inbounds i16, i16* [[P0]], i64 3
-; AVX-NEXT:    [[TMP1:%.*]] = bitcast i16* [[P0]] to <4 x i16>*
+; AVX-NEXT:    [[TMP1:%.*]] = bitcast i16* [[P0:%.*]] to <4 x i16>*
 ; AVX-NEXT:    [[TMP2:%.*]] = load <4 x i16>, <4 x i16>* [[TMP1]], align 1
 ; AVX-NEXT:    [[TMP3:%.*]] = zext <4 x i16> [[TMP2]] to <4 x i64>
 ; AVX-NEXT:    ret <4 x i64> [[TMP3]]
@@ -542,40 +417,19 @@ define <4 x i64> @loadext_4i16_to_4i64(i16* %p0) {
 
 define <8 x i32> @loadext_8i16_to_8i32(i16* %p0) {
 ; SSE2-LABEL: @loadext_8i16_to_8i32(
-; SSE2-NEXT:    [[P1:%.*]] = getelementptr inbounds i16, i16* [[P0:%.*]], i64 1
-; SSE2-NEXT:    [[P2:%.*]] = getelementptr inbounds i16, i16* [[P0]], i64 2
-; SSE2-NEXT:    [[P3:%.*]] = getelementptr inbounds i16, i16* [[P0]], i64 3
-; SSE2-NEXT:    [[P4:%.*]] = getelementptr inbounds i16, i16* [[P0]], i64 4
-; SSE2-NEXT:    [[P5:%.*]] = getelementptr inbounds i16, i16* [[P0]], i64 5
-; SSE2-NEXT:    [[P6:%.*]] = getelementptr inbounds i16, i16* [[P0]], i64 6
-; SSE2-NEXT:    [[P7:%.*]] = getelementptr inbounds i16, i16* [[P0]], i64 7
-; SSE2-NEXT:    [[TMP1:%.*]] = bitcast i16* [[P0]] to <8 x i16>*
+; SSE2-NEXT:    [[TMP1:%.*]] = bitcast i16* [[P0:%.*]] to <8 x i16>*
 ; SSE2-NEXT:    [[TMP2:%.*]] = load <8 x i16>, <8 x i16>* [[TMP1]], align 1
 ; SSE2-NEXT:    [[TMP3:%.*]] = zext <8 x i16> [[TMP2]] to <8 x i32>
 ; SSE2-NEXT:    ret <8 x i32> [[TMP3]]
 ;
 ; SLM-LABEL: @loadext_8i16_to_8i32(
-; SLM-NEXT:    [[P1:%.*]] = getelementptr inbounds i16, i16* [[P0:%.*]], i64 1
-; SLM-NEXT:    [[P2:%.*]] = getelementptr inbounds i16, i16* [[P0]], i64 2
-; SLM-NEXT:    [[P3:%.*]] = getelementptr inbounds i16, i16* [[P0]], i64 3
-; SLM-NEXT:    [[P4:%.*]] = getelementptr inbounds i16, i16* [[P0]], i64 4
-; SLM-NEXT:    [[P5:%.*]] = getelementptr inbounds i16, i16* [[P0]], i64 5
-; SLM-NEXT:    [[P6:%.*]] = getelementptr inbounds i16, i16* [[P0]], i64 6
-; SLM-NEXT:    [[P7:%.*]] = getelementptr inbounds i16, i16* [[P0]], i64 7
-; SLM-NEXT:    [[TMP1:%.*]] = bitcast i16* [[P0]] to <8 x i16>*
+; SLM-NEXT:    [[TMP1:%.*]] = bitcast i16* [[P0:%.*]] to <8 x i16>*
 ; SLM-NEXT:    [[TMP2:%.*]] = load <8 x i16>, <8 x i16>* [[TMP1]], align 1
 ; SLM-NEXT:    [[TMP3:%.*]] = zext <8 x i16> [[TMP2]] to <8 x i32>
 ; SLM-NEXT:    ret <8 x i32> [[TMP3]]
 ;
 ; AVX-LABEL: @loadext_8i16_to_8i32(
-; AVX-NEXT:    [[P1:%.*]] = getelementptr inbounds i16, i16* [[P0:%.*]], i64 1
-; AVX-NEXT:    [[P2:%.*]] = getelementptr inbounds i16, i16* [[P0]], i64 2
-; AVX-NEXT:    [[P3:%.*]] = getelementptr inbounds i16, i16* [[P0]], i64 3
-; AVX-NEXT:    [[P4:%.*]] = getelementptr inbounds i16, i16* [[P0]], i64 4
-; AVX-NEXT:    [[P5:%.*]] = getelementptr inbounds i16, i16* [[P0]], i64 5
-; AVX-NEXT:    [[P6:%.*]] = getelementptr inbounds i16, i16* [[P0]], i64 6
-; AVX-NEXT:    [[P7:%.*]] = getelementptr inbounds i16, i16* [[P0]], i64 7
-; AVX-NEXT:    [[TMP1:%.*]] = bitcast i16* [[P0]] to <8 x i16>*
+; AVX-NEXT:    [[TMP1:%.*]] = bitcast i16* [[P0:%.*]] to <8 x i16>*
 ; AVX-NEXT:    [[TMP2:%.*]] = load <8 x i16>, <8 x i16>* [[TMP1]], align 1
 ; AVX-NEXT:    [[TMP3:%.*]] = zext <8 x i16> [[TMP2]] to <8 x i32>
 ; AVX-NEXT:    ret <8 x i32> [[TMP3]]
@@ -620,22 +474,19 @@ define <8 x i32> @loadext_8i16_to_8i32(i16* %p0) {
 
 define <2 x i64> @loadext_2i32_to_2i64(i32* %p0) {
 ; SSE2-LABEL: @loadext_2i32_to_2i64(
-; SSE2-NEXT:    [[P1:%.*]] = getelementptr inbounds i32, i32* [[P0:%.*]], i64 1
-; SSE2-NEXT:    [[TMP1:%.*]] = bitcast i32* [[P0]] to <2 x i32>*
+; SSE2-NEXT:    [[TMP1:%.*]] = bitcast i32* [[P0:%.*]] to <2 x i32>*
 ; SSE2-NEXT:    [[TMP2:%.*]] = load <2 x i32>, <2 x i32>* [[TMP1]], align 1
 ; SSE2-NEXT:    [[TMP3:%.*]] = zext <2 x i32> [[TMP2]] to <2 x i64>
 ; SSE2-NEXT:    ret <2 x i64> [[TMP3]]
 ;
 ; SLM-LABEL: @loadext_2i32_to_2i64(
-; SLM-NEXT:    [[P1:%.*]] = getelementptr inbounds i32, i32* [[P0:%.*]], i64 1
-; SLM-NEXT:    [[TMP1:%.*]] = bitcast i32* [[P0]] to <2 x i32>*
+; SLM-NEXT:    [[TMP1:%.*]] = bitcast i32* [[P0:%.*]] to <2 x i32>*
 ; SLM-NEXT:    [[TMP2:%.*]] = load <2 x i32>, <2 x i32>* [[TMP1]], align 1
 ; SLM-NEXT:    [[TMP3:%.*]] = zext <2 x i32> [[TMP2]] to <2 x i64>
 ; SLM-NEXT:    ret <2 x i64> [[TMP3]]
 ;
 ; AVX-LABEL: @loadext_2i32_to_2i64(
-; AVX-NEXT:    [[P1:%.*]] = getelementptr inbounds i32, i32* [[P0:%.*]], i64 1
-; AVX-NEXT:    [[TMP1:%.*]] = bitcast i32* [[P0]] to <2 x i32>*
+; AVX-NEXT:    [[TMP1:%.*]] = bitcast i32* [[P0:%.*]] to <2 x i32>*
 ; AVX-NEXT:    [[TMP2:%.*]] = load <2 x i32>, <2 x i32>* [[TMP1]], align 1
 ; AVX-NEXT:    [[TMP3:%.*]] = zext <2 x i32> [[TMP2]] to <2 x i64>
 ; AVX-NEXT:    ret <2 x i64> [[TMP3]]
@@ -652,28 +503,19 @@ define <2 x i64> @loadext_2i32_to_2i64(i32* %p0) {
 
 define <4 x i64> @loadext_4i32_to_4i64(i32* %p0) {
 ; SSE2-LABEL: @loadext_4i32_to_4i64(
-; SSE2-NEXT:    [[P1:%.*]] = getelementptr inbounds i32, i32* [[P0:%.*]], i64 1
-; SSE2-NEXT:    [[P2:%.*]] = getelementptr inbounds i32, i32* [[P0]], i64 2
-; SSE2-NEXT:    [[P3:%.*]] = getelementptr inbounds i32, i32* [[P0]], i64 3
-; SSE2-NEXT:    [[TMP1:%.*]] = bitcast i32* [[P0]] to <4 x i32>*
+; SSE2-NEXT:    [[TMP1:%.*]] = bitcast i32* [[P0:%.*]] to <4 x i32>*
 ; SSE2-NEXT:    [[TMP2:%.*]] = load <4 x i32>, <4 x i32>* [[TMP1]], align 1
 ; SSE2-NEXT:    [[TMP3:%.*]] = zext <4 x i32> [[TMP2]] to <4 x i64>
 ; SSE2-NEXT:    ret <4 x i64> [[TMP3]]
 ;
 ; SLM-LABEL: @loadext_4i32_to_4i64(
-; SLM-NEXT:    [[P1:%.*]] = getelementptr inbounds i32, i32* [[P0:%.*]], i64 1
-; SLM-NEXT:    [[P2:%.*]] = getelementptr inbounds i32, i32* [[P0]], i64 2
-; SLM-NEXT:    [[P3:%.*]] = getelementptr inbounds i32, i32* [[P0]], i64 3
-; SLM-NEXT:    [[TMP1:%.*]] = bitcast i32* [[P0]] to <4 x i32>*
+; SLM-NEXT:    [[TMP1:%.*]] = bitcast i32* [[P0:%.*]] to <4 x i32>*
 ; SLM-NEXT:    [[TMP2:%.*]] = load <4 x i32>, <4 x i32>* [[TMP1]], align 1
 ; SLM-NEXT:    [[TMP3:%.*]] = zext <4 x i32> [[TMP2]] to <4 x i64>
 ; SLM-NEXT:    ret <4 x i64> [[TMP3]]
 ;
 ; AVX-LABEL: @loadext_4i32_to_4i64(
-; AVX-NEXT:    [[P1:%.*]] = getelementptr inbounds i32, i32* [[P0:%.*]], i64 1
-; AVX-NEXT:    [[P2:%.*]] = getelementptr inbounds i32, i32* [[P0]], i64 2
-; AVX-NEXT:    [[P3:%.*]] = getelementptr inbounds i32, i32* [[P0]], i64 3
-; AVX-NEXT:    [[TMP1:%.*]] = bitcast i32* [[P0]] to <4 x i32>*
+; AVX-NEXT:    [[TMP1:%.*]] = bitcast i32* [[P0:%.*]] to <4 x i32>*
 ; AVX-NEXT:    [[TMP2:%.*]] = load <4 x i32>, <4 x i32>* [[TMP1]], align 1
 ; AVX-NEXT:    [[TMP3:%.*]] = zext <4 x i32> [[TMP2]] to <4 x i64>
 ; AVX-NEXT:    ret <4 x i64> [[TMP3]]

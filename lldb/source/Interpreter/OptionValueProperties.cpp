@@ -48,7 +48,8 @@ void OptionValueProperties::AppendProperty(ConstString name,
                                            ConstString desc,
                                            bool is_global,
                                            const OptionValueSP &value_sp) {
-  Property property(name, desc, is_global, value_sp);
+  Property property(name.GetStringRef(), desc.GetStringRef(), is_global,
+                    value_sp);
   m_name_to_index.Append(name, m_properties.size());
   m_properties.push_back(property);
   value_sp->SetParent(shared_from_this());
@@ -225,6 +226,17 @@ OptionValueProperties::GetPropertyAtIndexAsOptionValueLanguage(
   return nullptr;
 }
 
+bool OptionValueProperties::SetPropertyAtIndexAsLanguage(
+    const ExecutionContext *exe_ctx, uint32_t idx, const LanguageType lang) {
+  const Property *property = GetPropertyAtIndex(exe_ctx, true, idx);
+  if (property) {
+    OptionValue *value = property->GetValue().get();
+    if (value)
+      return value->SetLanguageValue(lang);
+  }
+  return false;
+}
+
 bool OptionValueProperties::GetPropertyAtIndexAsArgs(
     const ExecutionContext *exe_ctx, uint32_t idx, Args &args) const {
   const Property *property = GetPropertyAtIndex(exe_ctx, false, idx);
@@ -396,6 +408,17 @@ OptionValueSInt64 *OptionValueProperties::GetPropertyAtIndexAsOptionValueSInt64(
     OptionValue *value = property->GetValue().get();
     if (value)
       return value->GetAsSInt64();
+  }
+  return nullptr;
+}
+
+OptionValueUInt64 *OptionValueProperties::GetPropertyAtIndexAsOptionValueUInt64(
+    const ExecutionContext *exe_ctx, uint32_t idx) const {
+  const Property *property = GetPropertyAtIndex(exe_ctx, false, idx);
+  if (property) {
+    OptionValue *value = property->GetValue().get();
+    if (value)
+      return value->GetAsUInt64();
   }
   return nullptr;
 }
@@ -630,11 +653,11 @@ void OptionValueProperties::Apropos(
       } else {
         bool match = false;
         llvm::StringRef name = property->GetName();
-        if (name.contains_lower(keyword))
+        if (name.contains_insensitive(keyword))
           match = true;
         else {
           llvm::StringRef desc = property->GetDescription();
-          if (desc.contains_lower(keyword))
+          if (desc.contains_insensitive(keyword))
             match = true;
         }
         if (match) {

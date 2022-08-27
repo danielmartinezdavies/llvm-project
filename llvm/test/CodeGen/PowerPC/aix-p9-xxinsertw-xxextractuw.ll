@@ -743,14 +743,12 @@ define <4 x float> @_Z10testInsEltILj0EDv4_ffET0_S1_T1_(<4 x float> %a, float %b
 ; CHECK-64-LABEL: _Z10testInsEltILj0EDv4_ffET0_S1_T1_:
 ; CHECK-64:       # %bb.0: # %entry
 ; CHECK-64-NEXT:    xscvdpspn 0, 1
-; CHECK-64-NEXT:    xxsldwi 0, 0, 0, 3
 ; CHECK-64-NEXT:    xxinsertw 34, 0, 0
 ; CHECK-64-NEXT:    blr
 ;
 ; CHECK-32-LABEL: _Z10testInsEltILj0EDv4_ffET0_S1_T1_:
 ; CHECK-32:       # %bb.0: # %entry
 ; CHECK-32-NEXT:    xscvdpspn 0, 1
-; CHECK-32-NEXT:    xxsldwi 0, 0, 0, 3
 ; CHECK-32-NEXT:    xxinsertw 34, 0, 0
 ; CHECK-32-NEXT:    blr
 entry:
@@ -762,14 +760,12 @@ define <4 x float> @_Z10testInsEltILj1EDv4_ffET0_S1_T1_(<4 x float> %a, float %b
 ; CHECK-64-LABEL: _Z10testInsEltILj1EDv4_ffET0_S1_T1_:
 ; CHECK-64:       # %bb.0: # %entry
 ; CHECK-64-NEXT:    xscvdpspn 0, 1
-; CHECK-64-NEXT:    xxsldwi 0, 0, 0, 3
 ; CHECK-64-NEXT:    xxinsertw 34, 0, 4
 ; CHECK-64-NEXT:    blr
 ;
 ; CHECK-32-LABEL: _Z10testInsEltILj1EDv4_ffET0_S1_T1_:
 ; CHECK-32:       # %bb.0: # %entry
 ; CHECK-32-NEXT:    xscvdpspn 0, 1
-; CHECK-32-NEXT:    xxsldwi 0, 0, 0, 3
 ; CHECK-32-NEXT:    xxinsertw 34, 0, 4
 ; CHECK-32-NEXT:    blr
 entry:
@@ -781,14 +777,12 @@ define <4 x float> @_Z10testInsEltILj2EDv4_ffET0_S1_T1_(<4 x float> %a, float %b
 ; CHECK-64-LABEL: _Z10testInsEltILj2EDv4_ffET0_S1_T1_:
 ; CHECK-64:       # %bb.0: # %entry
 ; CHECK-64-NEXT:    xscvdpspn 0, 1
-; CHECK-64-NEXT:    xxsldwi 0, 0, 0, 3
 ; CHECK-64-NEXT:    xxinsertw 34, 0, 8
 ; CHECK-64-NEXT:    blr
 ;
 ; CHECK-32-LABEL: _Z10testInsEltILj2EDv4_ffET0_S1_T1_:
 ; CHECK-32:       # %bb.0: # %entry
 ; CHECK-32-NEXT:    xscvdpspn 0, 1
-; CHECK-32-NEXT:    xxsldwi 0, 0, 0, 3
 ; CHECK-32-NEXT:    xxinsertw 34, 0, 8
 ; CHECK-32-NEXT:    blr
 entry:
@@ -800,14 +794,12 @@ define <4 x float> @_Z10testInsEltILj3EDv4_ffET0_S1_T1_(<4 x float> %a, float %b
 ; CHECK-64-LABEL: _Z10testInsEltILj3EDv4_ffET0_S1_T1_:
 ; CHECK-64:       # %bb.0: # %entry
 ; CHECK-64-NEXT:    xscvdpspn 0, 1
-; CHECK-64-NEXT:    xxsldwi 0, 0, 0, 3
 ; CHECK-64-NEXT:    xxinsertw 34, 0, 12
 ; CHECK-64-NEXT:    blr
 ;
 ; CHECK-32-LABEL: _Z10testInsEltILj3EDv4_ffET0_S1_T1_:
 ; CHECK-32:       # %bb.0: # %entry
 ; CHECK-32-NEXT:    xscvdpspn 0, 1
-; CHECK-32-NEXT:    xxsldwi 0, 0, 0, 3
 ; CHECK-32-NEXT:    xxinsertw 34, 0, 12
 ; CHECK-32-NEXT:    blr
 entry:
@@ -1455,16 +1447,16 @@ entry:
 define <4 x float> @testSameVecEl0LE(<4 x float> %a) {
 ; CHECK-64-LABEL: testSameVecEl0LE:
 ; CHECK-64:       # %bb.0: # %entry
-; CHECK-64-NEXT:    xxspltw 0, 34, 2
-; CHECK-64-NEXT:    xxsldwi 0, 34, 0, 1
-; CHECK-64-NEXT:    xxsldwi 34, 0, 0, 3
+; CHECK-64-NEXT:    ld 3, L..C0(2) # %const.0
+; CHECK-64-NEXT:    lxv 35, 0(3)
+; CHECK-64-NEXT:    vperm 2, 2, 2, 3
 ; CHECK-64-NEXT:    blr
 ;
 ; CHECK-32-LABEL: testSameVecEl0LE:
 ; CHECK-32:       # %bb.0: # %entry
-; CHECK-32-NEXT:    xxspltw 0, 34, 2
-; CHECK-32-NEXT:    xxsldwi 0, 34, 0, 1
-; CHECK-32-NEXT:    xxsldwi 34, 0, 0, 3
+; CHECK-32-NEXT:    lwz 3, L..C0(2) # %const.0
+; CHECK-32-NEXT:    lxv 35, 0(3)
+; CHECK-32-NEXT:    vperm 2, 2, 2, 3
 ; CHECK-32-NEXT:    blr
 entry:
   %vecins = shufflevector <4 x float> %a, <4 x float> %a, <4 x i32> <i32 6, i32 1, i32 2, i32 3>
@@ -1473,16 +1465,16 @@ entry:
 define <4 x float> @testSameVecEl1LE(<4 x float> %a) {
 ; CHECK-64-LABEL: testSameVecEl1LE:
 ; CHECK-64:       # %bb.0: # %entry
-; CHECK-64-NEXT:    xxswapd 35, 34
-; CHECK-64-NEXT:    vmrghw 2, 2, 3
-; CHECK-64-NEXT:    vmrghw 2, 2, 3
+; CHECK-64-NEXT:    ld 3, L..C1(2) # %const.0
+; CHECK-64-NEXT:    lxv 35, 0(3)
+; CHECK-64-NEXT:    vperm 2, 2, 2, 3
 ; CHECK-64-NEXT:    blr
 ;
 ; CHECK-32-LABEL: testSameVecEl1LE:
 ; CHECK-32:       # %bb.0: # %entry
-; CHECK-32-NEXT:    xxswapd 35, 34
-; CHECK-32-NEXT:    vmrghw 2, 2, 3
-; CHECK-32-NEXT:    vmrghw 2, 2, 3
+; CHECK-32-NEXT:    lwz 3, L..C1(2) # %const.0
+; CHECK-32-NEXT:    lxv 35, 0(3)
+; CHECK-32-NEXT:    vperm 2, 2, 2, 3
 ; CHECK-32-NEXT:    blr
 entry:
   %vecins = shufflevector <4 x float> %a, <4 x float> %a, <4 x i32> <i32 0, i32 6, i32 2, i32 3>
@@ -1491,16 +1483,16 @@ entry:
 define <4 x float> @testSameVecEl3LE(<4 x float> %a) {
 ; CHECK-64-LABEL: testSameVecEl3LE:
 ; CHECK-64:       # %bb.0: # %entry
-; CHECK-64-NEXT:    xxspltw 0, 34, 2
-; CHECK-64-NEXT:    xxswapd 1, 34
-; CHECK-64-NEXT:    xxsldwi 34, 1, 0, 2
+; CHECK-64-NEXT:    ld 3, L..C2(2) # %const.0
+; CHECK-64-NEXT:    lxv 35, 0(3)
+; CHECK-64-NEXT:    vperm 2, 2, 2, 3
 ; CHECK-64-NEXT:    blr
 ;
 ; CHECK-32-LABEL: testSameVecEl3LE:
 ; CHECK-32:       # %bb.0: # %entry
-; CHECK-32-NEXT:    xxspltw 0, 34, 2
-; CHECK-32-NEXT:    xxswapd 1, 34
-; CHECK-32-NEXT:    xxsldwi 34, 1, 0, 2
+; CHECK-32-NEXT:    lwz 3, L..C2(2) # %const.0
+; CHECK-32-NEXT:    lxv 35, 0(3)
+; CHECK-32-NEXT:    vperm 2, 2, 2, 3
 ; CHECK-32-NEXT:    blr
 entry:
   %vecins = shufflevector <4 x float> %a, <4 x float> %a, <4 x i32> <i32 0, i32 1, i32 2, i32 6>
@@ -1568,14 +1560,12 @@ declare <4 x i32> @llvm.ppc.vsx.xxinsertw(<4 x i32>, <2 x i64>, i32)
 define <2 x i64> @intrinsicExtractTest(<2 x i64> %a) {
 ; CHECK-64-LABEL: intrinsicExtractTest:
 ; CHECK-64:       # %bb.0: # %entry
-; CHECK-64-NEXT:    xxextractuw 0, 34, 5
-; CHECK-64-NEXT:    xxlor 34, 0, 0
+; CHECK-64-NEXT:    xxextractuw 34, 34, 5
 ; CHECK-64-NEXT:    blr
 ;
 ; CHECK-32-LABEL: intrinsicExtractTest:
 ; CHECK-32:       # %bb.0: # %entry
-; CHECK-32-NEXT:    xxextractuw 0, 34, 5
-; CHECK-32-NEXT:    xxlor 34, 0, 0
+; CHECK-32-NEXT:    xxextractuw 34, 34, 5
 ; CHECK-32-NEXT:    blr
 entry:
   %ans = tail call <2 x i64> @llvm.ppc.vsx.xxextractuw(<2 x i64> %a, i32 5)

@@ -43,7 +43,7 @@ def SPV_CooperativeMatrixLengthNVOp : SPV_Op<"CooperativeMatrixLengthNV",
 
   let availability = [
     MinVersion<SPV_V_1_0>,
-    MaxVersion<SPV_V_1_5>,
+    MaxVersion<SPV_V_1_6>,
     Extension<[SPV_NV_cooperative_matrix]>,
     Capability<[SPV_C_CooperativeMatrixNV]>
   ];
@@ -55,7 +55,7 @@ def SPV_CooperativeMatrixLengthNVOp : SPV_Op<"CooperativeMatrixLengthNV",
   let results = (outs
     SPV_Int32:$result
   );
-  let verifier = [{ return success(); }];
+  let hasVerifier = 0;
 }
 
 // -----
@@ -117,7 +117,7 @@ def SPV_CooperativeMatrixLoadNVOp : SPV_Op<"CooperativeMatrixLoadNV", []> {
 
   let availability = [
     MinVersion<SPV_V_1_0>,
-    MaxVersion<SPV_V_1_5>,
+    MaxVersion<SPV_V_1_6>,
     Extension<[SPV_NV_cooperative_matrix]>,
     Capability<[SPV_C_CooperativeMatrixNV]>
   ];
@@ -132,11 +132,6 @@ def SPV_CooperativeMatrixLoadNVOp : SPV_Op<"CooperativeMatrixLoadNV", []> {
   let results = (outs
     SPV_AnyCooperativeMatrix:$result
   );
-
-  let verifier = [{
-    return verifyPointerAndCoopMatrixType(*this, pointer().getType(),
-                                          result().getType());
-  }];
 }
 
 // -----
@@ -197,7 +192,7 @@ def SPV_CooperativeMatrixMulAddNVOp : SPV_Op<"CooperativeMatrixMulAddNV",
 
   let availability = [
     MinVersion<SPV_V_1_0>,
-    MaxVersion<SPV_V_1_5>,
+    MaxVersion<SPV_V_1_6>,
     Extension<[SPV_NV_cooperative_matrix]>,
     Capability<[SPV_C_CooperativeMatrixNV]>
   ];
@@ -211,8 +206,6 @@ def SPV_CooperativeMatrixMulAddNVOp : SPV_Op<"CooperativeMatrixMulAddNV",
   let results = (outs
     SPV_AnyCooperativeMatrix:$result
   );
-
-  let verifier = [{ return verifyCoopMatrixMulAdd(*this); }];
 }
 
 // -----
@@ -260,7 +253,7 @@ def SPV_CooperativeMatrixStoreNVOp : SPV_Op<"CooperativeMatrixStoreNV", []> {
 
   let availability = [
     MinVersion<SPV_V_1_0>,
-    MaxVersion<SPV_V_1_5>,
+    MaxVersion<SPV_V_1_6>,
     Extension<[SPV_NV_cooperative_matrix]>,
     Capability<[SPV_C_CooperativeMatrixNV]>
   ];
@@ -274,11 +267,6 @@ def SPV_CooperativeMatrixStoreNVOp : SPV_Op<"CooperativeMatrixStoreNV", []> {
   );
 
   let results = (outs);
-
-  let verifier = [{
-    return verifyPointerAndCoopMatrixType(*this, pointer().getType(),
-                                          object().getType());
-  }];
 }
 
 // -----

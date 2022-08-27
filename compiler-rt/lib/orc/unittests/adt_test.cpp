@@ -13,6 +13,9 @@
 #include "adt.h"
 #include "gtest/gtest.h"
 
+#include <sstream>
+#include <string>
+
 using namespace __orc_rt;
 
 TEST(ADTTest, SpanDefaultConstruction) {
@@ -44,37 +47,4 @@ TEST(ADTTest, SpanConstructFromIteratorAndSize) {
   EXPECT_EQ(S.data(), &A[0]) << "Span data has unexpected value";
   for (unsigned I = 0; I != S.size(); ++I)
     EXPECT_EQ(S[I], A[I]) << "Unexpected span element value";
-}
-
-TEST(ADTTest, StringViewDefaultConstruction) {
-  string_view S;
-  EXPECT_TRUE(S.empty()) << "Default constructed span not empty";
-  EXPECT_EQ(S.size(), 0U) << "Default constructed span size not zero";
-  EXPECT_EQ(S.begin(), S.end()) << "Default constructed span begin != end";
-}
-
-TEST(ADTTest, StringViewConstructFromCharPtrAndSize) {
-  const char *Str = "abcdefg";
-  string_view S(Str, 5);
-  EXPECT_FALSE(S.empty()) << "Span should be non-empty";
-  EXPECT_EQ(S.size(), 5U) << "Span has unexpected size";
-  EXPECT_EQ(std::distance(S.begin(), S.end()), 5U)
-      << "Unexpected iterator range size";
-  EXPECT_EQ(S.data(), &Str[0]) << "Span data has unexpected value";
-  for (unsigned I = 0; I != S.size(); ++I)
-    EXPECT_EQ(S[I], Str[I]) << "Unexpected span element value";
-}
-
-TEST(ADTTest, StringViewConstructFromCharPtr) {
-  const char *Str = "abcdefg";
-  size_t StrLen = strlen(Str);
-  string_view S(Str);
-
-  EXPECT_FALSE(S.empty()) << "Span should be non-empty";
-  EXPECT_EQ(S.size(), StrLen) << "Span has unexpected size";
-  EXPECT_EQ(std::distance(S.begin(), S.end()), StrLen)
-      << "Unexpected iterator range size";
-  EXPECT_EQ(S.data(), &Str[0]) << "Span data has unexpected value";
-  for (unsigned I = 0; I != S.size(); ++I)
-    EXPECT_EQ(S[I], Str[I]) << "Unexpected span element value";
 }

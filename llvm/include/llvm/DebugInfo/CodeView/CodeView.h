@@ -135,6 +135,9 @@ enum class CPUType : uint16_t {
   Thumb = 0xf0,
   ARMNT = 0xf4,
   ARM64 = 0xf6,
+  HybridX86ARM64 = 0xf7,
+  ARM64EC = 0xf8,
+  ARM64X = 0xf9,
   D3D11_Shader = 0x100,
 };
 
@@ -158,6 +161,8 @@ enum SourceLanguage : uint8_t {
   JScript = 0x0e,
   MSIL = 0x0f,
   HLSL = 0x10,
+
+  Rust = 0x15,
 
   /// The DMD & Swift compilers emit 'D' and 'S', respectively, for the CV
   /// source language. Microsoft does not have enumerators for them yet.
@@ -325,6 +330,9 @@ enum class DebugSubsectionKind : uint32_t {
   MergedAssemblyInput = 0xfc,
 
   CoffSymbolRVA = 0xfd,
+
+  XfgHashType = 0xff,
+  XfgHashVirtual = 0x100,
 };
 
 /// Equivalent to CV_ptrtype_e.

@@ -10,8 +10,6 @@ import xml.etree.ElementTree as ET
 
 class TestGdbRemoteTargetXmlPacket(gdbremote_testcase.GdbRemoteTestCaseBase):
 
-    mydir = TestBase.compute_mydir(__file__)
-
     @llgs_test
     def test_g_target_xml_returns_correct_data(self):
         self.build()
@@ -64,7 +62,7 @@ class TestGdbRemoteTargetXmlPacket(gdbremote_testcase.GdbRemoteTestCaseBase):
             self.assertEqual(q_info_reg["format"], xml_info_reg.get("format"))
             self.assertEqual(q_info_reg["bitsize"], xml_info_reg.get("bitsize"))
 
-            if not self.getArchitecture() == 'aarch64':
+            if not self.isAArch64():
                 self.assertEqual(q_info_reg["offset"], xml_info_reg.get("offset"))
 
             self.assertEqual(q_info_reg["encoding"], xml_info_reg.get("encoding"))

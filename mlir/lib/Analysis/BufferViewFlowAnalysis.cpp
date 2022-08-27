@@ -8,6 +8,7 @@
 
 #include "mlir/Analysis/BufferViewFlowAnalysis.h"
 
+#include "mlir/Dialect/Arithmetic/IR/Arithmetic.h"
 #include "mlir/Interfaces/ControlFlowInterfaces.h"
 #include "mlir/Interfaces/ViewLikeInterface.h"
 #include "llvm/ADT/SetOperations.h"
@@ -51,9 +52,9 @@ void BufferViewFlowAnalysis::remove(const SmallPtrSetImpl<Value> &aliasValues) {
 /// successor regions and branch-like return operations from nested regions.
 void BufferViewFlowAnalysis::build(Operation *op) {
   // Registers all dependencies of the given values.
-  auto registerDependencies = [&](auto values, auto dependencies) {
-    for (auto entry : llvm::zip(values, dependencies))
-      this->dependencies[std::get<0>(entry)].insert(std::get<1>(entry));
+  auto registerDependencies = [&](ValueRange values, ValueRange dependencies) {
+    for (auto [value, dep] : llvm::zip(values, dependencies))
+      this->dependencies[value].insert(dep);
   };
 
   // Add additional dependencies created by view changes to the alias list.
@@ -70,10 +71,10 @@ void BufferViewFlowAnalysis::build(Operation *op) {
       // Query the branch op interface to get the successor operands.
       auto successorOperands =
           branchInterface.getSuccessorOperands(it.getIndex());
-      if (!successorOperands.hasValue())
-        continue;
       // Build the actual mapping of values to their immediate dependencies.
-      registerDependencies(successorOperands.getValue(), (*it)->getArguments());
+      registerDependencies(successorOperands.getForwardedOperands(),
+                           (*it)->getArguments().drop_front(
+                               successorOperands.getProducedOperandCount()));
     }
   });
 
@@ -101,16 +102,28 @@ void BufferViewFlowAnalysis::build(Operation *op) {
       regionInterface.getSuccessorRegions(region.getRegionNumber(),
                                           successorRegions);
       for (RegionSuccessor &successorRegion : successorRegions) {
+        // Determine the current region index (if any).
+        Optional<unsigned> regionIndex;
+        Region *regionSuccessor = successorRegion.getSuccessor();
+        if (regionSuccessor)
+          regionIndex = regionSuccessor->getRegionNumber();
         // Iterate over all immediate terminator operations and wire the
-        // successor inputs with the operands of each terminator.
+        // successor inputs with the successor operands of each terminator.
         for (Block &block : region) {
-          for (Operation &operation : block) {
-            if (operation.hasTrait<OpTrait::ReturnLike>())
-              registerDependencies(operation.getOperands(),
-                                   successorRegion.getSuccessorInputs());
+          auto successorOperands = getRegionBranchSuccessorOperands(
+              block.getTerminator(), regionIndex);
+          if (successorOperands) {
+            registerDependencies(*successorOperands,
+                                 successorRegion.getSuccessorInputs());
           }
         }
       }
     }
+  });
+
+  // TODO: This should be an interface.
+  op->walk([&](arith::SelectOp selectOp) {
+    registerDependencies({selectOp.getOperand(1)}, {selectOp.getResult()});
+    registerDependencies({selectOp.getOperand(2)}, {selectOp.getResult()});
   });
 }

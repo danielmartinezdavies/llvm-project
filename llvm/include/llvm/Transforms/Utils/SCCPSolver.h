@@ -16,22 +16,39 @@
 
 #include "llvm/ADT/MapVector.h"
 #include "llvm/Analysis/DomTreeUpdater.h"
-#include "llvm/Analysis/TargetLibraryInfo.h"
-#include "llvm/Analysis/ValueLattice.h"
-#include "llvm/Analysis/ValueLatticeUtils.h"
-#include "llvm/IR/InstVisitor.h"
 #include "llvm/Transforms/Utils/PredicateInfo.h"
-#include <cassert>
-#include <utility>
 #include <vector>
 
 namespace llvm {
+class Argument;
+class BasicBlock;
+class CallInst;
+class Constant;
+class DataLayout;
+class DominatorTree;
+class Function;
+class GlobalVariable;
+class Instruction;
+class LLVMContext;
+class PostDominatorTree;
+class StructType;
+class TargetLibraryInfo;
+class Value;
+class ValueLatticeElement;
 
 /// Helper struct for bundling up the analysis results per function for IPSCCP.
 struct AnalysisResultsForFn {
   std::unique_ptr<PredicateInfo> PredInfo;
   DominatorTree *DT;
   PostDominatorTree *PDT;
+};
+
+/// Helper struct shared between Function Specialization and SCCP Solver.
+struct ArgInfo {
+  Argument *Formal; // The Formal argument being analysed.
+  Constant *Actual; // A corresponding actual constant argument.
+
+  ArgInfo(Argument *F, Constant *A) : Formal(F), Actual(A){};
 };
 
 class SCCPInstVisitor;
@@ -130,6 +147,26 @@ public:
   /// Helper to return a Constant if \p LV is either a constant or a constant
   /// range with a single element.
   Constant *getConstant(const ValueLatticeElement &LV) const;
+
+  /// Return a reference to the set of argument tracked functions.
+  SmallPtrSetImpl<Function *> &getArgumentTrackedFunctions();
+
+  /// Mark the constant arguments of a new function specialization. \p F points
+  /// to the cloned function and \p Args contains a list of constant arguments
+  /// represented as pairs of {formal,actual} values (the formal argument is
+  /// associated with the original function definition). All other arguments of
+  /// the specialization inherit the lattice state of their corresponding values
+  /// in the original function.
+  void markArgInFuncSpecialization(Function *F,
+                                   const SmallVectorImpl<ArgInfo> &Args);
+
+  /// Mark all of the blocks in function \p F non-executable. Clients can used
+  /// this method to erase a function from the module (e.g., if it has been
+  /// completely specialized and is no longer needed).
+  void markFunctionUnreachable(Function *F);
+
+  void visit(Instruction *I);
+  void visitCall(CallInst &I);
 };
 
 } // namespace llvm

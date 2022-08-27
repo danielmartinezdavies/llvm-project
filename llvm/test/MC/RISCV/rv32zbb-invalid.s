@@ -1,4 +1,4 @@
-# RUN: not llvm-mc -triple riscv32 -mattr=+experimental-b,experimental-zbb < %s 2>&1 | FileCheck %s
+# RUN: not llvm-mc -triple riscv32 -mattr=+zbb < %s 2>&1 | FileCheck %s
 
 # Too many operands
 clz t0, t1, t2 # CHECK: :[[@LINE]]:13: error: invalid operand for instruction
@@ -18,6 +18,6 @@ max t0, t1 # CHECK: :[[@LINE]]:1: error: too few operands for instruction
 minu t0, t1 # CHECK: :[[@LINE]]:1: error: too few operands for instruction
 # Too few operands
 maxu t0, t1 # CHECK: :[[@LINE]]:1: error: too few operands for instruction
-clzw t0, t1 # CHECK: :[[@LINE]]:1: error: instruction requires the following: RV64I Base Instruction Set
-ctzw t0, t1 # CHECK: :[[@LINE]]:1: error: instruction requires the following: RV64I Base Instruction Set
-cpopw t0, t1 # CHECK: :[[@LINE]]:1: error: instruction requires the following: RV64I Base Instruction Set
+clzw t0, t1 # CHECK: :[[@LINE]]:1: error: instruction requires the following: RV64I Base Instruction Set{{$}}
+ctzw t0, t1 # CHECK: :[[@LINE]]:1: error: instruction requires the following: RV64I Base Instruction Set{{$}}
+cpopw t0, t1 # CHECK: :[[@LINE]]:1: error: instruction requires the following: RV64I Base Instruction Set{{$}}

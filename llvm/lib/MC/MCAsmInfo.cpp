@@ -77,6 +77,7 @@ MCAsmInfo::MCAsmInfo() {
   //   architecture basis.
   //   - The target subclasses for AArch64, ARM, and X86 handle these cases
   UseIntegratedAssembler = true;
+  ParseInlineAsmUsingAsmParser = false;
   PreserveAsmComments = true;
 }
 
@@ -113,7 +114,10 @@ MCAsmInfo::getExprForFDESymbol(const MCSymbol *Sym,
 }
 
 bool MCAsmInfo::isAcceptableChar(char C) const {
-  return isAlnum(C) || C == '_' || C == '$' || C == '.' || C == '@';
+  if (C == '@')
+    return doesAllowAtInName();
+
+  return isAlnum(C) || C == '_' || C == '$' || C == '.';
 }
 
 bool MCAsmInfo::isValidUnquotedName(StringRef Name) const {

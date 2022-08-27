@@ -40,6 +40,11 @@ MergeEndDec("arm-enable-merge-loopenddec", cl::Hidden,
     cl::desc("Enable merging Loop End and Dec instructions."),
     cl::init(true));
 
+static cl::opt<bool>
+SetLRPredicate("arm-set-lr-predicate", cl::Hidden,
+    cl::desc("Enable setting lr as a predicate in tail predication regions."),
+    cl::init(true));
+
 namespace {
 class MVETPAndVPTOptimisations : public MachineFunctionPass {
 public:
@@ -290,6 +295,9 @@ MachineInstr *MVETPAndVPTOptimisations::CheckForLRUseInPredecessors(
       MIB.add(LoopStart->getOperand(0));
       MIB.add(LoopStart->getOperand(1));
 
+      // Make sure to remove the kill flags, to prevent them from being invalid.
+      LoopStart->getOperand(1).setIsKill(false);
+
       // Revert the t2WhileLoopStartLR to a CMP and Br.
       RevertWhileLoopStartLR(LoopStart, TII, ARM::t2Bcc, true);
       return MIB;
@@ -358,7 +366,7 @@ bool MVETPAndVPTOptimisations::MergeLoopEnd(MachineLoop *ML) {
     while (!Worklist.empty()) {
       Register Reg = Worklist.pop_back_val();
       for (MachineInstr &MI : MRI->use_nodbg_instructions(Reg)) {
-        if (count(ExpectedUsers, &MI))
+        if (llvm::is_contained(ExpectedUsers, &MI))
           continue;
         if (MI.getOpcode() != TargetOpcode::COPY ||
             !MI.getOperand(0).getReg().isVirtual()) {
@@ -396,6 +404,17 @@ bool MVETPAndVPTOptimisations::MergeLoopEnd(MachineLoop *ML) {
     LoopPhi->getOperand(3).setReg(DecReg);
   }
 
+  SmallVector<MachineOperand, 4> Cond;              // For analyzeBranch.
+  MachineBasicBlock *TBB = nullptr, *FBB = nullptr; // For analyzeBranch.
+  if (!TII->analyzeBranch(*LoopEnd->getParent(), TBB, FBB, Cond) && !FBB) {
+    // If the LoopEnd falls through, need to insert a t2B to the fall-through
+    // block so that the non-analyzable t2LoopEndDec doesn't fall through.
+    MachineFunction::iterator MBBI = ++LoopEnd->getParent()->getIterator();
+    BuildMI(LoopEnd->getParent(), DebugLoc(), TII->get(ARM::t2B))
+        .addMBB(&*MBBI)
+        .add(predOps(ARMCC::AL));
+  }
+
   // Replace the loop dec and loop end as a single instruction.
   MachineInstrBuilder MI =
       BuildMI(*LoopEnd->getParent(), *LoopEnd, LoopEnd->getDebugLoc(),
@@ -426,14 +445,19 @@ bool MVETPAndVPTOptimisations::ConvertTailPredLoop(MachineLoop *ML,
   MachineInstr *LoopEnd, *LoopPhi, *LoopStart, *LoopDec;
   if (!findLoopComponents(ML, MRI, LoopStart, LoopPhi, LoopDec, LoopEnd))
     return false;
-  if (LoopDec != LoopEnd || LoopStart->getOpcode() != ARM::t2DoLoopStart)
+  if (LoopDec != LoopEnd || (LoopStart->getOpcode() != ARM::t2DoLoopStart &&
+                             LoopStart->getOpcode() != ARM::t2WhileLoopStartLR))
     return false;
 
   SmallVector<MachineInstr *, 4> VCTPs;
-  for (MachineBasicBlock *BB : ML->blocks())
+  SmallVector<MachineInstr *, 4> MVEInstrs;
+  for (MachineBasicBlock *BB : ML->blocks()) {
     for (MachineInstr &MI : *BB)
       if (isVCTP(&MI))
         VCTPs.push_back(&MI);
+      else if (findFirstVPTPredOperandIdx(MI) != -1)
+        MVEInstrs.push_back(&MI);
+  }
 
   if (VCTPs.empty()) {
     LLVM_DEBUG(dbgs() << "  no VCTPs\n");
@@ -491,16 +515,30 @@ bool MVETPAndVPTOptimisations::ConvertTailPredLoop(MachineLoop *ML,
       return false;
     }
 
-  MachineInstrBuilder MI = BuildMI(*MBB, InsertPt, LoopStart->getDebugLoc(),
-                                   TII->get(ARM::t2DoLoopStartTP))
-                               .add(LoopStart->getOperand(0))
-                               .add(LoopStart->getOperand(1))
-                               .addReg(CountReg);
-  (void)MI;
+  unsigned NewOpc = LoopStart->getOpcode() == ARM::t2DoLoopStart
+                        ? ARM::t2DoLoopStartTP
+                        : ARM::t2WhileLoopStartTP;
+  MachineInstrBuilder MI =
+      BuildMI(*MBB, InsertPt, LoopStart->getDebugLoc(), TII->get(NewOpc))
+          .add(LoopStart->getOperand(0))
+          .add(LoopStart->getOperand(1))
+          .addReg(CountReg);
+  if (NewOpc == ARM::t2WhileLoopStartTP)
+    MI.add(LoopStart->getOperand(2));
   LLVM_DEBUG(dbgs() << "Replacing " << *LoopStart << "  with "
                     << *MI.getInstr());
   MRI->constrainRegClass(CountReg, &ARM::rGPRRegClass);
   LoopStart->eraseFromParent();
+
+  if (SetLRPredicate) {
+    // Each instruction in the loop needs to be using LR as the predicate from
+    // the Phi as the predicate.
+    Register LR = LoopPhi->getOperand(0).getReg();
+    for (MachineInstr *MI : MVEInstrs) {
+      int Idx = findFirstVPTPredOperandIdx(*MI);
+      MI->getOperand(Idx + 2).setReg(LR);
+    }
+  }
 
   return true;
 }
@@ -983,6 +1021,7 @@ bool MVETPAndVPTOptimisations::ConvertVPSEL(MachineBasicBlock &MBB) {
             .add(MI.getOperand(1))
             .addImm(ARMVCC::Then)
             .add(MI.getOperand(4))
+            .add(MI.getOperand(5))
             .add(MI.getOperand(2));
     // Silence unused variable warning in release builds.
     (void)MIBuilder;
@@ -1013,8 +1052,7 @@ bool MVETPAndVPTOptimisations::HintDoLoopStartReg(MachineBasicBlock &MBB) {
 }
 
 bool MVETPAndVPTOptimisations::runOnMachineFunction(MachineFunction &Fn) {
-  const ARMSubtarget &STI =
-      static_cast<const ARMSubtarget &>(Fn.getSubtarget());
+  const ARMSubtarget &STI = Fn.getSubtarget<ARMSubtarget>();
 
   if (!STI.isThumb2() || !STI.hasLOB())
     return false;

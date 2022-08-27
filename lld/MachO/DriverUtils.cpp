@@ -13,12 +13,10 @@
 #include "Target.h"
 
 #include "lld/Common/Args.h"
-#include "lld/Common/ErrorHandler.h"
-#include "lld/Common/Memory.h"
+#include "lld/Common/CommonLinkerContext.h"
 #include "lld/Common/Reproduce.h"
 #include "llvm/ADT/CachedHashString.h"
 #include "llvm/ADT/DenseMap.h"
-#include "llvm/Bitcode/BitcodeReader.h"
 #include "llvm/LTO/LTO.h"
 #include "llvm/Option/Arg.h"
 #include "llvm/Option/ArgList.h"
@@ -83,12 +81,13 @@ InputArgList MachOOptTable::parse(ArrayRef<const char *> argv) {
 
   // Expand response files (arguments in the form of @<filename>)
   // and then parse the argument again.
-  cl::ExpandResponseFiles(saver, cl::TokenizeGNUCommandLine, vec);
+  cl::ExpandResponseFiles(saver(), cl::TokenizeGNUCommandLine, vec);
   InputArgList args = ParseArgs(vec, missingIndex, missingCount);
 
   // Handle -fatal_warnings early since it converts missing argument warnings
   // to errors.
   errorHandler().fatalWarnings = args.hasArg(OPT_fatal_warnings);
+  errorHandler().suppressWarnings = args.hasArg(OPT_w);
 
   if (missingCount)
     error(Twine(args.getArgString(missingIndex)) + ": missing argument");
@@ -107,8 +106,9 @@ InputArgList MachOOptTable::parse(ArrayRef<const char *> argv) {
 }
 
 void MachOOptTable::printHelp(const char *argv0, bool showHidden) const {
-  PrintHelp(lld::outs(), (std::string(argv0) + " [options] file...").c_str(),
-            "LLVM Linker", showHidden);
+  OptTable::printHelp(lld::outs(),
+                      (std::string(argv0) + " [options] file...").c_str(),
+                      "LLVM Linker", showHidden);
   lld::outs() << "\n";
 }
 
@@ -150,6 +150,7 @@ std::string macho::createResponseFile(const InputArgList &args) {
       break;
     case OPT_force_load:
     case OPT_weak_library:
+    case OPT_load_hidden:
       os << arg->getSpelling() << " "
          << quote(rewriteInputPath(arg->getValue())) << "\n";
       break;
@@ -176,20 +177,27 @@ std::string macho::createResponseFile(const InputArgList &args) {
   return std::string(data.str());
 }
 
-Optional<std::string> macho::resolveDylibPath(StringRef path) {
+static void searchedDylib(const Twine &path, bool found) {
+  if (config->printDylibSearch)
+    message("searched " + path + (found ? ", found " : ", not found"));
+  if (!found)
+    depTracker->logFileNotFound(path);
+}
+
+Optional<StringRef> macho::resolveDylibPath(StringRef dylibPath) {
   // TODO: if a tbd and dylib are both present, we should check to make sure
   // they are consistent.
-  if (fs::exists(path))
-    return std::string(path);
-  else
-    depTracker->logFileNotFound(path);
+  SmallString<261> tbdPath = dylibPath;
+  path::replace_extension(tbdPath, ".tbd");
+  bool tbdExists = fs::exists(tbdPath);
+  searchedDylib(tbdPath, tbdExists);
+  if (tbdExists)
+    return saver().save(tbdPath.str());
 
-  SmallString<261> location = path;
-  path::replace_extension(location, ".tbd");
-  if (fs::exists(location))
-    return std::string(location);
-  else
-    depTracker->logFileNotFound(location);
+  bool dylibExists = fs::exists(dylibPath);
+  searchedDylib(dylibPath, dylibExists);
+  if (dylibExists)
+    return saver().save(dylibPath);
   return {};
 }
 
@@ -197,37 +205,53 @@ Optional<std::string> macho::resolveDylibPath(StringRef path) {
 // especially if it's a commonly re-exported core library.
 static DenseMap<CachedHashStringRef, DylibFile *> loadedDylibs;
 
-Optional<DylibFile *> macho::loadDylib(MemoryBufferRef mbref,
-                                       DylibFile *umbrella,
-                                       bool isBundleLoader) {
+DylibFile *macho::loadDylib(MemoryBufferRef mbref, DylibFile *umbrella,
+                            bool isBundleLoader, bool explicitlyLinked) {
   CachedHashStringRef path(mbref.getBufferIdentifier());
-  DylibFile *file = loadedDylibs[path];
-  if (file)
+  DylibFile *&file = loadedDylibs[path];
+  if (file) {
+    if (explicitlyLinked)
+      file->setExplicitlyLinked();
     return file;
+  }
 
+  DylibFile *newFile;
   file_magic magic = identify_magic(mbref.getBuffer());
   if (magic == file_magic::tapi_file) {
     Expected<std::unique_ptr<InterfaceFile>> result = TextAPIReader::get(mbref);
     if (!result) {
       error("could not load TAPI file at " + mbref.getBufferIdentifier() +
             ": " + toString(result.takeError()));
-      return {};
+      return nullptr;
     }
-    file = make<DylibFile>(**result, umbrella, isBundleLoader);
+    file =
+        make<DylibFile>(**result, umbrella, isBundleLoader, explicitlyLinked);
+
+    // parseReexports() can recursively call loadDylib(). That's fine since
+    // we wrote the DylibFile we just loaded to the loadDylib cache via the
+    // `file` reference. But the recursive load can grow loadDylibs, so the
+    // `file` reference might become invalid after parseReexports() -- so copy
+    // the pointer it refers to before continuing.
+    newFile = file;
+    if (newFile->exportingFile)
+      newFile->parseReexports(**result);
   } else {
     assert(magic == file_magic::macho_dynamically_linked_shared_lib ||
            magic == file_magic::macho_dynamically_linked_shared_lib_stub ||
            magic == file_magic::macho_executable ||
            magic == file_magic::macho_bundle);
-    file = make<DylibFile>(mbref, umbrella, isBundleLoader);
+    file = make<DylibFile>(mbref, umbrella, isBundleLoader, explicitlyLinked);
+
+    // parseLoadCommands() can also recursively call loadDylib(). See comment
+    // in previous block for why this means we must copy `file` here.
+    newFile = file;
+    if (newFile->exportingFile)
+      newFile->parseLoadCommands(mbref);
   }
-  // Note that DylibFile's ctor may recursively invoke loadDylib(), which can
-  // cause loadedDylibs to get resized and its iterators invalidated. As such,
-  // we redo the key lookup here instead of caching an iterator from our earlier
-  // lookup at the start of the function.
-  loadedDylibs[path] = file;
-  return file;
+  return newFile;
 }
+
+void macho::resetLoadedDylibs() { loadedDylibs.clear(); }
 
 Optional<StringRef>
 macho::findPathCombination(const Twine &name,
@@ -239,10 +263,10 @@ macho::findPathCombination(const Twine &name,
     path::append(base, name);
     for (StringRef ext : extensions) {
       Twine location = base + ext;
-      if (fs::exists(location))
-        return saver.save(location.str());
-      else
-        depTracker->logFileNotFound(location);
+      bool exists = fs::exists(location);
+      searchedDylib(location, exists);
+      if (exists)
+        return saver().save(location.str());
     }
   }
   return {};
@@ -259,27 +283,10 @@ StringRef macho::rerootPath(StringRef path) {
   return path;
 }
 
-Optional<InputFile *> macho::loadArchiveMember(MemoryBufferRef mb,
-                                               uint32_t modTime,
-                                               StringRef archiveName,
-                                               bool objCOnly) {
-  switch (identify_magic(mb.getBuffer())) {
-  case file_magic::macho_object:
-    if (!objCOnly || hasObjCSection(mb))
-      return make<ObjFile>(mb, modTime, archiveName);
-    return None;
-  case file_magic::bitcode:
-    if (!objCOnly || check(isBitcodeContainingObjCCategory(mb)))
-      return make<BitcodeFile>(mb);
-    return None;
-  default:
-    error(archiveName + ": archive member " + mb.getBufferIdentifier() +
-          " has unhandled file type");
-    return None;
-  }
-}
-
 uint32_t macho::getModTime(StringRef path) {
+  if (config->zeroModTime)
+    return 0;
+
   fs::file_status stat;
   if (!fs::status(path, stat))
     if (fs::exists(stat))
@@ -305,14 +312,14 @@ macho::DependencyTracker::DependencyTracker(StringRef path)
   }
 }
 
-void macho::DependencyTracker::write(llvm::StringRef version,
-                                     const llvm::SetVector<InputFile *> &inputs,
-                                     llvm::StringRef output) {
+void macho::DependencyTracker::write(StringRef version,
+                                     const SetVector<InputFile *> &inputs,
+                                     StringRef output) {
   if (!active)
     return;
 
   std::error_code ec;
-  llvm::raw_fd_ostream os(path, ec, llvm::sys::fs::OF_None);
+  raw_fd_ostream os(path, ec, fs::OF_None);
   if (ec) {
     warn("Error writing dependency info to file");
     return;

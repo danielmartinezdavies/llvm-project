@@ -55,7 +55,9 @@ def find_compiler_libdir():
 
   # Try using `-print-runtime-dir`. This is only supported by very new versions of Clang.
   # so allow failure here.
-  runtime_dir, clang_cmd = get_path_from_clang(['-print-runtime-dir'], allow_failure=True)
+  runtime_dir, clang_cmd = get_path_from_clang(shlex.split(config.target_cflags)
+                                               + ['-print-runtime-dir'],
+                                               allow_failure=True)
   if runtime_dir:
     if os.path.exists(runtime_dir):
       return os.path.realpath(runtime_dir)
@@ -123,6 +125,16 @@ else:
 # Add compiler ID to the list of available features.
 config.available_features.add(compiler_id)
 
+# When LLVM_ENABLE_PER_TARGET_RUNTIME_DIR=on, the initial value of
+# config.compiler_rt_libdir (COMPILER_RT_RESOLVED_LIBRARY_OUTPUT_DIR) has the
+# triple as the trailing path component. The value is incorrect for -m32/-m64.
+# Adjust config.compiler_rt accordingly.
+if config.enable_per_target_runtime_dir:
+    if '-m32' in shlex.split(config.target_cflags):
+        config.compiler_rt_libdir = re.sub(r'/x86_64(?=-[^/]+$)', '/i386', config.compiler_rt_libdir)
+    elif '-m64' in shlex.split(config.target_cflags):
+        config.compiler_rt_libdir = re.sub(r'/i386(?=-[^/]+$)', '/x86_64', config.compiler_rt_libdir)
+
 # Ask the compiler for the path to libraries it is going to use. If this
 # doesn't match config.compiler_rt_libdir then it means we might be testing the
 # compiler's own runtime libraries rather than the ones we just built.
@@ -160,11 +172,9 @@ if config.asan_shadow_scale != '':
 if config.memprof_shadow_scale != '':
   config.target_cflags += " -mllvm -memprof-mapping-scale=" + config.memprof_shadow_scale
 
-config.environment = dict(os.environ)
-
 # Clear some environment variables that might affect Clang.
-possibly_dangerous_env_vars = ['ASAN_OPTIONS', 'DFSAN_OPTIONS', 'LSAN_OPTIONS',
-                               'MSAN_OPTIONS', 'UBSAN_OPTIONS',
+possibly_dangerous_env_vars = ['ASAN_OPTIONS', 'DFSAN_OPTIONS', 'HWASAN_OPTIONS',
+                               'LSAN_OPTIONS', 'MSAN_OPTIONS', 'UBSAN_OPTIONS',
                                'COMPILER_PATH', 'RC_DEBUG_OPTIONS',
                                'CINDEXTEST_PREAMBLE_FILE', 'LIBRARY_PATH',
                                'CPATH', 'C_INCLUDE_PATH', 'CPLUS_INCLUDE_PATH',
@@ -194,6 +204,9 @@ if platform.system() == 'Windows' and '-win' in config.target_triple:
   config.environment['LIB'] = os.environ['LIB']
 
 config.available_features.add(config.host_os.lower())
+
+if config.target_triple.startswith("ppc") or config.target_triple.startswith("powerpc"):
+  config.available_features.add("ppc")
 
 if re.match(r'^x86_64.*-linux', config.target_triple):
   config.available_features.add("x86_64-linux")
@@ -351,6 +364,12 @@ sanitizer_can_use_cxxabi = getattr(config, 'sanitizer_can_use_cxxabi', True)
 if sanitizer_can_use_cxxabi:
   config.available_features.add('cxxabi')
 
+if not getattr(config, 'sanitizer_uses_static_cxxabi', False):
+  config.available_features.add('shared_cxxabi')
+
+if not getattr(config, 'sanitizer_uses_static_unwind', False):
+  config.available_features.add('shared_unwind')
+
 if config.has_lld:
   config.available_features.add('lld-available')
 
@@ -382,6 +401,8 @@ if config.host_os == 'Darwin':
     if osx_version >= (10, 11):
       config.available_features.add('osx-autointerception')
       config.available_features.add('osx-ld64-live_support')
+    if osx_version >= (10, 15):
+      config.available_features.add('osx-swift-runtime')
   except subprocess.CalledProcessError:
     pass
 
@@ -432,7 +453,11 @@ if config.host_os == 'Darwin':
   for vers in min_macos_deployment_target_substitutions:
     flag = config.apple_platform_min_deployment_target_flag
     major, minor = get_macos_aligned_version(vers)
-    config.substitutions.append( ('%%min_macos_deployment_target=%s.%s' % vers, '{}={}.{}'.format(flag, major, minor)) )
+    if 'mtargetos' in flag:
+      sim = '-simulator' if 'sim' in config.apple_platform else ''
+      config.substitutions.append( ('%%min_macos_deployment_target=%s.%s' % vers, '{}{}.{}{}'.format(flag, major, minor, sim)) )
+    else:
+      config.substitutions.append( ('%%min_macos_deployment_target=%s.%s' % vers, '{}={}.{}'.format(flag, major, minor)) )
 else:
   for vers in min_macos_deployment_target_substitutions:
     config.substitutions.append( ('%%min_macos_deployment_target=%s.%s' % vers, '') )
@@ -447,9 +472,8 @@ if config.android:
 
   # These are needed for tests to upload/download temp files, such as
   # suppression-files, to device.
-  config.substitutions.append( ('%device_rundir', "/data/local/tmp/Output") )
+  config.substitutions.append( ('%device_rundir/', "/data/local/tmp/Output/") )
   config.substitutions.append( ('%push_to_device', "%s -s '%s' push " % (adb, env['ANDROID_SERIAL']) ) )
-  config.substitutions.append( ('%pull_from_device', "%s -s '%s' pull " % (adb, env['ANDROID_SERIAL']) ) )
   config.substitutions.append( ('%adb_shell ', "%s -s '%s' shell " % (adb, env['ANDROID_SERIAL']) ) )
   config.substitutions.append( ('%device_rm', "%s -s '%s' shell 'rm ' " % (adb, env['ANDROID_SERIAL']) ) )
 
@@ -463,7 +487,7 @@ if config.android:
   except ValueError:
     lit_config.fatal("Failed to read ro.build.version.sdk (using '%s' as adb): got '%s'" % (adb, android_api_level_str))
   android_api_level = min(android_api_level, int(config.android_api_level))
-  for required in [26, 28, 30]:
+  for required in [26, 28, 29, 30]:
     if android_api_level >= required:
       config.available_features.add('android-%s' % required)
   # FIXME: Replace with appropriate version when availible.
@@ -476,9 +500,8 @@ if config.android:
   for file in config.android_files_to_push:
     subprocess.check_call([adb, "push", file, android_tmpdir], env=env)
 else:
-  config.substitutions.append( ('%device_rundir', "") )
+  config.substitutions.append( ('%device_rundir/', "") )
   config.substitutions.append( ('%push_to_device', "echo ") )
-  config.substitutions.append( ('%pull_from_device', "echo ") )
   config.substitutions.append( ('%adb_shell', "echo ") )
 
 if config.host_os == 'Linux':
@@ -493,7 +516,7 @@ if config.host_os == 'Linux':
   if not config.android and len(ver_lines) and ver_lines[0].startswith(b"ldd "):
     from distutils.version import LooseVersion
     ver = LooseVersion(ver_lines[0].split()[-1].decode())
-    for required in ["2.27", "2.30"]:
+    for required in ["2.27", "2.30", "2.34"]:
       if ver >= LooseVersion(required):
         config.available_features.add("glibc-" + required)
 
@@ -502,8 +525,11 @@ if os.path.exists(sancovcc_path):
   config.available_features.add("has_sancovcc")
   config.substitutions.append( ("%sancovcc ", sancovcc_path) )
 
+def liblto_path():
+  return os.path.join(config.llvm_shlib_dir, 'libLTO.dylib')
+
 def is_darwin_lto_supported():
-  return os.path.exists(os.path.join(config.llvm_shlib_dir, 'libLTO.dylib'))
+  return os.path.exists(liblto_path())
 
 def is_binutils_lto_supported():
   if not os.path.exists(os.path.join(config.llvm_shlib_dir, 'LLVMgold.so')):
@@ -525,8 +551,7 @@ def is_windows_lto_supported():
 
 if config.host_os == 'Darwin' and is_darwin_lto_supported():
   config.lto_supported = True
-  config.lto_launch = ["env", "DYLD_LIBRARY_PATH=" + config.llvm_shlib_dir]
-  config.lto_flags = []
+  config.lto_flags = [ '-Wl,-lto_library,' + liblto_path() ]
 elif config.host_os in ['Linux', 'FreeBSD', 'NetBSD']:
   config.lto_supported = False
   if config.use_lld:
@@ -536,14 +561,12 @@ elif config.host_os in ['Linux', 'FreeBSD', 'NetBSD']:
     config.lto_supported = True
 
   if config.lto_supported:
-    config.lto_launch = []
     if config.use_lld:
       config.lto_flags = ["-fuse-ld=lld"]
     else:
       config.lto_flags = ["-fuse-ld=gold"]
 elif config.host_os == 'Windows' and is_windows_lto_supported():
   config.lto_supported = True
-  config.lto_launch = []
   config.lto_flags = ["-fuse-ld=lld"]
 else:
   config.lto_supported = False
@@ -555,8 +578,6 @@ if config.lto_supported:
     config.lto_flags += ["-flto=thin"]
   else:
     config.lto_flags += ["-flto"]
-  if config.use_newpm:
-    config.lto_flags += ["-fexperimental-new-pass-manager"]
 
 if config.have_rpc_xdr_h:
   config.available_features.add('sunrpc')
@@ -595,8 +616,8 @@ if platform.system() == 'Darwin':
   # Only run up to 3 processes that require shadow memory simultaneously on
   # 64-bit Darwin. Using more scales badly and hogs the system due to
   # inefficient handling of large mmap'd regions (terabytes) by the kernel.
-  elif config.target_arch in ['x86_64', 'x86_64h']:
-    lit_config.warning('Throttling sanitizer tests that require shadow memory on Darwin 64bit')
+  else:
+    lit_config.warning('Throttling sanitizer tests that require shadow memory on Darwin')
     lit_config.parallelism_groups['shadow-memory'] = 3
 
 # Multiple substitutions are necessary to support multiple shared objects used
@@ -622,7 +643,7 @@ for postfix in ["2", "1", ""]:
   config.substitutions.append( ("%xdynamiclib_filename" + postfix, 'lib%xdynamiclib_namespec{}.so'.format(postfix)) )
   config.substitutions.append( ("%xdynamiclib_namespec", '%basename_t.dynamic') )
 
-# Provide a substituion that can be used to tell Clang to use a static libstdc++.
+# Provide a substitution that can be used to tell Clang to use a static libstdc++.
 # The substitution expands to nothing on non Linux platforms.
 # FIXME: This should check the target OS, not the host OS.
 if config.host_os == 'Linux':
@@ -676,7 +697,6 @@ target_cflags = [getattr(config, 'target_cflags', None)]
 extra_cflags = []
 
 if config.use_lto and config.lto_supported:
-  run_wrapper += config.lto_launch
   extra_cflags += config.lto_flags
 elif config.use_lto and (not config.lto_supported):
   config.unsupported = True
@@ -697,16 +717,16 @@ config.target_cflags = " " + " ".join(target_cflags + extra_cflags) + " "
 
 if config.host_os == 'Darwin':
   config.substitutions.append((
-    "%get_pid_from_output", 
+    "%get_pid_from_output",
     "{} {}/get_pid_from_output.py".format(
-      sh_quote(config.python_executable), 
+      sh_quote(config.python_executable),
       sh_quote(get_ios_commands_dir())
     ))
   )
   config.substitutions.append(
-    ("%print_crashreport_for_pid", 
+    ("%print_crashreport_for_pid",
     "{} {}/print_crashreport_for_pid.py".format(
-      sh_quote(config.python_executable), 
+      sh_quote(config.python_executable),
       sh_quote(get_ios_commands_dir())
     ))
   )

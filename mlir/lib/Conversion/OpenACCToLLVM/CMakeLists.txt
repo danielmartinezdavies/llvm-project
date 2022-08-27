@@ -9,8 +9,8 @@ add_mlir_conversion_library(MLIROpenACCToLLVM
 
   LINK_LIBS PUBLIC
   MLIRIR
-  MLIRLLVMIR
-  MLIROpenACC
-  MLIRStandardToLLVM
+  MLIRLLVMDialect
+  MLIRMemRefToLLVM
+  MLIROpenACCDialect
   MLIRTransforms
   )

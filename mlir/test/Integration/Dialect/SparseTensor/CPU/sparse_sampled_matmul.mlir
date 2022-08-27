@@ -1,16 +1,22 @@
-// RUN: mlir-opt %s \
-// RUN:   --sparsification --sparse-tensor-conversion \
-// RUN:   --convert-linalg-to-loops --convert-vector-to-scf --convert-scf-to-std \
-// RUN:   --func-bufferize --tensor-constant-bufferize --tensor-bufferize \
-// RUN:   --std-bufferize --finalizing-bufferize  \
-// RUN:   --convert-vector-to-llvm --convert-std-to-llvm | \
+// RUN: mlir-opt %s --sparse-compiler | \
 // RUN: TENSOR0="%mlir_integration_test_dir/data/test.mtx" \
 // RUN: mlir-cpu-runner \
 // RUN:  -e entry -entry-point-result=void  \
 // RUN:  -shared-libs=%mlir_integration_test_dir/libmlir_c_runner_utils%shlibext | \
 // RUN: FileCheck %s
+//
+// Do the same run, but now with SIMDization as well. This should not change the outcome.
+//
+// RUN: mlir-opt %s \
+// RUN:   --sparse-compiler="vectorization-strategy=2 vl=4 enable-simd-index32" | \
+// RUN: TENSOR0="%mlir_integration_test_dir/data/test.mtx" \
+// RUN: mlir-cpu-runner \
+// RUN:  -e entry -entry-point-result=void  \
+// RUN:  -shared-libs=%mlir_integration_test_dir/libmlir_c_runner_utils%shlibext | \
+// RUN: FileCheck %s
+//
 
-!Filename = type !llvm.ptr<i8>
+!Filename = !llvm.ptr<i8>
 
 #SparseMatrix = #sparse_tensor.encoding<{
   dimLevelType = [ "compressed", "compressed" ],
@@ -38,57 +44,59 @@ module {
   //
   // A kernel that computes a sampled matrix matrix multiplication.
   //
-  func @sampled_dense_dense(%args: tensor<?x?xf32, #SparseMatrix>,
-                            %arga: tensor<?x?xf32>,
-                            %argb: tensor<?x?xf32>,
-                            %argx: tensor<?x?xf32> {linalg.inplaceable = true}) -> tensor<?x?xf32> {
+  func.func @sampled_dense_dense(%args: tensor<?x?xf32, #SparseMatrix>,
+                                 %arga: tensor<?x?xf32>,
+                                 %argb: tensor<?x?xf32>,
+                                 %argx: tensor<?x?xf32>) -> tensor<?x?xf32> {
     %0 = linalg.generic #trait_sampled_dense_dense
       ins(%args, %arga, %argb: tensor<?x?xf32, #SparseMatrix>, tensor<?x?xf32>, tensor<?x?xf32>)
       outs(%argx: tensor<?x?xf32>) {
         ^bb(%s: f32, %a: f32, %b: f32, %x: f32):
-          %0 = mulf %a, %b : f32
-          %1 = mulf %s, %0 : f32
-          %2 = addf %x, %1 : f32
+          %0 = arith.mulf %a, %b : f32
+          %1 = arith.mulf %s, %0 : f32
+          %2 = arith.addf %x, %1 : f32
           linalg.yield %2 : f32
     } -> tensor<?x?xf32>
     return %0 : tensor<?x?xf32>
   }
 
-  func private @getTensorFilename(index) -> (!Filename)
+  func.func private @getTensorFilename(index) -> (!Filename)
 
   //
   // Main driver that reads matrix from file and calls the sparse kernel.
   //
-  func @entry() {
-    %d0 = constant 0.0 : f32
-    %c0 = constant 0 : index
-    %c1 = constant 1 : index
-    %c5 = constant 5 : index
-    %c10 = constant 10 : index
+  func.func @entry() {
+    %d0 = arith.constant 0.0 : f32
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c5 = arith.constant 5 : index
+    %c10 = arith.constant 10 : index
 
-    // Setup memory for the dense matrices and initialize.
-    %adata = memref.alloc(%c5, %c10) : memref<?x?xf32>
-    %bdata = memref.alloc(%c10, %c5) : memref<?x?xf32>
-    %xdata = memref.alloc(%c5,  %c5) : memref<?x?xf32>
-    scf.for %i = %c0 to %c5 step %c1 {
-      scf.for %j = %c0 to %c5 step %c1 {
-        memref.store %d0, %xdata[%i, %j] : memref<?x?xf32>
-      }
-      %p = addi %i, %c1 : index
-      %q = index_cast %p : index to i32
-      %d = sitofp %q : i32 to f32
-      scf.for %j = %c0 to %c10 step %c1 {
-        memref.store %d, %adata[%i, %j] : memref<?x?xf32>
-        memref.store %d, %bdata[%j, %i] : memref<?x?xf32>
-      }
-    }
-    %a = memref.tensor_load %adata : memref<?x?xf32>
-    %b = memref.tensor_load %bdata : memref<?x?xf32>
-    %x = memref.tensor_load %xdata : memref<?x?xf32>
+    // Initialize dense matrices.
+    %x = tensor.generate %c5, %c5 {
+    ^bb0(%i : index, %j : index):
+      tensor.yield %d0 : f32
+    } : tensor<?x?xf32>
+
+    %a = tensor.generate %c5, %c10 {
+    ^bb0(%i: index, %j: index):
+      %p = arith.addi %i, %c1 : index
+      %q = arith.index_cast %p : index to i32
+      %d = arith.sitofp %q : i32 to f32
+      tensor.yield %d : f32
+    } : tensor<?x?xf32>
+
+    %b = tensor.generate %c10, %c5 {
+    ^bb0(%i: index, %j: index):
+      %p = arith.addi %j, %c1 : index
+      %q = arith.index_cast %p : index to i32
+      %d = arith.sitofp %q : i32 to f32
+      tensor.yield %d : f32
+    } : tensor<?x?xf32>
 
     // Read the sparse matrix from file, construct sparse storage.
     %fileName = call @getTensorFilename(%c0) : (index) -> (!Filename)
-    %s = sparse_tensor.new %fileName : !llvm.ptr<i8> to tensor<?x?xf32, #SparseMatrix>
+    %s = sparse_tensor.new %fileName : !Filename to tensor<?x?xf32, #SparseMatrix>
 
     // Call the kernel.
     %0 = call @sampled_dense_dense(%s, %a, %b, %x)
@@ -103,16 +111,13 @@ module {
     // CHECK: ( 164, 0, 0, 640, 0 )
     // CHECK: ( 0, 520, 0, 0, 1250 )
     //
-    %r = memref.buffer_cast %0 : memref<?x?xf32>
     scf.for %i = %c0 to %c5 step %c1 {
-      %v = vector.transfer_read %r[%i, %c0], %d0: memref<?x?xf32>, vector<5xf32>
+      %v = vector.transfer_read %0[%i, %c0], %d0: tensor<?x?xf32>, vector<5xf32>
       vector.print %v : vector<5xf32>
     }
 
     // Release the resources.
-    memref.dealloc %adata : memref<?x?xf32>
-    memref.dealloc %bdata : memref<?x?xf32>
-    memref.dealloc %xdata : memref<?x?xf32>
+    bufferization.dealloc_tensor %s : tensor<?x?xf32, #SparseMatrix>
 
     return
   }

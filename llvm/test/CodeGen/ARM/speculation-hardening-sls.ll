@@ -34,8 +34,8 @@ if.then:                                          ; preds = %entry
   ret i32 %mul
 ; CHECK-LABEL: double_return:
 ; HARDEN:          {{bx lr$}}
-; NOHARDENARM:     {{bxge lr$}}
-; NOHARDENTHUMB:   {{bx lr$}}
+; NOHARDENARM:     {{bxgt lr$}}
+; NOHARDENTHUMB:   {{bxgt lr$}}
 ; ISBDSB-NEXT: dsb sy
 ; ISBDSB-NEXT: isb
 ; SB-NEXT:     {{ sb$}}
@@ -89,7 +89,7 @@ return:                                           ; preds = %entry, %l2
 define i32 @asmgoto() {
 entry:
 ; CHECK-LABEL: asmgoto:
-  callbr void asm sideeffect "B $0", "X"(i8* blockaddress(@asmgoto, %d))
+  callbr void asm sideeffect "B $0", "!i"()
             to label %asm.fallthrough [label %d]
      ; The asm goto above produces a direct branch:
 ; CHECK:           @APP

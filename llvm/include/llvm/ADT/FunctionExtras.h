@@ -37,6 +37,7 @@
 #include "llvm/ADT/STLForwardCompat.h"
 #include "llvm/Support/MemAlloc.h"
 #include "llvm/Support/type_traits.h"
+#include <cstring>
 #include <memory>
 #include <type_traits>
 
@@ -58,17 +59,22 @@ namespace detail {
 
 template <typename T>
 using EnableIfTrivial =
-    std::enable_if_t<llvm::is_trivially_move_constructible<T>::value &&
+    std::enable_if_t<std::is_trivially_move_constructible<T>::value &&
                      std::is_trivially_destructible<T>::value>;
 template <typename CallableT, typename ThisT>
 using EnableUnlessSameType =
     std::enable_if_t<!std::is_same<remove_cvref_t<CallableT>, ThisT>::value>;
 template <typename CallableT, typename Ret, typename... Params>
-using EnableIfCallable =
-    std::enable_if_t<std::is_void<Ret>::value ||
-                     std::is_convertible<decltype(std::declval<CallableT>()(
-                                             std::declval<Params>()...)),
-                                         Ret>::value>;
+using EnableIfCallable = std::enable_if_t<std::disjunction<
+    std::is_void<Ret>,
+    std::is_same<decltype(std::declval<CallableT>()(std::declval<Params>()...)),
+                 Ret>,
+    std::is_same<const decltype(std::declval<CallableT>()(
+                     std::declval<Params>()...)),
+                 Ret>,
+    std::is_convertible<decltype(std::declval<CallableT>()(
+                            std::declval<Params>()...)),
+                        Ret>>::value>;
 
 template <typename ReturnT, typename... ParamTs> class UniqueFunctionBase {
 protected:
@@ -94,8 +100,8 @@ protected:
     static_assert(!std::is_reference<T>::value,
                   "references should be handled by template specialization");
     using type = typename std::conditional<
-        llvm::is_trivially_copy_constructible<T>::value &&
-            llvm::is_trivially_move_constructible<T>::value &&
+        std::is_trivially_copy_constructible<T>::value &&
+            std::is_trivially_move_constructible<T>::value &&
             IsSizeLessThanThresholdT<T>::value,
         T, T &>::type;
   };

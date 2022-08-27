@@ -13,6 +13,7 @@
 #ifndef LLVM_SUPPORT_MATHEXTRAS_H
 #define LLVM_SUPPORT_MATHEXTRAS_H
 
+#include "llvm/ADT/bit.h"
 #include "llvm/Support/Compiler.h"
 #include <cassert>
 #include <climits>
@@ -21,10 +22,6 @@
 #include <cstring>
 #include <limits>
 #include <type_traits>
-
-#ifdef __ANDROID_NDK__
-#include <android/api-level.h>
-#endif
 
 #ifdef _MSC_VER
 // Declare these intrinsics manually rather including intrin.h. It's very
@@ -489,12 +486,12 @@ constexpr inline bool isShiftedMask_64(uint64_t Value) {
 /// Return true if the argument is a power of two > 0.
 /// Ex. isPowerOf2_32(0x00100000U) == true (32 bit edition.)
 constexpr inline bool isPowerOf2_32(uint32_t Value) {
-  return Value && !(Value & (Value - 1));
+  return llvm::has_single_bit(Value);
 }
 
 /// Return true if the argument is a power of two > 0 (64 bit edition.)
 constexpr inline bool isPowerOf2_64(uint64_t Value) {
-  return Value && !(Value & (Value - 1));
+  return llvm::has_single_bit(Value);
 }
 
 /// Count the number of ones from the most significant bit to the first
@@ -529,37 +526,6 @@ unsigned countTrailingOnes(T Value, ZeroBehavior ZB = ZB_Width) {
   return countTrailingZeros<T>(~Value, ZB);
 }
 
-namespace detail {
-template <typename T, std::size_t SizeOfT> struct PopulationCounter {
-  static unsigned count(T Value) {
-    // Generic version, forward to 32 bits.
-    static_assert(SizeOfT <= 4, "Not implemented!");
-#if defined(__GNUC__)
-    return __builtin_popcount(Value);
-#else
-    uint32_t v = Value;
-    v = v - ((v >> 1) & 0x55555555);
-    v = (v & 0x33333333) + ((v >> 2) & 0x33333333);
-    return ((v + (v >> 4) & 0xF0F0F0F) * 0x1010101) >> 24;
-#endif
-  }
-};
-
-template <typename T> struct PopulationCounter<T, 8> {
-  static unsigned count(T Value) {
-#if defined(__GNUC__)
-    return __builtin_popcountll(Value);
-#else
-    uint64_t v = Value;
-    v = v - ((v >> 1) & 0x5555555555555555ULL);
-    v = (v & 0x3333333333333333ULL) + ((v >> 2) & 0x3333333333333333ULL);
-    v = (v + (v >> 4)) & 0x0F0F0F0F0F0F0F0FULL;
-    return unsigned((uint64_t)(v * 0x0101010101010101ULL) >> 56);
-#endif
-  }
-};
-} // namespace detail
-
 /// Count the number of set bits in a value.
 /// Ex. countPopulation(0xF000F000) = 8
 /// Returns 0 if the word is zero.
@@ -568,7 +534,34 @@ inline unsigned countPopulation(T Value) {
   static_assert(std::numeric_limits<T>::is_integer &&
                     !std::numeric_limits<T>::is_signed,
                 "Only unsigned integral types are allowed.");
-  return detail::PopulationCounter<T, sizeof(T)>::count(Value);
+  return (unsigned)llvm::popcount(Value);
+}
+
+/// Return true if the argument contains a non-empty sequence of ones with the
+/// remainder zero (32 bit version.) Ex. isShiftedMask_32(0x0000FF00U) == true.
+/// If true, \p MaskIdx will specify the index of the lowest set bit and \p
+/// MaskLen is updated to specify the length of the mask, else neither are
+/// updated.
+inline bool isShiftedMask_32(uint32_t Value, unsigned &MaskIdx,
+                             unsigned &MaskLen) {
+  if (!isShiftedMask_32(Value))
+    return false;
+  MaskIdx = countTrailingZeros(Value);
+  MaskLen = countPopulation(Value);
+  return true;
+}
+
+/// Return true if the argument contains a non-empty sequence of ones with the
+/// remainder zero (64 bit version.) If true, \p MaskIdx will specify the index
+/// of the lowest set bit and \p MaskLen is updated to specify the length of the
+/// mask, else neither are updated.
+inline bool isShiftedMask_64(uint64_t Value, unsigned &MaskIdx,
+                             unsigned &MaskLen) {
+  if (!isShiftedMask_64(Value))
+    return false;
+  MaskIdx = countTrailingZeros(Value);
+  MaskLen = countPopulation(Value);
+  return true;
 }
 
 /// Compile time Log2.
@@ -580,15 +573,6 @@ template <size_t kValue> constexpr inline size_t CTLog2() {
 }
 
 template <> constexpr inline size_t CTLog2<1>() { return 0; }
-
-/// Return the log base 2 of the specified value.
-inline double Log2(double Value) {
-#if defined(__ANDROID_API__) && __ANDROID_API__ < 18
-  return __builtin_log(Value) / __builtin_log(2.0);
-#else
-  return log2(Value);
-#endif
-}
 
 /// Return the floor log base 2 of the specified value, -1 if the value is zero.
 /// (32 bit edition.)
@@ -633,38 +617,30 @@ inline uint64_t GreatestCommonDivisor64(uint64_t A, uint64_t B) {
 
 /// This function takes a 64-bit integer and returns the bit equivalent double.
 inline double BitsToDouble(uint64_t Bits) {
-  double D;
   static_assert(sizeof(uint64_t) == sizeof(double), "Unexpected type sizes");
-  memcpy(&D, &Bits, sizeof(Bits));
-  return D;
+  return llvm::bit_cast<double>(Bits);
 }
 
 /// This function takes a 32-bit integer and returns the bit equivalent float.
 inline float BitsToFloat(uint32_t Bits) {
-  float F;
   static_assert(sizeof(uint32_t) == sizeof(float), "Unexpected type sizes");
-  memcpy(&F, &Bits, sizeof(Bits));
-  return F;
+  return llvm::bit_cast<float>(Bits);
 }
 
 /// This function takes a double and returns the bit equivalent 64-bit integer.
 /// Note that copying doubles around changes the bits of NaNs on some hosts,
 /// notably x86, so this routine cannot be used if these bits are needed.
 inline uint64_t DoubleToBits(double Double) {
-  uint64_t Bits;
   static_assert(sizeof(uint64_t) == sizeof(double), "Unexpected type sizes");
-  memcpy(&Bits, &Double, sizeof(Double));
-  return Bits;
+  return llvm::bit_cast<uint64_t>(Double);
 }
 
 /// This function takes a float and returns the bit equivalent 32-bit integer.
 /// Note that copying floats around changes the bits of NaNs on some hosts,
 /// notably x86, so this routine cannot be used if these bits are needed.
 inline uint32_t FloatToBits(float Float) {
-  uint32_t Bits;
   static_assert(sizeof(uint32_t) == sizeof(float), "Unexpected type sizes");
-  memcpy(&Bits, &Float, sizeof(Float));
-  return Bits;
+  return llvm::bit_cast<uint32_t>(Float);
 }
 
 /// A and B are either alignments or offsets. Return the minimum alignment that
@@ -680,7 +656,7 @@ constexpr inline uint64_t MinAlign(uint64_t A, uint64_t B) {
 
 /// Returns the next power of two (in 64-bits) that is strictly greater than A.
 /// Returns zero on overflow.
-inline uint64_t NextPowerOf2(uint64_t A) {
+constexpr inline uint64_t NextPowerOf2(uint64_t A) {
   A |= (A >> 1);
   A |= (A >> 2);
   A |= (A >> 4);
@@ -708,27 +684,40 @@ inline uint64_t PowerOf2Ceil(uint64_t A) {
 /// Returns the next integer (mod 2**64) that is greater than or equal to
 /// \p Value and is a multiple of \p Align. \p Align must be non-zero.
 ///
-/// If non-zero \p Skew is specified, the return value will be a minimal
-/// integer that is greater than or equal to \p Value and equal to
-/// \p Align * N + \p Skew for some integer N. If \p Skew is larger than
-/// \p Align, its value is adjusted to '\p Skew mod \p Align'.
-///
 /// Examples:
 /// \code
 ///   alignTo(5, 8) = 8
 ///   alignTo(17, 8) = 24
 ///   alignTo(~0LL, 8) = 0
 ///   alignTo(321, 255) = 510
+/// \endcode
+inline uint64_t alignTo(uint64_t Value, uint64_t Align) {
+  assert(Align != 0u && "Align can't be 0.");
+  return (Value + Align - 1) / Align * Align;
+}
+
+inline uint64_t alignToPowerOf2(uint64_t Value, uint64_t Align) {
+  assert(Align != 0 && (Align & (Align - 1)) == 0 &&
+         "Align must be a power of 2");
+  return (Value + Align - 1) & -Align;
+}
+
+/// If non-zero \p Skew is specified, the return value will be a minimal integer
+/// that is greater than or equal to \p Size and equal to \p A * N + \p Skew for
+/// some integer N. If \p Skew is larger than \p A, its value is adjusted to '\p
+/// Skew mod \p A'. \p Align must be non-zero.
 ///
+/// Examples:
+/// \code
 ///   alignTo(5, 8, 7) = 7
 ///   alignTo(17, 8, 1) = 17
 ///   alignTo(~0LL, 8, 3) = 3
 ///   alignTo(321, 255, 42) = 552
 /// \endcode
-inline uint64_t alignTo(uint64_t Value, uint64_t Align, uint64_t Skew = 0) {
+inline uint64_t alignTo(uint64_t Value, uint64_t Align, uint64_t Skew) {
   assert(Align != 0u && "Align can't be 0.");
   Skew %= Align;
-  return (Value + Align - 1 - Skew) / Align * Align + Skew;
+  return alignTo(Value - Skew, Align) + Skew;
 }
 
 /// Returns the next integer (mod 2**64) that is greater than or equal to
@@ -879,7 +868,7 @@ extern const float huge_valf;
 
 
 /// Add two signed integers, computing the two's complement truncated result,
-/// returning true if overflow occured.
+/// returning true if overflow occurred.
 template <typename T>
 std::enable_if_t<std::is_signed<T>::value, T> AddOverflow(T X, T Y, T &Result) {
 #if __has_builtin(__builtin_add_overflow)

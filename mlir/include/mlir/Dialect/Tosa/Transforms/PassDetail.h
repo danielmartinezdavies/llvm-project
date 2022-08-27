@@ -9,6 +9,9 @@
 #ifndef MLIR_DIALECT_TOSA_TRANSFORMS_PASSDETAIL_H
 #define MLIR_DIALECT_TOSA_TRANSFORMS_PASSDETAIL_H
 
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "mlir/Dialect/Tosa/IR/TosaOps.h"
 #include "mlir/Pass/Pass.h"
 
 namespace mlir {
@@ -16,6 +19,6 @@ namespace mlir {
 #define GEN_PASS_CLASSES
 #include "mlir/Dialect/Tosa/Transforms/Passes.h.inc"
 
-} // end namespace mlir
+} // namespace mlir
 
 #endif // MLIR_DIALECT_TOSA_TRANSFORMS_PASSDETAIL_H

@@ -31,7 +31,7 @@ SANITIZER_INTERFACE_ATTRIBUTE
 void __msan_warning();
 
 // Print a warning and die.
-// Intrumentation inserts calls to this function when building in "fast" mode
+// Instrumentation inserts calls to this function when building in "fast" mode
 // (i.e. -mllvm -msan-keep-going)
 SANITIZER_INTERFACE_ATTRIBUTE __attribute__((noreturn))
 void __msan_warning_noreturn();
@@ -108,6 +108,11 @@ SANITIZER_INTERFACE_ATTRIBUTE
 void __msan_set_alloca_origin(void *a, uptr size, char *descr);
 SANITIZER_INTERFACE_ATTRIBUTE
 void __msan_set_alloca_origin4(void *a, uptr size, char *descr, uptr pc);
+SANITIZER_INTERFACE_ATTRIBUTE
+void __msan_set_alloca_origin_with_descr(void *a, uptr size, u32 *id_ptr,
+                                         char *descr);
+SANITIZER_INTERFACE_ATTRIBUTE
+void __msan_set_alloca_origin_no_descr(void *a, uptr size, u32 *id_ptr);
 SANITIZER_INTERFACE_ATTRIBUTE
 u32 __msan_chain_origin(u32 id);
 SANITIZER_INTERFACE_ATTRIBUTE

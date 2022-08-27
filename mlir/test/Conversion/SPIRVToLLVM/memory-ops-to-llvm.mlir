@@ -10,7 +10,7 @@ spv.func @access_chain() "None" {
   %0 = spv.Constant 1: i32
   %1 = spv.Variable : !spv.ptr<!spv.struct<(f32, !spv.array<4xf32>)>, Function>
   // CHECK: %[[ZERO:.*]] = llvm.mlir.constant(0 : i32) : i32
-  // CHECK: llvm.getelementptr %{{.*}}[%[[ZERO]], %[[ONE]], %[[ONE]]] : (!llvm.ptr<struct<packed (f32, array<4 x f32>)>>, i32, i32, i32) -> !llvm.ptr<f32>
+  // CHECK: llvm.getelementptr %{{.*}}[%[[ZERO]], 1, %[[ONE]]] : (!llvm.ptr<struct<packed (f32, array<4 x f32>)>>, i32, i32) -> !llvm.ptr<f32>
   %2 = spv.AccessChain %1[%0, %0] : !spv.ptr<!spv.struct<(f32, !spv.array<4xf32>)>, Function>, i32, i32
   spv.Return
 }
@@ -30,12 +30,12 @@ spv.func @access_chain_array(%arg0 : i32) "None" {
 //===----------------------------------------------------------------------===//
 
 spv.module Logical GLSL450 {
-  // CHECK: llvm.mlir.global external constant @var() : f32
+  // CHECK: llvm.mlir.global external constant @var() {addr_space = 0 : i32} : f32
   spv.GlobalVariable @var : !spv.ptr<f32, Input>
 }
 
 spv.module Logical GLSL450 {
-  //       CHECK: llvm.mlir.global private @struct() : !llvm.struct<packed (f32, array<10 x f32>)>
+  //       CHECK: llvm.mlir.global private @struct() {addr_space = 0 : i32} : !llvm.struct<packed (f32, array<10 x f32>)>
   // CHECK-LABEL: @func
   //       CHECK:   llvm.mlir.addressof @struct : !llvm.ptr<struct<packed (f32, array<10 x f32>)>>
   spv.GlobalVariable @struct : !spv.ptr<!spv.struct<(f32, !spv.array<10xf32>)>, Private>
@@ -46,7 +46,7 @@ spv.module Logical GLSL450 {
 }
 
 spv.module Logical GLSL450 {
-  //       CHECK: llvm.mlir.global external @bar_descriptor_set0_binding0() : i32
+  //       CHECK: llvm.mlir.global external @bar_descriptor_set0_binding0() {addr_space = 0 : i32} : i32
   // CHECK-LABEL: @foo
   //       CHECK:   llvm.mlir.addressof @bar_descriptor_set0_binding0 : !llvm.ptr<i32>
   spv.GlobalVariable @bar bind(0, 0) : !spv.ptr<i32, StorageBuffer>
@@ -57,12 +57,32 @@ spv.module Logical GLSL450 {
 }
 
 spv.module @name Logical GLSL450 {
-  //       CHECK: llvm.mlir.global external @name_bar_descriptor_set0_binding0() : i32
+  //       CHECK: llvm.mlir.global external @name_bar_descriptor_set0_binding0() {addr_space = 0 : i32} : i32
   // CHECK-LABEL: @foo
   //       CHECK:   llvm.mlir.addressof @name_bar_descriptor_set0_binding0 : !llvm.ptr<i32>
   spv.GlobalVariable @bar bind(0, 0) : !spv.ptr<i32, StorageBuffer>
   spv.func @foo() "None" {
     %0 = spv.mlir.addressof @bar : !spv.ptr<i32, StorageBuffer>
+    spv.Return
+  }
+}
+
+spv.module Logical GLSL450 {
+  // CHECK: llvm.mlir.global external @bar() {addr_space = 0 : i32, location = 1 : i32} : i32
+  // CHECK-LABEL: @foo
+  spv.GlobalVariable @bar {location = 1 : i32} : !spv.ptr<i32, Output>
+  spv.func @foo() "None" {
+    %0 = spv.mlir.addressof @bar : !spv.ptr<i32, Output>
+    spv.Return
+  }
+}
+
+spv.module Logical GLSL450 {
+  // CHECK: llvm.mlir.global external constant @bar() {addr_space = 0 : i32, location = 3 : i32} : f32
+  // CHECK-LABEL: @foo
+  spv.GlobalVariable @bar {descriptor_set = 0 : i32, location = 3 : i32} : !spv.ptr<f32, UniformConstant>
+  spv.func @foo() "None" {
+    %0 = spv.mlir.addressof @bar : !spv.ptr<f32, UniformConstant>
     spv.Return
   }
 }

@@ -28,6 +28,8 @@
 
 namespace lldb_private {
 
+class ClangExpressionParser;
+
 /// \class ClangUserExpression ClangUserExpression.h
 /// "lldb/Expression/ClangUserExpression.h" Encapsulates a single expression
 /// for use with Clang
@@ -196,6 +198,10 @@ private:
                         ExecutionContext &exe_ctx,
                         std::vector<std::string> modules_to_import,
                         bool for_completion);
+
+  lldb::addr_t GetCppObjectPointer(lldb::StackFrameSP frame,
+                                   ConstString &object_name, Status &err);
+
   /// Defines how the current expression should be wrapped.
   ClangExpressionSourceCode::WrapKind GetWrapKind() const;
   bool SetupPersistentState(DiagnosticManager &diagnostic_manager,
@@ -254,7 +260,7 @@ private:
   bool m_in_objectivec_method = false;
   /// True if the expression is compiled as a static (or class) method
   /// (currently true if it was parsed when exe_ctx was in an Objective-C class
-  /// method or static C++ member function).
+  /// method).
   bool m_in_static_method = false;
   /// True if "this" or "self" must be looked up and passed in.  False if the
   /// expression doesn't really use them and they can be NULL.

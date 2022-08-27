@@ -1,4 +1,4 @@
-; RUN: llc %s -pass-remarks-missed=memsize -pass-remarks-output=%t.opt.yaml -pass-remarks-filter=memsize -global-isel -o /dev/null 2>&1 | FileCheck %s --check-prefix=GISEL --implicit-check-not=GISEL
+; RUN: llc %s -pass-remarks-analysis=gisel-irtranslator-memsize -pass-remarks-output=%t.opt.yaml -pass-remarks-filter=gisel-irtranslator-memsize -global-isel -o /dev/null 2>&1 | FileCheck %s --check-prefix=GISEL --implicit-check-not=GISEL
 ; RUN: cat %t.opt.yaml | FileCheck -check-prefix=YAML %s
 
 source_filename = "memsize.c"
@@ -143,8 +143,8 @@ define void @known_call_with_dereferenceable_bytes(i8* dereferenceable(42) %dst,
 ; GISEL: Call to memset. Memory operation size: 1 bytes.
 ; GISEL-NOT:  Read Variables:
 ; GISEL-NEXT:  Written Variables: <unknown> (42 bytes).
-; YAML:       --- !Missed
-; YAML:       Pass:            memsize
+; YAML:       --- !Analysis
+; YAML:       gisel-irtranslator-memsize
 ; YAML:       Name:            MemoryOpIntrinsicCall
 ; YAML-LABEL: Function:        known_call_with_dereferenceable_bytes
 ; YAML-NEXT:  Args:
@@ -175,8 +175,8 @@ define void @known_call_with_dereferenceable_bytes(i8* dereferenceable(42) %dst,
 ; GISEL: Call to memcpy. Memory operation size: 1 bytes.
 ; GISEL-NEXT:  Read Variables: <unknown> (314 bytes).
 ; GISEL-NEXT:  Written Variables: <unknown> (42 bytes).
-; YAML:       --- !Missed
-; YAML:       Pass:            memsize
+; YAML:       --- !Analysis
+; YAML:       gisel-irtranslator-memsize
 ; YAML:       Name:            MemoryOpIntrinsicCall
 ; YAML-LABEL: Function:        known_call_with_dereferenceable_bytes
 ; YAML-NEXT:  Args:
@@ -213,8 +213,8 @@ define void @known_call_with_dereferenceable_bytes(i8* dereferenceable(42) %dst,
 ; GISEL: Call to memmove. Memory operation size: 1 bytes.
 ; GISEL-NEXT:  Read Variables: <unknown> (314 bytes).
 ; GISEL-NEXT:  Written Variables: <unknown> (42 bytes).
-; YAML:       --- !Missed
-; YAML:       Pass:            memsize
+; YAML:       --- !Analysis
+; YAML:       gisel-irtranslator-memsize
 ; YAML:       Name:            MemoryOpIntrinsicCall
 ; YAML-LABEL: Function:        known_call_with_dereferenceable_bytes
 ; YAML-NEXT:  Args:
@@ -251,8 +251,8 @@ define void @known_call_with_dereferenceable_bytes(i8* dereferenceable(42) %dst,
 ; GISEL: Call to bzero. Memory operation size: 1 bytes.
 ; GISEL-NOT:  Read Variables:
 ; GISEL-NEXT:  Written Variables: <unknown> (42 bytes).
-; YAML:       --- !Missed
-; YAML:       Pass:            memsize
+; YAML:       --- !Analysis
+; YAML:       gisel-irtranslator-memsize
 ; YAML:       Name:            MemoryOpCall
 ; YAML-LABEL: Function:        known_call_with_dereferenceable_bytes
 ; YAML-NEXT:  Args:
@@ -274,8 +274,8 @@ define void @known_call_with_dereferenceable_bytes(i8* dereferenceable(42) %dst,
 ; GISEL: Call to bcopy. Memory operation size: 1 bytes.
 ; GISEL-NEXT:  Read Variables: <unknown> (314 bytes).
 ; GISEL-NEXT:  Written Variables: <unknown> (42 bytes).
-; YAML:       --- !Missed
-; YAML:       Pass:            memsize
+; YAML:       --- !Analysis
+; YAML:       gisel-irtranslator-memsize
 ; YAML:       Name:            MemoryOpCall
 ; YAML-LABEL: Function:        known_call_with_dereferenceable_bytes
 ; YAML-NEXT:  Args:
@@ -302,6 +302,19 @@ define void @known_call_with_dereferenceable_bytes(i8* dereferenceable(42) %dst,
   ret void
 }
 
+@dropbear = external unnamed_addr constant [3 x i8], align 1
+@koala = external unnamed_addr constant [7 x i8], align 1
+
+define void @slicePun() {
+bb:
+; GISEL: remark: <unknown>:0:0: Call to memcpy. Memory operation size: 24 bytes.{{$}}
+; GISEL-NEXT: Read Variables: koala (56 bytes).
+; GISEL-NEXT: Written Variables: dropbear (24 bytes).
+  tail call void @llvm.memcpy.p0i8.p0i8.i64(i8* align 1 getelementptr inbounds ([3 x i8], [3 x i8]* @dropbear, i64 0, i64 0),
+                                            i8* getelementptr inbounds ([7 x i8], [7 x i8]* @koala, i64 0, i64 0), i64 24, i1 false)
+  ret void
+}
+
 attributes #0 = { noinline nounwind ssp uwtable "frame-pointer"="non-leaf" "min-legal-vector-width"="0" "no-trapping-math"="true" "stack-protector-buffer-size"="8" "target-cpu"="apple-a7" "target-features"="+aes,+crypto,+fp-armv8,+neon,+sha2,+zcm,+zcz" }
 attributes #1 = { nounwind "frame-pointer"="non-leaf" "no-trapping-math"="true" "stack-protector-buffer-size"="8" "target-cpu"="apple-a7" "target-features"="+aes,+crypto,+fp-armv8,+neon,+sha2,+zcm,+zcz" }
 attributes #2 = { nofree nosync nounwind readnone speculatable willreturn }
@@ -315,10 +328,10 @@ attributes #4 = { nounwind }
 !0 = !{i32 2, !"SDK Version", [2 x i32] [i32 12, i32 0]}
 !1 = !{i32 2, !"Debug Info Version", i32 3}
 !2 = !{i32 1, !"wchar_size", i32 4}
-!3 = !{i32 1, !"branch-target-enforcement", i32 0}
-!4 = !{i32 1, !"sign-return-address", i32 0}
-!5 = !{i32 1, !"sign-return-address-all", i32 0}
-!6 = !{i32 1, !"sign-return-address-with-bkey", i32 0}
+!3 = !{i32 8, !"branch-target-enforcement", i32 0}
+!4 = !{i32 8, !"sign-return-address", i32 0}
+!5 = !{i32 8, !"sign-return-address-all", i32 0}
+!6 = !{i32 8, !"sign-return-address-with-bkey", i32 0}
 !7 = !{i32 7, !"PIC Level", i32 2}
 !8 = !{i32 7, !"uwtable", i32 1}
 !9 = !{i32 7, !"frame-pointer", i32 1}

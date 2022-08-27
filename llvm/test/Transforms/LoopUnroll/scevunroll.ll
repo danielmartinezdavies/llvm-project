@@ -60,29 +60,45 @@ exit:
 
 ; SCEV unrolling properly handles loops with multiple exits. In this
 ; case, the computed trip count based on a canonical IV is *not* for a
-; latch block. Canonical unrolling incorrectly unrolls it, but SCEV
-; unrolling does not.
+; latch block.
 define i64 @earlyLoopTest(i64* %base) nounwind {
 ; CHECK-LABEL: @earlyLoopTest(
 ; CHECK-NEXT:  entry:
 ; CHECK-NEXT:    br label [[LOOP:%.*]]
 ; CHECK:       loop:
-; CHECK-NEXT:    [[IV:%.*]] = phi i64 [ 0, [[ENTRY:%.*]] ], [ [[INC:%.*]], [[TAIL:%.*]] ]
-; CHECK-NEXT:    [[S:%.*]] = phi i64 [ 0, [[ENTRY]] ], [ [[S_NEXT:%.*]], [[TAIL]] ]
-; CHECK-NEXT:    [[ADR:%.*]] = getelementptr i64, i64* [[BASE:%.*]], i64 [[IV]]
-; CHECK-NEXT:    [[VAL:%.*]] = load i64, i64* [[ADR]], align 4
-; CHECK-NEXT:    [[S_NEXT]] = add i64 [[S]], [[VAL]]
-; CHECK-NEXT:    [[INC]] = add nuw nsw i64 [[IV]], 1
-; CHECK-NEXT:    [[CMP:%.*]] = icmp ne i64 [[INC]], 4
-; CHECK-NEXT:    br i1 [[CMP]], label [[TAIL]], label [[EXIT1:%.*]]
+; CHECK-NEXT:    [[VAL:%.*]] = load i64, i64* [[BASE:%.*]], align 4
+; CHECK-NEXT:    br label [[TAIL:%.*]]
 ; CHECK:       tail:
 ; CHECK-NEXT:    [[CMP2:%.*]] = icmp ne i64 [[VAL]], 0
-; CHECK-NEXT:    br i1 [[CMP2]], label [[LOOP]], label [[EXIT2:%.*]]
+; CHECK-NEXT:    br i1 [[CMP2]], label [[LOOP_1:%.*]], label [[EXIT2:%.*]]
+; CHECK:       loop.1:
+; CHECK-NEXT:    [[ADR_1:%.*]] = getelementptr i64, i64* [[BASE]], i64 1
+; CHECK-NEXT:    [[VAL_1:%.*]] = load i64, i64* [[ADR_1]], align 4
+; CHECK-NEXT:    [[S_NEXT_1:%.*]] = add i64 [[VAL]], [[VAL_1]]
+; CHECK-NEXT:    br label [[TAIL_1:%.*]]
+; CHECK:       tail.1:
+; CHECK-NEXT:    [[CMP2_1:%.*]] = icmp ne i64 [[VAL_1]], 0
+; CHECK-NEXT:    br i1 [[CMP2_1]], label [[LOOP_2:%.*]], label [[EXIT2]]
+; CHECK:       loop.2:
+; CHECK-NEXT:    [[ADR_2:%.*]] = getelementptr i64, i64* [[BASE]], i64 2
+; CHECK-NEXT:    [[VAL_2:%.*]] = load i64, i64* [[ADR_2]], align 4
+; CHECK-NEXT:    [[S_NEXT_2:%.*]] = add i64 [[S_NEXT_1]], [[VAL_2]]
+; CHECK-NEXT:    br label [[TAIL_2:%.*]]
+; CHECK:       tail.2:
+; CHECK-NEXT:    [[CMP2_2:%.*]] = icmp ne i64 [[VAL_2]], 0
+; CHECK-NEXT:    br i1 [[CMP2_2]], label [[LOOP_3:%.*]], label [[EXIT2]]
+; CHECK:       loop.3:
+; CHECK-NEXT:    [[ADR_3:%.*]] = getelementptr i64, i64* [[BASE]], i64 3
+; CHECK-NEXT:    [[VAL_3:%.*]] = load i64, i64* [[ADR_3]], align 4
+; CHECK-NEXT:    [[S_NEXT_3:%.*]] = add i64 [[S_NEXT_2]], [[VAL_3]]
+; CHECK-NEXT:    br i1 false, label [[TAIL_3:%.*]], label [[EXIT1:%.*]]
+; CHECK:       tail.3:
+; CHECK-NEXT:    br label [[EXIT2]]
 ; CHECK:       exit1:
-; CHECK-NEXT:    [[S_LCSSA:%.*]] = phi i64 [ [[S]], [[LOOP]] ]
+; CHECK-NEXT:    [[S_LCSSA:%.*]] = phi i64 [ [[S_NEXT_2]], [[LOOP_3]] ]
 ; CHECK-NEXT:    ret i64 [[S_LCSSA]]
 ; CHECK:       exit2:
-; CHECK-NEXT:    [[S_NEXT_LCSSA1:%.*]] = phi i64 [ [[S_NEXT]], [[TAIL]] ]
+; CHECK-NEXT:    [[S_NEXT_LCSSA1:%.*]] = phi i64 [ [[VAL]], [[TAIL]] ], [ [[S_NEXT_1]], [[TAIL_1]] ], [ [[S_NEXT_2]], [[TAIL_2]] ], [ [[S_NEXT_3]], [[TAIL_3]] ]
 ; CHECK-NEXT:    ret i64 [[S_NEXT_LCSSA1]]
 ;
 entry:
@@ -115,18 +131,12 @@ define i32 @multiExit(i32* %base) nounwind {
 ; CHECK-NEXT:  entry:
 ; CHECK-NEXT:    br label [[L1:%.*]]
 ; CHECK:       l1:
-; CHECK-NEXT:    [[IV1:%.*]] = phi i32 [ 0, [[ENTRY:%.*]] ], [ [[INC1:%.*]], [[L2:%.*]] ]
-; CHECK-NEXT:    [[INC1]] = add nuw nsw i32 [[IV1]], 1
-; CHECK-NEXT:    [[ADR:%.*]] = getelementptr i32, i32* [[BASE:%.*]], i32 [[IV1]]
-; CHECK-NEXT:    [[VAL:%.*]] = load i32, i32* [[ADR]], align 4
-; CHECK-NEXT:    br i1 false, label [[L2]], label [[EXIT1:%.*]]
+; CHECK-NEXT:    [[VAL:%.*]] = load i32, i32* [[BASE:%.*]], align 4
+; CHECK-NEXT:    br i1 false, label [[L2:%.*]], label [[EXIT1:%.*]]
 ; CHECK:       l2:
-; CHECK-NEXT:    br i1 true, label [[L1]], label [[EXIT2:%.*]]
+; CHECK-NEXT:    ret i32 [[VAL]]
 ; CHECK:       exit1:
 ; CHECK-NEXT:    ret i32 1
-; CHECK:       exit2:
-; CHECK-NEXT:    [[VAL_LCSSA1:%.*]] = phi i32 [ [[VAL]], [[L2]] ]
-; CHECK-NEXT:    ret i32 [[VAL_LCSSA1]]
 ;
 entry:
   br label %l1
@@ -149,26 +159,63 @@ exit2:
 }
 
 
-; SCEV should not unroll a multi-exit loops unless the latch block has
-; a known trip count, regardless of the early exit trip counts. The
-; LoopUnroll utility uses this assumption to optimize the latch
-; block's branch.
+; SCEV can unroll a multi-exit loops even if the latch block has no
+; known trip count, but an early exit has a known trip count. In this
+; case we must be careful not to optimize the latch branch away.
 define i32 @multiExitIncomplete(i32* %base) nounwind {
 ; CHECK-LABEL: @multiExitIncomplete(
 ; CHECK-NEXT:  entry:
 ; CHECK-NEXT:    br label [[L1:%.*]]
 ; CHECK:       l1:
-; CHECK-NEXT:    [[IV1:%.*]] = phi i32 [ 0, [[ENTRY:%.*]] ], [ [[INC1:%.*]], [[L3:%.*]] ]
-; CHECK-NEXT:    [[INC1]] = add nuw i32 [[IV1]], 1
-; CHECK-NEXT:    [[ADR:%.*]] = getelementptr i32, i32* [[BASE:%.*]], i32 [[IV1]]
-; CHECK-NEXT:    [[VAL:%.*]] = load i32, i32* [[ADR]], align 4
-; CHECK-NEXT:    [[CMP1:%.*]] = icmp ult i32 [[IV1]], 5
-; CHECK-NEXT:    br i1 [[CMP1]], label [[L2:%.*]], label [[EXIT1:%.*]]
+; CHECK-NEXT:    [[VAL:%.*]] = load i32, i32* [[BASE:%.*]], align 4
+; CHECK-NEXT:    br label [[L2:%.*]]
 ; CHECK:       l2:
-; CHECK-NEXT:    br i1 true, label [[L3]], label [[EXIT2:%.*]]
+; CHECK-NEXT:    br label [[L3:%.*]]
 ; CHECK:       l3:
 ; CHECK-NEXT:    [[CMP3:%.*]] = icmp ne i32 [[VAL]], 0
-; CHECK-NEXT:    br i1 [[CMP3]], label [[L1]], label [[EXIT3:%.*]]
+; CHECK-NEXT:    br i1 [[CMP3]], label [[L1_1:%.*]], label [[EXIT3:%.*]]
+; CHECK:       l1.1:
+; CHECK-NEXT:    [[ADR_1:%.*]] = getelementptr i32, i32* [[BASE]], i32 1
+; CHECK-NEXT:    [[VAL_1:%.*]] = load i32, i32* [[ADR_1]], align 4
+; CHECK-NEXT:    br label [[L2_1:%.*]]
+; CHECK:       l2.1:
+; CHECK-NEXT:    br label [[L3_1:%.*]]
+; CHECK:       l3.1:
+; CHECK-NEXT:    [[CMP3_1:%.*]] = icmp ne i32 [[VAL_1]], 0
+; CHECK-NEXT:    br i1 [[CMP3_1]], label [[L1_2:%.*]], label [[EXIT3]]
+; CHECK:       l1.2:
+; CHECK-NEXT:    [[ADR_2:%.*]] = getelementptr i32, i32* [[BASE]], i32 2
+; CHECK-NEXT:    [[VAL_2:%.*]] = load i32, i32* [[ADR_2]], align 4
+; CHECK-NEXT:    br label [[L2_2:%.*]]
+; CHECK:       l2.2:
+; CHECK-NEXT:    br label [[L3_2:%.*]]
+; CHECK:       l3.2:
+; CHECK-NEXT:    [[CMP3_2:%.*]] = icmp ne i32 [[VAL_2]], 0
+; CHECK-NEXT:    br i1 [[CMP3_2]], label [[L1_3:%.*]], label [[EXIT3]]
+; CHECK:       l1.3:
+; CHECK-NEXT:    [[ADR_3:%.*]] = getelementptr i32, i32* [[BASE]], i32 3
+; CHECK-NEXT:    [[VAL_3:%.*]] = load i32, i32* [[ADR_3]], align 4
+; CHECK-NEXT:    br label [[L2_3:%.*]]
+; CHECK:       l2.3:
+; CHECK-NEXT:    br label [[L3_3:%.*]]
+; CHECK:       l3.3:
+; CHECK-NEXT:    [[CMP3_3:%.*]] = icmp ne i32 [[VAL_3]], 0
+; CHECK-NEXT:    br i1 [[CMP3_3]], label [[L1_4:%.*]], label [[EXIT3]]
+; CHECK:       l1.4:
+; CHECK-NEXT:    [[ADR_4:%.*]] = getelementptr i32, i32* [[BASE]], i32 4
+; CHECK-NEXT:    [[VAL_4:%.*]] = load i32, i32* [[ADR_4]], align 4
+; CHECK-NEXT:    br label [[L2_4:%.*]]
+; CHECK:       l2.4:
+; CHECK-NEXT:    br label [[L3_4:%.*]]
+; CHECK:       l3.4:
+; CHECK-NEXT:    [[CMP3_4:%.*]] = icmp ne i32 [[VAL_4]], 0
+; CHECK-NEXT:    br i1 [[CMP3_4]], label [[L1_5:%.*]], label [[EXIT3]]
+; CHECK:       l1.5:
+; CHECK-NEXT:    br i1 false, label [[L2_5:%.*]], label [[EXIT1:%.*]]
+; CHECK:       l2.5:
+; CHECK-NEXT:    br i1 true, label [[L3_5:%.*]], label [[EXIT2:%.*]]
+; CHECK:       l3.5:
+; CHECK-NEXT:    br label [[EXIT3]]
 ; CHECK:       exit1:
 ; CHECK-NEXT:    ret i32 1
 ; CHECK:       exit2:
@@ -263,15 +310,16 @@ define void @nsw_latch(i32* %a) nounwind {
 ; CHECK-NEXT:  entry:
 ; CHECK-NEXT:    br label [[FOR_BODY:%.*]]
 ; CHECK:       for.body:
-; CHECK-NEXT:    [[B_03:%.*]] = phi i32 [ 0, [[ENTRY:%.*]] ], [ [[ADD:%.*]], [[FOR_COND:%.*]] ]
-; CHECK-NEXT:    [[TOBOOL:%.*]] = icmp eq i32 [[B_03]], 0
-; CHECK-NEXT:    [[ADD]] = add nuw nsw i32 [[B_03]], 8
-; CHECK-NEXT:    br i1 [[TOBOOL]], label [[FOR_COND]], label [[RETURN:%.*]]
+; CHECK-NEXT:    br label [[FOR_COND:%.*]]
 ; CHECK:       for.cond:
-; CHECK-NEXT:    br i1 false, label [[RETURN]], label [[FOR_BODY]]
+; CHECK-NEXT:    br i1 false, label [[RETURN:%.*]], label [[FOR_BODY_1:%.*]]
+; CHECK:       for.body.1:
+; CHECK-NEXT:    br i1 false, label [[FOR_COND_1:%.*]], label [[RETURN]]
+; CHECK:       for.cond.1:
+; CHECK-NEXT:    br label [[RETURN]]
 ; CHECK:       return:
-; CHECK-NEXT:    [[B_03_LCSSA:%.*]] = phi i32 [ 8, [[FOR_BODY]] ], [ 0, [[FOR_COND]] ]
-; CHECK-NEXT:    [[RETVAL_0:%.*]] = phi i32 [ 1, [[FOR_BODY]] ], [ 0, [[FOR_COND]] ]
+; CHECK-NEXT:    [[B_03_LCSSA:%.*]] = phi i32 [ 0, [[FOR_COND]] ], [ 8, [[FOR_BODY_1]] ], [ 0, [[FOR_COND_1]] ]
+; CHECK-NEXT:    [[RETVAL_0:%.*]] = phi i32 [ 0, [[FOR_COND]] ], [ 1, [[FOR_BODY_1]] ], [ 0, [[FOR_COND_1]] ]
 ; CHECK-NEXT:    store i32 [[B_03_LCSSA]], i32* [[A:%.*]], align 4
 ; CHECK-NEXT:    ret void
 ;
@@ -294,3 +342,96 @@ return:                                           ; preds = %for.body, %for.cond
   store i32 %b.03.lcssa, i32* %a, align 4
   ret void
 }
+
+; Test case for PR56044. Check that SCEVs for exit phis are properly invalidated.
+define i32 @test_pr56044(i64* %src, i32 %a) {
+; CHECK-LABEL: @test_pr56044(
+; CHECK-NEXT:  entry:
+; CHECK-NEXT:    br label [[LOOP_1_PEEL_BEGIN:%.*]]
+; CHECK:       loop.1.peel.begin:
+; CHECK-NEXT:    br label [[LOOP_1_PEEL:%.*]]
+; CHECK:       loop.1.peel:
+; CHECK-NEXT:    call void @fn(i32 5)
+; CHECK-NEXT:    [[L_PEEL:%.*]] = load i64, i64* [[SRC:%.*]], align 8
+; CHECK-NEXT:    [[ADD_PEEL:%.*]] = add i64 [[L_PEEL]], [[L_PEEL]]
+; CHECK-NEXT:    [[EC_1_PEEL:%.*]] = icmp sgt i32 [[A:%.*]], 4
+; CHECK-NEXT:    br i1 [[EC_1_PEEL]], label [[MID:%.*]], label [[LOOP_1_PEEL_NEXT:%.*]]
+; CHECK:       loop.1.peel.next:
+; CHECK-NEXT:    br label [[LOOP_1_PEEL_NEXT1:%.*]]
+; CHECK:       loop.1.peel.next1:
+; CHECK-NEXT:    br label [[ENTRY_PEEL_NEWPH:%.*]]
+; CHECK:       entry.peel.newph:
+; CHECK-NEXT:    br label [[LOOP_1:%.*]]
+; CHECK:       loop.1:
+; CHECK-NEXT:    call void @fn(i32 18)
+; CHECK-NEXT:    [[L:%.*]] = load i64, i64* [[SRC]], align 8
+; CHECK-NEXT:    [[ADD:%.*]] = add i64 [[L]], [[L]]
+; CHECK-NEXT:    [[EC_1:%.*]] = icmp sgt i32 [[A]], 4
+; CHECK-NEXT:    br i1 [[EC_1]], label [[MID_LOOPEXIT:%.*]], label [[LOOP_1]], !llvm.loop [[LOOP0:![0-9]+]]
+; CHECK:       mid.loopexit:
+; CHECK-NEXT:    [[LCSSA_1_PH:%.*]] = phi i64 [ [[ADD]], [[LOOP_1]] ]
+; CHECK-NEXT:    br label [[MID]]
+; CHECK:       mid:
+; CHECK-NEXT:    [[LCSSA_1:%.*]] = phi i64 [ [[ADD_PEEL]], [[LOOP_1_PEEL]] ], [ [[LCSSA_1_PH]], [[MID_LOOPEXIT]] ]
+; CHECK-NEXT:    [[TRUNC:%.*]] = trunc i64 [[LCSSA_1]] to i32
+; CHECK-NEXT:    [[ADD_2:%.*]] = sub i32 [[A]], [[TRUNC]]
+; CHECK-NEXT:    br label [[LOOP_2_PEEL_BEGIN:%.*]]
+; CHECK:       loop.2.peel.begin:
+; CHECK-NEXT:    br label [[LOOP_2_PEEL:%.*]]
+; CHECK:       loop.2.peel:
+; CHECK-NEXT:    [[IV_2_NEXT_PEEL:%.*]] = add i32 0, [[ADD_2]]
+; CHECK-NEXT:    [[IV_1_NEXT_PEEL:%.*]] = add nuw nsw i32 0, 1
+; CHECK-NEXT:    [[EC_2_PEEL:%.*]] = icmp ult i32 [[IV_1_NEXT_PEEL]], 12345
+; CHECK-NEXT:    br i1 [[EC_2_PEEL]], label [[LOOP_2_PEEL_NEXT:%.*]], label [[EXIT:%.*]]
+; CHECK:       loop.2.peel.next:
+; CHECK-NEXT:    br label [[LOOP_2_PEEL_NEXT2:%.*]]
+; CHECK:       loop.2.peel.next2:
+; CHECK-NEXT:    br label [[MID_PEEL_NEWPH:%.*]]
+; CHECK:       mid.peel.newph:
+; CHECK-NEXT:    br label [[LOOP_2:%.*]]
+; CHECK:       loop.2:
+; CHECK-NEXT:    [[IV_1:%.*]] = phi i32 [ [[IV_1_NEXT_PEEL]], [[MID_PEEL_NEWPH]] ], [ [[IV_1_NEXT:%.*]], [[LOOP_2]] ]
+; CHECK-NEXT:    [[IV_2:%.*]] = phi i32 [ [[IV_2_NEXT_PEEL]], [[MID_PEEL_NEWPH]] ], [ [[IV_2_NEXT:%.*]], [[LOOP_2]] ]
+; CHECK-NEXT:    [[IV_2_NEXT]] = add i32 2, [[IV_2]]
+; CHECK-NEXT:    [[IV_1_NEXT]] = add nuw nsw i32 [[IV_1]], 1
+; CHECK-NEXT:    [[EC_2:%.*]] = icmp ult i32 [[IV_1_NEXT]], 12345
+; CHECK-NEXT:    br i1 [[EC_2]], label [[LOOP_2]], label [[EXIT_LOOPEXIT:%.*]], !llvm.loop [[LOOP2:![0-9]+]]
+; CHECK:       exit.loopexit:
+; CHECK-NEXT:    [[LCSSA_2_PH:%.*]] = phi i32 [ [[IV_2_NEXT]], [[LOOP_2]] ]
+; CHECK-NEXT:    br label [[EXIT]]
+; CHECK:       exit:
+; CHECK-NEXT:    [[LCSSA_2:%.*]] = phi i32 [ [[IV_2_NEXT_PEEL]], [[LOOP_2_PEEL]] ], [ [[LCSSA_2_PH]], [[EXIT_LOOPEXIT]] ]
+; CHECK-NEXT:    ret i32 [[LCSSA_2]]
+;
+entry:
+  br label %loop.1
+
+loop.1:
+  %p.1 = phi i32 [ 5, %entry ], [ 18, %loop.1 ]
+  call void @fn(i32 %p.1)
+  %l = load i64, i64* %src, align 8
+  %add = add i64 %l, %l
+  %ec.1 = icmp sgt i32 %a, 4
+  br i1 %ec.1, label %mid, label %loop.1
+
+mid:
+  %lcssa.1 = phi i64 [ %add, %loop.1 ]
+  %trunc = trunc i64 %lcssa.1 to i32
+  %add.2 = sub i32 %a, %trunc
+  br label %loop.2
+
+loop.2:
+  %iv.1 = phi i32 [ 0, %mid ], [ %iv.1.next, %loop.2 ]
+  %iv.2 = phi i32 [ %add.2, %mid ], [ %iv.2.next, %loop.2 ]
+  %p.2 = phi i32 [ 0, %mid ], [ 2, %loop.2 ]
+  %iv.2.next = add i32 %p.2, %iv.2
+  %iv.1.next = add nuw nsw i32 %iv.1, 1
+  %ec.2 = icmp ult i32 %iv.1.next, 12345
+  br i1 %ec.2, label %loop.2, label %exit
+
+exit:
+  %lcssa.2 = phi i32 [ %iv.2.next, %loop.2 ]
+  ret i32 %lcssa.2
+}
+
+declare void @fn(i32)

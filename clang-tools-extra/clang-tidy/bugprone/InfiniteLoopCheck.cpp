@@ -16,15 +16,35 @@ using namespace clang::ast_matchers;
 using clang::tidy::utils::hasPtrOrReferenceInFunc;
 
 namespace clang {
+namespace ast_matchers {
+/// matches a Decl if it has a  "no return" attribute of any kind
+AST_MATCHER(Decl, declHasNoReturnAttr) {
+  return Node.hasAttr<NoReturnAttr>() || Node.hasAttr<CXX11NoReturnAttr>() ||
+         Node.hasAttr<C11NoReturnAttr>();
+}
+
+/// matches a FunctionType if the type includes the GNU no return attribute
+AST_MATCHER(FunctionType, typeHasNoReturnAttr) {
+  return Node.getNoReturnAttr();
+}
+} // namespace ast_matchers
 namespace tidy {
 namespace bugprone {
 
 static internal::Matcher<Stmt>
 loopEndingStmt(internal::Matcher<Stmt> Internal) {
-  // FIXME: Cover noreturn ObjC methods (and blocks?).
+  internal::Matcher<QualType> isNoReturnFunType =
+      ignoringParens(functionType(typeHasNoReturnAttr()));
+  internal::Matcher<Decl> isNoReturnDecl =
+      anyOf(declHasNoReturnAttr(), functionDecl(hasType(isNoReturnFunType)),
+            varDecl(hasType(blockPointerType(pointee(isNoReturnFunType)))));
+
   return stmt(anyOf(
       mapAnyOf(breakStmt, returnStmt, gotoStmt, cxxThrowExpr).with(Internal),
-      callExpr(Internal, callee(functionDecl(isNoReturn())))));
+      callExpr(Internal,
+               callee(mapAnyOf(functionDecl, /* block callee */ varDecl)
+                          .with(isNoReturnDecl))),
+      objcMessageExpr(Internal, callee(isNoReturnDecl))));
 }
 
 /// Return whether `Var` was changed in `LoopStmt`.
@@ -65,6 +85,17 @@ static bool isVarThatIsPossiblyChanged(const Decl *Func, const Stmt *LoopStmt,
                  ObjCIvarRefExpr, ObjCPropertyRefExpr, ObjCMessageExpr>(Cond)) {
     // FIXME: Handle MemberExpr.
     return true;
+  } else if (const auto *CE = dyn_cast<CastExpr>(Cond)) {
+    QualType T = CE->getType();
+    while (true) {
+      if (T.isVolatileQualified())
+        return true;
+
+      if (!T->isAnyPointerType() && !T->isReferenceType())
+        break;
+
+      T = T->getPointeeType();
+    }
   }
 
   return false;
@@ -106,12 +137,32 @@ static std::string getCondVarNames(const Stmt *Cond) {
   return Result;
 }
 
-static bool isKnownFalse(const Expr &Cond, const ASTContext &Ctx) {
-  if (Cond.isValueDependent())
+static bool isKnownToHaveValue(const Expr &Cond, const ASTContext &Ctx,
+                               bool ExpectedValue) {
+  if (Cond.isValueDependent()) {
+    if (const auto *BinOp = dyn_cast<BinaryOperator>(&Cond)) {
+      // Conjunctions (disjunctions) can still be handled if at least one
+      // conjunct (disjunct) is known to be false (true).
+      if (!ExpectedValue && BinOp->getOpcode() == BO_LAnd)
+        return isKnownToHaveValue(*BinOp->getLHS(), Ctx, false) ||
+               isKnownToHaveValue(*BinOp->getRHS(), Ctx, false);
+      if (ExpectedValue && BinOp->getOpcode() == BO_LOr)
+        return isKnownToHaveValue(*BinOp->getLHS(), Ctx, true) ||
+               isKnownToHaveValue(*BinOp->getRHS(), Ctx, true);
+      if (BinOp->getOpcode() == BO_Comma)
+        return isKnownToHaveValue(*BinOp->getRHS(), Ctx, ExpectedValue);
+    } else if (const auto *UnOp = dyn_cast<UnaryOperator>(&Cond)) {
+      if (UnOp->getOpcode() == UO_LNot)
+        return isKnownToHaveValue(*UnOp->getSubExpr(), Ctx, !ExpectedValue);
+    } else if (const auto *Paren = dyn_cast<ParenExpr>(&Cond))
+      return isKnownToHaveValue(*Paren->getSubExpr(), Ctx, ExpectedValue);
+    else if (const auto *ImplCast = dyn_cast<ImplicitCastExpr>(&Cond))
+      return isKnownToHaveValue(*ImplCast->getSubExpr(), Ctx, ExpectedValue);
     return false;
+  }
   bool Result = false;
   if (Cond.EvaluateAsBooleanCondition(Result, Ctx))
-    return !Result;
+    return Result == ExpectedValue;
   return false;
 }
 
@@ -133,7 +184,7 @@ void InfiniteLoopCheck::check(const MatchFinder::MatchResult &Result) {
   const auto *LoopStmt = Result.Nodes.getNodeAs<Stmt>("loop-stmt");
   const auto *Func = Result.Nodes.getNodeAs<Decl>("func");
 
-  if (isKnownFalse(*Cond, *Result.Context))
+  if (isKnownToHaveValue(*Cond, *Result.Context, false))
     return;
 
   bool ShouldHaveConditionVariables = true;
@@ -145,6 +196,9 @@ void InfiniteLoopCheck::check(const MatchFinder::MatchResult &Result) {
       }
     }
   }
+
+  if (ExprMutationAnalyzer::isUnevaluated(LoopStmt, *LoopStmt, *Result.Context))
+    return;
 
   if (isAtLeastOneCondVarChanged(Func, LoopStmt, Cond, Result.Context))
     return;

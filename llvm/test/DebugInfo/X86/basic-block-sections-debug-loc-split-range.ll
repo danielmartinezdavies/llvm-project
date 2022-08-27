@@ -1,11 +1,7 @@
-; RUN: llc %s --dwarf-version=4 --basic-block-sections=none -filetype=obj -o %t
-; RUN: llvm-dwarfdump %t | FileCheck %s
-; RUN: llc %s --dwarf-version=4 --basic-block-sections=all -filetype=obj -o %t
-; RUN: llvm-dwarfdump %t | FileCheck %s --check-prefix=CHECK --check-prefix=SECTIONS
-; RUN: llc %s --dwarf-version=5 --basic-block-sections=none -filetype=obj -o %t
-; RUN: llvm-dwarfdump %t | FileCheck %s
-; RUN: llc %s --dwarf-version=5 --basic-block-sections=all -filetype=obj -o %t
-; RUN: llvm-dwarfdump %t | FileCheck %s --check-prefix=CHECK --check-prefix=SECTIONS
+; RUN: llc %s -mtriple=x86_64-unknown-linux-gnu --dwarf-version=4 --basic-block-sections=none -filetype=obj -o - | llvm-dwarfdump - | FileCheck %s
+; RUN: llc %s -mtriple=x86_64-unknown-linux-gnu --dwarf-version=4 --basic-block-sections=all -filetype=obj -o -  | llvm-dwarfdump - | FileCheck %s --check-prefix=CHECK --check-prefix=SECTIONS
+; RUN: llc %s -mtriple=x86_64-unknown-linux-gnu --dwarf-version=5 --basic-block-sections=none -filetype=obj -o - | llvm-dwarfdump - | FileCheck %s
+; RUN: llc %s -mtriple=x86_64-unknown-linux-gnu --dwarf-version=5 --basic-block-sections=all -filetype=obj -o -  | llvm-dwarfdump - | FileCheck %s --check-prefix=CHECK --check-prefix=SECTIONS
 
 ; CHECK:         DW_AT_location
 ; CHECK-NEXT:    [0x{{[0-9a-f]+}}, 0x{{[0-9a-f]+}}): DW_OP_constu 0x9d, DW_OP_stack_value
@@ -21,9 +17,6 @@
 ; The extra dbg value is added to split the range and to check if the
 ; ranges are split correctly with sections.  With basic block sections,
 ; the dbg value 157 (0x9d) gets split into one more range.
-
-
-target triple = "x86_64-unknown-linux-gnu"
 
 define dso_local void @_ZL4ncatPcjz(i8* %0, i32 %1, ...) unnamed_addr  align 32 !dbg !22 {
 .critedge3:

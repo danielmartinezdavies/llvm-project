@@ -601,6 +601,15 @@ enum CommandArgumentType {
   eArgTypeCommand,
   eArgTypeColumnNum,
   eArgTypeModuleUUID,
+  eArgTypeSaveCoreStyle,
+  eArgTypeLogHandler,
+  eArgTypeSEDStylePair,
+  eArgTypeRecognizerID,
+  eArgTypeConnectURL,
+  eArgTypeTargetID,
+  eArgTypeStopHookID,
+  eArgTypeReproducerProvider,
+  eArgTypeReproducerSignal,
   eArgTypeLastArg // Always keep this entry as the last entry in this
                   // enumeration!!
 };
@@ -748,6 +757,7 @@ enum BasicType {
   eBasicTypeUnsignedWChar,
   eBasicTypeChar16,
   eBasicTypeChar32,
+  eBasicTypeChar8,
   eBasicTypeShort,
   eBasicTypeUnsignedShort,
   eBasicTypeInt,
@@ -958,6 +968,35 @@ enum ExpressionEvaluationPhase {
   eExpressionEvaluationComplete
 };
 
+/// Architecture-agnostic categorization of instructions for traversing the
+/// control flow of a trace.
+///
+/// A single instruction can match one or more of these categories.
+enum InstructionControlFlowKind {
+  /// The instruction could not be classified.
+  eInstructionControlFlowKindUnknown = 0,
+  /// The instruction is something not listed below, i.e. it's a sequential
+  /// instruction that doesn't affect the control flow of the program.
+  eInstructionControlFlowKindOther,
+  /// The instruction is a near (function) call.
+  eInstructionControlFlowKindCall,
+  /// The instruction is a near (function) return.
+  eInstructionControlFlowKindReturn,
+  /// The instruction is a near unconditional jump.
+  eInstructionControlFlowKindJump,
+  /// The instruction is a near conditional jump.
+  eInstructionControlFlowKindCondJump,
+  /// The instruction is a call-like far transfer.
+  /// E.g. SYSCALL, SYSENTER, or FAR CALL.
+  eInstructionControlFlowKindFarCall,
+  /// The instruction is a return-like far transfer.
+  /// E.g. SYSRET, SYSEXIT, IRET, or FAR RET.
+  eInstructionControlFlowKindFarReturn,
+  /// The instruction is a jump-like far transfer.
+  /// E.g. FAR JMP.
+  eInstructionControlFlowKindFarJump
+};
+
 /// Watchpoint Kind.
 ///
 /// Indicates what types of events cause the watchpoint to fire. Used by Native
@@ -1111,6 +1150,51 @@ enum CommandInterpreterResult {
   /// Stopped because quit was requested.
   eCommandInterpreterResultQuitRequested,
 };
+
+// Style of core file to create when calling SaveCore.
+enum SaveCoreStyle {
+  eSaveCoreUnspecified = 0,
+  eSaveCoreFull = 1,
+  eSaveCoreDirtyOnly = 2,
+  eSaveCoreStackOnly = 3,
+};
+
+/// Events that might happen during a trace session.
+enum TraceEvent {
+  /// Tracing was disabled for some time due to a software trigger.
+  eTraceEventDisabledSW,
+  /// Tracing was disable for some time due to a hardware trigger.
+  eTraceEventDisabledHW,
+  /// Event due to CPU change for a thread. This event is also fired when
+  /// suddenly it's not possible to identify the cpu of a given thread.
+  eTraceEventCPUChanged,
+  /// Event due to a CPU HW clock tick.
+  eTraceEventHWClockTick,
+  /// The underlying tracing technology emitted a synchronization event used by
+  /// trace processors.
+  eTraceEventSyncPoint,
+};
+
+// Enum used to identify which kind of item a \a TraceCursor is pointing at
+enum TraceItemKind {
+  eTraceItemKindError = 0,
+  eTraceItemKindEvent,
+  eTraceItemKindInstruction,
+};
+
+/// Enum to indicate the reference point when invoking
+/// \a TraceCursor::Seek().
+/// The following values are inspired by \a std::istream::seekg.
+enum TraceCursorSeekType {
+  /// The beginning of the trace, i.e the oldest item.
+  eTraceCursorSeekTypeBeginning = 0,
+  /// The current position in the trace.
+  eTraceCursorSeekTypeCurrent,
+  /// The end of the trace, i.e the most recent item.
+  eTraceCursorSeekTypeEnd
+};
+
+
 } // namespace lldb
 
 #endif // LLDB_LLDB_ENUMERATIONS_H

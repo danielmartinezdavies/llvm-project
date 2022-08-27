@@ -1,7 +1,7 @@
 ; RUN: llc -verify-machineinstrs -mcpu=pwr4 -mattr=-altivec -mtriple powerpc-ibm-aix-xcoff \
 ; RUN:     -xcoff-traceback-table=false --code-model=large -filetype=obj -o %t.o < %s
 ; RUN: llvm-readobj --relocs --expand-relocs %t.o | FileCheck --check-prefix=RELOC %s
-; RUN: llvm-readobj -t %t.o | FileCheck --check-prefix=SYM %s
+; RUN: llvm-readobj --syms %t.o | FileCheck --check-prefix=SYM %s
 ; RUN: llvm-objdump -D -r --symbol-description %t.o | FileCheck --check-prefix=DIS %s
 
 @GInit = global double 1.000000e+00, align 8
@@ -210,7 +210,7 @@ entry:
 ; SYM-NEXT: Symbols [
 ; SYM-NEXT:   Symbol {
 ; SYM-NEXT:     Index: 0
-; SYM-NEXT:     Name: .file
+; SYM-NEXT:     Name: <stdin>
 ; SYM-NEXT:     Value (SymbolTableIndex): 0x0
 ; SYM-NEXT:     Section: N_DEBUG
 ; SYM-NEXT:     Source Language ID: TB_C (0x0)
@@ -251,7 +251,7 @@ entry:
 ; SYM-NEXT:       SectionLen: 132
 ; SYM-NEXT:       ParameterHashIndex: 0x0
 ; SYM-NEXT:       TypeChkSectNum: 0x0
-; SYM-NEXT:       SymbolAlignmentLog2: 4
+; SYM-NEXT:       SymbolAlignmentLog2: 5
 ; SYM-NEXT:       SymbolType: XTY_SD (0x1)
 ; SYM-NEXT:       StorageMappingClass: XMC_PR (0x0)
 ; SYM-NEXT:       StabInfoIndex: 0x0

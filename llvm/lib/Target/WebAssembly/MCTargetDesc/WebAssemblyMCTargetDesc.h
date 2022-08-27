@@ -26,7 +26,6 @@ class MCAsmBackend;
 class MCCodeEmitter;
 class MCInstrInfo;
 class MCObjectTargetWriter;
-class MVT;
 class Triple;
 
 MCCodeEmitter *createWebAssemblyMCCodeEmitter(const MCInstrInfo &MCII);
@@ -72,14 +71,12 @@ enum OperandType {
   OPERAND_SIGNATURE,
   /// type signature immediate for call_indirect.
   OPERAND_TYPEINDEX,
-  /// Event index.
-  OPERAND_EVENT,
+  /// Tag index.
+  OPERAND_TAG,
   /// A list of branch targets for br_list.
   OPERAND_BRLIST,
   /// 32-bit unsigned table number.
   OPERAND_TABLE,
-  /// heap type immediate for ref.null.
-  OPERAND_HEAPTYPE,
 };
 } // end namespace WebAssembly
 
@@ -94,6 +91,9 @@ enum TOF {
   // runtime.  This adds a level of indirection similar to the GOT on native
   // platforms.
   MO_GOT,
+
+  // Same as MO_GOT but the address stored in the global is a TLS address.
+  MO_GOT_TLS,
 
   // On a symbol operand this indicates that the immediate is the symbol
   // address relative the __memory_base wasm global.
@@ -124,6 +124,7 @@ enum TOF {
 // Defines symbolic names for the WebAssembly instructions.
 //
 #define GET_INSTRINFO_ENUM
+#define GET_INSTRINFO_MC_HELPER_DECLS
 #include "WebAssemblyGenInstrInfo.inc"
 
 namespace llvm {

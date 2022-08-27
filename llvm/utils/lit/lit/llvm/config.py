@@ -38,7 +38,7 @@ class LLVMConfig(object):
             # Many tools behave strangely if these environment variables aren't
             # set.
             self.with_system_environment(
-                ['SystemDrive', 'SystemRoot', 'TEMP', 'TMP'])
+                ['SystemDrive', 'SystemRoot', 'TEMP', 'TMP', 'PLATFORM'])
             self.use_lit_shell = True
 
             global lit_path_displayed
@@ -55,6 +55,19 @@ class LLVMConfig(object):
 
         if not self.use_lit_shell:
             features.add('shell')
+
+        self.with_system_environment([
+            'ASAN_SYMBOLIZER_PATH',
+            'HWASAN_SYMBOLIZER_PATH',
+            'MSAN_SYMBOLIZER_PATH',
+            'TSAN_SYMBOLIZER_PATH',
+            'UBSAN_SYMBOLIZER_PATH'
+            'ASAN_OPTIONS',
+            'HWASAN_OPTIONS',
+            'MSAN_OPTIONS',
+            'TSAN_OPTIONS',
+            'UBSAN_OPTIONS',
+        ])
 
         # Running on Darwin OS
         if platform.system() == 'Darwin':
@@ -89,6 +102,8 @@ class LLVMConfig(object):
         sanitizers = frozenset(x.lower() for x in sanitizers.split(';'))
         if 'address' in sanitizers:
             features.add('asan')
+        if 'hwaddress' in sanitizers:
+            features.add('hwasan')
         if 'memory' in sanitizers or 'memorywithorigins' in sanitizers:
             features.add('msan')
         if 'undefined' in sanitizers:
@@ -118,6 +133,8 @@ class LLVMConfig(object):
             elif re.match(r'^x86_64.*', target_triple):
                 features.add('target-x86_64')
             elif re.match(r'^aarch64.*', target_triple):
+                features.add('target-aarch64')
+            elif re.match(r'^arm64.*', target_triple):
                 features.add('target-aarch64')
             elif re.match(r'^arm.*', target_triple):
                 features.add('target-arm')
@@ -402,7 +419,7 @@ class LLVMConfig(object):
         self.add_err_msg_substitutions()
 
     def use_llvm_tool(self, name, search_env=None, required=False, quiet=False,
-                      use_installed=False):
+                      search_paths=None, use_installed=False):
         """Find the executable program 'name', optionally using the specified
         environment variable as an override before searching the build directory
         and then optionally the configuration's PATH."""
@@ -413,8 +430,11 @@ class LLVMConfig(object):
             tool = self.config.environment.get(search_env)
 
         if not tool:
-            # Use the build directory version.
-            tool = lit.util.which(name, self.config.llvm_tools_dir)
+            if search_paths is None:
+                search_paths = [self.config.llvm_tools_dir]
+            # Use the specified search paths.
+            path = os.pathsep.join(search_paths)
+            tool = lit.util.which(name, path)
 
         if not tool and use_installed:
             # Otherwise look in the path, if enabled.
@@ -484,14 +504,13 @@ class LLVMConfig(object):
 
         lib_dir_props = [
             self.config.name.lower() + '_libs_dir',
-            'clang_libs_dir',
             'llvm_shlib_dir',
             'llvm_libs_dir',
             ]
-        paths = [getattr(self.config, pp) for pp in lib_dir_props
-                 if getattr(self.config, pp, None)]
+        lib_paths = [getattr(self.config, pp) for pp in lib_dir_props
+                     if getattr(self.config, pp, None)]
 
-        self.with_environment('LD_LIBRARY_PATH', paths, append_path=True)
+        self.with_environment('LD_LIBRARY_PATH', lib_paths, append_path=True)
 
         shl = getattr(self.config, 'llvm_shlib_dir', None)
         pext = getattr(self.config, 'llvm_plugin_ext', None)
@@ -503,7 +522,7 @@ class LLVMConfig(object):
         # Discover the 'clang' and 'clangcc' to use.
         self.config.clang = self.use_llvm_tool(
             'clang', search_env='CLANG', required=required,
-            use_installed=use_installed)
+            search_paths=paths, use_installed=use_installed)
         if self.config.clang:
           self.config.available_features.add('clang')
           builtin_include_dir = self.get_clang_builtin_include_dir(
@@ -595,20 +614,24 @@ class LLVMConfig(object):
 
         lib_dir_props = [self.config.name.lower() + '_libs_dir',
                          'lld_libs_dir', 'llvm_libs_dir']
-        paths = [getattr(self.config, pp) for pp in lib_dir_props
-                 if getattr(self.config, pp, None)]
+        lib_paths = [getattr(self.config, pp) for pp in lib_dir_props
+                     if getattr(self.config, pp, None)]
 
-        self.with_environment('LD_LIBRARY_PATH', paths, append_path=True)
+        self.with_environment('LD_LIBRARY_PATH', lib_paths, append_path=True)
 
         # Discover the LLD executables to use.
 
         ld_lld = self.use_llvm_tool('ld.lld', required=required,
+                                    search_paths=paths,
                                     use_installed=use_installed)
         lld_link = self.use_llvm_tool('lld-link', required=required,
+                                      search_paths=paths,
                                       use_installed=use_installed)
         ld64_lld = self.use_llvm_tool('ld64.lld', required=required,
+                                      search_paths=paths,
                                       use_installed=use_installed)
         wasm_ld = self.use_llvm_tool('wasm-ld', required=required,
+                                     search_paths=paths,
                                      use_installed=use_installed)
 
         was_found = ld_lld and lld_link and ld64_lld and wasm_ld

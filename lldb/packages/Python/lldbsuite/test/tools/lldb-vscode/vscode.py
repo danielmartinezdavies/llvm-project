@@ -87,27 +87,39 @@ def read_packet(f, verbose=False, trace_file=None):
 def packet_type_is(packet, packet_type):
     return 'type' in packet and packet['type'] == packet_type
 
+def dump_dap_log(log_file):
+    print("========= DEBUG ADAPTER PROTOCOL LOGS =========")
+    if log_file is None:
+        print("no log file available")
+    else:
+        with open(log_file, "r") as file:
+            print(file.read())
+    print("========= END =========")
 
-def read_packet_thread(vs_comm):
+
+def read_packet_thread(vs_comm, log_file):
     done = False
-    while not done:
-        packet = read_packet(vs_comm.recv, trace_file=vs_comm.trace_file)
-        # `packet` will be `None` on EOF. We want to pass it down to
-        # handle_recv_packet anyway so the main thread can handle unexpected
-        # termination of lldb-vscode and stop waiting for new packets.
-        done = not vs_comm.handle_recv_packet(packet)
+    try:
+        while not done:
+            packet = read_packet(vs_comm.recv, trace_file=vs_comm.trace_file)
+            # `packet` will be `None` on EOF. We want to pass it down to
+            # handle_recv_packet anyway so the main thread can handle unexpected
+            # termination of lldb-vscode and stop waiting for new packets.
+            done = not vs_comm.handle_recv_packet(packet)
+    finally:
+        dump_dap_log(log_file)
 
 
 class DebugCommunication(object):
 
-    def __init__(self, recv, send, init_commands):
+    def __init__(self, recv, send, init_commands, log_file=None):
         self.trace_file = None
         self.send = send
         self.recv = recv
         self.recv_packets = []
         self.recv_condition = threading.Condition()
         self.recv_thread = threading.Thread(target=read_packet_thread,
-                                            args=(self,))
+                                            args=(self, log_file))
         self.process_event_body = None
         self.exit_status = None
         self.initialize_body = None
@@ -435,6 +447,10 @@ class DebugCommunication(object):
         return self.get_scope_variables('Locals', frameIndex=frameIndex,
                                         threadId=threadId)
 
+    def get_registers(self, frameIndex=0, threadId=None):
+        return self.get_scope_variables('Registers', frameIndex=frameIndex,
+                                        threadId=threadId)
+
     def get_local_variable(self, name, frameIndex=0, threadId=None):
         locals = self.get_local_variables(frameIndex=frameIndex,
                                           threadId=threadId)
@@ -494,7 +510,8 @@ class DebugCommunication(object):
                        initCommands=None, preRunCommands=None,
                        stopCommands=None, exitCommands=None,
                        attachCommands=None, terminateCommands=None,
-                       coreFile=None, postRunCommands=None):
+                       coreFile=None, postRunCommands=None,
+                       sourceMap=None):
         args_dict = {}
         if pid is not None:
             args_dict['pid'] = pid
@@ -521,6 +538,8 @@ class DebugCommunication(object):
             args_dict['coreFile'] = coreFile
         if postRunCommands:
             args_dict['postRunCommands'] = postRunCommands
+        if sourceMap:
+            args_dict['sourceMap'] = sourceMap
         command_dict = {
             'command': 'attach',
             'type': 'request',
@@ -735,8 +754,11 @@ class DebugCommunication(object):
         }
         return self.send_recv(command_dict)
 
-    def request_setBreakpoints(self, file_path, line_array, condition=None,
-                               hitCondition=None):
+    def request_setBreakpoints(self, file_path, line_array, data=None):
+        ''' data is array of parameters for breakpoints in line_array.
+            Each parameter object is 1:1 mapping with entries in line_entry.
+            It contains optional location/hitCondition/logMessage parameters.
+        '''
         (dir, base) = os.path.split(file_path)
         source_dict = {
             'name': base,
@@ -749,12 +771,18 @@ class DebugCommunication(object):
         if line_array is not None:
             args_dict['lines'] = '%s' % line_array
             breakpoints = []
-            for line in line_array:
+            for i, line in enumerate(line_array):
+                breakpoint_data = None
+                if data is not None and i < len(data):
+                    breakpoint_data = data[i]
                 bp = {'line': line}
-                if condition is not None:
-                    bp['condition'] = condition
-                if hitCondition is not None:
-                    bp['hitCondition'] = hitCondition
+                if breakpoint_data is not None:
+                    if 'condition' in breakpoint_data and breakpoint_data['condition']:
+                        bp['condition'] = breakpoint_data['condition']
+                    if 'hitCondition' in breakpoint_data and breakpoint_data['hitCondition']:
+                        bp['hitCondition'] = breakpoint_data['hitCondition']
+                    if 'logMessage' in breakpoint_data and breakpoint_data['logMessage']:
+                        bp['logMessage'] = breakpoint_data['logMessage']
                 breakpoints.append(bp)
             args_dict['breakpoints'] = breakpoints
 
@@ -943,7 +971,7 @@ class DebugAdaptor(DebugCommunication):
                                             stderr=subprocess.PIPE,
                                             env=adaptor_env)
             DebugCommunication.__init__(self, self.process.stdout,
-                                        self.process.stdin, init_commands)
+                                        self.process.stdin, init_commands, log_file)
         elif port is not None:
             s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             s.connect(('127.0.0.1', port))

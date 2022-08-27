@@ -51,7 +51,7 @@ def SPV_BranchOp : SPV_Op<"Branch", [
 
   let successors = (successor AnySuccessor:$target);
 
-  let verifier = [{ return success(); }];
+  let hasVerifier = 0;
 
   let builders = [
     OpBuilder<(ins "Block *":$successor, CArg<"ValueRange", "{}">:$arguments),
@@ -309,6 +309,9 @@ def SPV_LoopOp : SPV_Op<"mlir.loop", [InFunctionScope]> {
   let hasOpcode = 0;
 
   let autogenSerialization = 0;
+
+  let hasVerifier = 0;
+  let hasRegionVerifier = 1;
 }
 
 // -----
@@ -361,7 +364,7 @@ def SPV_ReturnOp : SPV_Op<"Return", [InFunctionScope, NoSideEffect,
 // -----
 
 def SPV_UnreachableOp : SPV_Op<"Unreachable", [InFunctionScope, Terminator]> {
-  let summary = "Declares that this block is not reachable in the CFG.";
+  let summary = "Behavior is undefined if this instruction is executed.";
 
   let description = [{
     This instruction must be the last instruction in a block.
@@ -470,6 +473,9 @@ def SPV_SelectionOp : SPV_Op<"mlir.selection", [InFunctionScope]> {
   let autogenSerialization = 0;
 
   let hasCanonicalizer = 1;
+
+  let hasVerifier = 0;
+  let hasRegionVerifier = 1;
 }
 
 #endif // MLIR_DIALECT_SPIRV_IR_CONTROLFLOW_OPS

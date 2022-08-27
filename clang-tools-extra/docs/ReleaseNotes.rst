@@ -1,5 +1,5 @@
 ====================================================
-Extra Clang Tools 13.0.0 (In-Progress) Release Notes
+Extra Clang Tools |release| |ReleaseNotesTitle|
 ====================================================
 
 .. contents::
@@ -8,17 +8,18 @@ Extra Clang Tools 13.0.0 (In-Progress) Release Notes
 
 Written by the `LLVM Team <https://llvm.org/>`_
 
-.. warning::
+.. only:: PreRelease
 
-   These are in-progress notes for the upcoming Extra Clang Tools 13 release.
-   Release notes for previous releases can be found on
-   `the Download Page <https://releases.llvm.org/download.html>`_.
+  .. warning::
+     These are in-progress notes for the upcoming Extra Clang Tools |version| release.
+     Release notes for previous releases can be found on
+     `the Download Page <https://releases.llvm.org/download.html>`_.
 
 Introduction
 ============
 
 This document contains the release notes for the Extra Clang Tools, part of the
-Clang release 13.0.0. Here we describe the status of the Extra Clang Tools in
+Clang release |release|. Here we describe the status of the Extra Clang Tools in
 some detail, including major improvements from the previous release and new
 feature work. All LLVM releases may be downloaded from the `LLVM releases web
 site <https://llvm.org/releases/>`_.
@@ -32,8 +33,8 @@ main Clang web page, this document applies to the *next* release, not
 the current one. To see the release notes for a specific release, please
 see the `releases page <https://llvm.org/releases/>`_.
 
-What's New in Extra Clang Tools 13.0.0?
-=======================================
+What's New in Extra Clang Tools |release|?
+==========================================
 
 Some of the major new features and improvements to Extra Clang Tools are listed
 here. Generic improvements to Extra Clang Tools as a whole or to its underlying
@@ -47,12 +48,40 @@ Major New Features
 Improvements to clangd
 ----------------------
 
-The improvements are...
+Inlay hints
+^^^^^^^^^^^
+
+Diagnostics
+^^^^^^^^^^^
+
+Semantic Highlighting
+^^^^^^^^^^^^^^^^^^^^^
+
+Compile flags
+^^^^^^^^^^^^^
+
+Hover
+^^^^^
+
+Code completion
+^^^^^^^^^^^^^^^
+
+Signature help
+^^^^^^^^^^^^^^
+
+Cross-references
+^^^^^^^^^^^^^^^^
+
+Objective-C
+^^^^^^^^^^^
+
+Miscellaneous
+^^^^^^^^^^^^^
 
 Improvements to clang-doc
 -------------------------
 
-The improvements are...
+- The default executor was changed to standalone to match other tools.
 
 Improvements to clang-query
 ---------------------------
@@ -67,65 +96,22 @@ The improvements are...
 Improvements to clang-tidy
 --------------------------
 
-- The `run-clang-tidy.py` helper script is now installed in `bin/` as
-  `run-clang-tidy`. It was previously installed in `share/clang/`.
-
-- Added command line option `--fix-notes` to apply fixes found in notes
-  attached to warnings. These are typically cases where we are less confident
-  the fix will have the desired effect.
-
-- libToolingCore and Clang-Tidy was refactored and now checks can produce
-  highlights (`^~~~~` under fragments of the source code) in diagnostics.
-  Existing and new checks in the future can be expected to start implementing
-  this functionality.
-  This change only affects the visual rendering of diagnostics, and does not
-  alter the behavior of generated fixes.
-
 New checks
 ^^^^^^^^^^
 
-- New :doc:`bugprone-implicit-widening-of-multiplication-result
-  <clang-tidy/checks/bugprone-implicit-widening-of-multiplication-result>` check.
+- New :doc:`cppcoreguidelines-avoid-const-or-ref-data-members
+  <clang-tidy/checks/cppcoreguidelines/avoid-const-or-ref-data-members>` check.
 
-  Diagnoses instances of an implicit widening of multiplication result.
-
-- New :doc:`concurrency-thread-canceltype-asynchronous
-  <clang-tidy/checks/concurrency-thread-canceltype-asynchronous>` check.
-
-  Finds ``pthread_setcanceltype`` function calls where a thread's cancellation
-  type is set to asynchronous.
-
-- New :doc:`altera-id-dependent-backward-branch
-  <clang-tidy/checks/altera-id-dependent-backward-branch>` check.
-
-  Finds ID-dependent variables and fields that are used within loops. This
-  causes branches to occur inside the loops, and thus leads to performance
-  degradation.
-
-- New :doc:`altera-unroll-loops
-  <clang-tidy/checks/altera-unroll-loops>` check.
-
-  Finds inner loops that have not been unrolled, as well as fully unrolled
-  loops with unknown loops bounds or a large number of iterations.
-
-- New :doc:`cppcoreguidelines-prefer-member-initializer
-  <clang-tidy/checks/cppcoreguidelines-prefer-member-initializer>` check.
-
-  Finds member initializations in the constructor body which can be placed into
-  the initialization list instead.
-
-- New :doc:`bugprone-unhandled-exception-at-new
-  <clang-tidy/checks/bugprone-unhandled-exception-at-new>` check.
-
-  Finds calls to ``new`` with missing exception handler for ``std::bad_alloc``.
+  Warns when a struct or class uses const or reference (lvalue or rvalue) data members.
 
 New check aliases
 ^^^^^^^^^^^^^^^^^
 
-- New alias :doc:`cert-pos47-c
-  <clang-tidy/checks/cert-pos47-c>` to
-  :doc:`concurrency-thread-canceltype-asynchronous
-  <clang-tidy/checks/concurrency-thread-canceltype-asynchronous>` was added.
+- New alias :doc:`cert-msc54-cpp
+  <clang-tidy/checks/cert/msc54-cpp>` to
+  :doc:`bugprone-signal-handler
+  <clang-tidy/checks/bugprone/signal-handler>` was added.
+
 
 Changes in existing checks
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
@@ -139,25 +125,28 @@ Changes in existing checks
   <clang-tidy/checks/readability-function-cognitive-complexity>` check.
 
 - Improved :doc:`bugprone-signal-handler
-  <clang-tidy/checks/bugprone-signal-handler>` check.
+  <clang-tidy/checks/bugprone/signal-handler>` check. Partial
+  support for C++14 signal handler rules was added. Bug report generation was
+  improved.
 
-  Added an option to choose the set of allowed functions.
+- Fixed a false positive in :doc:`cppcoreguidelines-pro-type-member-init
+  <clang-tidy/checks/cppcoreguidelines/pro-type-member-init>` when warnings
+  would be emitted for uninitialized members of an anonymous union despite
+  there being an initializer for one of the other members.
+  
+- Improved `modernize-use-emplace <clang-tidy/checks/modernize/use-emplace.html>`_ check.
 
-- Improved :doc:`readability-uniqueptr-delete-release
-  <clang-tidy/checks/readability-uniqueptr-delete-release>` check.
+  The check now supports detecting inefficient invocations of ``push`` and
+  ``push_front`` on STL-style containers and replacing them with ``emplace``
+  or ``emplace_front``.
 
-  Added an option to choose whether to refactor by calling the ``reset`` member
-  function or assignment to ``nullptr``.
-  Added support for pointers to ``std::unique_ptr``.
+- Improved `modernize-use-equals-default <clang-tidy/checks/modernize/use-equals-default.html>`_ check.
+
+  The check now skips unions since in this case a default constructor with empty body
+  is not equivalent to the explicitly defaulted one.
 
 Removed checks
 ^^^^^^^^^^^^^^
-
-- The readability-deleted-default check has been removed.
-  
-  The clang warning `Wdefaulted-function-deleted
-  <https://clang.llvm.org/docs/DiagnosticsReference.html#wdefaulted-function-deleted>`_
-  will diagnose the same issues and is enabled by default.
 
 Improvements to include-fixer
 -----------------------------
@@ -177,7 +166,5 @@ The improvements are...
 Improvements to pp-trace
 ------------------------
 
-The improvements are...
-
-Clang-tidy visual studio plugin
+Clang-tidy Visual Studio plugin
 -------------------------------

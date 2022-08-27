@@ -18,10 +18,8 @@
 #include "llvm/Analysis/RegionInfo.h"
 #include "llvm/Analysis/RegionIterator.h"
 #include "llvm/Analysis/RegionPass.h"
-#include "llvm/IR/Argument.h"
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/CFG.h"
-#include "llvm/IR/Constant.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/Dominators.h"
 #include "llvm/IR/Function.h"
@@ -33,7 +31,6 @@
 #include "llvm/IR/PatternMatch.h"
 #include "llvm/IR/Type.h"
 #include "llvm/IR/Use.h"
-#include "llvm/IR/User.h"
 #include "llvm/IR/Value.h"
 #include "llvm/IR/ValueHandle.h"
 #include "llvm/InitializePasses.h"
@@ -41,7 +38,6 @@
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
-#include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Transforms/Scalar.h"
 #include "llvm/Transforms/Utils.h"
@@ -276,6 +272,8 @@ class StructurizeCFG {
 
   void insertConditions(bool Loops);
 
+  void simplifyConditions();
+
   void delPhiValues(BasicBlock *From, BasicBlock *To);
 
   void addPhiValues(BasicBlock *From, BasicBlock *To);
@@ -397,7 +395,7 @@ void StructurizeCFG::orderNodes() {
         WorkList.emplace_back(I, I + Size);
 
       // Add the SCC nodes to the Order array.
-      for (auto &N : SCC) {
+      for (const auto &N : SCC) {
         assert(I < E && "SCC size mismatch!");
         Order[I++] = N.first;
       }
@@ -586,6 +584,28 @@ void StructurizeCFG::insertConditions(bool Loops) {
   }
 }
 
+/// Simplify any inverted conditions that were built by buildConditions.
+void StructurizeCFG::simplifyConditions() {
+  SmallVector<Instruction *> InstToErase;
+  for (auto &I : concat<PredMap::value_type>(Predicates, LoopPreds)) {
+    auto &Preds = I.second;
+    for (auto &J : Preds) {
+      auto &Cond = J.second;
+      Instruction *Inverted;
+      if (match(Cond, m_Not(m_OneUse(m_Instruction(Inverted)))) &&
+          !Cond->use_empty()) {
+        if (auto *InvertedCmp = dyn_cast<CmpInst>(Inverted)) {
+          InvertedCmp->setPredicate(InvertedCmp->getInversePredicate());
+          Cond->replaceAllUsesWith(InvertedCmp);
+          InstToErase.push_back(cast<Instruction>(Cond));
+        }
+      }
+    }
+  }
+  for (auto *I : InstToErase)
+    I->eraseFromParent();
+}
+
 /// Remove all PHI values coming from "From" into "To" and remember
 /// them in DeletedPhis
 void StructurizeCFG::delPhiValues(BasicBlock *From, BasicBlock *To) {
@@ -661,7 +681,7 @@ void StructurizeCFG::simplifyAffectedPhis() {
     Q.DT = DT;
     for (WeakVH VH : AffectedPhis) {
       if (auto Phi = dyn_cast_or_null<PHINode>(VH)) {
-        if (auto NewValue = SimplifyInstruction(Phi, Q)) {
+        if (auto NewValue = simplifyInstruction(Phi, Q)) {
           Phi->replaceAllUsesWith(NewValue);
           Phi->eraseFromParent();
           Changed = true;
@@ -954,7 +974,7 @@ static bool hasOnlyUniformBranches(Region *R, unsigned UniformMDKindID,
   // Count of how many direct children are conditional.
   unsigned ConditionalDirectChildren = 0;
 
-  for (auto E : R->elements()) {
+  for (auto *E : R->elements()) {
     if (!E->isSubRegion()) {
       auto Br = dyn_cast<BranchInst>(E->getEntry()->getTerminator());
       if (!Br || !Br->isConditional())
@@ -978,7 +998,7 @@ static bool hasOnlyUniformBranches(Region *R, unsigned UniformMDKindID,
       // their direct child basic blocks' terminators, regardless of whether
       // subregions are uniform or not. However, this requires a very careful
       // look at SIAnnotateControlFlow to make sure nothing breaks there.
-      for (auto BB : E->getNodeAs<Region>()->blocks()) {
+      for (auto *BB : E->getNodeAs<Region>()->blocks()) {
         auto Br = dyn_cast<BranchInst>(BB->getTerminator());
         if (!Br || !Br->isConditional())
           continue;
@@ -1066,6 +1086,7 @@ bool StructurizeCFG::run(Region *R, DominatorTree *DT) {
   insertConditions(false);
   insertConditions(true);
   setPhiValues();
+  simplifyConditions();
   simplifyAffectedPhis();
   rebuildSSA();
 

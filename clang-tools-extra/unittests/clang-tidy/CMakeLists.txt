@@ -20,11 +20,13 @@ add_extra_unittest(ClangTidyTests
   AddConstTest.cpp
   ClangTidyDiagnosticConsumerTest.cpp
   ClangTidyOptionsTest.cpp
+  DeclRefExprUtilsTest.cpp
   IncludeInserterTest.cpp
   GlobListTest.cpp
   GoogleModuleTest.cpp
   GrppiModuleTest.cpp
   LLVMModuleTest.cpp
+  ModernizeModuleTest.cpp
   NamespaceAliaserTest.cpp
   ObjCModuleTest.cpp
   OptionsProviderTest.cpp
@@ -53,6 +55,7 @@ target_link_libraries(ClangTidyTests
   clangTidyGoogleModule
   clangTidyGrppiModule
   clangTidyLLVMModule
+  clangTidyModernizeModule
   clangTidyObjCModule
   clangTidyReadabilityModule
   clangTidyUtils

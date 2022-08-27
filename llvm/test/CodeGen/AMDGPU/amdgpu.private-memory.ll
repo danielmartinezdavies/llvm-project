@@ -28,7 +28,7 @@
 ; HSA-PROMOTE: workgroup_group_segment_byte_size = 5120
 ; HSA-PROMOTE: .end_amd_kernel_code_t
 
-; HSA-PROMOTE: s_load_dword s{{[0-9]+}}, s[4:5], 0x2
+; HSA-PROMOTE: s_load_dwordx2 s[{{[0-9:]+}}], s[4:5], 0x1
 
 ; SI-PROMOTE: ds_write_b32
 ; SI-PROMOTE: ds_write_b32
@@ -42,7 +42,7 @@
 ; HSA-ALLOCA: .end_amd_kernel_code_t
 
 ; HSA-ALLOCA: s_mov_b32 flat_scratch_lo, s7
-; HSA-ALLOCA: s_add_u32 s6, s6, s9
+; HSA-ALLOCA: s_add_i32 s6, s6, s9
 ; HSA-ALLOCA: s_lshr_b32 flat_scratch_hi, s6, 8
 
 ; SI-ALLOCA: buffer_store_dword v{{[0-9]+}}, v{{[0-9]+}}, s[{{[0-9]+:[0-9]+}}], 0 offen ; encoding: [0x00,0x10,0x70,0xe0

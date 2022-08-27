@@ -33,14 +33,13 @@
 #include "llvm/Analysis/BasicAliasAnalysis.h"
 #include "llvm/Analysis/BranchProbabilityInfo.h"
 #include "llvm/Analysis/GlobalsModRef.h"
+#include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Analysis/LoopPass.h"
 #include "llvm/Analysis/MemorySSA.h"
 #include "llvm/Analysis/ScalarEvolution.h"
 #include "llvm/Analysis/ScalarEvolutionAliasAnalysis.h"
-#include "llvm/IR/Constants.h"
 #include "llvm/IR/DebugInfo.h"
 #include "llvm/IR/Dominators.h"
-#include "llvm/IR/Function.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/IntrinsicInst.h"
@@ -111,6 +110,10 @@ bool llvm::formLCSSAForInstructions(SmallVectorImpl<Instruction *> &Worklist,
     for (Use &U : I->uses()) {
       Instruction *User = cast<Instruction>(U.getUser());
       BasicBlock *UserBB = User->getParent();
+
+      // Skip uses in unreachable blocks.
+      if (!DT.isReachableFromEntry(UserBB))
+        continue;
 
       // For practical purposes, we consider that the use in a PHI
       // occurs in the respective predecessor block. For more info,
@@ -309,7 +312,7 @@ static void computeBlocksDominatingExits(
     // worklist, unless we visited it already.
     BasicBlock *IDomBB = DT.getNode(BB)->getIDom()->getBlock();
 
-    // Exit blocks can have an immediate dominator not beloinging to the
+    // Exit blocks can have an immediate dominator not belonging to the
     // loop. For an exit block to be immediately dominated by another block
     // outside the loop, it implies not all paths from that dominator, to the
     // exit block, go through the loop.
@@ -339,8 +342,10 @@ bool llvm::formLCSSA(Loop &L, const DominatorTree &DT, const LoopInfo *LI,
 
 #ifdef EXPENSIVE_CHECKS
   // Verify all sub-loops are in LCSSA form already.
-  for (Loop *SubLoop: L)
+  for (Loop *SubLoop: L) {
+    (void)SubLoop; // Silence unused variable warning.
     assert(SubLoop->isRecursivelyLCSSAForm(DT, *LI) && "Subloop not in LCSSA!");
+  }
 #endif
 
   SmallVector<BasicBlock *, 8> ExitBlocks;
@@ -416,7 +421,7 @@ bool llvm::formLCSSARecursively(Loop &L, const DominatorTree &DT,
 static bool formLCSSAOnAllLoops(const LoopInfo *LI, const DominatorTree &DT,
                                 ScalarEvolution *SE) {
   bool Changed = false;
-  for (auto &L : *LI)
+  for (const auto &L : *LI)
     Changed |= formLCSSARecursively(*L, DT, LI, SE);
   return Changed;
 }

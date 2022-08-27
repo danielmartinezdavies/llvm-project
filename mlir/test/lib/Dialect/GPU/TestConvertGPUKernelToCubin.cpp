@@ -6,8 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "mlir/Dialect/GPU/Passes.h"
-
+#include "mlir/Dialect/GPU/Transforms/Passes.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Target/LLVMIR/Dialect/NVVM/NVVMToLLVMIRTranslation.h"
 #include "mlir/Target/LLVMIR/Export.h"
@@ -20,6 +19,12 @@ namespace {
 class TestSerializeToCubinPass
     : public PassWrapper<TestSerializeToCubinPass, gpu::SerializeToBlobPass> {
 public:
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(TestSerializeToCubinPass)
+
+  StringRef getArgument() const final { return "test-gpu-to-cubin"; }
+  StringRef getDescription() const final {
+    return "Lower GPU kernel function to CUBIN binary annotations";
+  }
   TestSerializeToCubinPass();
 
 private:
@@ -53,17 +58,15 @@ namespace mlir {
 namespace test {
 // Register test pass to serialize GPU module to a CUBIN binary annotation.
 void registerTestGpuSerializeToCubinPass() {
-  PassRegistration<TestSerializeToCubinPass> registerSerializeToCubin(
-      "test-gpu-to-cubin",
-      "Lower GPU kernel function to CUBIN binary annotations", [] {
-        // Initialize LLVM NVPTX backend.
-        LLVMInitializeNVPTXTarget();
-        LLVMInitializeNVPTXTargetInfo();
-        LLVMInitializeNVPTXTargetMC();
-        LLVMInitializeNVPTXAsmPrinter();
+  PassRegistration<TestSerializeToCubinPass>([] {
+    // Initialize LLVM NVPTX backend.
+    LLVMInitializeNVPTXTarget();
+    LLVMInitializeNVPTXTargetInfo();
+    LLVMInitializeNVPTXTargetMC();
+    LLVMInitializeNVPTXAsmPrinter();
 
-        return std::make_unique<TestSerializeToCubinPass>();
-      });
+    return std::make_unique<TestSerializeToCubinPass>();
+  });
 }
 } // namespace test
 } // namespace mlir

@@ -11,6 +11,8 @@
 #include "tsd_exclusive.h"
 #include "tsd_shared.h"
 
+#include <stdlib.h>
+
 #include <condition_variable>
 #include <mutex>
 #include <set>
@@ -23,7 +25,9 @@ template <class Config> class MockAllocator {
 public:
   using ThisT = MockAllocator<Config>;
   using TSDRegistryT = typename Config::template TSDRegistryT<ThisT>;
-  using CacheT = struct MockCache { volatile scudo::uptr Canary; };
+  using CacheT = struct MockCache {
+    volatile scudo::uptr Canary;
+  };
   using QuarantineCacheT = struct MockQuarantine {};
 
   void init() {
@@ -39,6 +43,13 @@ public:
   void callPostInitCallback() {}
 
   bool isInitialized() { return Initialized; }
+
+  void *operator new(size_t Size) {
+    void *P = nullptr;
+    EXPECT_EQ(0, posix_memalign(&P, alignof(ThisT), Size));
+    return P;
+  }
+  void operator delete(void *P) { free(P); }
 
 private:
   bool Initialized = false;

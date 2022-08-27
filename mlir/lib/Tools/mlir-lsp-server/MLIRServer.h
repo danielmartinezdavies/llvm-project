@@ -16,10 +16,15 @@ namespace mlir {
 class DialectRegistry;
 
 namespace lsp {
+struct CodeAction;
+struct CodeActionContext;
+struct CompletionList;
 struct Diagnostic;
+struct DocumentSymbol;
 struct Hover;
 struct Location;
 struct Position;
+struct Range;
 class URIForFile;
 
 /// This class implements all of the MLIR related functionality necessary for a
@@ -54,6 +59,19 @@ public:
   /// Find a hover description for the given hover position, or None if one
   /// couldn't be found.
   Optional<Hover> findHover(const URIForFile &uri, const Position &hoverPos);
+
+  /// Find all of the document symbols within the given file.
+  void findDocumentSymbols(const URIForFile &uri,
+                           std::vector<DocumentSymbol> &symbols);
+
+  /// Get the code completion list for the position within the given file.
+  CompletionList getCodeCompletion(const URIForFile &uri,
+                                   const Position &completePos);
+
+  /// Get the set of code actions within the file.
+  void getCodeActions(const URIForFile &uri, const Range &pos,
+                      const CodeActionContext &context,
+                      std::vector<CodeAction> &actions);
 
 private:
   struct Impl;

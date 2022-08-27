@@ -19,9 +19,12 @@
 #include "Targets/ARM.h"
 #include "Targets/AVR.h"
 #include "Targets/BPF.h"
+#include "Targets/CSKY.h"
+#include "Targets/DirectX.h"
 #include "Targets/Hexagon.h"
 #include "Targets/Lanai.h"
 #include "Targets/Le64.h"
+#include "Targets/LoongArch.h"
 #include "Targets/M68k.h"
 #include "Targets/MSP430.h"
 #include "Targets/Mips.h"
@@ -590,6 +593,8 @@ TargetInfo *AllocateTarget(const llvm::Triple &Triple,
       return new NaClTargetInfo<X86_64TargetInfo>(Triple, Opts);
     case llvm::Triple::PS4:
       return new PS4OSTargetInfo<X86_64TargetInfo>(Triple, Opts);
+    case llvm::Triple::PS5:
+      return new PS5OSTargetInfo<X86_64TargetInfo>(Triple, Opts);
     default:
       return new X86_64TargetInfo(Triple, Opts);
     }
@@ -605,6 +610,18 @@ TargetInfo *AllocateTarget(const llvm::Triple &Triple,
         Triple.getEnvironment() != llvm::Triple::UnknownEnvironment)
       return nullptr;
     return new SPIR64TargetInfo(Triple, Opts);
+  }
+  case llvm::Triple::spirv32: {
+    if (os != llvm::Triple::UnknownOS ||
+        Triple.getEnvironment() != llvm::Triple::UnknownEnvironment)
+      return nullptr;
+    return new SPIRV32TargetInfo(Triple, Opts);
+  }
+  case llvm::Triple::spirv64: {
+    if (os != llvm::Triple::UnknownOS ||
+        Triple.getEnvironment() != llvm::Triple::UnknownEnvironment)
+      return nullptr;
+    return new SPIRV64TargetInfo(Triple, Opts);
   }
   case llvm::Triple::wasm32:
     if (Triple.getSubArch() != llvm::Triple::NoSubArch ||
@@ -637,6 +654,8 @@ TargetInfo *AllocateTarget(const llvm::Triple &Triple,
         return nullptr;
     }
 
+  case llvm::Triple::dxil:
+    return new DirectXTargetInfo(Triple,Opts);
   case llvm::Triple::renderscript32:
     return new LinuxTargetInfo<RenderScript32TargetInfo>(Triple, Opts);
   case llvm::Triple::renderscript64:
@@ -644,6 +663,28 @@ TargetInfo *AllocateTarget(const llvm::Triple &Triple,
 
   case llvm::Triple::ve:
     return new LinuxTargetInfo<VETargetInfo>(Triple, Opts);
+
+  case llvm::Triple::csky:
+    switch (os) {
+    case llvm::Triple::Linux:
+      return new LinuxTargetInfo<CSKYTargetInfo>(Triple, Opts);
+    default:
+      return new CSKYTargetInfo(Triple, Opts);
+    }
+  case llvm::Triple::loongarch32:
+    switch (os) {
+    case llvm::Triple::Linux:
+      return new LinuxTargetInfo<LoongArch32TargetInfo>(Triple, Opts);
+    default:
+      return new LoongArch32TargetInfo(Triple, Opts);
+    }
+  case llvm::Triple::loongarch64:
+    switch (os) {
+    case llvm::Triple::Linux:
+      return new LinuxTargetInfo<LoongArch64TargetInfo>(Triple, Opts);
+    default:
+      return new LoongArch64TargetInfo(Triple, Opts);
+    }
   }
 }
 } // namespace targets
@@ -719,6 +760,10 @@ TargetInfo::CreateTargetInfo(DiagnosticsEngine &Diags,
   Target->setCommandLineOpenCLOpts();
   Target->setMaxAtomicWidth();
 
+  if (!Opts->DarwinTargetVariantTriple.empty())
+    Target->DarwinTargetVariantTriple =
+        llvm::Triple(Opts->DarwinTargetVariantTriple);
+
   if (!Target->validateTarget(Diags))
     return nullptr;
 
@@ -745,18 +790,9 @@ bool TargetInfo::validateOpenCLTarget(const LangOptions &Opts,
 
   // Validate that feature macros are set properly for OpenCL C 3.0.
   // In other cases assume that target is always valid.
-  if (Opts.OpenCLCPlusPlus || Opts.OpenCLVersion < 300)
+  if (Opts.getOpenCLCompatibleVersion() < 300)
     return true;
 
-  // Feature and corresponding equivalent extension must be set
-  // simultaneously to the same value.
-  for (auto &ExtAndFeat : {std::make_pair("cl_khr_fp64", "__opencl_c_fp64")})
-    if (hasFeatureEnabled(OpenCLFeaturesMap, ExtAndFeat.first) !=
-        hasFeatureEnabled(OpenCLFeaturesMap, ExtAndFeat.second)) {
-      Diags.Report(diag::err_opencl_extension_and_feature_differs)
-          << ExtAndFeat.first << ExtAndFeat.second;
-      return false;
-    }
-
-  return true;
+  return OpenCLOptions::diagnoseUnsupportedFeatureDependencies(*this, Diags) &&
+         OpenCLOptions::diagnoseFeatureExtensionDifferences(*this, Diags);
 }

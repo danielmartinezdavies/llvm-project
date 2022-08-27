@@ -10,6 +10,7 @@
 target datalayout = "e-p:64:64:64-i1:8:8-i8:8:8-i16:16:16-i32:32:32-i64:64:64-f32:32:32-f64:64:64-v64:64:64-v128:128:128-a0:0:64-s0:64:64-f80:128:128-n8:16:32:64-S128"
 target triple = "x86_64-unknown-linux-gnu"
 
+; CHECK: @llvm.used = appending global [1 x i8*] [i8* bitcast (void ()* @msan.module_ctor to i8*)]
 ; CHECK: @llvm.global_ctors {{.*}} { i32 0, void ()* @msan.module_ctor, i8* null }
 
 ; Check the presence and the linkage type of __msan_track_origins and
@@ -232,6 +233,31 @@ declare void @llvm.memcpy.p0i8.p0i8.i64(i8* nocapture, i8* nocapture, i64, i1) n
 ; CHECK: call i8* @__msan_memcpy
 ; CHECK: ret void
 
+; memset.inline
+define void @MemSetInline(i8* nocapture %x) nounwind uwtable sanitize_memory {
+entry:
+  call void @llvm.memset.inline.p0i8.i64(i8* %x, i8 42, i64 10, i1 false)
+  ret void
+}
+
+declare void @llvm.memset.inline.p0i8.i64(i8* nocapture, i8, i64, i1) nounwind
+
+; CHECK-LABEL: @MemSetInline
+; CHECK: call i8* @__msan_memset
+; CHECK: ret void
+
+; memcpy.inline
+define void @MemCpyInline(i8* nocapture %x, i8* nocapture %y) nounwind uwtable sanitize_memory {
+entry:
+  call void @llvm.memcpy.inline.p0i8.p0i8.i64(i8* %x, i8* %y, i64 10, i1 false)
+  ret void
+}
+
+declare void @llvm.memcpy.inline.p0i8.p0i8.i64(i8* nocapture, i8* nocapture, i64, i1) nounwind
+
+; CHECK-LABEL: @MemCpyInline
+; CHECK: call i8* @__msan_memcpy
+; CHECK: ret void
 
 ; memmove is lowered to a call
 define void @MemMove(i8* nocapture %x, i8* nocapture %y) nounwind uwtable sanitize_memory {
@@ -247,7 +273,7 @@ declare void @llvm.memmove.p0i8.p0i8.i64(i8* nocapture, i8* nocapture, i64, i1) 
 ; CHECK: ret void
 
 ;; ------------
-;; Placeholder tests that will fail once element atomic @llvm.mem[cpy|move|set] instrinsics have
+;; Placeholder tests that will fail once element atomic @llvm.mem[cpy|move|set] intrinsics have
 ;; been added to the MemIntrinsic class hierarchy. These will act as a reminder to
 ;; verify that MSAN handles these intrinsics properly once they have been
 ;; added to that class hierarchy.
@@ -822,7 +848,7 @@ declare i32 @NoSanitizeMemoryUndefHelper(i32 %x)
 ; CHECK: ret i32
 
 
-; Test PHINode instrumentation in blacklisted functions
+; Test PHINode instrumentation in ignorelisted functions
 
 define i32 @NoSanitizeMemoryPHI(i32 %x) {
 entry:

@@ -755,12 +755,10 @@ enum FileAccess : unsigned {
 
 enum OpenFlags : unsigned {
   OF_None = 0,
-  F_None = 0, // For compatibility
 
   /// The file should be opened in text mode on platforms like z/OS that make
   /// this distinction.
   OF_Text = 1,
-  F_Text = 1, // For compatibility
 
   /// The file should use a carriage linefeed '\r\n'. This flag should only be
   /// used with OF_Text. Only makes a difference on Windows.
@@ -773,9 +771,9 @@ enum OpenFlags : unsigned {
 
   /// The file should be opened in append mode.
   OF_Append = 4,
-  F_Append = 4, // For compatibility
 
-  /// Delete the file on close. Only makes a difference on windows.
+  /// The returned handle can be used for deleting the file. Only makes a
+  /// difference on windows.
   OF_Delete = 8,
 
   /// When a child process is launched, this file should remain open in the
@@ -857,7 +855,8 @@ public:
   /// This creates a temporary file with createUniqueFile and schedules it for
   /// deletion with sys::RemoveFileOnSignal.
   static Expected<TempFile> create(const Twine &Model,
-                                   unsigned Mode = all_read | all_write);
+                                   unsigned Mode = all_read | all_write,
+                                   OpenFlags ExtraFlags = OF_None);
   TempFile(TempFile &&Other);
   TempFile &operator=(TempFile &&Other);
 
@@ -866,6 +865,11 @@ public:
 
   // The open file descriptor.
   int FD = -1;
+
+#ifdef _WIN32
+  // Whether we need to manually remove the file on close.
+  bool RemoveOnClose = false;
+#endif
 
   // Keep this with the given name.
   Error keep(const Twine &Name);
@@ -1009,6 +1013,25 @@ file_t getStderrHandle();
 /// @param Buf Buffer to read into.
 /// @returns The number of bytes read, or error.
 Expected<size_t> readNativeFile(file_t FileHandle, MutableArrayRef<char> Buf);
+
+/// Default chunk size for \a readNativeFileToEOF().
+enum : size_t { DefaultReadChunkSize = 4 * 4096 };
+
+/// Reads from \p FileHandle until EOF, appending to \p Buffer in chunks of
+/// size \p ChunkSize.
+///
+/// This calls \a readNativeFile() in a loop. On Error, previous chunks that
+/// were read successfully are left in \p Buffer and returned.
+///
+/// Note: For reading the final chunk at EOF, \p Buffer's capacity needs extra
+/// storage of \p ChunkSize.
+///
+/// \param FileHandle File to read from.
+/// \param Buffer Where to put the file content.
+/// \param ChunkSize Size of chunks.
+/// \returns The error if EOF was not found.
+Error readNativeFileToEOF(file_t FileHandle, SmallVectorImpl<char> &Buffer,
+                          ssize_t ChunkSize = DefaultReadChunkSize);
 
 /// Reads \p Buf.size() bytes from \p FileHandle at offset \p Offset into \p
 /// Buf. If 'pread' is available, this will use that, otherwise it will use
@@ -1275,6 +1298,7 @@ private:
   }
 
   void unmapImpl();
+  void dontNeedImpl();
 
   std::error_code init(sys::fs::file_t FD, uint64_t Offset, mapmode Mode);
 
@@ -1304,6 +1328,7 @@ public:
     unmapImpl();
     copyFrom(mapped_file_region());
   }
+  void dontNeed() { dontNeedImpl(); }
 
   size_t size() const;
   char *data() const;

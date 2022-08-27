@@ -49,7 +49,7 @@ def SPV_MatrixTimesMatrixOp : SPV_Op<"MatrixTimesMatrix", [NoSideEffect]> {
 
   let availability = [
     MinVersion<SPV_V_1_0>,
-    MaxVersion<SPV_V_1_5>,
+    MaxVersion<SPV_V_1_6>,
     Extension<[]>,
     Capability<[SPV_C_Matrix]>
   ];
@@ -66,8 +66,6 @@ def SPV_MatrixTimesMatrixOp : SPV_Op<"MatrixTimesMatrix", [NoSideEffect]> {
   let assemblyFormat = [{
     operands attr-dict `:` type($leftmatrix) `,` type($rightmatrix) `->` type($result)
   }];
-
-  let verifier = [{ return verifyMatrixTimesMatrix(*this); }];
 }
 
 // -----
@@ -104,7 +102,7 @@ def SPV_MatrixTimesScalarOp : SPV_Op<"MatrixTimesScalar", [NoSideEffect]> {
 
   let availability = [
     MinVersion<SPV_V_1_0>,
-    MaxVersion<SPV_V_1_5>,
+    MaxVersion<SPV_V_1_6>,
     Extension<[]>,
     Capability<[SPV_C_Matrix]>
   ];
@@ -130,8 +128,6 @@ def SPV_MatrixTimesScalarOp : SPV_Op<"MatrixTimesScalar", [NoSideEffect]> {
     Extension<[]>,
     Capability<[SPV_C_Matrix]>
   ];
-
-  let verifier = [{ return verifyMatrixTimesScalar(*this); }];
 }
 
 // -----
@@ -168,7 +164,7 @@ def SPV_TransposeOp : SPV_Op<"Transpose", [NoSideEffect]> {
 
   let availability = [
     MinVersion<SPV_V_1_0>,
-    MaxVersion<SPV_V_1_5>,
+    MaxVersion<SPV_V_1_6>,
     Extension<[]>,
     Capability<[SPV_C_Matrix]>
   ];
@@ -184,8 +180,6 @@ def SPV_TransposeOp : SPV_Op<"Transpose", [NoSideEffect]> {
   let assemblyFormat = [{
     operands attr-dict `:` type($matrix) `->` type($result)
   }];
-
-  let verifier = [{ return verifyTranspose(*this); }];
 }
 
 // -----

@@ -73,11 +73,8 @@ RefCountBug::RefCountBug(CheckerNameRef Checker, RefCountBugKind BT)
 
 static bool isNumericLiteralExpression(const Expr *E) {
   // FIXME: This set of cases was copied from SemaExprObjC.
-  return isa<IntegerLiteral>(E) ||
-         isa<CharacterLiteral>(E) ||
-         isa<FloatingLiteral>(E) ||
-         isa<ObjCBoolLiteralExpr>(E) ||
-         isa<CXXBoolLiteralExpr>(E);
+  return isa<IntegerLiteral, CharacterLiteral, FloatingLiteral,
+             ObjCBoolLiteralExpr, CXXBoolLiteralExpr>(E);
 }
 
 /// If type represents a pointer to CXXRecordDecl,
@@ -264,14 +261,12 @@ static void generateDiagnosticsForCallLike(ProgramStateRef CurrSt,
   }
 
   if (CurrV.getObjKind() == ObjKind::CF) {
-    os << "a Core Foundation object of type '"
-       << Sym->getType().getAsString() << "' with a ";
+    os << "a Core Foundation object of type '" << Sym->getType() << "' with a ";
   } else if (CurrV.getObjKind() == ObjKind::OS) {
     os << "an OSObject of type '" << findAllocatedObjectName(S, Sym->getType())
        << "' with a ";
   } else if (CurrV.getObjKind() == ObjKind::Generalized) {
-    os << "an object of type '" << Sym->getType().getAsString()
-       << "' with a ";
+    os << "an object of type '" << Sym->getType() << "' with a ";
   } else {
     assert(CurrV.getObjKind() == ObjKind::ObjC);
     QualType T = Sym->getType();
@@ -279,8 +274,7 @@ static void generateDiagnosticsForCallLike(ProgramStateRef CurrSt,
       os << "an Objective-C object with a ";
     } else {
       const ObjCObjectPointerType *PT = cast<ObjCObjectPointerType>(T);
-      os << "an instance of " << PT->getPointeeType().getAsString()
-         << " with a ";
+      os << "an instance of " << PT->getPointeeType() << " with a ";
     }
   }
 
@@ -846,7 +840,7 @@ RefCountReport::RefCountReport(const RefCountBug &D, const LangOptions &LOpts,
     : PathSensitiveBugReport(D, D.getDescription(), n), Sym(sym),
       isLeak(isLeak) {
   if (!isLeak)
-    addVisitor(std::make_unique<RefCountReportVisitor>(sym));
+    addVisitor<RefCountReportVisitor>(sym);
 }
 
 RefCountReport::RefCountReport(const RefCountBug &D, const LangOptions &LOpts,
@@ -854,7 +848,7 @@ RefCountReport::RefCountReport(const RefCountBug &D, const LangOptions &LOpts,
                                StringRef endText)
     : PathSensitiveBugReport(D, D.getDescription(), endText, n) {
 
-  addVisitor(std::make_unique<RefCountReportVisitor>(sym));
+  addVisitor<RefCountReportVisitor>(sym);
 }
 
 void RefLeakReport::deriveParamLocation(CheckerContext &Ctx) {
@@ -980,13 +974,12 @@ void RefLeakReport::findBindingToReport(CheckerContext &Ctx,
     // got from one to another.
     //
     // NOTE: We use the actual SVal stored in AllocBindingToReport here because
-    //       FindLastStoreBRVisitor compares SVal's and it can get trickier for
+    //       trackStoredValue compares SVal's and it can get trickier for
     //       something like derived regions if we want to construct SVal from
     //       Sym. Instead, we take the value that is definitely stored in that
-    //       region, thus guaranteeing that FindLastStoreBRVisitor will work.
-    addVisitor(std::make_unique<FindLastStoreBRVisitor>(
-        AllVarBindings[0].second.castAs<KnownSVal>(), AllocBindingToReport,
-        false, bugreporter::TrackingKind::Thorough));
+    //       region, thus guaranteeing that trackStoredValue will work.
+    bugreporter::trackStoredValue(AllVarBindings[0].second.castAs<KnownSVal>(),
+                                  AllocBindingToReport, *this);
   } else {
     AllocBindingToReport = AllocFirstBinding;
   }
@@ -1005,5 +998,5 @@ RefLeakReport::RefLeakReport(const RefCountBug &D, const LangOptions &LOpts,
 
   createDescription(Ctx);
 
-  addVisitor(std::make_unique<RefLeakReportVisitor>(Sym, AllocBindingToReport));
+  addVisitor<RefLeakReportVisitor>(Sym, AllocBindingToReport);
 }

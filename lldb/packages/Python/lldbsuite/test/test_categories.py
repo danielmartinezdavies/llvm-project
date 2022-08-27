@@ -21,7 +21,6 @@ debug_info_categories = [
 all_categories = {
     'basic_process': 'Basic process execution sniff tests.',
     'cmdline': 'Tests related to the LLDB command-line interface',
-    'darwin-log': 'Darwin log tests',
     'dataformatters': 'Tests related to the type command and the data formatters subsystem',
     'debugserver': 'Debugserver tests',
     'dsym': 'Tests that can be run with DSYM debug information',
@@ -65,7 +64,7 @@ def is_supported_on_platform(category, platform, compiler_path):
         return platform in ["darwin", "macosx", "ios", "watchos", "tvos", "bridgeos"]
     elif category == "gmodules":
         # First, check to see if the platform can even support gmodules.
-        if platform not in ["freebsd", "darwin", "macosx", "ios", "watchos", "tvos", "bridgeos"]:
+        if platform not in ["darwin", "macosx", "ios", "watchos", "tvos", "bridgeos"]:
             return False
         return gmodules.is_compiler_clang_with_gmodules(compiler_path)
     return True

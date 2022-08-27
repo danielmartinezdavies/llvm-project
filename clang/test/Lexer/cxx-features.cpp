@@ -31,6 +31,10 @@
 
 // --- C++2b features ---
 
+#if check(implicit_move, 0, 0, 0, 0, 0, 202011)
+#error "wrong value for __cpp_implicit_move"
+#endif
+
 #if check(size_t_suffix, 0, 0, 0, 0, 0, 202011)
 #error "wrong value for __cpp_size_t_suffix"
 #endif
@@ -91,6 +95,10 @@
 #error "wrong value for __cpp_impl_three_way_comparison"
 #endif
 
+#if check(impl_coroutine, 0, 0, 0, 0, 201902L, 201902L)
+#error "wrong value for __cpp_impl_coroutine"
+#endif
+
 // init_captures checked below
 
 #if check(modules, 0, 0, 0, 0, 0, 0)
@@ -98,8 +106,7 @@
 #error "wrong value for __cpp_modules"
 #endif
 
-#if check(using_enum, 0, 0, 0, 0, 0, 0)
-// FIXME: 201907 in C++20
+#if check(using_enum, 0, 0, 0, 0, 201907, 201907)
 #error "wrong value for __cpp_using_enum"
 #endif
 
@@ -270,7 +277,7 @@
 #error "wrong value for __cpp_lambdas"
 #endif
 
-#if check(constexpr, 0, 200704, 201304, 201603, 201907, 201907)
+#if check(constexpr, 0, 200704, 201304, 201603, 201907, 202110)
 #error "wrong value for __cpp_constexpr"
 #endif
 

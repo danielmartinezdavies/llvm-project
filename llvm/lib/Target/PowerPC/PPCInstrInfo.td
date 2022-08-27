@@ -198,8 +198,8 @@ def PPCfsel   : SDNode<"PPCISD::FSEL",
    // Type constraint for fsel.
    SDTypeProfile<1, 3, [SDTCisSameAs<0, 2>, SDTCisSameAs<0, 3>,
                         SDTCisFP<0>, SDTCisVT<1, f64>]>, []>;
-def PPCxsmaxc : SDNode<"PPCISD::XSMAXCDP", SDT_PPCFPMinMax, []>;
-def PPCxsminc : SDNode<"PPCISD::XSMINCDP", SDT_PPCFPMinMax, []>;
+def PPCxsmaxc : SDNode<"PPCISD::XSMAXC", SDT_PPCFPMinMax, []>;
+def PPCxsminc : SDNode<"PPCISD::XSMINC", SDT_PPCFPMinMax, []>;
 def PPChi       : SDNode<"PPCISD::Hi", SDTIntBinOp, []>;
 def PPClo       : SDNode<"PPCISD::Lo", SDTIntBinOp, []>;
 def PPCtoc_entry: SDNode<"PPCISD::TOC_ENTRY", SDTIntBinOp,
@@ -316,6 +316,24 @@ def PPCbctrl_load_toc : SDNode<"PPCISD::BCTRL_LOAD_TOC",
                                [SDNPHasChain, SDNPOptInGlue, SDNPOutGlue,
                                 SDNPVariadic]>;
 
+// Call nodes for strictfp calls (that define RM).
+def PPCcall_rm  : SDNode<"PPCISD::CALL_RM", SDT_PPCCall,
+                         [SDNPHasChain, SDNPOptInGlue, SDNPOutGlue,
+                          SDNPVariadic]>;
+def PPCcall_nop_rm  : SDNode<"PPCISD::CALL_NOP_RM", SDT_PPCCall,
+                             [SDNPHasChain, SDNPOptInGlue, SDNPOutGlue,
+                              SDNPVariadic]>;
+def PPCcall_notoc_rm : SDNode<"PPCISD::CALL_NOTOC_RM", SDT_PPCCall,
+                              [SDNPHasChain, SDNPOptInGlue, SDNPOutGlue,
+                               SDNPVariadic]>;
+def PPCbctrl_rm : SDNode<"PPCISD::BCTRL_RM", SDTNone,
+                         [SDNPHasChain, SDNPOptInGlue, SDNPOutGlue,
+                          SDNPVariadic]>;
+def PPCbctrl_load_toc_rm : SDNode<"PPCISD::BCTRL_LOAD_TOC_RM",
+                                  SDTypeProfile<0, 1, []>,
+                                  [SDNPHasChain, SDNPOptInGlue, SDNPOutGlue,
+                                   SDNPVariadic]>;
+
 def retflag       : SDNode<"PPCISD::RET_FLAG", SDTNone,
                            [SDNPHasChain, SDNPOptInGlue, SDNPVariadic]>;
 
@@ -410,6 +428,9 @@ def nzFPImmAsi64 : PatLeaf<(fpimm), [{
 // Get the Hi bits of a 64 bit immediate.
 def getFPAs64BitIntHi : SDNodeXForm<fpimm, [{
   APFloat APFloatOfN = N->getValueAPF();
+  bool Unused;
+  APFloatOfN.convert(APFloat::IEEEdouble(), APFloat::rmNearestTiesToEven,
+                     &Unused);
   uint32_t Hi = (uint32_t)((APFloatOfN.bitcastToAPInt().getZExtValue() &
                             0xFFFFFFFF00000000LL) >> 32);
   return CurDAG->getTargetConstant(Hi, SDLoc(N), MVT::i32);
@@ -418,6 +439,9 @@ def getFPAs64BitIntHi : SDNodeXForm<fpimm, [{
 // Get the Lo bits of a 64 bit immediate.
 def getFPAs64BitIntLo : SDNodeXForm<fpimm, [{
   APFloat APFloatOfN = N->getValueAPF();
+  bool Unused;
+  APFloatOfN.convert(APFloat::IEEEdouble(), APFloat::rmNearestTiesToEven,
+                     &Unused);
   uint32_t Lo = (uint32_t)(APFloatOfN.bitcastToAPInt().getZExtValue() &
                            0xFFFFFFFF);
   return CurDAG->getTargetConstant(Lo, SDLoc(N), MVT::i32);
@@ -454,7 +478,7 @@ def HI16 : SDNodeXForm<imm, [{
 
 def HA16 : SDNodeXForm<imm, [{
   // Transformation function: shift the immediate value down into the low bits.
-  long Val = N->getZExtValue();
+  int64_t Val = N->getZExtValue();
   return getI32Imm((Val - (signed short)Val) >> 16, SDLoc(N));
 }]>;
 def MB : SDNodeXForm<imm, [{
@@ -609,508 +633,6 @@ class NoEncode<string E> {
 }
 
 
-//===----------------------------------------------------------------------===//
-// PowerPC Operand Definitions.
-
-// In the default PowerPC assembler syntax, registers are specified simply
-// by number, so they cannot be distinguished from immediate values (without
-// looking at the opcode).  This means that the default operand matching logic
-// for the asm parser does not work, and we need to specify custom matchers.
-// Since those can only be specified with RegisterOperand classes and not
-// directly on the RegisterClass, all instructions patterns used by the asm
-// parser need to use a RegisterOperand (instead of a RegisterClass) for
-// all their register operands.
-// For this purpose, we define one RegisterOperand for each RegisterClass,
-// using the same name as the class, just in lower case.
-
-def PPCRegGPRCAsmOperand : AsmOperandClass {
-  let Name = "RegGPRC"; let PredicateMethod = "isRegNumber";
-}
-def gprc : RegisterOperand<GPRC> {
-  let ParserMatchClass = PPCRegGPRCAsmOperand;
-}
-def PPCRegG8RCAsmOperand : AsmOperandClass {
-  let Name = "RegG8RC"; let PredicateMethod = "isRegNumber";
-}
-def g8rc : RegisterOperand<G8RC> {
-  let ParserMatchClass = PPCRegG8RCAsmOperand;
-}
-def PPCRegGPRCNoR0AsmOperand : AsmOperandClass {
-  let Name = "RegGPRCNoR0"; let PredicateMethod = "isRegNumber";
-}
-def gprc_nor0 : RegisterOperand<GPRC_NOR0> {
-  let ParserMatchClass = PPCRegGPRCNoR0AsmOperand;
-}
-def PPCRegG8RCNoX0AsmOperand : AsmOperandClass {
-  let Name = "RegG8RCNoX0"; let PredicateMethod = "isRegNumber";
-}
-def g8rc_nox0 : RegisterOperand<G8RC_NOX0> {
-  let ParserMatchClass = PPCRegG8RCNoX0AsmOperand;
-}
-def PPCRegF8RCAsmOperand : AsmOperandClass {
-  let Name = "RegF8RC"; let PredicateMethod = "isRegNumber";
-}
-def f8rc : RegisterOperand<F8RC> {
-  let ParserMatchClass = PPCRegF8RCAsmOperand;
-}
-def PPCRegF4RCAsmOperand : AsmOperandClass {
-  let Name = "RegF4RC"; let PredicateMethod = "isRegNumber";
-}
-def f4rc : RegisterOperand<F4RC> {
-  let ParserMatchClass = PPCRegF4RCAsmOperand;
-}
-def PPCRegVRRCAsmOperand : AsmOperandClass {
-  let Name = "RegVRRC"; let PredicateMethod = "isRegNumber";
-}
-def vrrc : RegisterOperand<VRRC> {
-  let ParserMatchClass = PPCRegVRRCAsmOperand;
-}
-def PPCRegVFRCAsmOperand : AsmOperandClass {
-  let Name = "RegVFRC"; let PredicateMethod = "isRegNumber";
-}
-def vfrc : RegisterOperand<VFRC> {
-  let ParserMatchClass = PPCRegVFRCAsmOperand;
-}
-def PPCRegCRBITRCAsmOperand : AsmOperandClass {
-  let Name = "RegCRBITRC"; let PredicateMethod = "isCRBitNumber";
-}
-def crbitrc : RegisterOperand<CRBITRC> {
-  let ParserMatchClass = PPCRegCRBITRCAsmOperand;
-}
-def PPCRegCRRCAsmOperand : AsmOperandClass {
-  let Name = "RegCRRC"; let PredicateMethod = "isCCRegNumber";
-}
-def crrc : RegisterOperand<CRRC> {
-  let ParserMatchClass = PPCRegCRRCAsmOperand;
-}
-def PPCRegSPERCAsmOperand : AsmOperandClass {
-  let Name = "RegSPERC"; let PredicateMethod = "isRegNumber";
-}
-def sperc : RegisterOperand<SPERC> {
-  let ParserMatchClass = PPCRegSPERCAsmOperand;
-}
-def PPCRegSPE4RCAsmOperand : AsmOperandClass {
-  let Name = "RegSPE4RC"; let PredicateMethod = "isRegNumber";
-}
-def spe4rc : RegisterOperand<GPRC> {
-  let ParserMatchClass = PPCRegSPE4RCAsmOperand;
-}
-
-def PPCU1ImmAsmOperand : AsmOperandClass {
-  let Name = "U1Imm"; let PredicateMethod = "isU1Imm";
-  let RenderMethod = "addImmOperands";
-}
-def u1imm   : Operand<i32> {
-  let PrintMethod = "printU1ImmOperand";
-  let ParserMatchClass = PPCU1ImmAsmOperand;
-  let OperandType = "OPERAND_IMMEDIATE";
-}
-
-def PPCU2ImmAsmOperand : AsmOperandClass {
-  let Name = "U2Imm"; let PredicateMethod = "isU2Imm";
-  let RenderMethod = "addImmOperands";
-}
-def u2imm   : Operand<i32> {
-  let PrintMethod = "printU2ImmOperand";
-  let ParserMatchClass = PPCU2ImmAsmOperand;
-  let OperandType = "OPERAND_IMMEDIATE";
-}
-
-def PPCATBitsAsHintAsmOperand : AsmOperandClass {
-  let Name = "ATBitsAsHint"; let PredicateMethod = "isATBitsAsHint";
-  let RenderMethod = "addImmOperands"; // Irrelevant, predicate always fails.
-}
-def atimm   : Operand<i32> {
-  let PrintMethod = "printATBitsAsHint";
-  let ParserMatchClass = PPCATBitsAsHintAsmOperand;
-  let OperandType = "OPERAND_IMMEDIATE";
-}
-
-def PPCU3ImmAsmOperand : AsmOperandClass {
-  let Name = "U3Imm"; let PredicateMethod = "isU3Imm";
-  let RenderMethod = "addImmOperands";
-}
-def u3imm   : Operand<i32> {
-  let PrintMethod = "printU3ImmOperand";
-  let ParserMatchClass = PPCU3ImmAsmOperand;
-  let OperandType = "OPERAND_IMMEDIATE";
-}
-
-def PPCU4ImmAsmOperand : AsmOperandClass {
-  let Name = "U4Imm"; let PredicateMethod = "isU4Imm";
-  let RenderMethod = "addImmOperands";
-}
-def u4imm   : Operand<i32> {
-  let PrintMethod = "printU4ImmOperand";
-  let ParserMatchClass = PPCU4ImmAsmOperand;
-  let OperandType = "OPERAND_IMMEDIATE";
-}
-def PPCS5ImmAsmOperand : AsmOperandClass {
-  let Name = "S5Imm"; let PredicateMethod = "isS5Imm";
-  let RenderMethod = "addImmOperands";
-}
-def s5imm   : Operand<i32> {
-  let PrintMethod = "printS5ImmOperand";
-  let ParserMatchClass = PPCS5ImmAsmOperand;
-  let DecoderMethod = "decodeSImmOperand<5>";
-  let OperandType = "OPERAND_IMMEDIATE";
-}
-def PPCU5ImmAsmOperand : AsmOperandClass {
-  let Name = "U5Imm"; let PredicateMethod = "isU5Imm";
-  let RenderMethod = "addImmOperands";
-}
-def u5imm   : Operand<i32> {
-  let PrintMethod = "printU5ImmOperand";
-  let ParserMatchClass = PPCU5ImmAsmOperand;
-  let DecoderMethod = "decodeUImmOperand<5>";
-  let OperandType = "OPERAND_IMMEDIATE";
-}
-def PPCU6ImmAsmOperand : AsmOperandClass {
-  let Name = "U6Imm"; let PredicateMethod = "isU6Imm";
-  let RenderMethod = "addImmOperands";
-}
-def u6imm   : Operand<i32> {
-  let PrintMethod = "printU6ImmOperand";
-  let ParserMatchClass = PPCU6ImmAsmOperand;
-  let DecoderMethod = "decodeUImmOperand<6>";
-  let OperandType = "OPERAND_IMMEDIATE";
-}
-def PPCU7ImmAsmOperand : AsmOperandClass {
-  let Name = "U7Imm"; let PredicateMethod = "isU7Imm";
-  let RenderMethod = "addImmOperands";
-}
-def u7imm   : Operand<i32> {
-  let PrintMethod = "printU7ImmOperand";
-  let ParserMatchClass = PPCU7ImmAsmOperand;
-  let DecoderMethod = "decodeUImmOperand<7>";
-  let OperandType = "OPERAND_IMMEDIATE";
-}
-def PPCU8ImmAsmOperand : AsmOperandClass {
-  let Name = "U8Imm"; let PredicateMethod = "isU8Imm";
-  let RenderMethod = "addImmOperands";
-}
-def u8imm   : Operand<i32> {
-  let PrintMethod = "printU8ImmOperand";
-  let ParserMatchClass = PPCU8ImmAsmOperand;
-  let DecoderMethod = "decodeUImmOperand<8>";
-  let OperandType = "OPERAND_IMMEDIATE";
-}
-def PPCU10ImmAsmOperand : AsmOperandClass {
-  let Name = "U10Imm"; let PredicateMethod = "isU10Imm";
-  let RenderMethod = "addImmOperands";
-}
-def u10imm  : Operand<i32> {
-  let PrintMethod = "printU10ImmOperand";
-  let ParserMatchClass = PPCU10ImmAsmOperand;
-  let DecoderMethod = "decodeUImmOperand<10>";
-  let OperandType = "OPERAND_IMMEDIATE";
-}
-def PPCU12ImmAsmOperand : AsmOperandClass {
-  let Name = "U12Imm"; let PredicateMethod = "isU12Imm";
-  let RenderMethod = "addImmOperands";
-}
-def u12imm  : Operand<i32> {
-  let PrintMethod = "printU12ImmOperand";
-  let ParserMatchClass = PPCU12ImmAsmOperand;
-  let DecoderMethod = "decodeUImmOperand<12>";
-  let OperandType = "OPERAND_IMMEDIATE";
-}
-def PPCS16ImmAsmOperand : AsmOperandClass {
-  let Name = "S16Imm"; let PredicateMethod = "isS16Imm";
-  let RenderMethod = "addS16ImmOperands";
-}
-def s16imm  : Operand<i32> {
-  let PrintMethod = "printS16ImmOperand";
-  let EncoderMethod = "getImm16Encoding";
-  let ParserMatchClass = PPCS16ImmAsmOperand;
-  let DecoderMethod = "decodeSImmOperand<16>";
-  let OperandType = "OPERAND_IMMEDIATE";
-}
-def PPCU16ImmAsmOperand : AsmOperandClass {
-  let Name = "U16Imm"; let PredicateMethod = "isU16Imm";
-  let RenderMethod = "addU16ImmOperands";
-}
-def u16imm  : Operand<i32> {
-  let PrintMethod = "printU16ImmOperand";
-  let EncoderMethod = "getImm16Encoding";
-  let ParserMatchClass = PPCU16ImmAsmOperand;
-  let DecoderMethod = "decodeUImmOperand<16>";
-  let OperandType = "OPERAND_IMMEDIATE";
-}
-def PPCS17ImmAsmOperand : AsmOperandClass {
-  let Name = "S17Imm"; let PredicateMethod = "isS17Imm";
-  let RenderMethod = "addS16ImmOperands";
-}
-def s17imm  : Operand<i32> {
-  // This operand type is used for addis/lis to allow the assembler parser
-  // to accept immediates in the range -65536..65535 for compatibility with
-  // the GNU assembler.  The operand is treated as 16-bit otherwise.
-  let PrintMethod = "printS16ImmOperand";
-  let EncoderMethod = "getImm16Encoding";
-  let ParserMatchClass = PPCS17ImmAsmOperand;
-  let DecoderMethod = "decodeSImmOperand<16>";
-  let OperandType = "OPERAND_IMMEDIATE";
-}
-def PPCS34ImmAsmOperand : AsmOperandClass {
-  let Name = "S34Imm";
-  let PredicateMethod = "isS34Imm";
-  let RenderMethod = "addImmOperands";
-}
-def s34imm : Operand<i64> {
-  let PrintMethod = "printS34ImmOperand";
-  let EncoderMethod = "getImm34EncodingNoPCRel";
-  let ParserMatchClass = PPCS34ImmAsmOperand;
-  let DecoderMethod = "decodeSImmOperand<34>";
-  let OperandType = "OPERAND_IMMEDIATE";
-}
-def s34imm_pcrel : Operand<i64> {
-  let PrintMethod = "printS34ImmOperand";
-  let EncoderMethod = "getImm34EncodingPCRel";
-  let ParserMatchClass = PPCS34ImmAsmOperand;
-  let DecoderMethod = "decodeSImmOperand<34>";
-  let OperandType = "OPERAND_IMMEDIATE";
-}
-def PPCImmZeroAsmOperand : AsmOperandClass {
-  let Name = "ImmZero";
-  let PredicateMethod = "isImmZero";
-  let RenderMethod = "addImmOperands";
-}
-def immZero : Operand<i32> {
-  let PrintMethod = "printImmZeroOperand";
-  let ParserMatchClass = PPCImmZeroAsmOperand;
-  let DecoderMethod = "decodeImmZeroOperand";
-  let OperandType = "OPERAND_IMMEDIATE";
-}
-
-def fpimm0 : PatLeaf<(fpimm), [{ return N->isExactlyValue(+0.0); }]>;
-
-def PPCDirectBrAsmOperand : AsmOperandClass {
-  let Name = "DirectBr"; let PredicateMethod = "isDirectBr";
-  let RenderMethod = "addBranchTargetOperands";
-}
-def directbrtarget : Operand<OtherVT> {
-  let PrintMethod = "printBranchOperand";
-  let EncoderMethod = "getDirectBrEncoding";
-  let DecoderMethod = "decodeDirectBrTarget";
-  let ParserMatchClass = PPCDirectBrAsmOperand;
-  let OperandType = "OPERAND_PCREL";
-}
-def absdirectbrtarget : Operand<OtherVT> {
-  let PrintMethod = "printAbsBranchOperand";
-  let EncoderMethod = "getAbsDirectBrEncoding";
-  let ParserMatchClass = PPCDirectBrAsmOperand;
-}
-def PPCCondBrAsmOperand : AsmOperandClass {
-  let Name = "CondBr"; let PredicateMethod = "isCondBr";
-  let RenderMethod = "addBranchTargetOperands";
-}
-def condbrtarget : Operand<OtherVT> {
-  let PrintMethod = "printBranchOperand";
-  let EncoderMethod = "getCondBrEncoding";
-  let DecoderMethod = "decodeCondBrTarget";
-  let ParserMatchClass = PPCCondBrAsmOperand;
-  let OperandType = "OPERAND_PCREL";
-}
-def abscondbrtarget : Operand<OtherVT> {
-  let PrintMethod = "printAbsBranchOperand";
-  let EncoderMethod = "getAbsCondBrEncoding";
-  let ParserMatchClass = PPCCondBrAsmOperand;
-}
-def calltarget : Operand<iPTR> {
-  let PrintMethod = "printBranchOperand";
-  let EncoderMethod = "getDirectBrEncoding";
-  let DecoderMethod = "decodeDirectBrTarget";
-  let ParserMatchClass = PPCDirectBrAsmOperand;
-  let OperandType = "OPERAND_PCREL";
-}
-def abscalltarget : Operand<iPTR> {
-  let PrintMethod = "printAbsBranchOperand";
-  let EncoderMethod = "getAbsDirectBrEncoding";
-  let ParserMatchClass = PPCDirectBrAsmOperand;
-}
-def PPCCRBitMaskOperand : AsmOperandClass {
- let Name = "CRBitMask"; let PredicateMethod = "isCRBitMask";
-}
-def crbitm: Operand<i8> {
-  let PrintMethod = "printcrbitm";
-  let EncoderMethod = "get_crbitm_encoding";
-  let DecoderMethod = "decodeCRBitMOperand";
-  let ParserMatchClass = PPCCRBitMaskOperand;
-}
-// Address operands
-// A version of ptr_rc which excludes R0 (or X0 in 64-bit mode).
-def PPCRegGxRCNoR0Operand : AsmOperandClass {
-  let Name = "RegGxRCNoR0"; let PredicateMethod = "isRegNumber";
-}
-def ptr_rc_nor0 : Operand<iPTR>, PointerLikeRegClass<1> {
-  let ParserMatchClass = PPCRegGxRCNoR0Operand;
-}
-
-// New addressing modes with 34 bit immediates.
-def PPCDispRI34Operand : AsmOperandClass {
-  let Name = "DispRI34"; let PredicateMethod = "isS34Imm";
-  let RenderMethod = "addImmOperands";
-}
-def dispRI34 : Operand<iPTR> {
-  let ParserMatchClass = PPCDispRI34Operand;
-}
-def memri34 : Operand<iPTR> { // memri, imm is a 34-bit value.
-  let PrintMethod = "printMemRegImm34";
-  let MIOperandInfo = (ops dispRI34:$imm, ptr_rc_nor0:$reg);
-  let EncoderMethod = "getMemRI34Encoding";
-  let DecoderMethod = "decodeMemRI34Operands";
-}
-// memri, imm is a 34-bit value for pc-relative instructions where
-// base register is set to zero.
-def memri34_pcrel : Operand<iPTR> { // memri, imm is a 34-bit value.
-  let PrintMethod = "printMemRegImm34PCRel";
-  let MIOperandInfo = (ops dispRI34:$imm, immZero:$reg);
-  let EncoderMethod = "getMemRI34PCRelEncoding";
-  let DecoderMethod = "decodeMemRI34PCRelOperands";
-}
-
-// A version of ptr_rc usable with the asm parser.
-def PPCRegGxRCOperand : AsmOperandClass {
-  let Name = "RegGxRC"; let PredicateMethod = "isRegNumber";
-}
-def ptr_rc_idx : Operand<iPTR>, PointerLikeRegClass<0> {
-  let ParserMatchClass = PPCRegGxRCOperand;
-}
-
-def PPCDispRIOperand : AsmOperandClass {
- let Name = "DispRI"; let PredicateMethod = "isS16Imm";
- let RenderMethod = "addS16ImmOperands";
-}
-def dispRI : Operand<iPTR> {
-  let ParserMatchClass = PPCDispRIOperand;
-}
-def PPCDispRIXOperand : AsmOperandClass {
- let Name = "DispRIX"; let PredicateMethod = "isS16ImmX4";
- let RenderMethod = "addImmOperands";
-}
-def dispRIX : Operand<iPTR> {
-  let ParserMatchClass = PPCDispRIXOperand;
-}
-def PPCDispRIHashOperand : AsmOperandClass {
-  let Name = "DispRIHash"; let PredicateMethod = "isHashImmX8";
-  let RenderMethod = "addImmOperands";
-}
-def dispRIHash : Operand<iPTR> {
-  let ParserMatchClass = PPCDispRIHashOperand;
-}
-def PPCDispRIX16Operand : AsmOperandClass {
- let Name = "DispRIX16"; let PredicateMethod = "isS16ImmX16";
- let RenderMethod = "addImmOperands";
-}
-def dispRIX16 : Operand<iPTR> {
-  let ParserMatchClass = PPCDispRIX16Operand;
-}
-def PPCDispSPE8Operand : AsmOperandClass {
- let Name = "DispSPE8"; let PredicateMethod = "isU8ImmX8";
- let RenderMethod = "addImmOperands";
-}
-def dispSPE8 : Operand<iPTR> {
-  let ParserMatchClass = PPCDispSPE8Operand;
-}
-def PPCDispSPE4Operand : AsmOperandClass {
- let Name = "DispSPE4"; let PredicateMethod = "isU7ImmX4";
- let RenderMethod = "addImmOperands";
-}
-def dispSPE4 : Operand<iPTR> {
-  let ParserMatchClass = PPCDispSPE4Operand;
-}
-def PPCDispSPE2Operand : AsmOperandClass {
- let Name = "DispSPE2"; let PredicateMethod = "isU6ImmX2";
- let RenderMethod = "addImmOperands";
-}
-def dispSPE2 : Operand<iPTR> {
-  let ParserMatchClass = PPCDispSPE2Operand;
-}
-
-def memri : Operand<iPTR> {
-  let PrintMethod = "printMemRegImm";
-  let MIOperandInfo = (ops dispRI:$imm, ptr_rc_nor0:$reg);
-  let EncoderMethod = "getMemRIEncoding";
-  let DecoderMethod = "decodeMemRIOperands";
-  let OperandType = "OPERAND_MEMORY";
-}
-def memrr : Operand<iPTR> {
-  let PrintMethod = "printMemRegReg";
-  let MIOperandInfo = (ops ptr_rc_nor0:$ptrreg, ptr_rc_idx:$offreg);
-  let OperandType = "OPERAND_MEMORY";
-}
-def memrix : Operand<iPTR> {   // memri where the imm is 4-aligned.
-  let PrintMethod = "printMemRegImm";
-  let MIOperandInfo = (ops dispRIX:$imm, ptr_rc_nor0:$reg);
-  let EncoderMethod = "getMemRIXEncoding";
-  let DecoderMethod = "decodeMemRIXOperands";
-  let OperandType = "OPERAND_MEMORY";
-}
-def memrihash : Operand<iPTR> {
-  // memrihash 8-aligned for ROP Protection Instructions.
-  let PrintMethod = "printMemRegImmHash";
-  let MIOperandInfo = (ops dispRIHash:$imm, ptr_rc_nor0:$reg);
-  let EncoderMethod = "getMemRIHashEncoding";
-  let DecoderMethod = "decodeMemRIHashOperands";
-  let OperandType = "OPERAND_MEMORY";
-}
-def memrix16 : Operand<iPTR> { // memri, imm is 16-aligned, 12-bit, Inst{16:27}
-  let PrintMethod = "printMemRegImm";
-  let MIOperandInfo = (ops dispRIX16:$imm, ptr_rc_nor0:$reg);
-  let EncoderMethod = "getMemRIX16Encoding";
-  let DecoderMethod = "decodeMemRIX16Operands";
-  let OperandType = "OPERAND_MEMORY";
-}
-def spe8dis : Operand<iPTR> {   // SPE displacement where the imm is 8-aligned.
-  let PrintMethod = "printMemRegImm";
-  let MIOperandInfo = (ops dispSPE8:$imm, ptr_rc_nor0:$reg);
-  let EncoderMethod = "getSPE8DisEncoding";
-  let DecoderMethod = "decodeSPE8Operands";
-  let OperandType = "OPERAND_MEMORY";
-}
-def spe4dis : Operand<iPTR> {   // SPE displacement where the imm is 4-aligned.
-  let PrintMethod = "printMemRegImm";
-  let MIOperandInfo = (ops dispSPE4:$imm, ptr_rc_nor0:$reg);
-  let EncoderMethod = "getSPE4DisEncoding";
-  let DecoderMethod = "decodeSPE4Operands";
-  let OperandType = "OPERAND_MEMORY";
-}
-def spe2dis : Operand<iPTR> {   // SPE displacement where the imm is 2-aligned.
-  let PrintMethod = "printMemRegImm";
-  let MIOperandInfo = (ops dispSPE2:$imm, ptr_rc_nor0:$reg);
-  let EncoderMethod = "getSPE2DisEncoding";
-  let DecoderMethod = "decodeSPE2Operands";
-  let OperandType = "OPERAND_MEMORY";
-}
-
-// A single-register address. This is used with the SjLj
-// pseudo-instructions which translates to LD/LWZ.  These instructions requires
-// G8RC_NOX0 registers.
-def memr : Operand<iPTR> {
-  let MIOperandInfo = (ops ptr_rc_nor0:$ptrreg);
-  let OperandType = "OPERAND_MEMORY";
-}
-def PPCTLSRegOperand : AsmOperandClass {
-  let Name = "TLSReg"; let PredicateMethod = "isTLSReg";
-  let RenderMethod = "addTLSRegOperands";
-}
-def tlsreg32 : Operand<i32> {
-  let EncoderMethod = "getTLSRegEncoding";
-  let ParserMatchClass = PPCTLSRegOperand;
-}
-def tlsgd32 : Operand<i32> {}
-def tlscall32 : Operand<i32> {
-  let PrintMethod = "printTLSCall";
-  let MIOperandInfo = (ops calltarget:$func, tlsgd32:$sym);
-  let EncoderMethod = "getTLSCallEncoding";
-}
-
-// PowerPC Predicate operand.
-def pred : Operand<OtherVT> {
-  let PrintMethod = "printPredicateOperand";
-  let MIOperandInfo = (ops i32imm:$bibo, crrc:$reg);
-}
-
 // Define PowerPC specific addressing mode.
 
 // d-form
@@ -1140,15 +662,14 @@ def addr   : ComplexPattern<iPTR, 1, "SelectAddr",[], []>;
 /// This is just the offset part of iaddr, used for preinc.
 def iaddroff : ComplexPattern<iPTR, 1, "SelectAddrImmOffs", [], []>;
 
-// PC Relative Address
-def pcreladdr : ComplexPattern<iPTR, 1, "SelectAddrPCRel", [], []>;
-
 // Load and Store Instruction Selection addressing modes.
 def DForm  : ComplexPattern<iPTR, 2, "SelectDForm",    [], [SDNPWantParent]>;
 def DSForm : ComplexPattern<iPTR, 2, "SelectDSForm",   [], [SDNPWantParent]>;
 def DQForm : ComplexPattern<iPTR, 2, "SelectDQForm",   [], [SDNPWantParent]>;
 def XForm  : ComplexPattern<iPTR, 2, "SelectXForm",    [], [SDNPWantParent]>;
 def ForceXForm : ComplexPattern<iPTR, 2, "SelectForceXForm", [], [SDNPWantParent]>;
+def PCRelForm : ComplexPattern<iPTR, 2, "SelectPCRelForm", [], [SDNPWantParent]>;
+def PDForm : ComplexPattern<iPTR, 2, "SelectPDForm",   [], [SDNPWantParent]>;
 
 //===----------------------------------------------------------------------===//
 // PowerPC Instruction Predicate Definitions.
@@ -1164,12 +685,15 @@ def IsE500  : Predicate<"Subtarget->isE500()">;
 def HasSPE  : Predicate<"Subtarget->hasSPE()">;
 def HasICBT : Predicate<"Subtarget->hasICBT()">;
 def HasPartwordAtomics : Predicate<"Subtarget->hasPartwordAtomics()">;
+def HasQuadwordAtomics : Predicate<"Subtarget->hasQuadwordAtomics()">;
 def NoNaNsFPMath
     : Predicate<"Subtarget->getTargetMachine().Options.NoNaNsFPMath">;
 def NaNsFPMath
     : Predicate<"!Subtarget->getTargetMachine().Options.NoNaNsFPMath">;
 def HasBPERMD : Predicate<"Subtarget->hasBPERMD()">;
 def HasExtDiv : Predicate<"Subtarget->hasExtDiv()">;
+def IsISA2_06 : Predicate<"Subtarget->isISA2_06()">;
+def IsISA2_07 : Predicate<"Subtarget->isISA2_07()">;
 def IsISA3_0 : Predicate<"Subtarget->isISA3_0()">;
 def HasFPU : Predicate<"Subtarget->hasFPU()">;
 def PCRelativeMemops : Predicate<"Subtarget->hasPCRelativeMemops()">;
@@ -1180,6 +704,7 @@ def ModernAs: Predicate<"!Subtarget->isAIXABI() || Subtarget->HasModernAIXAs">,
                  AssemblerPredicate<(any_of (not AIXOS), FeatureModernAIXAs)>;
 def IsAIX : Predicate<"Subtarget->isAIXABI()">;
 def NotAIX : Predicate<"!Subtarget->isAIXABI()">;
+def IsISAFuture : Predicate<"Subtarget->isISAFuture()">;
 
 //===----------------------------------------------------------------------===//
 // PowerPC Multiclass Definitions.
@@ -1258,7 +783,7 @@ multiclass XOForm_1r<bits<6> opcode, bits<9> xo, bit oe, dag OOL, dag IOL,
 
 // Multiclass for instructions which have a record overflow form as well
 // as a record form but no carry (i.e. mulld, mulldo, subf, subfo, etc.)
-multiclass XOForm_1rx<bits<6> opcode, bits<9> xo, bit oe, dag OOL, dag IOL,
+multiclass XOForm_1rx<bits<6> opcode, bits<9> xo, dag OOL, dag IOL,
                       string asmbase, string asmstr, InstrItinClass itin,
                       list<dag> pattern> {
   let BaseName = asmbase in {
@@ -1635,7 +1160,7 @@ def RESTORE_CRBIT : PPCEmitTimePseudo<(outs crbitrc:$cond), (ins memri:$F),
                            "#RESTORE_CRBIT", []>;
 }
 
-let isTerminator = 1, isBarrier = 1, PPC970_Unit = 7 in {
+let isTerminator = 1, isBarrier = 1, PPC970_Unit = 7, hasSideEffects = 0 in {
   let isPredicable = 1, isReturn = 1, Uses = [LR, RM] in
     def BLR : XLForm_2_ext<19, 16, 20, 0, 0, (outs), (ins), "blr", IIC_BrB,
                            [(retflag)]>, Requires<[In32BitMode]>;
@@ -1676,7 +1201,8 @@ let Defs = [LR] in
   def MoveGOTtoLR : PPCEmitTimePseudo<(outs), (ins), "#MoveGOTtoLR", []>,
                     PPC970_Unit_BRU;
 
-let isBranch = 1, isTerminator = 1, hasCtrlDep = 1, PPC970_Unit = 7 in {
+let isBranch = 1, isTerminator = 1, hasCtrlDep = 1, PPC970_Unit = 7,
+    hasSideEffects = 0 in {
   let isBarrier = 1 in {
     let isPredicable = 1 in
       def B : IForm<18, 0, 0, (outs), (ins directbrtarget:$dst),
@@ -1768,7 +1294,8 @@ let isBranch = 1, isTerminator = 1, hasCtrlDep = 1, PPC970_Unit = 7 in {
 }
 
 // The unconditional BCL used by the SjLj setjmp code.
-let isCall = 1, hasCtrlDep = 1, isCodeGenOnly = 1, PPC970_Unit = 7 in {
+let isCall = 1, hasCtrlDep = 1, isCodeGenOnly = 1, PPC970_Unit = 7,
+    hasSideEffects = 0 in {
   let Defs = [LR], Uses = [RM] in {
     def BCLalways  : BForm_2<16, 20, 31, 0, 1, (outs), (ins condbrtarget:$dst),
                             "bcl 20, 31, $dst">;
@@ -1876,6 +1403,26 @@ let isCall = 1, PPC970_Unit = 7, Defs = [LR] in {
   }
 }
 
+let isCall = 1, PPC970_Unit = 7, Defs = [LR, RM], isCodeGenOnly = 1 in {
+  // Convenient aliases for call instructions
+  let Uses = [RM] in {
+    def BL_RM  : IForm<18, 0, 1, (outs), (ins calltarget:$func),
+                       "bl $func", IIC_BrB, []>;  // See Pat patterns below.
+    def BLA_RM : IForm<18, 1, 1, (outs), (ins abscalltarget:$func),
+                       "bla $func", IIC_BrB, [(PPCcall_rm (i32 imm:$func))]>;
+
+    def BL_NOP_RM  : IForm_and_DForm_4_zero<18, 0, 1, 24,
+                                            (outs), (ins calltarget:$func),
+                                            "bl $func\n\tnop", IIC_BrB, []>;
+  }
+  let Uses = [CTR, RM] in {
+    let isPredicable = 1 in
+      def BCTRL_RM : XLForm_2_ext<19, 528, 20, 0, 1, (outs), (ins),
+                                  "bctrl", IIC_BrB, [(PPCbctrl_rm)]>,
+                  Requires<[In32BitMode]>;
+  }
+}
+
 let isCall = 1, isTerminator = 1, isReturn = 1, isBarrier = 1, Uses = [RM] in
 def TCRETURNdi :PPCEmitTimePseudo< (outs),
                         (ins calltarget:$dst, i32imm:$offset),
@@ -1902,8 +1449,16 @@ let isCall = 1, PPC970_Unit = 7, isCodeGenOnly = 1,
 
 }
 
+let isCall = 1, PPC970_Unit = 7, isCodeGenOnly = 1,
+    Defs = [LR, R2, RM], Uses = [CTR, RM], RST = 2 in {
+  def BCTRL_LWZinto_toc_RM:
+    XLForm_2_ext_and_DForm_1<19, 528, 20, 0, 1, 32, (outs),
+     (ins memri:$src), "bctrl\n\tlwz 2, $src", IIC_BrB,
+     [(PPCbctrl_load_toc_rm iaddr:$src)]>, Requires<[In32BitMode]>;
 
-let isCodeGenOnly = 1 in {
+}
+
+let isCodeGenOnly = 1, hasSideEffects = 0 in {
 
 let isTerminator = 1, isBarrier = 1, PPC970_Unit = 7, isBranch = 1,
     isIndirectBranch = 1, isCall = 1, isReturn = 1, Uses = [CTR, RM]  in
@@ -2021,6 +1576,8 @@ def : Pat<(int_ppc_dcbtst xoaddr:$dst),
           (DCBTST 0, xoaddr:$dst)>;
 def : Pat<(int_ppc_dcbf xoaddr:$dst),
           (DCBF 0, xoaddr:$dst)>;
+def : Pat<(int_ppc_icbt xoaddr:$dst),
+          (ICBT 0, xoaddr:$dst)>;
 
 def : Pat<(prefetch xoaddr:$dst, (i32 0), imm, (i32 1)),
           (DCBT 0, xoaddr:$dst)>;   // data prefetch for loads
@@ -2222,6 +1779,10 @@ def TDI : DForm_base<2, (outs), (ins u5imm:$to, g8rc:$rA, s16imm:$imm),
 def TD : XForm_1<31, 68, (outs), (ins u5imm:$to, g8rc:$rA, g8rc:$rB),
                  "td $to, $rA, $rB", IIC_IntTrapD, []>;
 
+def POPCNTB : XForm_11<31, 122, (outs gprc:$rA), (ins gprc:$rS),
+                       "popcntb $rA, $rS", IIC_IntGeneral,
+                       [(set i32:$rA, (int_ppc_popcntb i32:$rS))]>;
+
 //===----------------------------------------------------------------------===//
 // PPC32 Load Instructions.
 //
@@ -2230,17 +1791,19 @@ def TD : XForm_1<31, 68, (outs), (ins u5imm:$to, g8rc:$rA, g8rc:$rB),
 let PPC970_Unit = 2 in {
 def LBZ : DForm_1<34, (outs gprc:$rD), (ins memri:$src),
                   "lbz $rD, $src", IIC_LdStLoad,
-                  [(set i32:$rD, (zextloadi8 DForm:$src))]>;
+                  [(set i32:$rD, (zextloadi8 DForm:$src))]>, ZExt32To64,
+                  SExt32To64;
 def LHA : DForm_1<42, (outs gprc:$rD), (ins memri:$src),
                   "lha $rD, $src", IIC_LdStLHA,
                   [(set i32:$rD, (sextloadi16 DForm:$src))]>,
-                  PPC970_DGroup_Cracked;
+                  PPC970_DGroup_Cracked, SExt32To64;
 def LHZ : DForm_1<40, (outs gprc:$rD), (ins memri:$src),
                   "lhz $rD, $src", IIC_LdStLoad,
-                  [(set i32:$rD, (zextloadi16 DForm:$src))]>;
+                  [(set i32:$rD, (zextloadi16 DForm:$src))]>, ZExt32To64,
+                  SExt32To64;
 def LWZ : DForm_1<32, (outs gprc:$rD), (ins memri:$src),
                   "lwz $rD, $src", IIC_LdStLoad,
-                  [(set i32:$rD, (load DForm:$src))]>;
+                  [(set i32:$rD, (load DForm:$src))]>, ZExt32To64;
 
 let Predicates = [HasFPU] in {
 def LFS : DForm_1<48, (outs f4rc:$rD), (ins memri:$src),
@@ -2333,23 +1896,25 @@ def LFDUX : XForm_1_memOp<31, 631, (outs f8rc:$rD, ptr_rc_nor0:$ea_result),
 let PPC970_Unit = 2, mayLoad = 1, mayStore = 0 in {
 def LBZX : XForm_1_memOp<31,  87, (outs gprc:$rD), (ins memrr:$src),
                    "lbzx $rD, $src", IIC_LdStLoad,
-                   [(set i32:$rD, (zextloadi8 XForm:$src))]>;
+                   [(set i32:$rD, (zextloadi8 XForm:$src))]>, ZExt32To64,
+                   SExt32To64;
 def LHAX : XForm_1_memOp<31, 343, (outs gprc:$rD), (ins memrr:$src),
                    "lhax $rD, $src", IIC_LdStLHA,
                    [(set i32:$rD, (sextloadi16 XForm:$src))]>,
-                   PPC970_DGroup_Cracked;
+                   PPC970_DGroup_Cracked, SExt32To64;
 def LHZX : XForm_1_memOp<31, 279, (outs gprc:$rD), (ins memrr:$src),
                    "lhzx $rD, $src", IIC_LdStLoad,
-                   [(set i32:$rD, (zextloadi16 XForm:$src))]>;
+                   [(set i32:$rD, (zextloadi16 XForm:$src))]>, ZExt32To64,
+                   SExt32To64;
 def LWZX : XForm_1_memOp<31,  23, (outs gprc:$rD), (ins memrr:$src),
                    "lwzx $rD, $src", IIC_LdStLoad,
-                   [(set i32:$rD, (load XForm:$src))]>;
+                   [(set i32:$rD, (load XForm:$src))]>, ZExt32To64;
 def LHBRX : XForm_1_memOp<31, 790, (outs gprc:$rD), (ins memrr:$src),
                    "lhbrx $rD, $src", IIC_LdStLoad,
-                   [(set i32:$rD, (PPClbrx ForceXForm:$src, i16))]>;
+                   [(set i32:$rD, (PPClbrx ForceXForm:$src, i16))]>, ZExt32To64;
 def LWBRX : XForm_1_memOp<31,  534, (outs gprc:$rD), (ins memrr:$src),
                    "lwbrx $rD, $src", IIC_LdStLoad,
-                   [(set i32:$rD, (PPClbrx ForceXForm:$src, i32))]>;
+                   [(set i32:$rD, (PPClbrx ForceXForm:$src, i32))]>, ZExt32To64;
 
 let Predicates = [HasFPU] in {
 def LFSX   : XForm_25_memOp<31, 535, (outs f4rc:$frD), (ins memrr:$src),
@@ -2542,11 +2107,19 @@ let isCodeGenOnly = 1 in {
 def EnforceIEIO : XForm_24_eieio<31, 854, (outs), (ins),
                                  "eieio", IIC_LdStLoad, []>;
 
+def PseudoEIEIO : PPCEmitTimePseudo<(outs), (ins), "#PPCEIEIO",
+                  [(int_ppc_eieio)]>;
+
 def : Pat<(int_ppc_sync),   (SYNC 0)>, Requires<[HasSYNC]>;
+def : Pat<(int_ppc_iospace_sync),   (SYNC 0)>, Requires<[HasSYNC]>;
 def : Pat<(int_ppc_lwsync), (SYNC 1)>, Requires<[HasSYNC]>;
+def : Pat<(int_ppc_iospace_lwsync), (SYNC 1)>, Requires<[HasSYNC]>;
 def : Pat<(int_ppc_sync),   (MSYNC)>, Requires<[HasOnlyMSYNC]>;
+def : Pat<(int_ppc_iospace_sync),   (MSYNC)>, Requires<[HasOnlyMSYNC]>;
 def : Pat<(int_ppc_lwsync), (MSYNC)>, Requires<[HasOnlyMSYNC]>;
-def : Pat<(int_ppc_eieio),  (EnforceIEIO)>;
+def : Pat<(int_ppc_iospace_lwsync), (MSYNC)>, Requires<[HasOnlyMSYNC]>;
+def : Pat<(int_ppc_eieio),  (PseudoEIEIO)>;
+def : Pat<(int_ppc_iospace_eieio),  (PseudoEIEIO)>;
 
 //===----------------------------------------------------------------------===//
 // PPC32 Arithmetic Instructions.
@@ -2586,10 +2159,10 @@ def SUBFIC : DForm_2< 8, (outs gprc:$rD), (ins gprc:$rA, s16imm:$imm),
 let isReMaterializable = 1, isAsCheapAsAMove = 1, isMoveImm = 1 in {
   def LI  : DForm_2_r0<14, (outs gprc:$rD), (ins s16imm:$imm),
                        "li $rD, $imm", IIC_IntSimple,
-                       [(set i32:$rD, imm32SExt16:$imm)]>;
+                       [(set i32:$rD, imm32SExt16:$imm)]>, SExt32To64;
   def LIS : DForm_2_r0<15, (outs gprc:$rD), (ins s17imm:$imm),
                        "lis $rD, $imm", IIC_IntSimple,
-                       [(set i32:$rD, imm16ShiftedSExt:$imm)]>;
+                       [(set i32:$rD, imm16ShiftedSExt:$imm)]>, SExt32To64;
 }
 }
 
@@ -2601,11 +2174,11 @@ let Defs = [CR0] in {
 def ANDI_rec : DForm_4<28, (outs gprc:$dst), (ins gprc:$src1, u16imm:$src2),
                     "andi. $dst, $src1, $src2", IIC_IntGeneral,
                     [(set i32:$dst, (and i32:$src1, immZExt16:$src2))]>,
-                    isRecordForm;
+                    isRecordForm, ZExt32To64, SExt32To64;
 def ANDIS_rec : DForm_4<29, (outs gprc:$dst), (ins gprc:$src1, u16imm:$src2),
                     "andis. $dst, $src1, $src2", IIC_IntGeneral,
                     [(set i32:$dst, (and i32:$src1, imm16ShiftedZExt:$src2))]>,
-                    isRecordForm;
+                    isRecordForm, ZExt32To64;
 }
 def ORI   : DForm_4<24, (outs gprc:$dst), (ins gprc:$src1, u16imm:$src2),
                     "ori $dst, $src1, $src2", IIC_IntSimple,
@@ -2675,13 +2248,13 @@ defm XOR  : XForm_6r<31, 316, (outs gprc:$rA), (ins gprc:$rS, gprc:$rB),
 } // isCommutable
 defm SLW  : XForm_6r<31,  24, (outs gprc:$rA), (ins gprc:$rS, gprc:$rB),
                      "slw", "$rA, $rS, $rB", IIC_IntGeneral,
-                     [(set i32:$rA, (PPCshl i32:$rS, i32:$rB))]>;
+                     [(set i32:$rA, (PPCshl i32:$rS, i32:$rB))]>, ZExt32To64;
 defm SRW  : XForm_6r<31, 536, (outs gprc:$rA), (ins gprc:$rS, gprc:$rB),
                      "srw", "$rA, $rS, $rB", IIC_IntGeneral,
-                     [(set i32:$rA, (PPCsrl i32:$rS, i32:$rB))]>;
+                     [(set i32:$rA, (PPCsrl i32:$rS, i32:$rB))]>, ZExt32To64;
 defm SRAW : XForm_6rc<31, 792, (outs gprc:$rA), (ins gprc:$rS, gprc:$rB),
                       "sraw", "$rA, $rS, $rB", IIC_IntShift,
-                      [(set i32:$rA, (PPCsra i32:$rS, i32:$rB))]>;
+                      [(set i32:$rA, (PPCsra i32:$rS, i32:$rB))]>, SExt32To64;
 }
 
 def : InstAlias<"mr $rA, $rB", (OR gprc:$rA, gprc:$rB, gprc:$rB)>;
@@ -2696,19 +2269,21 @@ let PPC970_Unit = 1 in {  // FXU Operations.
 let hasSideEffects = 0 in {
 defm SRAWI : XForm_10rc<31, 824, (outs gprc:$rA), (ins gprc:$rS, u5imm:$SH),
                         "srawi", "$rA, $rS, $SH", IIC_IntShift,
-                        [(set i32:$rA, (sra i32:$rS, (i32 imm:$SH)))]>;
+                        [(set i32:$rA, (sra i32:$rS, (i32 imm:$SH)))]>,
+                        SExt32To64;
 defm CNTLZW : XForm_11r<31,  26, (outs gprc:$rA), (ins gprc:$rS),
                         "cntlzw", "$rA, $rS", IIC_IntGeneral,
-                        [(set i32:$rA, (ctlz i32:$rS))]>;
+                        [(set i32:$rA, (ctlz i32:$rS))]>, ZExt32To64;
 defm CNTTZW : XForm_11r<31, 538, (outs gprc:$rA), (ins gprc:$rS),
                         "cnttzw", "$rA, $rS", IIC_IntGeneral,
-                        [(set i32:$rA, (cttz i32:$rS))]>, Requires<[IsISA3_0]>;
+                        [(set i32:$rA, (cttz i32:$rS))]>, Requires<[IsISA3_0]>,
+                        ZExt32To64;
 defm EXTSB  : XForm_11r<31, 954, (outs gprc:$rA), (ins gprc:$rS),
                         "extsb", "$rA, $rS", IIC_IntSimple,
-                        [(set i32:$rA, (sext_inreg i32:$rS, i8))]>;
+                        [(set i32:$rA, (sext_inreg i32:$rS, i8))]>, SExt32To64;
 defm EXTSH  : XForm_11r<31, 922, (outs gprc:$rA), (ins gprc:$rS),
                         "extsh", "$rA, $rS", IIC_IntSimple,
-                        [(set i32:$rA, (sext_inreg i32:$rS, i16))]>;
+                        [(set i32:$rA, (sext_inreg i32:$rS, i16))]>, SExt32To64;
 
 let isCommutable = 1 in
 def CMPB : XForm_6<31, 508, (outs gprc:$rA), (ins gprc:$rS, gprc:$rB),
@@ -2980,6 +2555,10 @@ def MTCTRloop : XFXForm_7_ext<31, 467, 9, (outs), (ins gprc:$rS),
                 PPC970_DGroup_First, PPC970_Unit_FXU;
 }
 
+let hasSideEffects = 1, hasNoSchedulingInfo = 1, Uses = [CTR], Defs = [CTR] in
+def DecreaseCTRloop : PPCEmitTimePseudo<(outs crbitrc:$rT), (ins i32imm:$stride),
+                                       "#DecreaseCTRloop", [(set i1:$rT, (int_loop_decrement (i32 imm:$stride)))]>;
+
 let hasSideEffects = 0 in {
 let Defs = [LR] in {
 def MTLR  : XFXForm_7_ext<31, 467, 8, (outs), (ins gprc:$rS),
@@ -2991,6 +2570,22 @@ def MFLR  : XFXForm_1_ext<31, 339, 8, (outs gprc:$rT), (ins),
                           "mflr $rT", IIC_SprMFSPR>,
             PPC970_DGroup_First, PPC970_Unit_FXU;
 }
+}
+
+let hasSideEffects = 1 in {
+  def MTUDSCR : XFXForm_7_ext<31, 467, 3, (outs), (ins gprc:$rX),
+                              "mtspr 3, $rX", IIC_SprMTSPR>,
+                PPC970_DGroup_Single, PPC970_Unit_FXU;
+  def MFUDSCR : XFXForm_1_ext<31, 339, 3, (outs gprc:$rX), (ins),
+                              "mfspr $rX, 3", IIC_SprMFSPR>,
+                PPC970_DGroup_First, PPC970_Unit_FXU;
+}
+
+// Disable these alias on AIX since they are not supported.
+let Predicates = [ModernAs] in {
+// Aliases for moving to/from dscr to mtspr/mfspr
+def : InstAlias<"mtudscr $Rx", (MTUDSCR gprc:$Rx)>;
+def : InstAlias<"mfudscr $Rx", (MFUDSCR gprc:$Rx)>;
 }
 
 let isCodeGenOnly = 1 in {
@@ -3067,20 +2662,25 @@ let Uses = [RM], mayRaiseFPException = 1 in {
 
 // When FM is 30/31, we are setting the 62/63 bit of FPSCR, the implicit-def
 // RM should be set.
+let hasSideEffects = 1, Defs = [RM] in {
 def MTFSB0 : XForm_43<63, 70, (outs), (ins u5imm:$FM),
-                      "mtfsb0 $FM", IIC_IntMTFSB0, []>,
+                      "mtfsb0 $FM", IIC_IntMTFSB0,
+                      [(int_ppc_mtfsb0 timm:$FM)]>,
              PPC970_DGroup_Single, PPC970_Unit_FPU;
 def MTFSB1 : XForm_43<63, 38, (outs), (ins u5imm:$FM),
-                      "mtfsb1 $FM", IIC_IntMTFSB0, []>,
+                      "mtfsb1 $FM", IIC_IntMTFSB0,
+                      [(int_ppc_mtfsb1 timm:$FM)]>,
              PPC970_DGroup_Single, PPC970_Unit_FPU;
+}
 
-let Defs = [RM] in {
+let Defs = [RM], hasSideEffects = 1 in {
   let isCodeGenOnly = 1 in
   def MTFSFb  : XFLForm<63, 711, (outs), (ins i32imm:$FM, f8rc:$rT),
-                        "mtfsf $FM, $rT", IIC_IntMTFSB0, []>,
+                        "mtfsf $FM, $rT", IIC_IntMTFSB0,
+                        [(int_ppc_mtfsf timm:$FM, f64:$rT)]>,
                 PPC970_DGroup_Single, PPC970_Unit_FPU;
 }
-let Uses = [RM] in {
+let Uses = [RM], hasSideEffects = 1 in {
   def MFFS   : XForm_42<63, 583, (outs f8rc:$rT), (ins),
                          "mffs $rT", IIC_IntMFFS,
                          [(set f64:$rT, (PPCmffs))]>,
@@ -3128,12 +2728,16 @@ def MODSW : XForm_8<31, 779, (outs gprc:$rT), (ins gprc:$rA, gprc:$rB),
 def MODUW : XForm_8<31, 267, (outs gprc:$rT), (ins gprc:$rA, gprc:$rB),
                         "moduw $rT, $rA, $rB", IIC_IntDivW,
                         [(set i32:$rT, (urem i32:$rA, i32:$rB))]>;
+let hasSideEffects = 1 in
+def ADDEX : Z23Form_RTAB5_CY2<31, 170, (outs gprc:$rT),
+                              (ins gprc:$rA, gprc:$rB, u2imm:$CY),
+                              "addex $rT, $rA, $rB, $CY", IIC_IntGeneral, []>;
 }
 
 let PPC970_Unit = 1, hasSideEffects = 0 in {  // FXU Operations.
 // XO-Form instructions.  Arithmetic instructions that can set overflow bit
 let isCommutable = 1 in
-defm ADD4  : XOForm_1rx<31, 266, 0, (outs gprc:$rT), (ins gprc:$rA, gprc:$rB),
+defm ADD4  : XOForm_1rx<31, 266, (outs gprc:$rT), (ins gprc:$rA, gprc:$rB),
                         "add", "$rT, $rA, $rB", IIC_IntSimple,
                         [(set i32:$rT, (add i32:$rA, i32:$rB))]>;
 let isCodeGenOnly = 1 in
@@ -3167,11 +2771,11 @@ defm MULHW : XOForm_1r<31, 75, 0, (outs gprc:$rT), (ins gprc:$rA, gprc:$rB),
 defm MULHWU : XOForm_1r<31, 11, 0, (outs gprc:$rT), (ins gprc:$rA, gprc:$rB),
                        "mulhwu", "$rT, $rA, $rB", IIC_IntMulHWU,
                        [(set i32:$rT, (mulhu i32:$rA, i32:$rB))]>;
-defm MULLW : XOForm_1rx<31, 235, 0, (outs gprc:$rT), (ins gprc:$rA, gprc:$rB),
+defm MULLW : XOForm_1rx<31, 235, (outs gprc:$rT), (ins gprc:$rA, gprc:$rB),
                         "mullw", "$rT, $rA, $rB", IIC_IntMulHW,
                         [(set i32:$rT, (mul i32:$rA, i32:$rB))]>;
 } // isCommutable
-defm SUBF  : XOForm_1rx<31, 40, 0, (outs gprc:$rT), (ins gprc:$rA, gprc:$rB),
+defm SUBF  : XOForm_1rx<31, 40, (outs gprc:$rT), (ins gprc:$rA, gprc:$rB),
                         "subf", "$rT, $rA, $rB", IIC_IntGeneral,
                         [(set i32:$rT, (sub i32:$rB, i32:$rA))]>;
 defm SUBFC : XOForm_1rc<31, 8, 0, (outs gprc:$rT), (ins gprc:$rA, gprc:$rB),
@@ -3396,6 +3000,12 @@ def : Pat<(PPCcall (i32 tglobaladdr:$dst)),
 def : Pat<(PPCcall (i32 texternalsym:$dst)),
           (BL texternalsym:$dst)>;
 
+def : Pat<(PPCcall_rm (i32 tglobaladdr:$dst)),
+          (BL_RM tglobaladdr:$dst)>;
+
+def : Pat<(PPCcall_rm (i32 texternalsym:$dst)),
+          (BL_RM texternalsym:$dst)>;
+
 // Calls for AIX only
 def : Pat<(PPCcall (i32 mcsym:$dst)),
           (BL mcsym:$dst)>;
@@ -3405,6 +3015,15 @@ def : Pat<(PPCcall_nop (i32 mcsym:$dst)),
 
 def : Pat<(PPCcall_nop (i32 texternalsym:$dst)),
           (BL_NOP texternalsym:$dst)>;
+
+def : Pat<(PPCcall_rm (i32 mcsym:$dst)),
+          (BL_RM mcsym:$dst)>;
+
+def : Pat<(PPCcall_nop_rm (i32 mcsym:$dst)),
+          (BL_NOP_RM mcsym:$dst)>;
+
+def : Pat<(PPCcall_nop_rm (i32 texternalsym:$dst)),
+          (BL_NOP_RM texternalsym:$dst)>;
 
 def : Pat<(PPCtc_return (i32 tglobaladdr:$dst),  imm:$imm),
           (TCRETURNdi tglobaladdr:$dst, imm:$imm)>;
@@ -3625,6 +3244,16 @@ def : Pat<(fcopysign f32:$frB, f64:$frA),
           (FCPSGNS (COPY_TO_REGCLASS $frA, F4RC), $frB)>;
 }
 
+// XL Compat intrinsics.
+def : Pat<(int_ppc_fmsub f64:$A, f64:$B, f64:$C), (FMSUB $A, $B, $C)>;
+def : Pat<(int_ppc_fmsubs f32:$A, f32:$B, f32:$C), (FMSUBS $A, $B, $C)>;
+def : Pat<(int_ppc_fnmadd f64:$A, f64:$B, f64:$C), (FNMADD $A, $B, $C)>;
+def : Pat<(int_ppc_fnmadds f32:$A, f32:$B, f32:$C), (FNMADDS $A, $B, $C)>;
+def : Pat<(int_ppc_fre f64:$A), (FRE $A)>;
+def : Pat<(int_ppc_fres f32:$A), (FRES $A)>;
+def : Pat<(int_ppc_fnabs f64:$A), (FNABSD $A)>;
+def : Pat<(int_ppc_fnabss f32:$A), (FNABSS $A)>;
+
 include "PPCInstrAltivec.td"
 include "PPCInstrSPE.td"
 include "PPCInstr64Bit.td"
@@ -3638,7 +3267,8 @@ def       : Pat<(not i1:$in),
 
 // Prefixed instructions may require access to the above defs at a later
 // time so we include this after the def.
-include "PPCInstrPrefix.td"
+include "PPCInstrP10.td"
+include "PPCInstrMMA.td"
 
 // Patterns for arithmetic i1 operations.
 def : Pat<(add i1:$a, i1:$b),
@@ -4372,6 +4002,10 @@ def : Pat<(i1 (not (trunc i32:$in))),
 def : Pat<(i1 (not (trunc i64:$in))),
            (ANDI_rec_1_EQ_BIT8 $in)>;
 
+def : Pat<(int_ppc_fsel f8rc:$FRA, f8rc:$FRC, f8rc:$FRB), (FSELD $FRA, $FRC, $FRB)>;
+def : Pat<(int_ppc_frsqrte f8rc:$frB), (FRSQRTE $frB)>;
+def : Pat<(int_ppc_frsqrtes f4rc:$frB), (FRSQRTES $frB)>;
+
 //===----------------------------------------------------------------------===//
 // PowerPC Instructions used for assembler/disassembler only
 //
@@ -4447,19 +4081,20 @@ def MTMSRD : XForm_mtmsr<31, 178, (outs), (ins gprc:$RS, u1imm:$L),
 def MCRFS : XLForm_3<63, 64, (outs crrc:$BF), (ins crrc:$BFA),
                      "mcrfs $BF, $BFA", IIC_BrMCR>;
 
-// If W is 0 and BF is 7, the 60:63 bits will be set, we should set the
-// implicit-def RM.
-def MTFSFI : XLForm_4<63, 134, (outs crrc:$BF), (ins i32imm:$U, i32imm:$W),
+// All MTFSF variants may change the rounding mode so conservatively set it
+// as an implicit def for all of them.
+let Predicates = [HasFPU] in {
+let Defs = [RM], hasSideEffects = 1 in {
+let isCodeGenOnly = 1,
+    Pattern = [(int_ppc_mtfsfi timm:$BF, timm:$U)], W = 0 in
+def MTFSFIb : XLForm_4<63, 134, (outs), (ins u3imm:$BF, u4imm:$U),
+                       "mtfsfi $BF, $U", IIC_IntMFFS>;
+def MTFSFI : XLForm_4<63, 134, (outs), (ins u3imm:$BF, u4imm:$U, i32imm:$W),
                       "mtfsfi $BF, $U, $W", IIC_IntMFFS>;
 let Defs = [CR1] in
-def MTFSFI_rec : XLForm_4<63, 134, (outs crrc:$BF), (ins i32imm:$U, i32imm:$W),
+def MTFSFI_rec : XLForm_4<63, 134, (outs), (ins u3imm:$BF, u4imm:$U, u1imm:$W),
                        "mtfsfi. $BF, $U, $W", IIC_IntMFFS>, isRecordForm;
 
-def : InstAlias<"mtfsfi $BF, $U", (MTFSFI crrc:$BF, i32imm:$U, 0)>;
-def : InstAlias<"mtfsfi. $BF, $U", (MTFSFI_rec crrc:$BF, i32imm:$U, 0)>;
-
-let Predicates = [HasFPU] in {
-let Defs = [RM] in {
 def MTFSF : XFLForm_1<63, 711, (outs),
                       (ins i32imm:$FLM, f8rc:$FRB, u1imm:$L, i32imm:$W),
                       "mtfsf $FLM, $FRB, $L, $W", IIC_IntMFFS, []>;
@@ -4469,6 +4104,8 @@ def MTFSF_rec : XFLForm_1<63, 711, (outs),
                        "mtfsf. $FLM, $FRB, $L, $W", IIC_IntMFFS, []>, isRecordForm;
 }
 
+def : InstAlias<"mtfsfi $BF, $U", (MTFSFI u3imm:$BF, u4imm:$U, 0)>;
+def : InstAlias<"mtfsfi. $BF, $U", (MTFSFI_rec u3imm:$BF, u4imm:$U, 0)>;
 def : InstAlias<"mtfsf $FLM, $FRB", (MTFSF i32imm:$FLM, f8rc:$FRB, 0, 0)>;
 def : InstAlias<"mtfsf. $FLM, $FRB", (MTFSF_rec i32imm:$FLM, f8rc:$FRB, 0, 0)>;
 }
@@ -4663,6 +4300,7 @@ class PPCAsmPseudo<string asm, dag iops>
 def : InstAlias<"sc", (SC 0)>;
 
 def : InstAlias<"sync", (SYNC 0)>, Requires<[HasSYNC]>;
+def : InstAlias<"hwsync", (SYNC 0), 0>, Requires<[HasSYNC]>;
 def : InstAlias<"msync", (SYNC 0), 0>, Requires<[HasSYNC]>;
 def : InstAlias<"lwsync", (SYNC 1)>, Requires<[HasSYNC]>;
 def : InstAlias<"ptesync", (SYNC 2)>, Requires<[HasSYNC]>;
@@ -4888,9 +4526,11 @@ def SUBIC_rec : PPCAsmPseudo<"subic. $rA, $rB, $imm",
                           (ins gprc:$rA, gprc:$rB, s16imm:$imm)>;
 
 def EXTLWI : PPCAsmPseudo<"extlwi $rA, $rS, $n, $b",
-                          (ins gprc:$rA, gprc:$rS, u5imm:$n, u5imm:$b)>;
+                          (ins gprc:$rA, gprc:$rS, u5imm:$n, u5imm:$b)>,
+                          ZExt32To64;
 def EXTLWI_rec : PPCAsmPseudo<"extlwi. $rA, $rS, $n, $b",
-                           (ins gprc:$rA, gprc:$rS, u5imm:$n, u5imm:$b)>;
+                           (ins gprc:$rA, gprc:$rS, u5imm:$n, u5imm:$b)>,
+                           ZExt32To64;
 def EXTRWI : PPCAsmPseudo<"extrwi $rA, $rS, $n, $b",
                           (ins gprc:$rA, gprc:$rS, u5imm:$n, u5imm:$b)>;
 def EXTRWI_rec : PPCAsmPseudo<"extrwi. $rA, $rS, $n, $b",
@@ -4904,17 +4544,17 @@ def INSRWI : PPCAsmPseudo<"insrwi $rA, $rS, $n, $b",
 def INSRWI_rec : PPCAsmPseudo<"insrwi. $rA, $rS, $n, $b",
                            (ins gprc:$rA, gprc:$rS, u5imm:$n, u5imm:$b)>;
 def ROTRWI : PPCAsmPseudo<"rotrwi $rA, $rS, $n",
-                          (ins gprc:$rA, gprc:$rS, u5imm:$n)>;
+                          (ins gprc:$rA, gprc:$rS, u5imm:$n)>, ZExt32To64;
 def ROTRWI_rec : PPCAsmPseudo<"rotrwi. $rA, $rS, $n",
-                           (ins gprc:$rA, gprc:$rS, u5imm:$n)>;
+                           (ins gprc:$rA, gprc:$rS, u5imm:$n)>, ZExt32To64;
 def SLWI : PPCAsmPseudo<"slwi $rA, $rS, $n",
-                        (ins gprc:$rA, gprc:$rS, u5imm:$n)>;
+                        (ins gprc:$rA, gprc:$rS, u5imm:$n)>, ZExt32To64;
 def SLWI_rec : PPCAsmPseudo<"slwi. $rA, $rS, $n",
-                         (ins gprc:$rA, gprc:$rS, u5imm:$n)>;
+                         (ins gprc:$rA, gprc:$rS, u5imm:$n)>, ZExt32To64;
 def SRWI : PPCAsmPseudo<"srwi $rA, $rS, $n",
-                        (ins gprc:$rA, gprc:$rS, u5imm:$n)>;
+                        (ins gprc:$rA, gprc:$rS, u5imm:$n)>, ZExt32To64;
 def SRWI_rec : PPCAsmPseudo<"srwi. $rA, $rS, $n",
-                         (ins gprc:$rA, gprc:$rS, u5imm:$n)>;
+                         (ins gprc:$rA, gprc:$rS, u5imm:$n)>, ZExt32To64;
 def CLRRWI : PPCAsmPseudo<"clrrwi $rA, $rS, $n",
                           (ins gprc:$rA, gprc:$rS, u5imm:$n)>;
 def CLRRWI_rec : PPCAsmPseudo<"clrrwi. $rA, $rS, $n",
@@ -5005,7 +4645,7 @@ def RLWNMbm_rec : PPCAsmPseudo<"rlwnm. $rA, $rS, $n, $b",
 
 // These generic branch instruction forms are used for the assembler parser only.
 // Defs and Uses are conservative, since we don't know the BO value.
-let PPC970_Unit = 7, isBranch = 1 in {
+let PPC970_Unit = 7, isBranch = 1, hasSideEffects = 0 in {
   let Defs = [CTR], Uses = [CTR, RM] in {
     def gBC : BForm_3<16, 0, 0, (outs),
                       (ins u5imm:$bo, crbitrc:$bi, condbrtarget:$dst),
@@ -5240,8 +4880,29 @@ def MSGSYNC : XForm_0<31, 886, (outs), (ins), "msgsync", IIC_SprMSGSYNC, []>;
 def STOP : XForm_0<19, 370, (outs), (ins), "stop", IIC_SprSTOP, []>;
 
 def SETB : XForm_44<31, 128, (outs gprc:$RT), (ins crrc:$BFA),
-                       "setb $RT, $BFA", IIC_IntGeneral>;
+                       "setb $RT, $BFA", IIC_IntGeneral>, SExt32To64;
 } // IsISA3_0
+
+let Predicates = [IsISA3_0] in {
+def : Pat<(i32 (int_ppc_cmprb i32:$a, gprc:$b, gprc:$c)),
+          (i32 (SETB (CMPRB u1imm:$a, $b, $c)))>;
+}
+def : Pat<(i32 (int_ppc_mulhw gprc:$a, gprc:$b)),
+          (i32 (MULHW $a, $b))>;
+def : Pat<(i32 (int_ppc_mulhwu gprc:$a, gprc:$b)),
+          (i32 (MULHWU $a, $b))>;
+def : Pat<(i32 (int_ppc_cmpb gprc:$a, gprc:$b)),
+          (i32 (CMPB $a, $b))>;
+
+def : Pat<(int_ppc_load2r ForceXForm:$ptr),
+          (LHBRX ForceXForm:$ptr)>;
+def : Pat<(int_ppc_load4r ForceXForm:$ptr),
+          (LWBRX ForceXForm:$ptr)>;
+def : Pat<(int_ppc_store2r gprc:$a, ForceXForm:$ptr),
+          (STHBRX gprc:$a, ForceXForm:$ptr)>;
+def : Pat<(int_ppc_store4r gprc:$a, ForceXForm:$ptr),
+          (STWBRX gprc:$a, ForceXForm:$ptr)>;
+
 
 // Fast 32-bit reverse bits algorithm:
 // Step 1: 1-bit swap (swap odd 1-bit and even 1-bit):
@@ -5391,7 +5052,76 @@ def DWBytes3210 {
     (i64 (INSERT_SUBREG (i64 (IMPLICIT_DEF)), Word, sub_32));
 }
 
+// These instructions store a hash computed from the value of the link register
+// and the value of the stack pointer.
+let mayStore = 1 in {
+def HASHST : XForm_XD6_RA5_RB5<31, 722, (outs),
+                               (ins gprc:$RB, memrihash:$D_RA_XD),
+                               "hashst $RB, $D_RA_XD", IIC_IntGeneral, []>;
+def HASHSTP : XForm_XD6_RA5_RB5<31, 658, (outs),
+                                (ins gprc:$RB, memrihash:$D_RA_XD),
+                                "hashstp $RB, $D_RA_XD", IIC_IntGeneral, []>;
+}
+
+// These instructions check a hash computed from the value of the link register
+// and the value of the stack pointer. The hasSideEffects flag is needed as the
+// instruction may TRAP if the hash does not match the hash stored at the
+// specified address.
+let mayLoad = 1, hasSideEffects = 1 in {
+def HASHCHK : XForm_XD6_RA5_RB5<31, 754, (outs),
+                                (ins gprc:$RB, memrihash:$D_RA_XD),
+                                "hashchk $RB, $D_RA_XD", IIC_IntGeneral, []>;
+def HASHCHKP : XForm_XD6_RA5_RB5<31, 690, (outs),
+                                 (ins gprc:$RB, memrihash:$D_RA_XD),
+                                 "hashchkp $RB, $D_RA_XD", IIC_IntGeneral, []>;
+}
+
 // Now both high word and low word are reversed, next
 // swap the high word and low word.
 def : Pat<(i64 (bitreverse i64:$A)),
   (OR8 (RLDICR DWBytes7654.DWord, 32, 31), DWBytes3210.DWord)>;
+
+def : Pat<(int_ppc_stwcx ForceXForm:$dst, gprc:$A),
+          (STWCX gprc:$A, ForceXForm:$dst)>;
+def : Pat<(int_ppc_stbcx ForceXForm:$dst, gprc:$A),
+          (STBCX gprc:$A, ForceXForm:$dst)>;
+def : Pat<(int_ppc_trap gprc:$A),
+          (TWI 24, $A, 0)>;
+
+def : Pat<(int_ppc_fcfid f64:$A),
+        (XSCVSXDDP $A)>;
+def : Pat<(int_ppc_fcfud f64:$A),
+        (XSCVUXDDP $A)>;
+def : Pat<(int_ppc_fctid f64:$A),
+        (FCTID $A)>;
+def : Pat<(int_ppc_fctidz f64:$A),
+        (XSCVDPSXDS $A)>;
+def : Pat<(int_ppc_fctiw f64:$A),
+        (FCTIW $A)>;
+def : Pat<(int_ppc_fctiwz f64:$A),
+        (XSCVDPSXWS $A)>;
+def : Pat<(int_ppc_fctudz f64:$A),
+        (XSCVDPUXDS $A)>;
+def : Pat<(int_ppc_fctuwz f64:$A),
+        (XSCVDPUXWS $A)>;
+
+def : Pat<(int_ppc_mfmsr), (MFMSR)>;
+def : Pat<(int_ppc_mftbu), (MFTB 269)>;
+def : Pat<(i32 (int_ppc_mfspr timm:$SPR)),
+          (MFSPR $SPR)>;
+def : Pat<(int_ppc_mtspr timm:$SPR, gprc:$RT),
+          (MTSPR $SPR, $RT)>;
+def : Pat<(int_ppc_mtmsr gprc:$RS),
+          (MTMSR $RS, 0)>;
+
+let Predicates = [IsISA2_07] in {
+  def : Pat<(int_ppc_sthcx ForceXForm:$dst, gprc:$A),
+          (STHCX gprc:$A, ForceXForm:$dst)>;
+}
+def : Pat<(int_ppc_dcbtstt ForceXForm:$dst),
+          (DCBTST 16, ForceXForm:$dst)>;
+def : Pat<(int_ppc_dcbtt ForceXForm:$dst),
+          (DCBT 16, ForceXForm:$dst)>;
+
+def : Pat<(int_ppc_stfiw ForceXForm:$dst, f64:$XT),
+          (STFIWX f64:$XT, ForceXForm:$dst)>;

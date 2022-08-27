@@ -70,7 +70,7 @@ def SPV_GroupBroadcastOp : SPV_Op<"GroupBroadcast",
 
   let availability = [
     MinVersion<SPV_V_1_0>,
-    MaxVersion<SPV_V_1_5>,
+    MaxVersion<SPV_V_1_6>,
     Extension<[]>,
     Capability<[SPV_C_Groups]>
   ];
@@ -126,7 +126,7 @@ def SPV_SubgroupBallotKHROp : SPV_Op<"SubgroupBallotKHR", []> {
 
   let availability = [
     MinVersion<SPV_V_1_0>,
-    MaxVersion<SPV_V_1_5>,
+    MaxVersion<SPV_V_1_6>,
     Extension<[SPV_KHR_shader_ballot]>,
     Capability<[SPV_C_SubgroupBallotKHR]>
   ];
@@ -139,7 +139,7 @@ def SPV_SubgroupBallotKHROp : SPV_Op<"SubgroupBallotKHR", []> {
     SPV_Int32Vec4:$result
   );
 
-  let verifier = [{ return success(); }];
+  let hasVerifier = 0;
 
   let assemblyFormat = "$predicate attr-dict `:` type($result)";
 }
@@ -181,7 +181,7 @@ def SPV_SubgroupBlockReadINTELOp : SPV_Op<"SubgroupBlockReadINTEL", []> {
 
   let availability = [
     MinVersion<SPV_V_1_0>,
-    MaxVersion<SPV_V_1_5>,
+    MaxVersion<SPV_V_1_6>,
     Extension<[SPV_INTEL_subgroups]>,
     Capability<[SPV_C_SubgroupBufferBlockIOINTEL]>
   ];
@@ -231,7 +231,7 @@ def SPV_SubgroupBlockWriteINTELOp : SPV_Op<"SubgroupBlockWriteINTEL", []> {
 
   let availability = [
     MinVersion<SPV_V_1_0>,
-    MaxVersion<SPV_V_1_5>,
+    MaxVersion<SPV_V_1_6>,
     Extension<[SPV_INTEL_subgroups]>,
     Capability<[SPV_C_SubgroupBufferBlockIOINTEL]>
   ];

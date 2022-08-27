@@ -12,6 +12,10 @@ add_clang_library(clangInterpreter
   IncrementalParser.cpp
   Interpreter.cpp
 
+  DEPENDS
+  intrinsics_gen
+  ClangDriverOptions
+
   LINK_LIBS
   clangAST
   clangAnalysis

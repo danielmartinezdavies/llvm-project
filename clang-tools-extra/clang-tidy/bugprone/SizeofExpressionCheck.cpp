@@ -20,7 +20,7 @@ namespace bugprone {
 namespace {
 
 AST_MATCHER_P(IntegerLiteral, isBiggerThan, unsigned, N) {
-  return Node.getValue().getZExtValue() > N;
+  return Node.getValue().ugt(N);
 }
 
 AST_MATCHER_P2(Expr, hasSizeOfDescendant, int, Depth,
@@ -87,9 +87,9 @@ void SizeofExpressionCheck::registerMatchers(MatchFinder *Finder) {
   const auto ConstantExpr = ignoringParenImpCasts(
       anyOf(integerLiteral(), unaryOperator(hasUnaryOperand(IntegerExpr)),
             binaryOperator(hasLHS(IntegerExpr), hasRHS(IntegerExpr))));
-  const auto IntegerCallExpr = ignoringParenImpCasts(
-      callExpr(anyOf(hasType(isInteger()), hasType(enumType())),
-               unless(isInTemplateInstantiation())));
+  const auto IntegerCallExpr = ignoringParenImpCasts(callExpr(
+      anyOf(hasType(isInteger()), hasType(hasCanonicalType(enumType()))),
+      unless(isInTemplateInstantiation())));
   const auto SizeOfExpr = sizeOfExpr(hasArgumentOfType(
       hasUnqualifiedDesugaredType(type().bind("sizeof-arg-type"))));
   const auto SizeOfZero =
@@ -176,7 +176,7 @@ void SizeofExpressionCheck::registerMatchers(MatchFinder *Finder) {
                          .bind("sizeof-pointer-to-aggregate"),
                      this);
 
-  // Detect expression like: sizeof(epxr) <= k for a suspicious constant 'k'.
+  // Detect expression like: sizeof(expr) <= k for a suspicious constant 'k'.
   if (WarnOnSizeOfCompareToConstant) {
     Finder->addMatcher(
         binaryOperator(matchers::isRelationalOperator(),

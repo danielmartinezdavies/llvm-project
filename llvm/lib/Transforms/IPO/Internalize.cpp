@@ -19,7 +19,6 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/Transforms/IPO/Internalize.h"
-#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/ADT/StringSet.h"
 #include "llvm/ADT/Triple.h"
@@ -29,12 +28,11 @@
 #include "llvm/Pass.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
+#include "llvm/Support/GlobPattern.h"
 #include "llvm/Support/LineIterator.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Transforms/IPO.h"
-#include "llvm/Transforms/Utils/GlobalStatus.h"
-#include "llvm/Transforms/Utils/ModuleUtils.h"
 using namespace llvm;
 
 #define DEBUG_TYPE "internalize"
@@ -43,13 +41,13 @@ STATISTIC(NumAliases, "Number of aliases internalized");
 STATISTIC(NumFunctions, "Number of functions internalized");
 STATISTIC(NumGlobals, "Number of global vars internalized");
 
-// APIFile - A file which contains a list of symbols that should not be marked
-// external.
+// APIFile - A file which contains a list of symbol glob patterns that should
+// not be marked external.
 static cl::opt<std::string>
     APIFile("internalize-public-api-file", cl::value_desc("filename"),
             cl::desc("A file containing list of symbol names to preserve"));
 
-// APIList - A list of symbols that should not be marked internal.
+// APIList - A list of symbol glob patterns that should not be marked internal.
 static cl::list<std::string>
     APIList("internalize-public-api-list", cl::value_desc("list"),
             cl::desc("A list of symbol names to preserve"), cl::CommaSeparated);
@@ -62,29 +60,44 @@ public:
   PreserveAPIList() {
     if (!APIFile.empty())
       LoadFile(APIFile);
-    ExternalNames.insert(APIList.begin(), APIList.end());
+    for (StringRef Pattern : APIList)
+      addGlob(Pattern);
   }
 
   bool operator()(const GlobalValue &GV) {
-    return ExternalNames.count(GV.getName());
+    return llvm::any_of(
+        ExternalNames, [&](GlobPattern &GP) { return GP.match(GV.getName()); });
   }
 
 private:
   // Contains the set of symbols loaded from file
-  StringSet<> ExternalNames;
+  SmallVector<GlobPattern> ExternalNames;
+
+  void addGlob(StringRef Pattern) {
+    auto GlobOrErr = GlobPattern::create(Pattern);
+    if (!GlobOrErr) {
+      errs() << "WARNING: when loading pattern: '"
+             << toString(GlobOrErr.takeError()) << "' ignoring";
+      return;
+    }
+    ExternalNames.emplace_back(std::move(*GlobOrErr));
+  }
 
   void LoadFile(StringRef Filename) {
     // Load the APIFile...
-    ErrorOr<std::unique_ptr<MemoryBuffer>> Buf =
+    ErrorOr<std::unique_ptr<MemoryBuffer>> BufOrErr =
         MemoryBuffer::getFile(Filename);
-    if (!Buf) {
+    if (!BufOrErr) {
       errs() << "WARNING: Internalize couldn't load file '" << Filename
              << "'! Continuing as if it's empty.\n";
       return; // Just continue as if the file were empty
     }
-    for (line_iterator I(*Buf->get(), true), E; I != E; ++I)
-      ExternalNames.insert(*I);
+    Buf = std::move(*BufOrErr);
+    for (line_iterator I(*Buf, true), E; I != E; ++I)
+      addGlob(*I);
   }
+
+  std::shared_ptr<MemoryBuffer> Buf;
 };
 } // end anonymous namespace
 
@@ -100,6 +113,12 @@ bool InternalizePass::shouldPreserveGV(const GlobalValue &GV) {
   // Assume that dllexported symbols are referenced elsewhere
   if (GV.hasDLLExportStorageClass())
     return true;
+
+  // As the name suggests, externally initialized variables need preserving as
+  // they would be initialized elsewhere externally.
+  if (const auto *G = dyn_cast<GlobalVariable>(&GV))
+    if (G->isExternallyInitialized())
+      return true;
 
   // Already local, has nothing to do.
   if (GV.hasLocalLinkage())
@@ -124,21 +143,15 @@ bool InternalizePass::maybeInternalize(
     if (auto *GO = dyn_cast<GlobalObject>(&GV)) {
       // If a comdat with one member is not externally visible, we can drop it.
       // Otherwise, the comdat can be used to establish dependencies among the
-      // group of sections. Thus we have to keep the comdat.
-      //
-      // On ELF, GNU ld and gold use the signature name as the comdat
-      // deduplication key. Rename the comdat to suppress deduplication with
-      // other object files. On COFF, non-external selection symbol suppresses
-      // deduplication and thus does not need renaming.
+      // group of sections. Thus we have to keep the comdat but switch it to
+      // nodeduplicate.
+      // Note: nodeduplicate is not necessary for COFF. wasm doesn't support
+      // nodeduplicate.
       ComdatInfo &Info = ComdatMap.find(C)->second;
-      if (Info.Size == 1) {
+      if (Info.Size == 1)
         GO->setComdat(nullptr);
-      } else if (IsELF) {
-        if (Info.Dest == nullptr)
-          Info.Dest = GV.getParent()->getOrInsertComdat(
-              (C->getName() + ModuleId).toStringRef(ComdatName));
-        GO->setComdat(Info.Dest);
-      }
+      else if (!IsWasm)
+        C->setSelectionKind(Comdat::NoDeduplicate);
     }
 
     if (GV.hasLocalLinkage())
@@ -201,22 +214,6 @@ bool InternalizePass::internalizeModule(Module &M, CallGraph *CG) {
     AlwaysPreserved.insert(V->getName());
   }
 
-  // Mark all functions not in the api as internal.
-  ModuleId = getUniqueModuleId(&M);
-  IsELF = Triple(M.getTargetTriple()).isOSBinFormatELF();
-  for (Function &I : M) {
-    if (!maybeInternalize(I, ComdatMap))
-      continue;
-    Changed = true;
-
-    if (ExternalNode)
-      // Remove a callgraph edge from the external node to this function.
-      ExternalNode->removeOneAbstractEdgeTo((*CG)[&I]);
-
-    ++NumFunctions;
-    LLVM_DEBUG(dbgs() << "Internalizing func " << I.getName() << "\n");
-  }
-
   // Never internalize the llvm.used symbol.  It is used to implement
   // attribute((used)).
   // FIXME: Shouldn't this just filter on llvm.metadata section??
@@ -233,7 +230,25 @@ bool InternalizePass::internalizeModule(Module &M, CallGraph *CG) {
   // FIXME: We should probably add this (and the __stack_chk_guard) via some
   // type of call-back in CodeGen.
   AlwaysPreserved.insert("__stack_chk_fail");
-  AlwaysPreserved.insert("__stack_chk_guard");
+  if (Triple(M.getTargetTriple()).isOSAIX())
+    AlwaysPreserved.insert("__ssp_canary_word");
+  else
+    AlwaysPreserved.insert("__stack_chk_guard");
+
+  // Mark all functions not in the api as internal.
+  IsWasm = Triple(M.getTargetTriple()).isOSBinFormatWasm();
+  for (Function &I : M) {
+    if (!maybeInternalize(I, ComdatMap))
+      continue;
+    Changed = true;
+
+    if (ExternalNode)
+      // Remove a callgraph edge from the external node to this function.
+      ExternalNode->removeOneAbstractEdgeTo((*CG)[&I]);
+
+    ++NumFunctions;
+    LLVM_DEBUG(dbgs() << "Internalizing func " << I.getName() << "\n");
+  }
 
   // Mark all global variables with initializers that are not in the api as
   // internal as well.

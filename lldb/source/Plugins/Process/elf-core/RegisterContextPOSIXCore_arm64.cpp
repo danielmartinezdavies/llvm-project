@@ -62,7 +62,7 @@ RegisterContextCorePOSIX_arm64::RegisterContextCorePOSIX_arm64(
   ConfigureRegisterContext();
 }
 
-RegisterContextCorePOSIX_arm64::~RegisterContextCorePOSIX_arm64() {}
+RegisterContextCorePOSIX_arm64::~RegisterContextCorePOSIX_arm64() = default;
 
 bool RegisterContextCorePOSIX_arm64::ReadGPR() { return true; }
 
@@ -230,7 +230,7 @@ bool RegisterContextCorePOSIX_arm64::ReadRegister(const RegisterInfo *reg_info,
 }
 
 bool RegisterContextCorePOSIX_arm64::ReadAllRegisterValues(
-    lldb::DataBufferSP &data_sp) {
+    lldb::WritableDataBufferSP &data_sp) {
   return false;
 }
 

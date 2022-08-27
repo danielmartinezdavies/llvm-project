@@ -13,7 +13,8 @@
 //===----------------------------------------------------------------------===//
 
 #include "PassDetail.h"
-#include "mlir/Dialect/Linalg/IR/LinalgOps.h"
+#include "mlir/Dialect/Arithmetic/IR/Arithmetic.h"
+#include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Linalg/Passes.h"
 #include "mlir/Dialect/Linalg/Transforms/Transforms.h"
 #include "mlir/IR/AffineExpr.h"
@@ -34,44 +35,47 @@ struct InlineScalarOperands : public OpRewritePattern<GenericOp> {
     SmallVector<size_t> scalarOperands;
     SmallVector<AffineMap> newIndexingMaps;
     SmallVector<Value> newOperands;
-    for (auto it : llvm::enumerate(llvm::zip(genericOp.getInputIndexingMaps(),
-                                             genericOp.getInputTensors()))) {
-      AffineMap map = std::get<0>(it.value());
-      if (map.isConstant()) {
-        scalarOperands.emplace_back(it.index());
+    for (OpOperand *opOperand : genericOp.getInputOperands()) {
+      AffineMap map = genericOp.getTiedIndexingMap(opOperand);
+      if (genericOp.isInputTensor(opOperand) && map.isConstant()) {
+        scalarOperands.emplace_back(opOperand->getOperandNumber());
       } else {
         newIndexingMaps.emplace_back(map);
-        newOperands.emplace_back(std::get<1>(it.value()));
+        newOperands.emplace_back(opOperand->get());
       }
     }
 
     if (scalarOperands.empty())
       return failure();
 
-    newIndexingMaps.append(genericOp.getOutputIndexingMaps());
+    for (OpOperand *opOperand : genericOp.getOutputOperands())
+      newIndexingMaps.emplace_back(genericOp.getTiedIndexingMap(opOperand));
 
     Location loc = genericOp->getLoc();
+    SmallVector<Value> outputOperands = genericOp.getOutputOperands();
     auto newOp = rewriter.create<GenericOp>(
-        loc, genericOp->getResultTypes(), newOperands,
-        genericOp.getOutputTensors(), newIndexingMaps,
-        llvm::to_vector<4>(
-            genericOp.iterator_types().template getAsValueRange<StringAttr>()));
-    rewriter.cloneRegionBefore(genericOp.region(), newOp.region(),
-                               newOp.region().begin());
+        loc, genericOp->getResultTypes(), newOperands, outputOperands,
+        newIndexingMaps,
+        llvm::to_vector<4>(genericOp.getIteratorTypes()
+                               .template getAsValueRange<StringAttr>()));
+    rewriter.cloneRegionBefore(genericOp.getRegion(), newOp.getRegion(),
+                               newOp.getRegion().begin());
 
     Block *body = newOp.getBody();
     PatternRewriter::InsertionGuard guard(rewriter);
     rewriter.setInsertionPointToStart(body);
 
     for (auto idx : llvm::reverse(scalarOperands)) {
-      Value operand = genericOp.getInput(idx);
-      AffineMap map = genericOp.getInputIndexingMap(idx);
+      OpOperand *opOperand = genericOp.getInputOperand(idx);
+      AffineMap map = genericOp.getTiedIndexingMap(opOperand);
       SmallVector<int64_t> indices = map.getConstantResults();
       SmallVector<Value> indicesValues;
       for (auto idx : indices)
-        indicesValues.emplace_back(rewriter.create<ConstantIndexOp>(loc, idx));
-      operand = rewriter.create<tensor::ExtractOp>(loc, operand, indicesValues);
-      body->getArgument(idx).replaceAllUsesWith(operand);
+        indicesValues.emplace_back(
+            rewriter.create<arith::ConstantIndexOp>(loc, idx));
+      Value extractedValue = rewriter.create<tensor::ExtractOp>(
+          loc, opOperand->get(), indicesValues);
+      body->getArgument(idx).replaceAllUsesWith(extractedValue);
       body->eraseArgument(idx);
     }
 
@@ -93,8 +97,8 @@ namespace {
 /// Pass that removes unit-extent dims within generic ops.
 struct LinalgInlineScalarOperandsPass
     : public LinalgInlineScalarOperandsBase<LinalgInlineScalarOperandsPass> {
-  void runOnFunction() override {
-    FuncOp funcOp = getFunction();
+  void runOnOperation() override {
+    func::FuncOp funcOp = getOperation();
     MLIRContext *context = funcOp.getContext();
     RewritePatternSet patterns(context);
 
@@ -104,7 +108,7 @@ struct LinalgInlineScalarOperandsPass
 };
 } // namespace
 
-std::unique_ptr<OperationPass<FuncOp>>
+std::unique_ptr<OperationPass<func::FuncOp>>
 mlir::createLinalgInlineScalarOperandsPass() {
   return std::make_unique<LinalgInlineScalarOperandsPass>();
 }

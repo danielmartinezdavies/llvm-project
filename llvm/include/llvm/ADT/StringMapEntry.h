@@ -5,17 +5,20 @@
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
-//
-// This file defines the StringMapEntry class - it is intended to be a low
-// dependency implementation detail of StringMap that is more suitable for
-// inclusion in public headers than StringMap.h itself is.
-//
+///
+/// \file
+/// This file defines the StringMapEntry class - it is intended to be a low
+/// dependency implementation detail of StringMap that is more suitable for
+/// inclusion in public headers than StringMap.h itself is.
+///
 //===----------------------------------------------------------------------===//
 
 #ifndef LLVM_ADT_STRINGMAPENTRY_H
 #define LLVM_ADT_STRINGMAPENTRY_H
 
+#include "llvm/ADT/None.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/ADT/STLFunctionalExtras.h"
 
 namespace llvm {
 
@@ -84,7 +87,7 @@ public:
 
 template <> class StringMapEntryStorage<NoneType> : public StringMapEntryBase {
 public:
-  explicit StringMapEntryStorage(size_t keyLength, NoneType none = None)
+  explicit StringMapEntryStorage(size_t keyLength, NoneType = None)
       : StringMapEntryBase(keyLength) {}
   StringMapEntryStorage(StringMapEntryStorage &entry) = delete;
 

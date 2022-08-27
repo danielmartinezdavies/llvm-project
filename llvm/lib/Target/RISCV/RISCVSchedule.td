@@ -112,6 +112,7 @@ def ReadCSR         : SchedRead;
 def ReadMemBase     : SchedRead;
 def ReadFMemBase    : SchedRead;
 def ReadStoreData   : SchedRead;
+def ReadFStoreData  : SchedRead;
 def ReadIALU        : SchedRead;
 def ReadIALU32      : SchedRead;    // 32-bit integer ALU operations on RV64I
 def ReadShiftImm    : SchedRead;
@@ -230,3 +231,4 @@ def : ReadAdvance<ReadFSqrt16, 0>;
 
 // Include the scheduler resources for other instruction extensions.
 include "RISCVScheduleB.td"
+include "RISCVScheduleV.td"

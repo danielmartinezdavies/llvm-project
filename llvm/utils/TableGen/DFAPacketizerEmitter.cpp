@@ -14,14 +14,10 @@
 //
 //===----------------------------------------------------------------------===//
 
-#define DEBUG_TYPE "dfa-emitter"
-
 #include "CodeGenSchedule.h"
 #include "CodeGenTarget.h"
 #include "DFAEmitter.h"
-#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
-#include "llvm/ADT/StringExtras.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/TableGen/Record.h"
@@ -33,6 +29,8 @@
 #include <string>
 #include <unordered_map>
 #include <vector>
+
+#define DEBUG_TYPE "dfa-emitter"
 
 using namespace llvm;
 
