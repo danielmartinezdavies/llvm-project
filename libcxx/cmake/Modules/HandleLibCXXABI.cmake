@@ -63,46 +63,56 @@ function(import_private_headers target include_dirs headers)
   target_include_directories(${target} INTERFACE "${LIBCXX_BINARY_DIR}/private-abi-headers")
 endfunction()
 
-# This function creates an imported library named <target> of the given <kind> (SHARED|STATIC).
+# This function creates an imported static library named <target>.
 # It imports a library named <name> searched at the given <path>.
-function(imported_library target kind path name)
-  add_library(${target} ${kind} IMPORTED GLOBAL)
-  set(libnames "${CMAKE_${kind}_LIBRARY_PREFIX}${name}${CMAKE_${kind}_LIBRARY_SUFFIX}")
-  # Make sure we find .tbd files on macOS
-  if (kind STREQUAL "SHARED")
-    list(APPEND libnames "${CMAKE_${kind}_LIBRARY_PREFIX}${name}.tbd")
-  endif()
+function(import_static_library target path name)
+  add_library(${target} STATIC IMPORTED GLOBAL)
   find_library(file
-    NAMES ${libnames}
+    NAMES "${CMAKE_STATIC_LIBRARY_PREFIX}${name}${CMAKE_STATIC_LIBRARY_SUFFIX}"
     PATHS "${path}"
     NO_CACHE)
   set_target_properties(${target} PROPERTIES IMPORTED_LOCATION "${file}")
 endfunction()
 
+# This function creates an imported shared (interface) library named <target>
+# for the given library <name>.
+function(import_shared_library target name)
+  add_library(${target} INTERFACE IMPORTED GLOBAL)
+  set_target_properties(${target} PROPERTIES IMPORTED_LIBNAME "${name}")
+endfunction()
+
 # Link against a system-provided libstdc++
 if ("${LIBCXX_CXX_ABI}" STREQUAL "libstdc++")
+  if(NOT LIBCXX_CXX_ABI_INCLUDE_PATHS)
+    message(FATAL_ERROR "LIBCXX_CXX_ABI_INCLUDE_PATHS must be set when selecting libstdc++ as an ABI library")
+  endif()
+
   add_library(libcxx-abi-headers INTERFACE)
   import_private_headers(libcxx-abi-headers "${LIBCXX_CXX_ABI_INCLUDE_PATHS}"
     "cxxabi.h;bits/c++config.h;bits/os_defines.h;bits/cpu_defines.h;bits/cxxabi_tweaks.h;bits/cxxabi_forced.h")
   target_compile_definitions(libcxx-abi-headers INTERFACE "-DLIBSTDCXX" "-D__GLIBCXX__")
 
-  imported_library(libcxx-abi-shared SHARED "${LIBCXX_CXX_ABI_LIBRARY_PATH}" stdc++)
+  import_shared_library(libcxx-abi-shared stdc++)
   target_link_libraries(libcxx-abi-shared INTERFACE libcxx-abi-headers)
 
-  imported_library(libcxx-abi-static STATIC "${LIBCXX_CXX_ABI_LIBRARY_PATH}" stdc++)
+  import_static_library(libcxx-abi-static "${LIBCXX_CXX_ABI_LIBRARY_PATH}" stdc++)
   target_link_libraries(libcxx-abi-static INTERFACE libcxx-abi-headers)
 
 # Link against a system-provided libsupc++
 elseif ("${LIBCXX_CXX_ABI}" STREQUAL "libsupc++")
+  if(NOT LIBCXX_CXX_ABI_INCLUDE_PATHS)
+    message(FATAL_ERROR "LIBCXX_CXX_ABI_INCLUDE_PATHS must be set when selecting libsupc++ as an ABI library")
+  endif()
+
   add_library(libcxx-abi-headers INTERFACE)
   import_private_headers(libcxx-abi-headers "${LIBCXX_CXX_ABI_INCLUDE_PATHS}"
     "cxxabi.h;bits/c++config.h;bits/os_defines.h;bits/cpu_defines.h;bits/cxxabi_tweaks.h;bits/cxxabi_forced.h")
   target_compile_definitions(libcxx-abi-headers INTERFACE "-D__GLIBCXX__")
 
-  imported_library(libcxx-abi-shared SHARED "${LIBCXX_CXX_ABI_LIBRARY_PATH}" supc++)
+  import_shared_library(libcxx-abi-shared supc++)
   target_link_libraries(libcxx-abi-shared INTERFACE libcxx-abi-headers)
 
-  imported_library(libcxx-abi-static STATIC "${LIBCXX_CXX_ABI_LIBRARY_PATH}" supc++)
+  import_static_library(libcxx-abi-static "${LIBCXX_CXX_ABI_LIBRARY_PATH}" supc++)
   target_link_libraries(libcxx-abi-static INTERFACE libcxx-abi-headers)
 
 # Link against the in-tree libc++abi
@@ -112,7 +122,18 @@ elseif ("${LIBCXX_CXX_ABI}" STREQUAL "libcxxabi")
   target_compile_definitions(libcxx-abi-headers INTERFACE "-DLIBCXX_BUILDING_LIBCXXABI")
 
   if (TARGET cxxabi_shared)
-    add_library(libcxx-abi-shared ALIAS cxxabi_shared)
+    add_library(libcxx-abi-shared INTERFACE)
+    target_link_libraries(libcxx-abi-shared INTERFACE cxxabi_shared)
+
+    # When using the in-tree libc++abi as an ABI library, libc++ re-exports the
+    # libc++abi symbols (on platforms where it can) because libc++abi is only an
+    # implementation detail of libc++.
+    target_link_libraries(libcxx-abi-shared INTERFACE cxxabi-reexports)
+
+    # Populate the OUTPUT_NAME property of libcxx-abi-shared because that is used when
+    # generating a linker script.
+    get_target_property(_output_name cxxabi_shared OUTPUT_NAME)
+    set_target_properties(libcxx-abi-shared PROPERTIES "OUTPUT_NAME" "${_output_name}")
   endif()
 
   if (TARGET cxxabi_static)
@@ -129,22 +150,22 @@ elseif ("${LIBCXX_CXX_ABI}" STREQUAL "libcxxabi")
 
 # Link against a system-provided libc++abi
 elseif ("${LIBCXX_CXX_ABI}" STREQUAL "system-libcxxabi")
+  if(NOT LIBCXX_CXX_ABI_INCLUDE_PATHS)
+    message(FATAL_ERROR "LIBCXX_CXX_ABI_INCLUDE_PATHS must be set when selecting system-libcxxabi as an ABI library")
+  endif()
+
   add_library(libcxx-abi-headers INTERFACE)
   import_private_headers(libcxx-abi-headers "${LIBCXX_CXX_ABI_INCLUDE_PATHS}" "cxxabi.h;__cxxabi_config.h")
   target_compile_definitions(libcxx-abi-headers INTERFACE "-DLIBCXX_BUILDING_LIBCXXABI")
 
-  imported_library(libcxx-abi-shared SHARED "${LIBCXX_CXX_ABI_LIBRARY_PATH}" c++abi)
+  import_shared_library(libcxx-abi-shared c++abi)
   target_link_libraries(libcxx-abi-shared INTERFACE libcxx-abi-headers)
 
-  imported_library(libcxx-abi-static STATIC "${LIBCXX_CXX_ABI_LIBRARY_PATH}" c++abi)
+  import_static_library(libcxx-abi-static "${LIBCXX_CXX_ABI_LIBRARY_PATH}" c++abi)
   target_link_libraries(libcxx-abi-static INTERFACE libcxx-abi-headers)
 
 # Link against a system-provided libcxxrt
 elseif ("${LIBCXX_CXX_ABI}" STREQUAL "libcxxrt")
-  # libcxxrt does not provide aligned new and delete operators
-  # TODO: We're keeping this for backwards compatibility, but this doesn't belong here.
-  set(LIBCXX_ENABLE_NEW_DELETE_DEFINITIONS ON)
-
   if(NOT LIBCXX_CXX_ABI_INCLUDE_PATHS)
     message(STATUS "LIBCXX_CXX_ABI_INCLUDE_PATHS not set, using /usr/include/c++/v1")
     set(LIBCXX_CXX_ABI_INCLUDE_PATHS "/usr/include/c++/v1")
@@ -154,10 +175,10 @@ elseif ("${LIBCXX_CXX_ABI}" STREQUAL "libcxxrt")
     "cxxabi.h;unwind.h;unwind-arm.h;unwind-itanium.h")
   target_compile_definitions(libcxx-abi-headers INTERFACE "-DLIBCXXRT")
 
-  imported_library(libcxx-abi-shared SHARED "${LIBCXX_CXX_ABI_LIBRARY_PATH}" cxxrt)
+  import_shared_library(libcxx-abi-shared cxxrt)
   target_link_libraries(libcxx-abi-shared INTERFACE libcxx-abi-headers)
 
-  imported_library(libcxx-abi-static STATIC "${LIBCXX_CXX_ABI_LIBRARY_PATH}" cxxrt)
+  import_static_library(libcxx-abi-static "${LIBCXX_CXX_ABI_LIBRARY_PATH}" cxxrt)
   target_link_libraries(libcxx-abi-static INTERFACE libcxx-abi-headers)
 
 # Link against a system-provided vcruntime

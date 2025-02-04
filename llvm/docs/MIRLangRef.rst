@@ -58,12 +58,12 @@ for the post register allocation pseudo instruction expansion pass, you can
 specify the machine copy propagation pass in the ``-stop-after`` option, as it
 runs just before the pass that we are trying to test:
 
-   ``llc -stop-after=machine-cp bug-trigger.ll > test.mir``
+   ``llc -stop-after=machine-cp bug-trigger.ll -o test.mir``
 
 If the same pass is run multiple times, a run index can be included
 after the name with a comma.
 
-   ``llc -stop-after=dead-mi-elimination,1 bug-trigger.ll > test.mir``
+   ``llc -stop-after=dead-mi-elimination,1 bug-trigger.ll -o test.mir``
 
 After generating the input MIR file, you'll have to add a run line that uses
 the ``-run-pass`` option to it. In order to test the post register allocation
@@ -168,11 +168,11 @@ Here is an example of a YAML document that contains an LLVM module:
 
 .. code-block:: llvm
 
-       define i32 @inc(i32* %x) {
+       define i32 @inc(ptr %x) {
        entry:
-         %0 = load i32, i32* %x
+         %0 = load i32, ptr %x
          %1 = add i32 %0, 1
-         store i32 %1, i32* %x
+         store i32 %1, ptr %x
          ret i32 %1
        }
 
@@ -460,7 +460,7 @@ is preferred.
 Machine Operands
 ----------------
 
-There are seventeen different kinds of machine operands, and all of them can be
+There are eighteen different kinds of machine operands, and all of them can be
 serialized.
 
 Immediate Operands
@@ -540,41 +540,55 @@ Register Flags
 The table below shows all of the possible register flags along with the
 corresponding internal ``llvm::RegState`` representation:
 
+..
+   Keep this in sync with MachineInstrBuilder.h
+
 .. list-table::
    :header-rows: 1
 
    * - Flag
      - Internal Value
+     - Meaning
 
    * - ``implicit``
      - ``RegState::Implicit``
+     - Not emitted register (e.g. carry, or temporary result).
 
    * - ``implicit-def``
      - ``RegState::ImplicitDefine``
+     - ``implicit`` and ``def``
 
    * - ``def``
      - ``RegState::Define``
+     - Register definition.
 
    * - ``dead``
      - ``RegState::Dead``
+     - Unused definition.
 
    * - ``killed``
      - ``RegState::Kill``
+     - The last use of a register.
 
    * - ``undef``
      - ``RegState::Undef``
+     - Value of the register doesn't matter.
 
    * - ``internal``
      - ``RegState::InternalRead``
+     - Register reads a value that is defined inside the same instruction or bundle.
 
    * - ``early-clobber``
      - ``RegState::EarlyClobber``
+     - Register definition happens before uses.
 
    * - ``debug-use``
      - ``RegState::Debug``
+     - Register 'use' is for debugging purpose.
 
    * - ``renamable``
      - ``RegState::Renamable``
+     - Register that may be renamed.
 
 .. _subregister-indices:
 
@@ -736,6 +750,19 @@ The syntax is:
 
     EH_LABEL <mcsymbol Ltmp1>
 
+Debug Instruction Reference Operands
+^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+A debug instruction reference operand is a pair of indices, referring to an
+instruction and an operand within that instruction respectively; see
+:ref:`Instruction referencing locations <instruction-referencing-locations>`.
+
+The example below uses a reference to Instruction 1, Operand 0:
+
+.. code-block:: text
+
+    DBG_INSTR_REF !123, !DIExpression(DW_OP_LLVM_arg, 0), dbg-instr-ref(1, 0), debug-location !456
+
 CFIIndex Operands
 ^^^^^^^^^^^^^^^^^
 
@@ -856,16 +883,16 @@ Where:
 
 - ``debug-info-location`` identifies a DILocation metadata node.
 
-These metadata attributes correspond to the operands of a ``llvm.dbg.declare``
-IR intrinsic, see the :ref:`source level debugging<format_common_intrinsics>`
-documentation.
+These metadata attributes correspond to the operands of a ``#dbg_declare``
+IR debug record, see the :ref:`source level
+debugging<debug_records>` documentation.
 
 Varying variable locations
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 Variables that are not always on the stack or change location are specified
 with the ``DBG_VALUE``  meta machine instruction. It is synonymous with the
-``llvm.dbg.value`` IR intrinsic, and is written:
+``#dbg_value`` IR record, and is written:
 
 .. code-block:: text
 
@@ -886,6 +913,8 @@ variable. The second operand (``IsIndirect``) is deprecated and to be deleted.
 All additional qualifiers for the variable location should be made through the
 expression metadata.
 
+.. _instruction-referencing-locations:
+
 Instruction referencing locations
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
@@ -898,16 +927,16 @@ instruction number and operand number. Consider the example below:
 .. code-block:: text
 
     $rbp = MOV64ri 0, debug-instr-number 1, debug-location !12
-    DBG_INSTR_REF 1, 0, !123, !DIExpression(), debug-location !456
+    DBG_INSTR_REF !123, !DIExpression(DW_OP_LLVM_arg, 0), dbg-instr-ref(1, 0), debug-location !456
 
 Instruction numbers are directly attached to machine instructions with an
 optional ``debug-instr-number`` attachment, before the optional
 ``debug-location`` attachment. The value defined in ``$rbp`` in the code
 above would be identified by the pair ``<1, 0>``.
 
-The first two operands of the ``DBG_INSTR_REF`` above record the instruction
+The 3rd operand of the ``DBG_INSTR_REF`` above records the instruction
 and operand number ``<1, 0>``, identifying the value defined by the ``MOV64ri``.
-The additional operands to ``DBG_INSTR_REF`` are identical to ``DBG_VALUE``,
+The first two operands to ``DBG_INSTR_REF`` are identical to ``DBG_VALUE_LIST``,
 and the ``DBG_INSTR_REF`` s position records where the variable takes on the
 designated value in the same way.
 

@@ -703,8 +703,12 @@ static bool GetFrameDataProgram(PdbIndex &index,
   if (frame_data_it == new_fpo_data.end())
     return false;
 
-  PDBStringTable &strings = cantFail(index.pdb().getStringTable());
-  out_program = cantFail(strings.getStringForID(frame_data_it->FrameFunc));
+  auto strings = index.pdb().getStringTable();
+  if (!strings) {
+    consumeError(strings.takeError());
+    return false;
+  }
+  out_program = cantFail(strings->getStringForID(frame_data_it->FrameFunc));
   return true;
 }
 
@@ -898,7 +902,6 @@ VariableInfo lldb_private::npdb::GetVariableLocationInfo(
           loc_specifier_id.modi,
           loc_specifier_id.offset + loc_specifier_cvs.RecordData.size());
     }
-    result.location = DWARFExpressionList();
     for (const auto &entry : location_map) {
       DWARFExpression dwarf_expr =
           entry.data.is_dwarf ? entry.data.expr
@@ -906,7 +909,7 @@ VariableInfo lldb_private::npdb::GetVariableLocationInfo(
                                     entry.data.offset_to_location,
                                     offset_to_size, type_size, module);
 
-      result.location->AddExpression(entry.GetRangeBase(), entry.GetRangeEnd(),
+      result.location.AddExpression(entry.GetRangeBase(), entry.GetRangeEnd(),
                                      dwarf_expr);
     }
     return result;
@@ -1105,6 +1108,11 @@ size_t lldb_private::npdb::GetSizeOfType(PdbTypeSymId id,
     return GetSizeOfTypeInternal<ClassRecord>(cvt);
   case LF_UNION:
     return GetSizeOfTypeInternal<UnionRecord>(cvt);
+  case LF_BITFIELD: {
+    BitFieldRecord record;
+    llvm::cantFail(TypeDeserializer::deserializeAs<BitFieldRecord>(cvt, record));
+    return GetSizeOfType({record.Type}, tpi);
+  }
   default:
     break;
   }

@@ -8,7 +8,7 @@
 #ifndef MLIR_CONVERSION_SCFTOGPU_SCFTOGPUPASS_H_
 #define MLIR_CONVERSION_SCFTOGPU_SCFTOGPUPASS_H_
 
-#include "mlir/IR/FunctionInterfaces.h"
+#include "mlir/Interfaces/FunctionInterfaces.h"
 #include "mlir/Support/LLVM.h"
 
 #include <memory>
@@ -17,6 +17,10 @@ namespace mlir {
 template <typename T>
 class InterfacePass;
 class Pass;
+
+#define GEN_PASS_DECL_CONVERTAFFINEFORTOGPU
+#define GEN_PASS_DECL_CONVERTPARALLELLOOPTOGPU
+#include "mlir/Conversion/Passes.h.inc"
 
 /// Create a pass that converts loop nests into GPU kernels.  It considers
 /// top-level affine.for operations as roots of loop nests and converts them to

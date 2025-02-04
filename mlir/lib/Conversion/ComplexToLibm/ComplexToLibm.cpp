@@ -8,10 +8,16 @@
 
 #include "mlir/Conversion/ComplexToLibm/ComplexToLibm.h"
 
-#include "../PassDetail.h"
 #include "mlir/Dialect/Complex/IR/Complex.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/PatternMatch.h"
+#include "mlir/Pass/Pass.h"
+#include <optional>
+
+namespace mlir {
+#define GEN_PASS_DEF_CONVERTCOMPLEXTOLIBM
+#include "mlir/Conversion/Passes.h.inc"
+} // namespace mlir
 
 using namespace mlir;
 
@@ -19,10 +25,10 @@ namespace {
 // Functor to resolve the function name corresponding to the given complex
 // result type.
 struct ComplexTypeResolver {
-  llvm::Optional<bool> operator()(Type type) const {
-    auto complexType = type.cast<ComplexType>();
+  std::optional<bool> operator()(Type type) const {
+    auto complexType = cast<ComplexType>(type);
     auto elementType = complexType.getElementType();
-    if (!elementType.isa<Float32Type, Float64Type>())
+    if (!isa<Float32Type, Float64Type>(elementType))
       return {};
 
     return elementType.getIntOrFloatBitWidth() == 64;
@@ -32,9 +38,9 @@ struct ComplexTypeResolver {
 // Functor to resolve the function name corresponding to the given float result
 // type.
 struct FloatTypeResolver {
-  llvm::Optional<bool> operator()(Type type) const {
-    auto elementType = type.cast<FloatType>();
-    if (!elementType.isa<Float32Type, Float64Type>())
+  std::optional<bool> operator()(Type type) const {
+    auto elementType = cast<FloatType>(type);
+    if (!isa<Float32Type, Float64Type>(elementType))
       return {};
 
     return elementType.getIntOrFloatBitWidth() == 64;
@@ -49,10 +55,8 @@ template <typename Op, typename TypeResolver = ComplexTypeResolver>
 struct ScalarOpToLibmCall : public OpRewritePattern<Op> {
 public:
   using OpRewritePattern<Op>::OpRewritePattern;
-  ScalarOpToLibmCall<Op, TypeResolver>(MLIRContext *context,
-                                       StringRef floatFunc,
-                                       StringRef doubleFunc,
-                                       PatternBenefit benefit)
+  ScalarOpToLibmCall(MLIRContext *context, StringRef floatFunc,
+                     StringRef doubleFunc, PatternBenefit benefit)
       : OpRewritePattern<Op>(context, benefit), floatFunc(floatFunc),
         doubleFunc(doubleFunc){};
 
@@ -71,7 +75,7 @@ LogicalResult ScalarOpToLibmCall<Op, TypeResolver>::matchAndRewrite(
   if (!isDouble.has_value())
     return failure();
 
-  auto name = isDouble.value() ? doubleFunc : floatFunc;
+  auto name = *isDouble ? doubleFunc : floatFunc;
 
   auto opFunc = dyn_cast_or_null<SymbolOpInterface>(
       SymbolTable::lookupSymbolIn(module, name));
@@ -113,11 +117,13 @@ void mlir::populateComplexToLibmConversionPatterns(RewritePatternSet &patterns,
       patterns.getContext(), "cabsf", "cabs", benefit);
   patterns.add<ScalarOpToLibmCall<complex::AngleOp, FloatTypeResolver>>(
       patterns.getContext(), "cargf", "carg", benefit);
+  patterns.add<ScalarOpToLibmCall<complex::TanOp>>(patterns.getContext(),
+                                                   "ctanf", "ctan", benefit);
 }
 
 namespace {
 struct ConvertComplexToLibmPass
-    : public ConvertComplexToLibmBase<ConvertComplexToLibmPass> {
+    : public impl::ConvertComplexToLibmBase<ConvertComplexToLibmPass> {
   void runOnOperation() override;
 };
 } // namespace
@@ -132,7 +138,8 @@ void ConvertComplexToLibmPass::runOnOperation() {
   target.addLegalDialect<func::FuncDialect>();
   target.addIllegalOp<complex::PowOp, complex::SqrtOp, complex::TanhOp,
                       complex::CosOp, complex::SinOp, complex::ConjOp,
-                      complex::LogOp, complex::AbsOp, complex::AngleOp>();
+                      complex::LogOp, complex::AbsOp, complex::AngleOp,
+                      complex::TanOp>();
   if (failed(applyPartialConversion(module, target, std::move(patterns))))
     signalPassFailure();
 }

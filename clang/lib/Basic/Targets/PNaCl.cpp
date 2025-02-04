@@ -16,10 +16,10 @@
 using namespace clang;
 using namespace clang::targets;
 
-ArrayRef<const char *> PNaClTargetInfo::getGCCRegNames() const { return None; }
+ArrayRef<const char *> PNaClTargetInfo::getGCCRegNames() const { return {}; }
 
 ArrayRef<TargetInfo::GCCRegAlias> PNaClTargetInfo::getGCCRegAliases() const {
-  return None;
+  return {};
 }
 
 void PNaClTargetInfo::getArchDefines(const LangOptions &Opts,

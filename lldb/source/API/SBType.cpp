@@ -7,30 +7,35 @@
 //===----------------------------------------------------------------------===//
 
 #include "lldb/API/SBType.h"
+#include "Utils.h"
 #include "lldb/API/SBDefines.h"
 #include "lldb/API/SBModule.h"
 #include "lldb/API/SBStream.h"
 #include "lldb/API/SBTypeEnumMember.h"
 #include "lldb/Core/Mangled.h"
+#include "lldb/Symbol/CompilerDecl.h"
 #include "lldb/Symbol/CompilerType.h"
 #include "lldb/Symbol/Type.h"
 #include "lldb/Symbol/TypeSystem.h"
 #include "lldb/Utility/ConstString.h"
+#include "lldb/Utility/DataExtractor.h"
 #include "lldb/Utility/Instrumentation.h"
+#include "lldb/Utility/Scalar.h"
 #include "lldb/Utility/Stream.h"
+#include "lldb/ValueObject/ValueObjectConstResult.h"
 
 #include "llvm/ADT/APSInt.h"
+#include "llvm/Support/MathExtras.h"
 
 #include <memory>
+#include <optional>
 
 using namespace lldb;
 using namespace lldb_private;
 
 SBType::SBType() { LLDB_INSTRUMENT_VA(this); }
 
-SBType::SBType(const CompilerType &type)
-    : m_opaque_sp(new TypeImpl(
-          CompilerType(type.GetTypeSystem(), type.GetOpaqueQualType()))) {}
+SBType::SBType(const CompilerType &type) : m_opaque_sp(new TypeImpl(type)) {}
 
 SBType::SBType(const lldb::TypeSP &type_sp)
     : m_opaque_sp(new TypeImpl(type_sp)) {}
@@ -122,10 +127,22 @@ uint64_t SBType::GetByteSize() {
   LLDB_INSTRUMENT_VA(this);
 
   if (IsValid())
-    if (llvm::Optional<uint64_t> size =
+    if (std::optional<uint64_t> size =
             m_opaque_sp->GetCompilerType(false).GetByteSize(nullptr))
       return *size;
   return 0;
+}
+
+uint64_t SBType::GetByteAlign() {
+  LLDB_INSTRUMENT_VA(this);
+
+  if (!IsValid())
+    return 0;
+
+  std::optional<uint64_t> bit_align =
+      m_opaque_sp->GetCompilerType(/*prefer_dynamic=*/false)
+          .GetTypeBitAlign(nullptr);
+  return llvm::divideCeil(bit_align.value_or(0), 8);
 }
 
 bool SBType::IsPointerType() {
@@ -326,6 +343,79 @@ lldb::SBTypeMemberFunction SBType::GetMemberFunctionAtIndex(uint32_t idx) {
   return sb_func_type;
 }
 
+SBTypeStaticField::SBTypeStaticField() { LLDB_INSTRUMENT_VA(this); }
+
+SBTypeStaticField::SBTypeStaticField(lldb_private::CompilerDecl decl)
+    : m_opaque_up(decl ? std::make_unique<CompilerDecl>(decl) : nullptr) {}
+
+SBTypeStaticField::SBTypeStaticField(const SBTypeStaticField &rhs) {
+  LLDB_INSTRUMENT_VA(this, rhs);
+
+  m_opaque_up = clone(rhs.m_opaque_up);
+}
+
+SBTypeStaticField &SBTypeStaticField::operator=(const SBTypeStaticField &rhs) {
+  LLDB_INSTRUMENT_VA(this, rhs);
+
+  m_opaque_up = clone(rhs.m_opaque_up);
+  return *this;
+}
+
+SBTypeStaticField::~SBTypeStaticField() { LLDB_INSTRUMENT_VA(this); }
+
+SBTypeStaticField::operator bool() const {
+  LLDB_INSTRUMENT_VA(this);
+
+  return IsValid();
+}
+
+bool SBTypeStaticField::IsValid() const {
+  LLDB_INSTRUMENT_VA(this);
+
+  return m_opaque_up != nullptr;
+}
+
+const char *SBTypeStaticField::GetName() {
+  LLDB_INSTRUMENT_VA(this);
+
+  if (!IsValid())
+    return "";
+  return m_opaque_up->GetName().GetCString();
+}
+
+const char *SBTypeStaticField::GetMangledName() {
+  LLDB_INSTRUMENT_VA(this);
+
+  if (!IsValid())
+    return "";
+  return m_opaque_up->GetMangledName().GetCString();
+}
+
+SBType SBTypeStaticField::GetType() {
+  LLDB_INSTRUMENT_VA(this);
+
+  if (!IsValid())
+    return SBType();
+  return SBType(m_opaque_up->GetType());
+}
+
+SBValue SBTypeStaticField::GetConstantValue(lldb::SBTarget target) {
+  LLDB_INSTRUMENT_VA(this, target);
+
+  if (!IsValid())
+    return SBValue();
+
+  Scalar value = m_opaque_up->GetConstantValue();
+  if (!value.IsValid())
+    return SBValue();
+  DataExtractor data;
+  value.GetData(data);
+  auto value_obj_sp = ValueObjectConstResult::Create(
+      target.GetSP().get(), m_opaque_up->GetType(), m_opaque_up->GetName(),
+      data);
+  return SBValue(std::move(value_obj_sp));
+}
+
 lldb::SBType SBType::GetUnqualifiedType() {
   LLDB_INSTRUMENT_VA(this);
 
@@ -364,8 +454,8 @@ SBType SBType::GetBasicType(lldb::BasicType basic_type) {
   LLDB_INSTRUMENT_VA(this, basic_type);
 
   if (IsValid() && m_opaque_sp->IsValid())
-    return SBType(
-        m_opaque_sp->GetTypeSystem(false)->GetBasicTypeFromAST(basic_type));
+    if (auto ts = m_opaque_sp->GetTypeSystem(false))
+      return SBType(ts->GetBasicTypeFromAST(basic_type));
   return SBType();
 }
 
@@ -439,6 +529,16 @@ SBTypeMember SBType::GetVirtualBaseClassAtIndex(uint32_t idx) {
   return sb_type_member;
 }
 
+SBTypeStaticField SBType::GetStaticFieldWithName(const char *name) {
+  LLDB_INSTRUMENT_VA(this, name);
+
+  if (!IsValid() || !name)
+    return SBTypeStaticField();
+
+  return SBTypeStaticField(m_opaque_sp->GetCompilerType(/*prefer_dynamic=*/true)
+                               .GetStaticFieldWithName(name));
+}
+
 SBTypeEnumMemberList SBType::GetEnumMembers() {
   LLDB_INSTRUMENT_VA(this);
 
@@ -492,7 +592,12 @@ bool SBType::IsTypeComplete() {
 
   if (!IsValid())
     return false;
-  return m_opaque_sp->GetCompilerType(false).IsCompleteType();
+  CompilerType compiler_type = m_opaque_sp->GetCompilerType(false);
+  // Only return true if we have a complete type and it wasn't forcefully
+  // completed.
+  if (compiler_type.IsCompleteType())
+    return !compiler_type.IsForcefullyCompleted();
+  return false;
 }
 
 uint32_t SBType::GetTypeFlags() {
@@ -580,6 +685,14 @@ lldb::TemplateArgumentKind SBType::GetTemplateArgumentKind(uint32_t idx) {
     return m_opaque_sp->GetCompilerType(false).GetTemplateArgumentKind(
         idx, /*expand_pack=*/true);
   return eTemplateArgumentKindNull;
+}
+
+SBType SBType::FindDirectNestedType(const char *name) {
+  LLDB_INSTRUMENT_VA(this, name);
+
+  if (!IsValid())
+    return SBType();
+  return SBType(m_opaque_sp->FindDirectNestedType(name));
 }
 
 SBTypeList::SBTypeList() : m_opaque_up(new TypeListImpl()) {
@@ -805,14 +918,15 @@ const char *SBTypeMemberFunction::GetName() {
 const char *SBTypeMemberFunction::GetDemangledName() {
   LLDB_INSTRUMENT_VA(this);
 
-  if (m_opaque_sp) {
-    ConstString mangled_str = m_opaque_sp->GetMangledName();
-    if (mangled_str) {
-      Mangled mangled(mangled_str);
-      return mangled.GetDemangledName().GetCString();
-    }
-  }
-  return nullptr;
+  if (!m_opaque_sp)
+    return nullptr;
+
+  ConstString mangled_str = m_opaque_sp->GetMangledName();
+  if (!mangled_str)
+    return nullptr;
+
+  Mangled mangled(mangled_str);
+  return mangled.GetDemangledName().GetCString();
 }
 
 const char *SBTypeMemberFunction::GetMangledName() {

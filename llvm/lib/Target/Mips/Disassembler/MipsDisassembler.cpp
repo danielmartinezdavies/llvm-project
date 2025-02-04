@@ -11,7 +11,6 @@
 //===----------------------------------------------------------------------===//
 
 #include "MCTargetDesc/MipsMCTargetDesc.h"
-#include "Mips.h"
 #include "TargetInfo/MipsTargetInfo.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/MC/MCContext.h"
@@ -44,26 +43,26 @@ class MipsDisassembler : public MCDisassembler {
 public:
   MipsDisassembler(const MCSubtargetInfo &STI, MCContext &Ctx, bool IsBigEndian)
       : MCDisassembler(STI, Ctx),
-        IsMicroMips(STI.getFeatureBits()[Mips::FeatureMicroMips]),
+        IsMicroMips(STI.hasFeature(Mips::FeatureMicroMips)),
         IsBigEndian(IsBigEndian) {}
 
-  bool hasMips2() const { return STI.getFeatureBits()[Mips::FeatureMips2]; }
-  bool hasMips3() const { return STI.getFeatureBits()[Mips::FeatureMips3]; }
-  bool hasMips32() const { return STI.getFeatureBits()[Mips::FeatureMips32]; }
+  bool hasMips2() const { return STI.hasFeature(Mips::FeatureMips2); }
+  bool hasMips3() const { return STI.hasFeature(Mips::FeatureMips3); }
+  bool hasMips32() const { return STI.hasFeature(Mips::FeatureMips32); }
 
   bool hasMips32r6() const {
-    return STI.getFeatureBits()[Mips::FeatureMips32r6];
+    return STI.hasFeature(Mips::FeatureMips32r6);
   }
 
-  bool isFP64() const { return STI.getFeatureBits()[Mips::FeatureFP64Bit]; }
+  bool isFP64() const { return STI.hasFeature(Mips::FeatureFP64Bit); }
 
-  bool isGP64() const { return STI.getFeatureBits()[Mips::FeatureGP64Bit]; }
+  bool isGP64() const { return STI.hasFeature(Mips::FeatureGP64Bit); }
 
-  bool isPTR64() const { return STI.getFeatureBits()[Mips::FeaturePTR64Bit]; }
+  bool isPTR64() const { return STI.hasFeature(Mips::FeaturePTR64Bit); }
 
-  bool hasCnMips() const { return STI.getFeatureBits()[Mips::FeatureCnMips]; }
+  bool hasCnMips() const { return STI.hasFeature(Mips::FeatureCnMips); }
 
-  bool hasCnMipsP() const { return STI.getFeatureBits()[Mips::FeatureCnMipsP]; }
+  bool hasCnMipsP() const { return STI.hasFeature(Mips::FeatureCnMipsP); }
 
   bool hasCOP3() const {
     // Only present in MIPS-I and MIPS-II
@@ -485,6 +484,10 @@ static DecodeStatus DecodeMovePRegPair(MCInst &Inst, unsigned RegPair,
 static DecodeStatus DecodeMovePOperands(MCInst &Inst, unsigned Insn,
                                         uint64_t Address,
                                         const MCDisassembler *Decoder);
+
+static DecodeStatus DecodeFIXMEInstruction(MCInst &Inst, unsigned Insn,
+                                           uint64_t Address,
+                                           const MCDisassembler *Decoder);
 
 static MCDisassembler *createMipsDisassembler(
                        const Target &T,
@@ -2512,4 +2515,13 @@ static DecodeStatus DecodeBlezGroupBranchMMR6(MCInst &MI, InsnType insn,
   MI.addOperand(MCOperand::createImm(Imm));
 
   return MCDisassembler::Success;
+}
+
+// This instruction does not have a working decoder, and needs to be
+// fixed. This "fixme" function was introduced to keep the backend compiling,
+// while making changes to tablegen code.
+static DecodeStatus DecodeFIXMEInstruction(MCInst &Inst, unsigned Insn,
+                                           uint64_t Address,
+                                           const MCDisassembler *Decoder) {
+  return MCDisassembler::Fail;
 }

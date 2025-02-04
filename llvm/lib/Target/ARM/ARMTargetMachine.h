@@ -14,17 +14,18 @@
 #define LLVM_LIB_TARGET_ARM_ARMTARGETMACHINE_H
 
 #include "ARMSubtarget.h"
-#include "llvm/ADT/Optional.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Analysis/TargetTransformInfo.h"
+#include "llvm/CodeGen/CodeGenTargetMachineImpl.h"
 #include "llvm/Support/CodeGen.h"
 #include "llvm/Target/TargetMachine.h"
 #include <memory>
+#include <optional>
 
 namespace llvm {
 
-class ARMBaseTargetMachine : public LLVMTargetMachine {
+class ARMBaseTargetMachine : public CodeGenTargetMachineImpl {
 public:
   enum ARMABI {
     ARM_ABI_UNKNOWN,
@@ -38,11 +39,15 @@ protected:
   bool isLittle;
   mutable StringMap<std::unique_ptr<ARMSubtarget>> SubtargetMap;
 
+  /// Reset internal state.
+  void reset() override;
+
 public:
   ARMBaseTargetMachine(const Target &T, const Triple &TT, StringRef CPU,
                        StringRef FS, const TargetOptions &Options,
-                       Optional<Reloc::Model> RM, Optional<CodeModel::Model> CM,
-                       CodeGenOpt::Level OL, bool isLittle);
+                       std::optional<Reloc::Model> RM,
+                       std::optional<CodeModel::Model> CM, CodeGenOptLevel OL,
+                       bool isLittle);
   ~ARMBaseTargetMachine() override;
 
   const ARMSubtarget *getSubtargetImpl(const Function &F) const override;
@@ -63,6 +68,7 @@ public:
 
   bool isTargetHardFloat() const {
     return TargetTriple.getEnvironment() == Triple::GNUEABIHF ||
+           TargetTriple.getEnvironment() == Triple::GNUEABIHFT64 ||
            TargetTriple.getEnvironment() == Triple::MuslEABIHF ||
            TargetTriple.getEnvironment() == Triple::EABIHF ||
            (TargetTriple.isOSBinFormatMachO() &&
@@ -73,11 +79,23 @@ public:
 
   bool targetSchedulesPostRAScheduling() const override { return true; };
 
+  MachineFunctionInfo *
+  createMachineFunctionInfo(BumpPtrAllocator &Allocator, const Function &F,
+                            const TargetSubtargetInfo *STI) const override;
+
   /// Returns true if a cast between SrcAS and DestAS is a noop.
   bool isNoopAddrSpaceCast(unsigned SrcAS, unsigned DestAS) const override {
     // Addrspacecasts are always noops.
     return true;
   }
+
+  yaml::MachineFunctionInfo *createDefaultFuncInfoYAML() const override;
+  yaml::MachineFunctionInfo *
+  convertFuncInfoToYAML(const MachineFunction &MF) const override;
+  bool parseMachineFunctionInfo(const yaml::MachineFunctionInfo &,
+                                PerFunctionMIParsingState &PFS,
+                                SMDiagnostic &Error,
+                                SMRange &SourceRange) const override;
 };
 
 /// ARM/Thumb little endian target machine.
@@ -86,8 +104,9 @@ class ARMLETargetMachine : public ARMBaseTargetMachine {
 public:
   ARMLETargetMachine(const Target &T, const Triple &TT, StringRef CPU,
                      StringRef FS, const TargetOptions &Options,
-                     Optional<Reloc::Model> RM, Optional<CodeModel::Model> CM,
-                     CodeGenOpt::Level OL, bool JIT);
+                     std::optional<Reloc::Model> RM,
+                     std::optional<CodeModel::Model> CM, CodeGenOptLevel OL,
+                     bool JIT);
 };
 
 /// ARM/Thumb big endian target machine.
@@ -96,8 +115,9 @@ class ARMBETargetMachine : public ARMBaseTargetMachine {
 public:
   ARMBETargetMachine(const Target &T, const Triple &TT, StringRef CPU,
                      StringRef FS, const TargetOptions &Options,
-                     Optional<Reloc::Model> RM, Optional<CodeModel::Model> CM,
-                     CodeGenOpt::Level OL, bool JIT);
+                     std::optional<Reloc::Model> RM,
+                     std::optional<CodeModel::Model> CM, CodeGenOptLevel OL,
+                     bool JIT);
 };
 
 } // end namespace llvm

@@ -1,9 +1,11 @@
-// RUN: %clang_cc1 -fsyntax-only -verify -triple x86_64-apple-darwin %s
+// RUN: %clang_cc1 -fsyntax-only -ffreestanding -verify=expected,one-bit -triple x86_64-apple-darwin %s
+// RUN: %clang_cc1 -fsyntax-only -ffreestanding -Wno-single-bit-bitfield-constant-conversion -verify -triple x86_64-apple-darwin %s
+
+#include <stdbool.h>
 
 // This file tests -Wconstant-conversion, a subcategory of -Wconversion
 // which is on by default.
 
-// rdar://problem/6792488
 void test_6792488(void) {
   int x = 0x3ff0000000000000U; // expected-warning {{implicit conversion from 'unsigned long' to 'int' changes value from 4607182418800017408 to 0}}
 }
@@ -19,12 +21,14 @@ void test(void) {
     int b : 1;  // The only valid values are 0 and -1.
   } s;
 
-  s.b = -3; // expected-warning {{implicit truncation from 'int' to bit-field changes value from -3 to -1}}
-  s.b = -2; // expected-warning {{implicit truncation from 'int' to bit-field changes value from -2 to 0}}
-  s.b = -1; // no-warning
-  s.b = 0;  // no-warning
-  s.b = 1;  // expected-warning {{implicit truncation from 'int' to bit-field changes value from 1 to -1}}
-  s.b = 2;  // expected-warning {{implicit truncation from 'int' to bit-field changes value from 2 to 0}}
+  s.b = -3;    // expected-warning {{implicit truncation from 'int' to bit-field changes value from -3 to -1}}
+  s.b = -2;    // expected-warning {{implicit truncation from 'int' to bit-field changes value from -2 to 0}}
+  s.b = -1;    // no-warning
+  s.b = 0;     // no-warning
+  s.b = 1;     // one-bit-warning {{implicit truncation from 'int' to a one-bit wide bit-field changes value from 1 to -1}}
+  s.b = true;  // no-warning (we suppress it manually to reduce false positives)
+  s.b = false; // no-warning
+  s.b = 2;     // expected-warning {{implicit truncation from 'int' to bit-field changes value from 2 to 0}}
 }
 
 enum Test2 { K_zero, K_one };

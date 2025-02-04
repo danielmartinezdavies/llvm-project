@@ -6,6 +6,18 @@ if(LLVM_ENABLE_ZLIB)
   set(imported_libs ZLIB::ZLIB)
 endif()
 
+if(LLVM_ENABLE_ZSTD)
+  if(TARGET zstd::libzstd_shared AND NOT LLVM_USE_STATIC_ZSTD)
+    set(zstd_target zstd::libzstd_shared)
+  else()
+    set(zstd_target zstd::libzstd_static)
+  endif()
+endif()
+
+if(LLVM_ENABLE_ZSTD)
+  list(APPEND imported_libs ${zstd_target})
+endif()
+
 add_lld_library(lldELF
   AArch64ErrataFix.cpp
   Arch/AArch64.cpp
@@ -13,6 +25,7 @@ add_lld_library(lldELF
   Arch/ARM.cpp
   Arch/AVR.cpp
   Arch/Hexagon.cpp
+  Arch/LoongArch.cpp
   Arch/Mips.cpp
   Arch/MipsArchTree.cpp
   Arch/MSP430.cpp
@@ -20,9 +33,11 @@ add_lld_library(lldELF
   Arch/PPC64.cpp
   Arch/RISCV.cpp
   Arch/SPARCV9.cpp
+  Arch/SystemZ.cpp
   Arch/X86.cpp
   Arch/X86_64.cpp
   ARMErrataFix.cpp
+  BPSectionOrderer.cpp
   CallGraphSort.cpp
   DWARF.cpp
   Driver.cpp
@@ -58,7 +73,10 @@ add_lld_library(lldELF
   Object
   Option
   Passes
+  ProfileData
   Support
+  TargetParser
+  TransformUtils
 
   LINK_LIBS
   lldCommon

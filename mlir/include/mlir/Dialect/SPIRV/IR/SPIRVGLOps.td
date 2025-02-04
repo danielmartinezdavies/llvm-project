@@ -20,29 +20,29 @@ include "mlir/Interfaces/SideEffectInterfaces.td"
 // SPIR-V GLSL 4.50 opcode specification.
 //===----------------------------------------------------------------------===//
 
-// Base class for all GL ops.
-class SPV_GLOp<string mnemonic, int opcode, list<Trait> traits = []> :
-  SPV_ExtInstOp<mnemonic, "GL", "GLSL.std.450", opcode, traits> {
+// Base class for all OpenGL ops.
+class SPIRV_GLOp<string mnemonic, int opcode, list<Trait> traits = []> :
+  SPIRV_ExtInstOp<mnemonic, "GL", "GLSL.std.450", opcode, traits> {
 
   let availability = [
-    MinVersion<SPV_V_1_0>,
-    MaxVersion<SPV_V_1_5>,
+    MinVersion<SPIRV_V_1_0>,
+    MaxVersion<SPIRV_V_1_6>,
     Extension<[]>,
-    Capability<[SPV_C_Shader]>
+    Capability<[SPIRV_C_Shader]>
   ];
 }
 
 // Base class for GL unary ops.
-class SPV_GLUnaryOp<string mnemonic, int opcode, Type resultType,
+class SPIRV_GLUnaryOp<string mnemonic, int opcode, Type resultType,
                       Type operandType, list<Trait> traits = []> :
-  SPV_GLOp<mnemonic, opcode, !listconcat([NoSideEffect], traits)> {
+  SPIRV_GLOp<mnemonic, opcode, !listconcat([Pure], traits)> {
 
   let arguments = (ins
-    SPV_ScalarOrVectorOf<operandType>:$operand
+    SPIRV_ScalarOrVectorOf<operandType>:$operand
   );
 
   let results = (outs
-    SPV_ScalarOrVectorOf<resultType>:$result
+    SPIRV_ScalarOrVectorOf<resultType>:$result
   );
 
   let hasVerifier = 0;
@@ -50,25 +50,25 @@ class SPV_GLUnaryOp<string mnemonic, int opcode, Type resultType,
 
 // Base class for GL Unary arithmetic ops where return type matches
 // the operand type.
-class SPV_GLUnaryArithmeticOp<string mnemonic, int opcode, Type type,
+class SPIRV_GLUnaryArithmeticOp<string mnemonic, int opcode, Type type,
                                 list<Trait> traits = []> :
-  SPV_GLUnaryOp<mnemonic, opcode, type, type,
+  SPIRV_GLUnaryOp<mnemonic, opcode, type, type,
                   traits # [SameOperandsAndResultType]> {
   let assemblyFormat = "$operand `:` type($operand) attr-dict";
 }
 
 // Base class for GL binary ops.
-class SPV_GLBinaryOp<string mnemonic, int opcode, Type resultType,
+class SPIRV_GLBinaryOp<string mnemonic, int opcode, Type resultType,
                         Type operandType, list<Trait> traits = []> :
-  SPV_GLOp<mnemonic, opcode, !listconcat([NoSideEffect], traits)> {
+  SPIRV_GLOp<mnemonic, opcode, !listconcat([Pure], traits)> {
 
   let arguments = (ins
-    SPV_ScalarOrVectorOf<operandType>:$lhs,
-    SPV_ScalarOrVectorOf<operandType>:$rhs
+    SPIRV_ScalarOrVectorOf<operandType>:$lhs,
+    SPIRV_ScalarOrVectorOf<operandType>:$rhs
   );
 
   let results = (outs
-    SPV_ScalarOrVectorOf<resultType>:$result
+    SPIRV_ScalarOrVectorOf<resultType>:$result
   );
 
   let hasVerifier = 0;
@@ -76,26 +76,26 @@ class SPV_GLBinaryOp<string mnemonic, int opcode, Type resultType,
 
 // Base class for GL Binary arithmetic ops where operand types and
 // return type matches.
-class SPV_GLBinaryArithmeticOp<string mnemonic, int opcode, Type type,
+class SPIRV_GLBinaryArithmeticOp<string mnemonic, int opcode, Type type,
                                  list<Trait> traits = []> :
-  SPV_GLBinaryOp<mnemonic, opcode, type, type,
+  SPIRV_GLBinaryOp<mnemonic, opcode, type, type,
                    traits # [SameOperandsAndResultType]> {
   let assemblyFormat = "operands attr-dict `:` type($result)";
 }
 
 // Base class for GL ternary ops.
-class SPV_GLTernaryArithmeticOp<string mnemonic, int opcode, Type type,
+class SPIRV_GLTernaryArithmeticOp<string mnemonic, int opcode, Type type,
                         list<Trait> traits = []> :
-  SPV_GLOp<mnemonic, opcode, !listconcat([NoSideEffect], traits)> {
+  SPIRV_GLOp<mnemonic, opcode, !listconcat([Pure], traits)> {
 
   let arguments = (ins
-    SPV_ScalarOrVectorOf<type>:$x,
-    SPV_ScalarOrVectorOf<type>:$y,
-    SPV_ScalarOrVectorOf<type>:$z
+    SPIRV_ScalarOrVectorOf<type>:$x,
+    SPIRV_ScalarOrVectorOf<type>:$y,
+    SPIRV_ScalarOrVectorOf<type>:$z
   );
 
   let results = (outs
-    SPV_ScalarOrVectorOf<type>:$result
+    SPIRV_ScalarOrVectorOf<type>:$result
   );
 
   let hasCustomAssemblyFormat = 1;
@@ -104,7 +104,7 @@ class SPV_GLTernaryArithmeticOp<string mnemonic, int opcode, Type type,
 
 // -----
 
-def SPV_GLFAbsOp : SPV_GLUnaryArithmeticOp<"FAbs", 4, SPV_Float> {
+def SPIRV_GLFAbsOp : SPIRV_GLUnaryArithmeticOp<"FAbs", 4, SPIRV_Float> {
   let summary = "Absolute value of operand";
 
   let description = [{
@@ -116,25 +116,18 @@ def SPV_GLFAbsOp : SPV_GLUnaryArithmeticOp<"FAbs", 4, SPV_Float> {
     Result Type and the type of x must be the same type. Results are computed
     per component.
 
-    <!-- End of AutoGen section -->
-    ```
-    float-scalar-vector-type ::= float-type |
-                                 `vector<` integer-literal `x` float-type `>`
-    abs-op ::= ssa-id `=` `spv.GL.FAbs` ssa-use `:`
-               float-scalar-vector-type
-    ```
     #### Example:
 
     ```mlir
-    %2 = spv.GL.FAbs %0 : f32
-    %3 = spv.GL.FAbs %1 : vector<3xf16>
+    %2 = spirv.GL.FAbs %0 : f32
+    %3 = spirv.GL.FAbs %1 : vector<3xf16>
     ```
   }];
 }
 
 // -----
 
-def SPV_GLSAbsOp : SPV_GLUnaryArithmeticOp<"SAbs", 5, SPV_Integer> {
+def SPIRV_GLSAbsOp : SPIRV_GLUnaryArithmeticOp<"SAbs", 5, SPIRV_Integer> {
   let summary = "Absolute value of operand";
 
   let description = [{
@@ -145,25 +138,18 @@ def SPV_GLSAbsOp : SPV_GLUnaryArithmeticOp<"SAbs", 5, SPV_Integer> {
     types. Result Type and operand types must have the same number of components
     with the same component width. Results are computed per component.
 
-    <!-- End of AutoGen section -->
-    ```
-    integer-scalar-vector-type ::= integer-type |
-                                   `vector<` integer-literal `x` integer-type `>`
-    abs-op ::= ssa-id `=` `spv.GL.SAbs` ssa-use `:`
-               integer-scalar-vector-type
-    ```
     #### Example:
 
     ```mlir
-    %2 = spv.GL.SAbs %0 : i32
-    %3 = spv.GL.SAbs %1 : vector<3xi16>
+    %2 = spirv.GL.SAbs %0 : i32
+    %3 = spirv.GL.SAbs %1 : vector<3xi16>
     ```
   }];
 }
 
 // -----
 
-def SPV_GLCeilOp : SPV_GLUnaryArithmeticOp<"Ceil", 9, SPV_Float> {
+def SPIRV_GLCeilOp : SPIRV_GLUnaryArithmeticOp<"Ceil", 9, SPIRV_Float> {
   let summary = "Rounds up to the next whole number";
 
   let description = [{
@@ -176,25 +162,18 @@ def SPV_GLCeilOp : SPV_GLUnaryArithmeticOp<"Ceil", 9, SPV_Float> {
     Result Type and the type of x must be the same type. Results are computed
     per component.
 
-    <!-- End of AutoGen section -->
-    ```
-    float-scalar-vector-type ::= float-type |
-                                 `vector<` integer-literal `x` float-type `>`
-    ceil-op ::= ssa-id `=` `spv.GL.Ceil` ssa-use `:`
-                float-scalar-vector-type
-    ```
     #### Example:
 
     ```mlir
-    %2 = spv.GL.Ceil %0 : f32
-    %3 = spv.GL.Ceil %1 : vector<3xf16>
+    %2 = spirv.GL.Ceil %0 : f32
+    %3 = spirv.GL.Ceil %1 : vector<3xf16>
     ```
   }];
 }
 
 // -----
 
-def SPV_GLCosOp : SPV_GLUnaryArithmeticOp<"Cos", 14, SPV_Float16or32> {
+def SPIRV_GLCosOp : SPIRV_GLUnaryArithmeticOp<"Cos", 14, SPIRV_Float16or32> {
   let summary = "Cosine of operand in radians";
 
   let description = [{
@@ -206,27 +185,18 @@ def SPV_GLCosOp : SPV_GLUnaryArithmeticOp<"Cos", 14, SPV_Float16or32> {
     Result Type and the type of x must be the same type. Results are computed
     per component.
 
-    <!-- End of AutoGen section -->
-    ```
-    restricted-float-scalar-type ::=  `f16` | `f32`
-    restricted-float-scalar-vector-type ::=
-      restricted-float-scalar-type |
-      `vector<` integer-literal `x` restricted-float-scalar-type `>`
-    cos-op ::= ssa-id `=` `spv.GL.Cos` ssa-use `:`
-               restricted-float-scalar-vector-type
-    ```
     #### Example:
 
     ```mlir
-    %2 = spv.GL.Cos %0 : f32
-    %3 = spv.GL.Cos %1 : vector<3xf16>
+    %2 = spirv.GL.Cos %0 : f32
+    %3 = spirv.GL.Cos %1 : vector<3xf16>
     ```
   }];
 }
 
 // -----
 
-def SPV_GLSinOp : SPV_GLUnaryArithmeticOp<"Sin", 13, SPV_Float16or32> {
+def SPIRV_GLSinOp : SPIRV_GLUnaryArithmeticOp<"Sin", 13, SPIRV_Float16or32> {
   let summary = "Sine of operand in radians";
 
   let description = [{
@@ -238,27 +208,18 @@ def SPV_GLSinOp : SPV_GLUnaryArithmeticOp<"Sin", 13, SPV_Float16or32> {
     Result Type and the type of x must be the same type. Results are computed
     per component.
 
-    <!-- End of AutoGen section -->
-    ```
-    restricted-float-scalar-type ::=  `f16` | `f32`
-    restricted-float-scalar-vector-type ::=
-      restricted-float-scalar-type |
-      `vector<` integer-literal `x` restricted-float-scalar-type `>`
-    sin-op ::= ssa-id `=` `spv.GL.Sin` ssa-use `:`
-               restricted-float-scalar-vector-type
-    ```
     #### Example:
 
     ```mlir
-    %2 = spv.GL.Sin %0 : f32
-    %3 = spv.GL.Sin %1 : vector<3xf16>
+    %2 = spirv.GL.Sin %0 : f32
+    %3 = spirv.GL.Sin %1 : vector<3xf16>
     ```
   }];
 }
 
 // -----
 
-def SPV_GLTanOp : SPV_GLUnaryArithmeticOp<"Tan", 15, SPV_Float16or32> {
+def SPIRV_GLTanOp : SPIRV_GLUnaryArithmeticOp<"Tan", 15, SPIRV_Float16or32> {
   let summary = "Tangent of operand in radians";
 
   let description = [{
@@ -270,27 +231,18 @@ def SPV_GLTanOp : SPV_GLUnaryArithmeticOp<"Tan", 15, SPV_Float16or32> {
     Result Type and the type of x must be the same type. Results are computed
     per component.
 
-    <!-- End of AutoGen section -->
-    ```
-    restricted-float-scalar-type ::=  `f16` | `f32`
-    restricted-float-scalar-vector-type ::=
-      restricted-float-scalar-type |
-      `vector<` integer-literal `x` restricted-float-scalar-type `>`
-    tan-op ::= ssa-id `=` `spv.GL.Tan` ssa-use `:`
-               restricted-float-scalar-vector-type
-    ```
     #### Example:
 
     ```mlir
-    %2 = spv.GL.Tan %0 : f32
-    %3 = spv.GL.Tan %1 : vector<3xf16>
+    %2 = spirv.GL.Tan %0 : f32
+    %3 = spirv.GL.Tan %1 : vector<3xf16>
     ```
   }];
 }
 
 // -----
 
-def SPV_GLAsinOp : SPV_GLUnaryArithmeticOp<"Asin", 16, SPV_Float16or32> {
+def SPIRV_GLAsinOp : SPIRV_GLUnaryArithmeticOp<"Asin", 16, SPIRV_Float16or32> {
   let summary = "Arc Sine of operand in radians";
 
   let description = [{
@@ -304,27 +256,19 @@ def SPV_GLAsinOp : SPV_GLUnaryArithmeticOp<"Asin", 16, SPV_Float16or32> {
 
     Result Type and the type of x must be the same type. Results are computed
     per component.
-    <!-- End of AutoGen section -->
-    ```
-    restricted-float-scalar-type ::=  `f16` | `f32`
-    restricted-float-scalar-vector-type ::=
-      restricted-float-scalar-type |
-      `vector<` integer-literal `x` restricted-float-scalar-type `>`
-    asin-op ::= ssa-id `=` `spv.GL.Asin` ssa-use `:`
-                restricted-float-scalar-vector-type
-    ```
+
     #### Example:
 
     ```mlir
-    %2 = spv.GL.Asin %0 : f32
-    %3 = spv.GL.Asin %1 : vector<3xf16>
+    %2 = spirv.GL.Asin %0 : f32
+    %3 = spirv.GL.Asin %1 : vector<3xf16>
     ```
   }];
 }
 
 // -----
 
-def SPV_GLAcosOp : SPV_GLUnaryArithmeticOp<"Acos", 17, SPV_Float16or32> {
+def SPIRV_GLAcosOp : SPIRV_GLUnaryArithmeticOp<"Acos", 17, SPIRV_Float16or32> {
   let summary = "Arc Cosine of operand in radians";
 
   let description = [{
@@ -338,27 +282,19 @@ def SPV_GLAcosOp : SPV_GLUnaryArithmeticOp<"Acos", 17, SPV_Float16or32> {
 
     Result Type and the type of x must be the same type. Results are computed
     per component.
-    <!-- End of AutoGen section -->
-    ```
-    restricted-float-scalar-type ::=  `f16` | `f32`
-    restricted-float-scalar-vector-type ::=
-      restricted-float-scalar-type |
-      `vector<` integer-literal `x` restricted-float-scalar-type `>`
-    acos-op ::= ssa-id `=` `spv.GL.Acos` ssa-use `:`
-                restricted-float-scalar-vector-type
-    ```
+
     #### Example:
 
     ```mlir
-    %2 = spv.GL.Acos %0 : f32
-    %3 = spv.GL.Acos %1 : vector<3xf16>
+    %2 = spirv.GL.Acos %0 : f32
+    %3 = spirv.GL.Acos %1 : vector<3xf16>
     ```
   }];
 }
 
 // -----
 
-def SPV_GLAtanOp : SPV_GLUnaryArithmeticOp<"Atan", 18, SPV_Float16or32> {
+def SPIRV_GLAtanOp : SPIRV_GLUnaryArithmeticOp<"Atan", 18, SPIRV_Float16or32> {
   let summary = "Arc Tangent of operand in radians";
 
   let description = [{
@@ -372,27 +308,19 @@ def SPV_GLAtanOp : SPV_GLUnaryArithmeticOp<"Atan", 18, SPV_Float16or32> {
 
     Result Type and the type of x must be the same type. Results are computed
     per component.
-    <!-- End of AutoGen section -->
-    ```
-    restricted-float-scalar-type ::=  `f16` | `f32`
-    restricted-float-scalar-vector-type ::=
-      restricted-float-scalar-type |
-      `vector<` integer-literal `x` restricted-float-scalar-type `>`
-    atan-op ::= ssa-id `=` `spv.GL.Atan` ssa-use `:`
-                restricted-float-scalar-vector-type
-    ```
+
     #### Example:
 
     ```mlir
-    %2 = spv.GL.Atan %0 : f32
-    %3 = spv.GL.Atan %1 : vector<3xf16>
+    %2 = spirv.GL.Atan %0 : f32
+    %3 = spirv.GL.Atan %1 : vector<3xf16>
     ```
   }];
 }
 
 // -----
 
-def SPV_GLExpOp : SPV_GLUnaryArithmeticOp<"Exp", 27, SPV_Float16or32> {
+def SPIRV_GLExpOp : SPIRV_GLUnaryArithmeticOp<"Exp", 27, SPIRV_Float16or32> {
   let summary = "Exponentiation of Operand 1";
 
   let description = [{
@@ -404,27 +332,18 @@ def SPV_GLExpOp : SPV_GLUnaryArithmeticOp<"Exp", 27, SPV_Float16or32> {
     Result Type and the type of x must be the same type. Results are
     computed per component.";
 
-    <!-- End of AutoGen section -->
-    ```
-    restricted-float-scalar-type ::=  `f16` | `f32`
-    restricted-float-scalar-vector-type ::=
-      restricted-float-scalar-type |
-      `vector<` integer-literal `x` restricted-float-scalar-type `>`
-    exp-op ::= ssa-id `=` `spv.GL.Exp` ssa-use `:`
-               restricted-float-scalar-vector-type
-    ```
     #### Example:
 
     ```mlir
-    %2 = spv.GL.Exp %0 : f32
-    %3 = spv.GL.Exp %1 : vector<3xf16>
+    %2 = spirv.GL.Exp %0 : f32
+    %3 = spirv.GL.Exp %1 : vector<3xf16>
     ```
   }];
 }
 
 // -----
 
-def SPV_GLFloorOp : SPV_GLUnaryArithmeticOp<"Floor", 8, SPV_Float> {
+def SPIRV_GLFloorOp : SPIRV_GLUnaryArithmeticOp<"Floor", 8, SPIRV_Float> {
   let summary = "Rounds down to the next whole number";
 
   let description = [{
@@ -437,29 +356,25 @@ def SPV_GLFloorOp : SPV_GLUnaryArithmeticOp<"Floor", 8, SPV_Float> {
     Result Type and the type of x must be the same type. Results are computed
     per component.
 
-    <!-- End of AutoGen section -->
-    ```
-    float-scalar-vector-type ::= float-type |
-                                 `vector<` integer-literal `x` float-type `>`
-    floor-op ::= ssa-id `=` `spv.GL.Floor` ssa-use `:`
-                float-scalar-vector-type
-    ```
     #### Example:
 
     ```mlir
-    %2 = spv.GL.Floor %0 : f32
-    %3 = spv.GL.Floor %1 : vector<3xf16>
+    %2 = spirv.GL.Floor %0 : f32
+    %3 = spirv.GL.Floor %1 : vector<3xf16>
     ```
   }];
 }
 
 // -----
 
-def SPV_GLRoundOp: SPV_GLUnaryArithmeticOp<"Round", 1, SPV_Float> {
-  let summary = "Rounds to the whole number";
+def SPIRV_GLRoundOp: SPIRV_GLUnaryArithmeticOp<"Round", 1, SPIRV_Float> {
+  let summary = "Rounds to the nearest whole number";
 
   let description = [{
-    Result is the value equal to the nearest whole number.
+    Result is the value equal to the nearest whole number to x. The fraction
+    0.5 will round in a direction chosen by the implementation, presumably
+    the direction that is fastest. This includes the possibility that
+    Round x is the same value as RoundEven x for all values of x.
 
     The operand x must be a scalar or vector whose component type is
     floating-point.
@@ -467,25 +382,43 @@ def SPV_GLRoundOp: SPV_GLUnaryArithmeticOp<"Round", 1, SPV_Float> {
     Result Type and the type of x must be the same type. Results are computed
     per component.
 
-    <!-- End of AutoGen section -->
-    ```
-    float-scalar-vector-type ::= float-type |
-                                 `vector<` integer-literal `x` float-type `>`
-    floor-op ::= ssa-id `=` `spv.GL.Round` ssa-use `:`
-                float-scalar-vector-type
-    ```
     #### Example:
 
     ```mlir
-    %2 = spv.GL.Round %0 : f32
-    %3 = spv.GL.Round %1 : vector<3xf16>
+    %2 = spirv.GL.Round %0 : f32
+    %3 = spirv.GL.Round %1 : vector<3xf16>
     ```
   }];
 }
 
 // -----
 
-def SPV_GLInverseSqrtOp : SPV_GLUnaryArithmeticOp<"InverseSqrt", 32, SPV_Float> {
+def SPIRV_GLRoundEvenOp: SPIRV_GLUnaryArithmeticOp<"RoundEven", 2, SPIRV_Float> {
+  let summary = "Rounds to the nearest even whole number";
+
+  let description = [{
+    Result is the value equal to the nearest whole number to x. A fractional
+    part of 0.5 will round toward the nearest even whole number. (Both 3.5 and
+    4.5 for x will be 4.0.)
+
+    The operand x must be a scalar or vector whose component type is
+    floating-point.
+
+    Result Type and the type of x must be the same type. Results are computed
+    per component.
+
+    #### Example:
+
+    ```mlir
+    %2 = spirv.GL.RoundEven %0 : f32
+    %3 = spirv.GL.RoundEven %1 : vector<3xf16>
+    ```
+  }];
+}
+
+// -----
+
+def SPIRV_GLInverseSqrtOp : SPIRV_GLUnaryArithmeticOp<"InverseSqrt", 32, SPIRV_Float> {
   let summary = "Reciprocal of sqrt(operand)";
 
   let description = [{
@@ -497,25 +430,18 @@ def SPV_GLInverseSqrtOp : SPV_GLUnaryArithmeticOp<"InverseSqrt", 32, SPV_Float> 
     Result Type and the type of x must be the same type. Results are computed
     per component.
 
-    <!-- End of AutoGen section -->
-    ```
-    float-scalar-vector-type ::= float-type |
-                                 `vector<` integer-literal `x` float-type `>`
-    rsqrt-op ::= ssa-id `=` `spv.GL.InverseSqrt` ssa-use `:`
-                 float-scalar-vector-type
-    ```
     #### Example:
 
     ```mlir
-    %2 = spv.GL.InverseSqrt %0 : f32
-    %3 = spv.GL.InverseSqrt %1 : vector<3xf16>
+    %2 = spirv.GL.InverseSqrt %0 : f32
+    %3 = spirv.GL.InverseSqrt %1 : vector<3xf16>
     ```
   }];
 }
 
 // -----
 
-def SPV_GLLogOp : SPV_GLUnaryArithmeticOp<"Log", 28, SPV_Float16or32> {
+def SPIRV_GLLogOp : SPIRV_GLUnaryArithmeticOp<"Log", 28, SPIRV_Float16or32> {
   let summary = "Natural logarithm of the operand";
 
   let description = [{
@@ -528,27 +454,18 @@ def SPV_GLLogOp : SPV_GLUnaryArithmeticOp<"Log", 28, SPV_Float16or32> {
     Result Type and the type of x must be the same type. Results are computed
     per component.
 
-    <!-- End of AutoGen section -->
-    ```
-    restricted-float-scalar-type ::=  `f16` | `f32`
-    restricted-float-scalar-vector-type ::=
-      restricted-float-scalar-type |
-      `vector<` integer-literal `x` restricted-float-scalar-type `>`
-    log-op ::= ssa-id `=` `spv.GL.Log` ssa-use `:`
-               restricted-float-scalar-vector-type
-    ```
     #### Example:
 
     ```mlir
-    %2 = spv.GL.Log %0 : f32
-    %3 = spv.GL.Log %1 : vector<3xf16>
+    %2 = spirv.GL.Log %0 : f32
+    %3 = spirv.GL.Log %1 : vector<3xf16>
     ```
   }];
 }
 
 // -----
 
-def SPV_GLFMaxOp : SPV_GLBinaryArithmeticOp<"FMax", 40, SPV_Float> {
+def SPIRV_GLFMaxOp : SPIRV_GLBinaryArithmeticOp<"FMax", 40, SPIRV_Float> {
   let summary = "Return maximum of two floating-point operands";
 
   let description = [{
@@ -561,25 +478,18 @@ def SPV_GLFMaxOp : SPV_GLBinaryArithmeticOp<"FMax", 40, SPV_Float> {
     Result Type and the type of all operands must be the same
     type. Results are computed per component.
 
-    <!-- End of AutoGen section -->
-    ```
-    float-scalar-vector-type ::= float-type |
-                                 `vector<` integer-literal `x` float-type `>`
-    fmax-op ::= ssa-id `=` `spv.GL.FMax` ssa-use `:`
-                float-scalar-vector-type
-    ```
     #### Example:
 
     ```mlir
-    %2 = spv.GL.FMax %0, %1 : f32
-    %3 = spv.GL.FMax %0, %1 : vector<3xf16>
+    %2 = spirv.GL.FMax %0, %1 : f32
+    %3 = spirv.GL.FMax %0, %1 : vector<3xf16>
     ```
   }];
 }
 
 // -----
 
-def SPV_GLUMaxOp : SPV_GLBinaryArithmeticOp<"UMax", 41, SPV_Integer> {
+def SPIRV_GLUMaxOp : SPIRV_GLBinaryArithmeticOp<"UMax", 41, SPIRV_Integer> {
   let summary = "Return maximum of two unsigned integer operands";
 
   let description = [{
@@ -591,25 +501,18 @@ def SPV_GLUMaxOp : SPV_GLBinaryArithmeticOp<"UMax", 41, SPV_Integer> {
     components with the same component width. Results are computed per
     component.
 
-    <!-- End of AutoGen section -->
-    ```
-    integer-scalar-vector-type ::= integer-type |
-                                   `vector<` integer-literal `x` integer-type `>`
-    smax-op ::= ssa-id `=` `spv.GL.UMax` ssa-use `:`
-                integer-scalar-vector-type
-    ```
     #### Example:
 
     ```mlir
-    %2 = spv.GL.UMax %0, %1 : i32
-    %3 = spv.GL.UMax %0, %1 : vector<3xi16>
+    %2 = spirv.GL.UMax %0, %1 : i32
+    %3 = spirv.GL.UMax %0, %1 : vector<3xi16>
     ```
   }];
 }
 
 // -----
 
-def SPV_GLSMaxOp : SPV_GLBinaryArithmeticOp<"SMax", 42, SPV_Integer> {
+def SPIRV_GLSMaxOp : SPIRV_GLBinaryArithmeticOp<"SMax", 42, SPIRV_Integer> {
   let summary = "Return maximum of two signed integer operands";
 
   let description = [{
@@ -621,25 +524,18 @@ def SPV_GLSMaxOp : SPV_GLBinaryArithmeticOp<"SMax", 42, SPV_Integer> {
     components with the same component width. Results are computed per
     component.
 
-    <!-- End of AutoGen section -->
-    ```
-    integer-scalar-vector-type ::= integer-type |
-                                   `vector<` integer-literal `x` integer-type `>`
-    smax-op ::= ssa-id `=` `spv.GL.SMax` ssa-use `:`
-                integer-scalar-vector-type
-    ```
     #### Example:
 
     ```mlir
-    %2 = spv.GL.SMax %0, %1 : i32
-    %3 = spv.GL.SMax %0, %1 : vector<3xi16>
+    %2 = spirv.GL.SMax %0, %1 : i32
+    %3 = spirv.GL.SMax %0, %1 : vector<3xi16>
     ```
   }];
 }
 
 // -----
 
-def SPV_GLFMinOp : SPV_GLBinaryArithmeticOp<"FMin", 37, SPV_Float> {
+def SPIRV_GLFMinOp : SPIRV_GLBinaryArithmeticOp<"FMin", 37, SPIRV_Float> {
   let summary = "Return minimum of two floating-point operands";
 
   let description = [{
@@ -652,25 +548,18 @@ def SPV_GLFMinOp : SPV_GLBinaryArithmeticOp<"FMin", 37, SPV_Float> {
     Result Type and the type of all operands must be the same type. Results are
     computed per component.
 
-    <!-- End of AutoGen section -->
-    ```
-    float-scalar-vector-type ::= float-type |
-                                 `vector<` integer-literal `x` float-type `>`
-    fmin-op ::= ssa-id `=` `spv.GL.FMin` ssa-use `:`
-                float-scalar-vector-type
-    ```
     #### Example:
 
     ```mlir
-    %2 = spv.GL.FMin %0, %1 : f32
-    %3 = spv.GL.FMin %0, %1 : vector<3xf16>
+    %2 = spirv.GL.FMin %0, %1 : f32
+    %3 = spirv.GL.FMin %0, %1 : vector<3xf16>
     ```
   }];
 }
 
 // -----
 
-def SPV_GLUMinOp : SPV_GLBinaryArithmeticOp<"UMin", 38, SPV_Integer> {
+def SPIRV_GLUMinOp : SPIRV_GLBinaryArithmeticOp<"UMin", 38, SPIRV_Integer> {
   let summary = "Return minimum of two unsigned integer operands";
 
   let description = [{
@@ -682,25 +571,18 @@ def SPV_GLUMinOp : SPV_GLBinaryArithmeticOp<"UMin", 38, SPV_Integer> {
     components with the same component width. Results are computed per
     component.
 
-    <!-- End of AutoGen section -->
-    ```
-    integer-scalar-vector-type ::= integer-type |
-                                   `vector<` integer-literal `x` integer-type `>`
-    smin-op ::= ssa-id `=` `spv.GL.UMin` ssa-use `:`
-                integer-scalar-vector-type
-    ```
     #### Example:
 
     ```mlir
-    %2 = spv.GL.UMin %0, %1 : i32
-    %3 = spv.GL.UMin %0, %1 : vector<3xi16>
+    %2 = spirv.GL.UMin %0, %1 : i32
+    %3 = spirv.GL.UMin %0, %1 : vector<3xi16>
     ```
   }];
 }
 
 // -----
 
-def SPV_GLSMinOp : SPV_GLBinaryArithmeticOp<"SMin", 39, SPV_Integer> {
+def SPIRV_GLSMinOp : SPIRV_GLBinaryArithmeticOp<"SMin", 39, SPIRV_Integer> {
   let summary = "Return minimum of two signed integer operands";
 
   let description = [{
@@ -712,25 +594,18 @@ def SPV_GLSMinOp : SPV_GLBinaryArithmeticOp<"SMin", 39, SPV_Integer> {
     components with the same component width. Results are computed per
     component.
 
-    <!-- End of AutoGen section -->
-    ```
-    integer-scalar-vector-type ::= integer-type |
-                                   `vector<` integer-literal `x` integer-type `>`
-    smin-op ::= ssa-id `=` `spv.GL.SMin` ssa-use `:`
-                integer-scalar-vector-type
-    ```
     #### Example:
 
     ```mlir
-    %2 = spv.GL.SMin %0, %1 : i32
-    %3 = spv.GL.SMin %0, %1 : vector<3xi16>
+    %2 = spirv.GL.SMin %0, %1 : i32
+    %3 = spirv.GL.SMin %0, %1 : vector<3xi16>
     ```
   }];
 }
 
 // -----
 
-def SPV_GLPowOp : SPV_GLBinaryArithmeticOp<"Pow", 26, SPV_Float16or32> {
+def SPIRV_GLPowOp : SPIRV_GLBinaryArithmeticOp<"Pow", 26, SPIRV_Float16or32> {
   let summary = "Return x raised to the y power of two operands";
 
   let description = [{
@@ -744,27 +619,18 @@ def SPV_GLPowOp : SPV_GLBinaryArithmeticOp<"Pow", 26, SPV_Float16or32> {
     Result Type and the type of all operands must be the same type. Results are
     computed per component.
 
-    <!-- End of AutoGen section -->
-    ```
-    restricted-float-scalar-type ::=  `f16` | `f32`
-    restricted-float-scalar-vector-type ::=
-      restricted-float-scalar-type |
-      `vector<` integer-literal `x` restricted-float-scalar-type `>`
-    pow-op ::= ssa-id `=` `spv.GL.Pow` ssa-use `:`
-               restricted-float-scalar-vector-type
-    ```
     #### Example:
 
     ```mlir
-    %2 = spv.GL.Pow %0, %1 : f32
-    %3 = spv.GL.Pow %0, %1 : vector<3xf16>
+    %2 = spirv.GL.Pow %0, %1 : f32
+    %3 = spirv.GL.Pow %0, %1 : vector<3xf16>
     ```
   }];
 }
 
 // -----
 
-def SPV_GLFSignOp : SPV_GLUnaryArithmeticOp<"FSign", 6, SPV_Float> {
+def SPIRV_GLFSignOp : SPIRV_GLUnaryArithmeticOp<"FSign", 6, SPIRV_Float> {
   let summary = "Returns the sign of the operand";
 
   let description = [{
@@ -776,25 +642,18 @@ def SPV_GLFSignOp : SPV_GLUnaryArithmeticOp<"FSign", 6, SPV_Float> {
     Result Type and the type of x must be the same type. Results are computed
     per component.
 
-    <!-- End of AutoGen section -->
-    ```
-    float-scalar-vector-type ::= float-type |
-                                 `vector<` integer-literal `x` float-type `>`
-    sign-op ::= ssa-id `=` `spv.GL.FSign` ssa-use `:`
-                float-scalar-vector-type
-    ```
     #### Example:
 
     ```mlir
-    %2 = spv.GL.FSign %0 : f32
-    %3 = spv.GL.FSign %1 : vector<3xf16>
+    %2 = spirv.GL.FSign %0 : f32
+    %3 = spirv.GL.FSign %1 : vector<3xf16>
     ```
   }];
 }
 
 // -----
 
-def SPV_GLSSignOp : SPV_GLUnaryArithmeticOp<"SSign", 7, SPV_Integer> {
+def SPIRV_GLSSignOp : SPIRV_GLUnaryArithmeticOp<"SSign", 7, SPIRV_Integer> {
   let summary = "Returns the sign of the operand";
 
   let description = [{
@@ -805,25 +664,18 @@ def SPV_GLSSignOp : SPV_GLUnaryArithmeticOp<"SSign", 7, SPV_Integer> {
     types. Result Type and operand types must have the same number of components
     with the same component width. Results are computed per component.
 
-    <!-- End of AutoGen section -->
-    ```
-    integer-scalar-vector-type ::= integer-type |
-                                   `vector<` integer-literal `x` integer-type `>`
-    sign-op ::= ssa-id `=` `spv.GL.SSign` ssa-use `:`
-                integer-scalar-vector-type
-    ```
     #### Example:
 
     ```mlir
-    %2 = spv.GL.SSign %0 : i32
-    %3 = spv.GL.SSign %1 : vector<3xi16>
+    %2 = spirv.GL.SSign %0 : i32
+    %3 = spirv.GL.SSign %1 : vector<3xi16>
     ```
   }];
 }
 
 // -----
 
-def SPV_GLSqrtOp : SPV_GLUnaryArithmeticOp<"Sqrt", 31, SPV_Float> {
+def SPIRV_GLSqrtOp : SPIRV_GLUnaryArithmeticOp<"Sqrt", 31, SPIRV_Float> {
   let summary = "Returns the square root of the operand";
 
   let description = [{
@@ -835,25 +687,18 @@ def SPV_GLSqrtOp : SPV_GLUnaryArithmeticOp<"Sqrt", 31, SPV_Float> {
     Result Type and the type of x must be the same type. Results are computed
     per component.
 
-    <!-- End of AutoGen section -->
-    ```
-    float-scalar-vector-type ::= float-type |
-                                 `vector<` integer-literal `x` float-type `>`
-    sqrt-op ::= ssa-id `=` `spv.GL.Sqrt` ssa-use `:`
-                float-scalar-vector-type
-    ```
     #### Example:
 
     ```mlir
-    %2 = spv.GL.Sqrt %0 : f32
-    %3 = spv.GL.Sqrt %1 : vector<3xf16>
+    %2 = spirv.GL.Sqrt %0 : f32
+    %3 = spirv.GL.Sqrt %1 : vector<3xf16>
     ```
   }];
 }
 
 // -----
 
-def SPV_GLSinhOp : SPV_GLUnaryArithmeticOp<"Sinh", 19, SPV_Float16or32> {
+def SPIRV_GLSinhOp : SPIRV_GLUnaryArithmeticOp<"Sinh", 19, SPIRV_Float16or32> {
   let summary = "Hyperbolic sine of operand in radians";
 
   let description = [{
@@ -865,27 +710,18 @@ def SPV_GLSinhOp : SPV_GLUnaryArithmeticOp<"Sinh", 19, SPV_Float16or32> {
     Result Type and the type of x must be the same type. Results are computed
     per component.
 
-    <!-- End of AutoGen section -->
-    ```
-    restricted-float-scalar-type ::=  `f16` | `f32`
-    restricted-float-scalar-vector-type ::=
-      restricted-float-scalar-type |
-      `vector<` integer-literal `x` restricted-float-scalar-type `>`
-    sinh-op ::= ssa-id `=` `spv.GL.Sinh` ssa-use `:`
-                restricted-float-scalar-vector-type
-    ```
     #### Example:
 
     ```mlir
-    %2 = spv.GL.Sinh %0 : f32
-    %3 = spv.GL.Sinh %1 : vector<3xf16>
+    %2 = spirv.GL.Sinh %0 : f32
+    %3 = spirv.GL.Sinh %1 : vector<3xf16>
     ```
   }];
 }
 
 // -----
 
-def SPV_GLCoshOp : SPV_GLUnaryArithmeticOp<"Cosh", 20, SPV_Float16or32> {
+def SPIRV_GLCoshOp : SPIRV_GLUnaryArithmeticOp<"Cosh", 20, SPIRV_Float16or32> {
   let summary = "Hyperbolic cosine of operand in radians";
 
   let description = [{
@@ -897,27 +733,18 @@ def SPV_GLCoshOp : SPV_GLUnaryArithmeticOp<"Cosh", 20, SPV_Float16or32> {
     Result Type and the type of x must be the same type. Results are computed
     per component.
 
-    <!-- End of AutoGen section -->
-    ```
-    restricted-float-scalar-type ::=  `f16` | `f32`
-    restricted-float-scalar-vector-type ::=
-      restricted-float-scalar-type |
-      `vector<` integer-literal `x` restricted-float-scalar-type `>`
-    cosh-op ::= ssa-id `=` `spv.GL.Cosh` ssa-use `:`
-                restricted-float-scalar-vector-type
-    ```
     #### Example:
 
     ```mlir
-    %2 = spv.GL.Cosh %0 : f32
-    %3 = spv.GL.Cosh %1 : vector<3xf16>
+    %2 = spirv.GL.Cosh %0 : f32
+    %3 = spirv.GL.Cosh %1 : vector<3xf16>
     ```
   }];
 }
 
 // -----
 
-def SPV_GLTanhOp : SPV_GLUnaryArithmeticOp<"Tanh", 21, SPV_Float16or32> {
+def SPIRV_GLTanhOp : SPIRV_GLUnaryArithmeticOp<"Tanh", 21, SPIRV_Float16or32> {
   let summary = "Hyperbolic tangent of operand in radians";
 
   let description = [{
@@ -929,27 +756,18 @@ def SPV_GLTanhOp : SPV_GLUnaryArithmeticOp<"Tanh", 21, SPV_Float16or32> {
     Result Type and the type of x must be the same type. Results are computed
     per component.
 
-    <!-- End of AutoGen section -->
-    ```
-    restricted-float-scalar-type ::=  `f16` | `f32`
-    restricted-float-scalar-vector-type ::=
-      restricted-float-scalar-type |
-      `vector<` integer-literal `x` restricted-float-scalar-type `>`
-    tanh-op ::= ssa-id `=` `spv.GL.Tanh` ssa-use `:`
-                restricted-float-scalar-vector-type
-    ```
     #### Example:
 
     ```mlir
-    %2 = spv.GL.Tanh %0 : f32
-    %3 = spv.GL.Tanh %1 : vector<3xf16>
+    %2 = spirv.GL.Tanh %0 : f32
+    %3 = spirv.GL.Tanh %1 : vector<3xf16>
     ```
   }];
 }
 
 // -----
 
-def SPV_GLFClampOp : SPV_GLTernaryArithmeticOp<"FClamp", 43, SPV_Float> {
+def SPIRV_GLFClampOp : SPIRV_GLTernaryArithmeticOp<"FClamp", 43, SPIRV_Float> {
   let summary = "Clamp x between min and max values.";
 
   let description = [{
@@ -965,21 +783,21 @@ def SPV_GLFClampOp : SPV_GLTernaryArithmeticOp<"FClamp", 43, SPV_Float> {
 
     <!-- End of AutoGen section -->
     ```
-    fclamp-op ::= ssa-id `=` `spv.GL.FClamp` ssa-use, ssa-use, ssa-use `:`
+    fclamp-op ::= ssa-id `=` `spirv.GL.FClamp` ssa-use, ssa-use, ssa-use `:`
                float-scalar-vector-type
     ```
     #### Example:
 
     ```mlir
-    %2 = spv.GL.FClamp %x, %min, %max : f32
-    %3 = spv.GL.FClamp %x, %min, %max : vector<3xf16>
+    %2 = spirv.GL.FClamp %x, %min, %max : f32
+    %3 = spirv.GL.FClamp %x, %min, %max : vector<3xf16>
     ```
   }];
 }
 
 // -----
 
-def SPV_GLUClampOp : SPV_GLTernaryArithmeticOp<"UClamp", 44, SPV_Integer> {
+def SPIRV_GLUClampOp : SPIRV_GLTernaryArithmeticOp<"UClamp", 44, SPIRV_Integer> {
   let summary = "Clamp x between min and max values.";
 
   let description = [{
@@ -994,21 +812,21 @@ def SPV_GLUClampOp : SPV_GLTernaryArithmeticOp<"UClamp", 44, SPV_Integer> {
 
     <!-- End of AutoGen section -->
     ```
-    uclamp-op ::= ssa-id `=` `spv.GL.UClamp` ssa-use, ssa-use, ssa-use `:`
+    uclamp-op ::= ssa-id `=` `spirv.GL.UClamp` ssa-use, ssa-use, ssa-use `:`
                unsigned-signless-scalar-vector-type
     ```
     #### Example:
 
     ```mlir
-    %2 = spv.GL.UClamp %x, %min, %max : i32
-    %3 = spv.GL.UClamp %x, %min, %max : vector<3xui16>
+    %2 = spirv.GL.UClamp %x, %min, %max : i32
+    %3 = spirv.GL.UClamp %x, %min, %max : vector<3xui16>
     ```
   }];
 }
 
 // -----
 
-def SPV_GLSClampOp : SPV_GLTernaryArithmeticOp<"SClamp", 45, SPV_Integer> {
+def SPIRV_GLSClampOp : SPIRV_GLTernaryArithmeticOp<"SClamp", 45, SPIRV_Integer> {
   let summary = "Clamp x between min and max values.";
 
   let description = [{
@@ -1023,21 +841,21 @@ def SPV_GLSClampOp : SPV_GLTernaryArithmeticOp<"SClamp", 45, SPV_Integer> {
 
     <!-- End of AutoGen section -->
     ```
-    uclamp-op ::= ssa-id `=` `spv.GL.UClamp` ssa-use, ssa-use, ssa-use `:`
+    uclamp-op ::= ssa-id `=` `spirv.GL.UClamp` ssa-use, ssa-use, ssa-use `:`
                sgined-scalar-vector-type
     ```
     #### Example:
 
     ```mlir
-    %2 = spv.GL.SClamp %x, %min, %max : si32
-    %3 = spv.GL.SClamp %x, %min, %max : vector<3xsi16>
+    %2 = spirv.GL.SClamp %x, %min, %max : si32
+    %3 = spirv.GL.SClamp %x, %min, %max : vector<3xsi16>
     ```
   }];
 }
 
 // -----
 
-def SPV_GLFmaOp : SPV_GLTernaryArithmeticOp<"Fma", 50, SPV_Float> {
+def SPIRV_GLFmaOp : SPIRV_GLTernaryArithmeticOp<"Fma", 50, SPIRV_Float> {
   let summary = "Computes a * b + c.";
 
   let description = [{
@@ -1063,21 +881,21 @@ def SPV_GLFmaOp : SPV_GLTernaryArithmeticOp<"Fma", 50, SPV_Float> {
 
     <!-- End of AutoGen section -->
     ```
-    fma-op ::= ssa-id `=` `spv.GL.Fma` ssa-use, ssa-use, ssa-use `:`
+    fma-op ::= ssa-id `=` `spirv.GL.Fma` ssa-use, ssa-use, ssa-use `:`
                float-scalar-vector-type
     ```
     #### Example:
 
     ```mlir
-    %0 = spv.GL.Fma %a, %b, %c : f32
-    %1 = spv.GL.Fma %a, %b, %c : vector<3xf16>
+    %0 = spirv.GL.Fma %a, %b, %c : f32
+    %1 = spirv.GL.Fma %a, %b, %c : vector<3xf16>
     ```
   }];
 }
 
 // ----
 
-def SPV_GLFrexpStructOp : SPV_GLOp<"FrexpStruct", 52, [NoSideEffect]> {
+def SPIRV_GLFrexpStructOp : SPIRV_GLOp<"FrexpStruct", 52, [Pure]> {
   let summary = "Splits x into two components such that x = significand * 2^exponent";
 
   let description = [{
@@ -1099,30 +917,20 @@ def SPV_GLFrexpStructOp : SPV_GLOp<"FrexpStruct", 52, [NoSideEffect]> {
     The operand x must be a scalar or vector whose component type is
     floating-point.
 
-    <!-- End of AutoGen section -->
-    ```
-    float-scalar-vector-type ::= float-type |
-                                 `vector<` integer-literal `x` float-type `>`
-    integer-scalar-vector-type ::= integer-type |
-                                 `vector<` integer-literal `x` integer-type `>`
-    frexpstruct-op ::= ssa-id `=` `spv.GL.FrexpStruct` ssa-use `:`
-                                  `!spv.struct<` float-scalar-vector-type `,`
-                                                  integer-scalar-vector-type `>`
-    ```
     #### Example:
 
     ```mlir
-    %2 = spv.GL.FrexpStruct %0 : f32 -> !spv.struct<f32, i32>
-    %3 = spv.GL.FrexpStruct %0 : vector<3xf32> -> !spv.struct<vector<3xf32>, vector<3xi32>>
+    %2 = spirv.GL.FrexpStruct %0 : f32 -> !spirv.struct<f32, i32>
+    %3 = spirv.GL.FrexpStruct %0 : vector<3xf32> -> !spirv.struct<vector<3xf32>, vector<3xi32>>
     ```
   }];
 
   let arguments = (ins
-    SPV_ScalarOrVectorOf<SPV_Float>:$operand
+    SPIRV_ScalarOrVectorOf<SPIRV_Float>:$operand
   );
 
   let results = (outs
-    SPV_AnyStruct:$result
+    SPIRV_AnyStruct:$result
   );
 
   let assemblyFormat = [{
@@ -1130,9 +938,9 @@ def SPV_GLFrexpStructOp : SPV_GLOp<"FrexpStruct", 52, [NoSideEffect]> {
   }];
 }
 
-def SPV_GLLdexpOp :
-  SPV_GLOp<"Ldexp", 53, [
-      NoSideEffect, AllTypesMatch<["x", "y"]>]> {
+def SPIRV_GLLdexpOp :
+  SPIRV_GLOp<"Ldexp", 53, [
+      Pure, AllTypesMatch<["x", "y"]>]> {
   let summary = "Builds y such that y = significand * 2^exponent";
 
   let description = [{
@@ -1163,18 +971,18 @@ def SPV_GLLdexpOp :
     #### Example:
 
     ```mlir
-    %y = spv.GL.Ldexp %x : f32, %exp : i32 -> f32
-    %y = spv.GL.Ldexp %x : vector<3xf32>, %exp : vector<3xi32> -> vector<3xf32>
+    %y = spirv.GL.Ldexp %x : f32, %exp : i32 -> f32
+    %y = spirv.GL.Ldexp %x : vector<3xf32>, %exp : vector<3xi32> -> vector<3xf32>
     ```
   }];
 
   let arguments = (ins
-    SPV_ScalarOrVectorOf<SPV_Float>:$x,
-    SPV_ScalarOrVectorOf<SPV_Integer>:$exp
+    SPIRV_ScalarOrVectorOf<SPIRV_Float>:$x,
+    SPIRV_ScalarOrVectorOf<SPIRV_Integer>:$exp
   );
 
   let results = (outs
-    SPV_ScalarOrVectorOf<SPV_Float>:$y
+    SPIRV_ScalarOrVectorOf<SPIRV_Float>:$y
   );
 
   let assemblyFormat = [{
@@ -1182,9 +990,9 @@ def SPV_GLLdexpOp :
   }];
 }
 
-def SPV_GLFMixOp :
-  SPV_GLOp<"FMix", 46, [
-      NoSideEffect, AllTypesMatch<["x", "y", "a", "result"]>]> {
+def SPIRV_GLFMixOp :
+  SPIRV_GLOp<"FMix", 46, [
+      Pure, AllTypesMatch<["x", "y", "a", "result"]>]> {
   let summary = "Builds the linear blend of x and y";
 
   let description = [{
@@ -1199,19 +1007,19 @@ def SPV_GLFMixOp :
     #### Example:
 
     ```mlir
-    %0 = spv.GL.FMix %x : f32, %y : f32, %a : f32 -> f32
-    %0 = spv.GL.FMix %x : vector<4xf32>, %y : vector<4xf32>, %a : vector<4xf32> -> vector<4xf32>
+    %0 = spirv.GL.FMix %x : f32, %y : f32, %a : f32 -> f32
+    %0 = spirv.GL.FMix %x : vector<4xf32>, %y : vector<4xf32>, %a : vector<4xf32> -> vector<4xf32>
     ```
   }];
 
   let arguments = (ins
-    SPV_ScalarOrVectorOf<SPV_Float>:$x,
-    SPV_ScalarOrVectorOf<SPV_Float>:$y,
-    SPV_ScalarOrVectorOf<SPV_Float>:$a
+    SPIRV_ScalarOrVectorOf<SPIRV_Float>:$x,
+    SPIRV_ScalarOrVectorOf<SPIRV_Float>:$y,
+    SPIRV_ScalarOrVectorOf<SPIRV_Float>:$a
   );
 
   let results = (outs
-    SPV_ScalarOrVectorOf<SPV_Float>:$result
+    SPIRV_ScalarOrVectorOf<SPIRV_Float>:$result
   );
 
   let assemblyFormat = [{
@@ -1221,7 +1029,123 @@ def SPV_GLFMixOp :
   let hasVerifier = 0;
 }
 
-def SPV_GLFindUMsbOp : SPV_GLUnaryArithmeticOp<"FindUMsb", 75, SPV_Int32> {
+// -----
+
+def SPIRV_GLDistanceOp : SPIRV_GLOp<"Distance", 67, [
+    Pure,
+    AllTypesMatch<["p0", "p1"]>,
+    TypesMatchWith<"result type must match operand element type",
+                  "p0", "result",
+                  "::mlir::getElementTypeOrSelf($_self)">
+  ]> {
+  let summary = "Return distance between two points";
+
+  let description = [{
+    Result is the distance between p0 and p1, i.e., length(p0 - p1).
+
+    The operands must all be a scalar or vector whose component type is floating-point.
+
+    Result Type must be a scalar of the same type as the component type of the operands.
+
+    #### Example:
+
+    ```mlir
+    %2 = spirv.GL.Distance %0, %1 : vector<3xf32>, vector<3xf32> -> f32
+    ```
+  }];
+
+  let arguments = (ins
+    SPIRV_ScalarOrVectorOf<SPIRV_Float>:$p0,
+    SPIRV_ScalarOrVectorOf<SPIRV_Float>:$p1
+  );
+
+  let results = (outs
+    SPIRV_Float:$result
+  );
+
+  let assemblyFormat = [{
+    operands attr-dict `:` type($p0) `,` type($p1) `->` type($result)
+  }];
+
+  let hasVerifier = 0;
+}
+
+// -----
+
+def SPIRV_GLCrossOp : SPIRV_GLBinaryArithmeticOp<"Cross", 68, SPIRV_Float> {
+  let summary = "Return the cross product of two 3-component vectors";
+
+  let description = [{
+    Result is the cross product of x and y, i.e., the resulting components are, in order:
+
+    x[1] * y[2] - y[1] * x[2]
+
+    x[2] * y[0] - y[2] * x[0]
+
+    x[0] * y[1] - y[0] * x[1]
+
+    All the operands must be vectors of 3 components of a floating-point type.
+
+    Result Type and the type of all operands must be the same type.
+
+    #### Example:
+
+    ```mlir
+    %2 = spirv.GL.Cross %0, %1 : vector<3xf32>
+    %3 = spirv.GL.Cross %0, %1 : vector<3xf16>
+    ```
+  }];
+}
+
+// -----
+
+def SPIRV_GLNormalizeOp : SPIRV_GLUnaryArithmeticOp<"Normalize", 69, SPIRV_Float> {
+  let summary = "Normalizes a vector operand";
+
+  let description = [{
+    Result is the vector in the same direction as x but with a length of 1.
+
+    The operand x must be a scalar or vector whose component type is floating-point.
+
+    Result Type and the type of x must be the same type.
+
+    #### Example:
+
+    ```mlir
+    %2 = spirv.GL.Normalize %0 : vector<3xf32>
+    %3 = spirv.GL.Normalize %1 : vector<4xf16>
+    ```
+  }];
+}
+
+// -----
+
+def SPIRV_GLReflectOp : SPIRV_GLBinaryArithmeticOp<"Reflect", 71, SPIRV_Float> {
+  let summary = "Calculate reflection direction vector";
+
+  let description = [{
+    For the incident vector I and surface orientation N, the result is the reflection direction:
+
+    I - 2 * dot(N, I) * N
+
+    N must already be normalized in order to achieve the desired result.
+
+    The operands must all be a scalar or vector whose component type is floating-point.
+
+    Result Type and the type of all operands must be the same type.
+
+    #### Example:
+
+    ```mlir
+    %2 = spirv.GL.Reflect %0, %1 : f32
+    %3 = spirv.GL.Reflect %0, %1 : vector<3xf32>
+    ```
+  }];
+}
+
+// ----
+
+def SPIRV_GLFindUMsbOp : SPIRV_GLUnaryArithmeticOp<"FindUMsb", 75, SPIRV_Int32> {
   let summary = "Unsigned-integer most-significant bit";
 
   let description = [{

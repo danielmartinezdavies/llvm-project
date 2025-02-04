@@ -20,7 +20,6 @@
 #include "llvm/MC/MCInstrInfo.h"
 #include "llvm/MC/MCRegisterInfo.h"
 #include "llvm/Support/ErrorHandling.h"
-#include "llvm/Support/FormattedStream.h"
 
 #include <cstring>
 
@@ -86,21 +85,21 @@ void AVRInstPrinter::printInst(const MCInst *MI, uint64_t Address,
   }
 }
 
-const char *AVRInstPrinter::getPrettyRegisterName(unsigned RegNum,
+const char *AVRInstPrinter::getPrettyRegisterName(MCRegister Reg,
                                                   MCRegisterInfo const &MRI) {
   // GCC prints register pairs by just printing the lower register
   // If the register contains a subregister, print it instead
   if (MRI.getNumSubRegIndices() > 0) {
-    unsigned RegLoNum = MRI.getSubReg(RegNum, AVR::sub_lo);
-    RegNum = (RegLoNum != AVR::NoRegister) ? RegLoNum : RegNum;
+    MCRegister RegLo = MRI.getSubReg(Reg, AVR::sub_lo);
+    Reg = (RegLo != AVR::NoRegister) ? RegLo : Reg;
   }
 
-  return getRegisterName(RegNum);
+  return getRegisterName(Reg);
 }
 
 void AVRInstPrinter::printOperand(const MCInst *MI, unsigned OpNo,
                                   raw_ostream &O) {
-  const MCOperandInfo &MOI = this->MII.get(MI->getOpcode()).OpInfo[OpNo];
+  const MCOperandInfo &MOI = this->MII.get(MI->getOpcode()).operands()[OpNo];
   if (MOI.RegClass == AVR::ZREGRegClassID) {
     // Special case for the Z register, which sometimes doesn't have an operand
     // in the MCInst.

@@ -1,5 +1,5 @@
-; RUN: llc -march=bpfel -filetype=asm -o - %s | FileCheck -check-prefixes=CHECK %s
-; RUN: llc -march=bpfeb -filetype=asm -o - %s | FileCheck -check-prefixes=CHECK %s
+; RUN: llc -mtriple=bpfel -filetype=asm -o - %s | FileCheck -check-prefixes=CHECK %s
+; RUN: llc -mtriple=bpfeb -filetype=asm -o - %s | FileCheck -check-prefixes=CHECK %s
 ;
 ; Source code:
 ;   typedef struct t1 { int f1; } __t1;
@@ -15,7 +15,7 @@
 ; Function Attrs: norecurse nounwind readonly
 define dso_local i32 @test() local_unnamed_addr #0 !dbg !15 {
 entry:
-  %0 = load i32, i32* getelementptr inbounds (%struct.t1, %struct.t1* @global, i64 0, i32 0), align 4, !dbg !18, !tbaa !19
+  %0 = load i32, ptr @global, align 4, !dbg !18, !tbaa !19
   ret i32 %0, !dbg !24
 }
 

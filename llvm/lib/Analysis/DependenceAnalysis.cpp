@@ -216,7 +216,8 @@ void DependenceAnalysisWrapperPass::print(raw_ostream &OS,
 
 PreservedAnalyses
 DependenceAnalysisPrinterPass::run(Function &F, FunctionAnalysisManager &FAM) {
-  OS << "'Dependence Analysis' for function '" << F.getName() << "':\n";
+  OS << "Printing analysis 'Dependence Analysis' for function '" << F.getName()
+     << "':\n";
   dumpExampleDependence(OS, &FAM.getResult<DependenceAnalysis>(F),
                         FAM.getResult<ScalarEvolutionAnalysis>(F),
                         NormalizeResults);
@@ -722,7 +723,10 @@ static AliasResult underlyingObjectsAlias(AAResults *AA,
       MemoryLocation::getBeforeOrAfter(LocA.Ptr, LocA.AATags);
   MemoryLocation LocBS =
       MemoryLocation::getBeforeOrAfter(LocB.Ptr, LocB.AATags);
-  if (AA->isNoAlias(LocAS, LocBS))
+  BatchAAResults BAA(*AA);
+  BAA.enableCrossIterationMode();
+
+  if (BAA.isNoAlias(LocAS, LocBS))
     return AliasResult::NoAlias;
 
   // Check the underlying objects are the same
@@ -742,7 +746,6 @@ static AliasResult underlyingObjectsAlias(AAResults *AA,
   // must not alias.
   return AliasResult::NoAlias;
 }
-
 
 // Returns true if the load or store can be analyzed. Atomic and volatile
 // operations have properties which this analysis does not understand.
@@ -1379,8 +1382,8 @@ bool DependenceInfo::weakCrossingSIVtest(
   LLVM_DEBUG(dbgs() << "\t    Delta = " << *Delta << "\n");
   NewConstraint.setLine(Coeff, Coeff, Delta, CurLoop);
   if (Delta->isZero()) {
-    Result.DV[Level].Direction &= unsigned(~Dependence::DVEntry::LT);
-    Result.DV[Level].Direction &= unsigned(~Dependence::DVEntry::GT);
+    Result.DV[Level].Direction &= ~Dependence::DVEntry::LT;
+    Result.DV[Level].Direction &= ~Dependence::DVEntry::GT;
     ++WeakCrossingSIVsuccesses;
     if (!Result.DV[Level].Direction) {
       ++WeakCrossingSIVindependence;
@@ -1439,8 +1442,8 @@ bool DependenceInfo::weakCrossingSIVtest(
     }
     if (isKnownPredicate(CmpInst::ICMP_EQ, Delta, ML)) {
       // i = i' = UB
-      Result.DV[Level].Direction &= unsigned(~Dependence::DVEntry::LT);
-      Result.DV[Level].Direction &= unsigned(~Dependence::DVEntry::GT);
+      Result.DV[Level].Direction &= ~Dependence::DVEntry::LT;
+      Result.DV[Level].Direction &= ~Dependence::DVEntry::GT;
       ++WeakCrossingSIVsuccesses;
       if (!Result.DV[Level].Direction) {
         ++WeakCrossingSIVindependence;
@@ -1473,7 +1476,7 @@ bool DependenceInfo::weakCrossingSIVtest(
   LLVM_DEBUG(dbgs() << "\t    Remainder = " << Remainder << "\n");
   if (Remainder != 0) {
     // Equal direction isn't possible
-    Result.DV[Level].Direction &= unsigned(~Dependence::DVEntry::EQ);
+    Result.DV[Level].Direction &= ~Dependence::DVEntry::EQ;
     ++WeakCrossingSIVsuccesses;
   }
   return false;
@@ -2450,8 +2453,7 @@ bool DependenceInfo::gcdMIVtest(const SCEV *Src, const SCEV *Dst,
   const SCEVConstant *Constant = dyn_cast<SCEVConstant>(Delta);
   if (const SCEVAddExpr *Sum = dyn_cast<SCEVAddExpr>(Delta)) {
     // If Delta is a sum of products, we may be able to make further progress.
-    for (unsigned Op = 0, Ops = Sum->getNumOperands(); Op < Ops; Op++) {
-      const SCEV *Operand = Sum->getOperand(Op);
+    for (const SCEV *Operand : Sum->operands()) {
       if (isa<SCEVConstant>(Operand)) {
         assert(!Constant && "Surprised to find multiple constants");
         Constant = cast<SCEVConstant>(Operand);
@@ -2557,7 +2559,7 @@ bool DependenceInfo::gcdMIVtest(const SCEV *Src, const SCEV *Dst,
       LLVM_DEBUG(dbgs() << "\tRemainder = " << Remainder << "\n");
       if (Remainder != 0) {
         unsigned Level = mapSrcLoop(CurLoop);
-        Result.DV[Level - 1].Direction &= unsigned(~Dependence::DVEntry::EQ);
+        Result.DV[Level - 1].Direction &= ~Dependence::DVEntry::EQ;
         Improved = true;
       }
     }
@@ -3444,9 +3446,9 @@ bool DependenceInfo::tryDelinearizeFixedSize(
   // iff the subscripts are positive and are less than the range of the
   // dimension.
   if (!DisableDelinearizationChecks) {
-    auto AllIndiciesInRange = [&](SmallVector<int, 4> &DimensionSizes,
-                                  SmallVectorImpl<const SCEV *> &Subscripts,
-                                  Value *Ptr) {
+    auto AllIndicesInRange = [&](SmallVector<int, 4> &DimensionSizes,
+                                 SmallVectorImpl<const SCEV *> &Subscripts,
+                                 Value *Ptr) {
       size_t SSize = Subscripts.size();
       for (size_t I = 1; I < SSize; ++I) {
         const SCEV *S = Subscripts[I];
@@ -3462,8 +3464,8 @@ bool DependenceInfo::tryDelinearizeFixedSize(
       return true;
     };
 
-    if (!AllIndiciesInRange(SrcSizes, SrcSubscripts, SrcPtr) ||
-        !AllIndiciesInRange(DstSizes, DstSubscripts, DstPtr)) {
+    if (!AllIndicesInRange(SrcSizes, SrcSubscripts, SrcPtr) ||
+        !AllIndicesInRange(DstSizes, DstSubscripts, DstPtr)) {
       SrcSubscripts.clear();
       DstSubscripts.clear();
       return false;
@@ -3607,7 +3609,7 @@ DependenceInfo::depends(Instruction *Src, Instruction *Dst,
   Value *SrcPtr = getLoadStorePointerOperand(Src);
   Value *DstPtr = getLoadStorePointerOperand(Dst);
 
-  switch (underlyingObjectsAlias(AA, F->getParent()->getDataLayout(),
+  switch (underlyingObjectsAlias(AA, F->getDataLayout(),
                                  MemoryLocation::get(Dst),
                                  MemoryLocation::get(Src))) {
   case AliasResult::MayAlias:
@@ -4034,7 +4036,7 @@ const SCEV *DependenceInfo::getSplitIteration(const Dependence &Dep,
   Value *SrcPtr = getLoadStorePointerOperand(Src);
   Value *DstPtr = getLoadStorePointerOperand(Dst);
   assert(underlyingObjectsAlias(
-             AA, F->getParent()->getDataLayout(), MemoryLocation::get(Dst),
+             AA, F->getDataLayout(), MemoryLocation::get(Dst),
              MemoryLocation::get(Src)) == AliasResult::MustAlias);
 
   // establish loop nesting levels

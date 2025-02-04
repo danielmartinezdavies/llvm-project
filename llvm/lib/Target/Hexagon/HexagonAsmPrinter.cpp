@@ -13,10 +13,10 @@
 //===----------------------------------------------------------------------===//
 
 #include "HexagonAsmPrinter.h"
-#include "Hexagon.h"
 #include "HexagonInstrInfo.h"
 #include "HexagonRegisterInfo.h"
 #include "HexagonSubtarget.h"
+#include "HexagonTargetStreamer.h"
 #include "MCTargetDesc/HexagonInstPrinter.h"
 #include "MCTargetDesc/HexagonMCExpr.h"
 #include "MCTargetDesc/HexagonMCInstrInfo.h"
@@ -43,10 +43,9 @@
 #include "llvm/MC/MCSymbol.h"
 #include "llvm/MC/TargetRegistry.h"
 #include "llvm/Support/Casting.h"
-#include "llvm/Support/CommandLine.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
-#include <algorithm>
+#include "llvm/Target/TargetMachine.h"
 #include <cassert>
 #include <cstdint>
 #include <string>
@@ -66,8 +65,7 @@ void HexagonLowerToMC(const MCInstrInfo &MCII, const MachineInstr *MI,
 inline static unsigned getHexagonRegisterPair(unsigned Reg,
       const MCRegisterInfo *RI) {
   assert(Hexagon::IntRegsRegClass.contains(Reg));
-  MCSuperRegIterator SR(Reg, RI, false);
-  unsigned Pair = *SR;
+  unsigned Pair = *RI->superregs(Reg).begin();
   assert(Hexagon::DoubleRegsRegClass.contains(Pair));
   return Pair;
 }
@@ -209,7 +207,7 @@ static MCSymbol *smallData(AsmPrinter &AP, const MachineInstr &MI,
       OutStreamer.emitLabel(Sym);
       OutStreamer.emitSymbolAttribute(Sym, MCSA_Global);
       OutStreamer.emitIntValue(Value, AlignSize);
-      OutStreamer.emitCodeAlignment(AlignSize, &STI);
+      OutStreamer.emitCodeAlignment(Align(AlignSize), &STI);
     }
   } else {
     assert(Imm.isExpr() && "Expected expression and found none");
@@ -237,7 +235,7 @@ static MCSymbol *smallData(AsmPrinter &AP, const MachineInstr &MI,
       OutStreamer.emitLabel(Sym);
       OutStreamer.emitSymbolAttribute(Sym, MCSA_Local);
       OutStreamer.emitValue(Imm.getExpr(), AlignSize);
-      OutStreamer.emitCodeAlignment(AlignSize, &STI);
+      OutStreamer.emitCodeAlignment(Align(AlignSize), &STI);
     }
   }
   return Sym;
@@ -776,6 +774,24 @@ void HexagonAsmPrinter::emitInstruction(const MachineInstr *MI) {
   OutStreamer->emitInstruction(MCB, getSubtargetInfo());
 }
 
+void HexagonAsmPrinter::emitStartOfAsmFile(Module &M) {
+  if (TM.getTargetTriple().isOSBinFormatELF())
+    emitAttributes();
+}
+
+void HexagonAsmPrinter::emitEndOfAsmFile(Module &M) {
+  HexagonTargetStreamer &HTS =
+      static_cast<HexagonTargetStreamer &>(*OutStreamer->getTargetStreamer());
+  if (TM.getTargetTriple().isOSBinFormatELF())
+    HTS.finishAttributeSection();
+}
+
+void HexagonAsmPrinter::emitAttributes() {
+  HexagonTargetStreamer &HTS =
+      static_cast<HexagonTargetStreamer &>(*OutStreamer->getTargetStreamer());
+  HTS.emitTargetAttributes(*TM.getMCSubtargetInfo());
+}
+
 void HexagonAsmPrinter::EmitSled(const MachineInstr &MI, SledKind Kind) {
   static const int8_t NoopsInSledCount = 4;
   // We want to emit the following pattern:
@@ -822,7 +838,7 @@ void HexagonAsmPrinter::EmitSled(const MachineInstr &MI, SledKind Kind) {
   emitNops(NoopsInSledCount);
 
   OutStreamer->emitLabel(PostSled);
-  recordSled(CurSled, MI, Kind, 0);
+  recordSled(CurSled, MI, Kind, 2);
 }
 
 void HexagonAsmPrinter::LowerPATCHABLE_FUNCTION_ENTER(const MachineInstr &MI) {

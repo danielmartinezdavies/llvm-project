@@ -13,8 +13,8 @@
 #ifndef LLVM_EXECUTIONENGINE_ORC_SHARED_ORCRTBRIDGE_H
 #define LLVM_EXECUTIONENGINE_ORC_SHARED_ORCRTBRIDGE_H
 
-#include "llvm/ADT/StringMap.h"
 #include "llvm/ExecutionEngine/Orc/Shared/ExecutorAddress.h"
+#include "llvm/ExecutionEngine/Orc/Shared/ExecutorSymbolDef.h"
 #include "llvm/ExecutionEngine/Orc/Shared/SimpleRemoteEPCUtils.h"
 #include "llvm/ExecutionEngine/Orc/Shared/TargetProcessControlTypes.h"
 
@@ -42,6 +42,7 @@ extern const char *MemoryWriteUInt16sWrapperName;
 extern const char *MemoryWriteUInt32sWrapperName;
 extern const char *MemoryWriteUInt64sWrapperName;
 extern const char *MemoryWriteBuffersWrapperName;
+extern const char *MemoryWritePointersWrapperName;
 
 extern const char *RegisterEHFrameSectionWrapperName;
 extern const char *DeregisterEHFrameSectionWrapperName;
@@ -51,12 +52,13 @@ extern const char *RunAsVoidFunctionWrapperName;
 extern const char *RunAsIntFunctionWrapperName;
 
 using SPSSimpleExecutorDylibManagerOpenSignature =
-    shared::SPSExpected<uint64_t>(shared::SPSExecutorAddr, shared::SPSString,
-                                  uint64_t);
+    shared::SPSExpected<shared::SPSExecutorAddr>(shared::SPSExecutorAddr,
+                                                 shared::SPSString, uint64_t);
 
 using SPSSimpleExecutorDylibManagerLookupSignature =
-    shared::SPSExpected<shared::SPSSequence<shared::SPSExecutorAddr>>(
-        shared::SPSExecutorAddr, uint64_t, shared::SPSRemoteSymbolLookupSet);
+    shared::SPSExpected<shared::SPSSequence<shared::SPSExecutorSymbolDef>>(
+        shared::SPSExecutorAddr, shared::SPSExecutorAddr,
+        shared::SPSRemoteSymbolLookupSet);
 
 using SPSSimpleExecutorMemoryManagerReserveSignature =
     shared::SPSExpected<shared::SPSExecutorAddr>(shared::SPSExecutorAddr,

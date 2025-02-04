@@ -30,18 +30,16 @@ struct SparcRegisterInfo : public SparcGenRegisterInfo {
   const uint32_t* getRTCallPreservedMask(CallingConv::ID CC) const;
 
   BitVector getReservedRegs(const MachineFunction &MF) const override;
+  bool isReservedReg(const MachineFunction &MF, MCRegister Reg) const;
 
   const TargetRegisterClass *getPointerRegClass(const MachineFunction &MF,
                                                 unsigned Kind) const override;
 
-  void eliminateFrameIndex(MachineBasicBlock::iterator II,
+  bool eliminateFrameIndex(MachineBasicBlock::iterator II,
                            int SPAdj, unsigned FIOperandNum,
                            RegScavenger *RS = nullptr) const override;
 
   Register getFrameRegister(const MachineFunction &MF) const override;
-
-  bool canRealignStack(const MachineFunction &MF) const override;
-
 };
 
 } // end namespace llvm

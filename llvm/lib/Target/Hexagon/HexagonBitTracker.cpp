@@ -7,7 +7,6 @@
 //===----------------------------------------------------------------------===//
 
 #include "HexagonBitTracker.h"
-#include "Hexagon.h"
 #include "HexagonInstrInfo.h"
 #include "HexagonRegisterInfo.h"
 #include "HexagonSubtarget.h"
@@ -24,7 +23,6 @@
 #include "llvm/Support/Compiler.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
-#include "llvm/Support/MathExtras.h"
 #include "llvm/Support/raw_ostream.h"
 #include <cassert>
 #include <cstddef>
@@ -329,7 +327,7 @@ bool HexagonEvaluator::evaluate(const MachineInstr &MI,
       int FI = op(1).getIndex();
       int Off = op(2).getImm();
       unsigned A = MFI.getObjectAlign(FI).value() + std::abs(Off);
-      unsigned L = countTrailingZeros(A);
+      unsigned L = llvm::countr_zero(A);
       RegisterCell RC = RegisterCell::self(Reg[0].Reg, W0);
       RC.fill(0, L, BT::BitValue::Zero);
       return rr0(RC, Outputs);
@@ -1223,7 +1221,7 @@ bool HexagonEvaluator::evaluateFormalCopy(const MachineInstr &MI,
   RegisterRef RD = MI.getOperand(0);
   RegisterRef RS = MI.getOperand(1);
   assert(RD.Sub == 0);
-  if (!Register::isPhysicalRegister(RS.Reg))
+  if (!RS.Reg.isPhysical())
     return false;
   RegExtMap::const_iterator F = VRX.find(RD.Reg);
   if (F == VRX.end())
@@ -1287,7 +1285,7 @@ unsigned HexagonEvaluator::getNextPhysReg(unsigned PReg, unsigned Width) const {
 }
 
 unsigned HexagonEvaluator::getVirtRegFor(unsigned PReg) const {
-  for (std::pair<unsigned,unsigned> P : MRI.liveins())
+  for (std::pair<MCRegister, Register> P : MRI.liveins())
     if (P.first == PReg)
       return P.second;
   return 0;

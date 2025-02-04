@@ -69,7 +69,7 @@ public:
   loadShard(llvm::StringRef ShardIdentifier) const override {
     std::lock_guard<std::mutex> Lock(StorageMu);
     AccessedPaths.insert(ShardIdentifier);
-    if (Storage.find(ShardIdentifier) == Storage.end()) {
+    if (!Storage.contains(ShardIdentifier)) {
       return nullptr;
     }
     auto IndexFile =
@@ -132,11 +132,11 @@ TEST_F(BackgroundIndexTest, Config) {
   BackgroundIndex::Options Opts;
   Opts.ContextProvider = [](PathRef P) {
     Config C;
-    if (P.endswith("foo.cpp"))
+    if (P.ends_with("foo.cpp"))
       C.CompileFlags.Edits.push_back([](std::vector<std::string> &Argv) {
         Argv = tooling::getInsertArgumentAdjuster("-Done=two")(Argv, "");
       });
-    if (P.endswith("baz.cpp"))
+    if (P.ends_with("baz.cpp"))
       C.Index.Background = Config::BackgroundPolicy::Skip;
     return Context::current().derive(Config::Key, std::move(C));
   };
@@ -146,7 +146,7 @@ TEST_F(BackgroundIndexTest, Config) {
   MemoryShardStorage MSS(Storage, CacheHits);
   // We need the CommandMangler, because that applies the config we're testing.
   OverlayCDB CDB(/*Base=*/nullptr, /*FallbackFlags=*/{},
-                 tooling::ArgumentsAdjuster(CommandMangler::forTests()));
+                 CommandMangler::forTests());
 
   BackgroundIndex Idx(
       FS, CDB, [&](llvm::StringRef) { return &MSS; }, std::move(Opts));
@@ -580,8 +580,9 @@ TEST_F(BackgroundIndexTest, UncompilableFiles) {
   CDB.setCompileCommand(testPath("build/../A.cc"), Cmd);
   ASSERT_TRUE(Idx.blockUntilIdleForTest());
 
-  EXPECT_THAT(Storage.keys(), ElementsAre(testPath("A.cc"), testPath("A.h"),
-                                          testPath("B.h"), testPath("C.h")));
+  EXPECT_THAT(Storage.keys(),
+              UnorderedElementsAre(testPath("A.cc"), testPath("A.h"),
+                                   testPath("B.h"), testPath("C.h")));
 
   {
     auto Shard = MSS.loadShard(testPath("A.cc"));
@@ -635,7 +636,8 @@ TEST_F(BackgroundIndexTest, CmdLineHash) {
   CDB.setCompileCommand(testPath("build/../A.cc"), Cmd);
   ASSERT_TRUE(Idx.blockUntilIdleForTest());
 
-  EXPECT_THAT(Storage.keys(), ElementsAre(testPath("A.cc"), testPath("A.h")));
+  EXPECT_THAT(Storage.keys(),
+              UnorderedElementsAre(testPath("A.cc"), testPath("A.h")));
   // Make sure we only store the Cmd for main file.
   EXPECT_FALSE(MSS.loadShard(testPath("A.h"))->Cmd);
 
@@ -683,7 +685,8 @@ TEST_F(BackgroundIndexTest, Reindex) {
 class BackgroundIndexRebuilderTest : public testing::Test {
 protected:
   BackgroundIndexRebuilderTest()
-      : Source(IndexContents::All), Target(std::make_unique<MemIndex>()),
+      : Source(IndexContents::All, /*SupportContainedRefs=*/true),
+        Target(std::make_unique<MemIndex>()),
         Rebuilder(&Target, &Source, /*Threads=*/10) {
     // Prepare FileSymbols with TestSymbol in it, for checkRebuild.
     TestSymbol.ID = SymbolID("foo");

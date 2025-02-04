@@ -90,7 +90,7 @@ namespace aliastemplateinst {
   template<typename T> struct A { };
   template<typename T> using APtr = A<T*>; // expected-note{{previous use is here}}
 
-  template struct APtr<int>; // expected-error{{type alias template 'APtr' cannot be referenced with a struct specifier}}
+  template struct APtr<int>; // expected-error{{alias template 'APtr' cannot be referenced with the 'struct' specifier}}
 }
 
 namespace DontDiagnoseInvalidTest {
@@ -101,6 +101,28 @@ struct Derived : Base<false> { // expected-note {{requested here}}
   using Base<false>::Base; // OK. Don't diagnose that 'Base' isn't a base class of Derived.
 };
 } // namespace DontDiagnoseInvalidTest
+
+namespace shadow_nested_operator {
+template <typename T>
+struct A {
+  struct Nested {};
+  operator Nested*() {return 0;};
+};
+
+template <typename T>
+struct B : A<T> {
+  using A<T>::operator typename A<T>::Nested*;
+  operator typename A<T>::Nested *() {
+    struct A<T> * thi = this;
+    return *thi;
+ };
+};
+
+int foo () {
+  struct B<int> b;
+  auto s = *b;
+}
+} // namespace shadow_nested_operator
 
 namespace func_templ {
 namespace sss {

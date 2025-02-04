@@ -22,8 +22,8 @@ namespace presburger {
 
 class LinearTransform {
 public:
-  explicit LinearTransform(Matrix &&oMatrix);
-  explicit LinearTransform(const Matrix &oMatrix);
+  explicit LinearTransform(IntMatrix &&oMatrix);
+  explicit LinearTransform(const IntMatrix &oMatrix);
 
   // Returns a linear transform T such that MT is M in column echelon form.
   // Also returns the number of non-zero columns in MT.
@@ -32,7 +32,7 @@ public:
   // strictly below that of the previous column, and all columns which have only
   // zeros are at the end.
   static std::pair<unsigned, LinearTransform>
-  makeTransformToColumnEchelon(Matrix m);
+  makeTransformToColumnEchelon(const IntMatrix &m);
 
   // Returns an IntegerRelation having a constraint vector vT for every
   // constraint vector v in rel, where T is this transform.
@@ -40,19 +40,20 @@ public:
 
   // The given vector is interpreted as a row vector v. Post-multiply v with
   // this transform, say T, and return vT.
-  SmallVector<int64_t, 8> preMultiplyWithRow(ArrayRef<int64_t> rowVec) const {
+  SmallVector<DynamicAPInt, 8>
+  preMultiplyWithRow(ArrayRef<DynamicAPInt> rowVec) const {
     return matrix.preMultiplyWithRow(rowVec);
   }
 
   // The given vector is interpreted as a column vector v. Pre-multiply v with
   // this transform, say T, and return Tv.
-  SmallVector<int64_t, 8>
-  postMultiplyWithColumn(ArrayRef<int64_t> colVec) const {
+  SmallVector<DynamicAPInt, 8>
+  postMultiplyWithColumn(ArrayRef<DynamicAPInt> colVec) const {
     return matrix.postMultiplyWithColumn(colVec);
   }
 
 private:
-  Matrix matrix;
+  IntMatrix matrix;
 };
 
 } // namespace presburger

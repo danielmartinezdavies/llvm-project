@@ -7,17 +7,25 @@
 //===----------------------------------------------------------------------===//
 
 #include "mlir/Transforms/RegionUtils.h"
+#include "mlir/Analysis/TopologicalSortUtils.h"
 #include "mlir/IR/Block.h"
+#include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/IRMapping.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/RegionGraphTraits.h"
 #include "mlir/IR/Value.h"
 #include "mlir/Interfaces/ControlFlowInterfaces.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
+#include "mlir/Support/LogicalResult.h"
 
 #include "llvm/ADT/DepthFirstIterator.h"
 #include "llvm/ADT/PostOrderIterator.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallSet.h"
+
+#include <deque>
+#include <iterator>
 
 using namespace mlir;
 
@@ -67,6 +75,102 @@ void mlir::getUsedValuesDefinedAbove(MutableArrayRef<Region> regions,
                                      SetVector<Value> &values) {
   for (Region &region : regions)
     getUsedValuesDefinedAbove(region, region, values);
+}
+
+//===----------------------------------------------------------------------===//
+// Make block isolated from above.
+//===----------------------------------------------------------------------===//
+
+SmallVector<Value> mlir::makeRegionIsolatedFromAbove(
+    RewriterBase &rewriter, Region &region,
+    llvm::function_ref<bool(Operation *)> cloneOperationIntoRegion) {
+
+  // Get initial list of values used within region but defined above.
+  llvm::SetVector<Value> initialCapturedValues;
+  mlir::getUsedValuesDefinedAbove(region, initialCapturedValues);
+
+  std::deque<Value> worklist(initialCapturedValues.begin(),
+                             initialCapturedValues.end());
+  llvm::DenseSet<Value> visited;
+  llvm::DenseSet<Operation *> visitedOps;
+
+  llvm::SetVector<Value> finalCapturedValues;
+  SmallVector<Operation *> clonedOperations;
+  while (!worklist.empty()) {
+    Value currValue = worklist.front();
+    worklist.pop_front();
+    if (visited.count(currValue))
+      continue;
+    visited.insert(currValue);
+
+    Operation *definingOp = currValue.getDefiningOp();
+    if (!definingOp || visitedOps.count(definingOp)) {
+      finalCapturedValues.insert(currValue);
+      continue;
+    }
+    visitedOps.insert(definingOp);
+
+    if (!cloneOperationIntoRegion(definingOp)) {
+      // Defining operation isnt cloned, so add the current value to final
+      // captured values list.
+      finalCapturedValues.insert(currValue);
+      continue;
+    }
+
+    // Add all operands of the operation to the worklist and mark the op as to
+    // be cloned.
+    for (Value operand : definingOp->getOperands()) {
+      if (visited.count(operand))
+        continue;
+      worklist.push_back(operand);
+    }
+    clonedOperations.push_back(definingOp);
+  }
+
+  // The operations to be cloned need to be ordered in topological order
+  // so that they can be cloned into the region without violating use-def
+  // chains.
+  mlir::computeTopologicalSorting(clonedOperations);
+
+  OpBuilder::InsertionGuard g(rewriter);
+  // Collect types of existing block
+  Block *entryBlock = &region.front();
+  SmallVector<Type> newArgTypes =
+      llvm::to_vector(entryBlock->getArgumentTypes());
+  SmallVector<Location> newArgLocs = llvm::to_vector(llvm::map_range(
+      entryBlock->getArguments(), [](BlockArgument b) { return b.getLoc(); }));
+
+  // Append the types of the captured values.
+  for (auto value : finalCapturedValues) {
+    newArgTypes.push_back(value.getType());
+    newArgLocs.push_back(value.getLoc());
+  }
+
+  // Create a new entry block.
+  Block *newEntryBlock =
+      rewriter.createBlock(&region, region.begin(), newArgTypes, newArgLocs);
+  auto newEntryBlockArgs = newEntryBlock->getArguments();
+
+  // Create a mapping between the captured values and the new arguments added.
+  IRMapping map;
+  auto replaceIfFn = [&](OpOperand &use) {
+    return use.getOwner()->getBlock()->getParent() == &region;
+  };
+  for (auto [arg, capturedVal] :
+       llvm::zip(newEntryBlockArgs.take_back(finalCapturedValues.size()),
+                 finalCapturedValues)) {
+    map.map(capturedVal, arg);
+    rewriter.replaceUsesWithIf(capturedVal, arg, replaceIfFn);
+  }
+  rewriter.setInsertionPointToStart(newEntryBlock);
+  for (auto *clonedOp : clonedOperations) {
+    Operation *newOp = rewriter.clone(*clonedOp, map);
+    rewriter.replaceOpUsesWithIf(clonedOp, newOp->getResults(), replaceIfFn);
+  }
+  rewriter.mergeBlocks(
+      entryBlock, newEntryBlock,
+      newEntryBlock->getArguments().take_front(entryBlock->getNumArguments()));
+  return llvm::to_vector(finalCapturedValues);
 }
 
 //===----------------------------------------------------------------------===//
@@ -144,17 +248,17 @@ public:
   bool wasProvenLive(Value value) {
     // TODO: For results that are removable, e.g. for region based control flow,
     // we could allow for these values to be tracked independently.
-    if (OpResult result = value.dyn_cast<OpResult>())
+    if (OpResult result = dyn_cast<OpResult>(value))
       return wasProvenLive(result.getOwner());
-    return wasProvenLive(value.cast<BlockArgument>());
+    return wasProvenLive(cast<BlockArgument>(value));
   }
   bool wasProvenLive(BlockArgument arg) { return liveValues.count(arg); }
   void setProvedLive(Value value) {
     // TODO: For results that are removable, e.g. for region based control flow,
     // we could allow for these values to be tracked independently.
-    if (OpResult result = value.dyn_cast<OpResult>())
+    if (OpResult result = dyn_cast<OpResult>(value))
       return setProvedLive(result.getOwner());
-    setProvedLive(value.cast<BlockArgument>());
+    setProvedLive(cast<BlockArgument>(value));
   }
   void setProvedLive(BlockArgument arg) {
     changed |= liveValues.insert(arg).second;
@@ -438,11 +542,11 @@ unsigned BlockEquivalenceData::getOrderOf(Value value) const {
   assert(value.getParentBlock() == block && "expected value of this block");
 
   // Arguments use the argument number as the order index.
-  if (BlockArgument arg = value.dyn_cast<BlockArgument>())
+  if (BlockArgument arg = dyn_cast<BlockArgument>(value))
     return arg.getArgNumber();
 
   // Otherwise, the result order is offset from the parent op's order.
-  OpResult result = value.cast<OpResult>();
+  OpResult result = cast<OpResult>(value);
   auto opOrderIt = opOrderIndex.find(result.getDefiningOp());
   assert(opOrderIt != opOrderIndex.end() && "expected op to have an order");
   return opOrderIt->second + result.getResultNumber();
@@ -493,7 +597,7 @@ LogicalResult BlockMergeCluster::addToCluster(BlockEquivalenceData &blockData) {
     // Check that the operations are equivalent.
     if (!OperationEquivalence::isEquivalentTo(
             &*lhsIt, &*rhsIt, OperationEquivalence::ignoreValueEquivalence,
-            OperationEquivalence::ignoreValueEquivalence,
+            /*markEquivalent=*/nullptr,
             OperationEquivalence::Flags::IgnoreLocations))
       return failure();
 
@@ -575,6 +679,93 @@ static bool ableToUpdatePredOperands(Block *block) {
   return true;
 }
 
+/// Prunes the redundant list of new arguments. E.g., if we are passing an
+/// argument list like [x, y, z, x] this would return [x, y, z] and it would
+/// update the `block` (to whom the argument are passed to) accordingly. The new
+/// arguments are passed as arguments at the back of the block, hence we need to
+/// know how many `numOldArguments` were before, in order to correctly replace
+/// the new arguments in the block
+static SmallVector<SmallVector<Value, 8>, 2> pruneRedundantArguments(
+    const SmallVector<SmallVector<Value, 8>, 2> &newArguments,
+    RewriterBase &rewriter, unsigned numOldArguments, Block *block) {
+
+  SmallVector<SmallVector<Value, 8>, 2> newArgumentsPruned(
+      newArguments.size(), SmallVector<Value, 8>());
+
+  if (newArguments.empty())
+    return newArguments;
+
+  // `newArguments` is a 2D array of size `numLists` x `numArgs`
+  unsigned numLists = newArguments.size();
+  unsigned numArgs = newArguments[0].size();
+
+  // Map that for each arg index contains the index that we can use in place of
+  // the original index. E.g., if we have newArgs = [x, y, z, x], we will have
+  // idxToReplacement[3] = 0
+  llvm::DenseMap<unsigned, unsigned> idxToReplacement;
+
+  // This is a useful data structure to track the first appearance of a Value
+  // on a given list of arguments
+  DenseMap<Value, unsigned> firstValueToIdx;
+  for (unsigned j = 0; j < numArgs; ++j) {
+    Value newArg = newArguments[0][j];
+    firstValueToIdx.try_emplace(newArg, j);
+  }
+
+  // Go through the first list of arguments (list 0).
+  for (unsigned j = 0; j < numArgs; ++j) {
+    // Look back to see if there are possible redundancies in list 0. Please
+    // note that we are using a map to annotate when an argument was seen first
+    // to avoid a O(N^2) algorithm. This has the drawback that if we have two
+    // lists like:
+    // list0: [%a, %a, %a]
+    // list1: [%c, %b, %b]
+    // We cannot simplify it, because firstValueToIdx[%a] = 0, but we cannot
+    // point list1[1](==%b) or list1[2](==%b) to list1[0](==%c).  However, since
+    // the number of arguments can be potentially unbounded we cannot afford a
+    // O(N^2) algorithm (to search to all the possible pairs) and we need to
+    // accept the trade-off.
+    unsigned k = firstValueToIdx[newArguments[0][j]];
+    if (k == j)
+      continue;
+
+    bool shouldReplaceJ = true;
+    unsigned replacement = k;
+    // If a possible redundancy is found, then scan the other lists: we
+    // can prune the arguments if and only if they are redundant in every
+    // list.
+    for (unsigned i = 1; i < numLists; ++i)
+      shouldReplaceJ =
+          shouldReplaceJ && (newArguments[i][k] == newArguments[i][j]);
+    // Save the replacement.
+    if (shouldReplaceJ)
+      idxToReplacement[j] = replacement;
+  }
+
+  // Populate the pruned argument list.
+  for (unsigned i = 0; i < numLists; ++i)
+    for (unsigned j = 0; j < numArgs; ++j)
+      if (!idxToReplacement.contains(j))
+        newArgumentsPruned[i].push_back(newArguments[i][j]);
+
+  // Replace the block's redundant arguments.
+  SmallVector<unsigned> toErase;
+  for (auto [idx, arg] : llvm::enumerate(block->getArguments())) {
+    if (idxToReplacement.contains(idx)) {
+      Value oldArg = block->getArgument(numOldArguments + idx);
+      Value newArg =
+          block->getArgument(numOldArguments + idxToReplacement[idx]);
+      rewriter.replaceAllUsesWith(oldArg, newArg);
+      toErase.push_back(numOldArguments + idx);
+    }
+  }
+
+  // Erase the block's redundant arguments.
+  for (unsigned idxToErase : llvm::reverse(toErase))
+    block->eraseArgument(idxToErase);
+  return newArgumentsPruned;
+}
+
 LogicalResult BlockMergeCluster::merge(RewriterBase &rewriter) {
   // Don't consider clusters that don't have blocks to merge.
   if (blocksToMerge.empty())
@@ -604,6 +795,7 @@ LogicalResult BlockMergeCluster::merge(RewriterBase &rewriter) {
         1 + blocksToMerge.size(),
         SmallVector<Value, 8>(operandsToMerge.size()));
     unsigned curOpIndex = 0;
+    unsigned numOldArguments = leaderBlock->getNumArguments();
     for (const auto &it : llvm::enumerate(operandsToMerge)) {
       unsigned nextOpOffset = it.value().first - curOpIndex;
       curOpIndex = it.value().first;
@@ -623,6 +815,11 @@ LogicalResult BlockMergeCluster::merge(RewriterBase &rewriter) {
         }
       }
     }
+
+    // Prune redundant arguments and update the leader block argument list
+    newArguments = pruneRedundantArguments(newArguments, rewriter,
+                                           numOldArguments, leaderBlock);
+
     // Update the predecessors for each of the blocks.
     auto updatePredecessors = [&](Block *block, unsigned clusterIndex) {
       for (auto predIt = block->pred_begin(), predE = block->pred_end();
@@ -679,6 +876,15 @@ static LogicalResult mergeIdenticalBlocks(RewriterBase &rewriter,
       if (hasNonEmptyRegion)
         continue;
 
+      // Don't allow merging if this block's arguments are used outside of the
+      // original block.
+      bool argHasExternalUsers = llvm::any_of(
+          block->getArguments(), [block](mlir::BlockArgument &arg) {
+            return arg.isUsedOutsideOfBlock(block);
+          });
+      if (argHasExternalUsers)
+        continue;
+
       // Try to add this block to an existing cluster.
       bool addedToCluster = false;
       for (auto &cluster : clusters)
@@ -719,6 +925,112 @@ static LogicalResult mergeIdenticalBlocks(RewriterBase &rewriter,
   return success(anyChanged);
 }
 
+/// If a block's argument is always the same across different invocations, then
+/// drop the argument and use the value directly inside the block
+static LogicalResult dropRedundantArguments(RewriterBase &rewriter,
+                                            Block &block) {
+  SmallVector<size_t> argsToErase;
+
+  // Go through the arguments of the block.
+  for (auto [argIdx, blockOperand] : llvm::enumerate(block.getArguments())) {
+    bool sameArg = true;
+    Value commonValue;
+
+    // Go through the block predecessor and flag if they pass to the block
+    // different values for the same argument.
+    for (Block::pred_iterator predIt = block.pred_begin(),
+                              predE = block.pred_end();
+         predIt != predE; ++predIt) {
+      auto branch = dyn_cast<BranchOpInterface>((*predIt)->getTerminator());
+      if (!branch) {
+        sameArg = false;
+        break;
+      }
+      unsigned succIndex = predIt.getSuccessorIndex();
+      SuccessorOperands succOperands = branch.getSuccessorOperands(succIndex);
+      auto branchOperands = succOperands.getForwardedOperands();
+      if (!commonValue) {
+        commonValue = branchOperands[argIdx];
+        continue;
+      }
+      if (branchOperands[argIdx] != commonValue) {
+        sameArg = false;
+        break;
+      }
+    }
+
+    // If they are passing the same value, drop the argument.
+    if (commonValue && sameArg) {
+      argsToErase.push_back(argIdx);
+
+      // Remove the argument from the block.
+      rewriter.replaceAllUsesWith(blockOperand, commonValue);
+    }
+  }
+
+  // Remove the arguments.
+  for (size_t argIdx : llvm::reverse(argsToErase)) {
+    block.eraseArgument(argIdx);
+
+    // Remove the argument from the branch ops.
+    for (auto predIt = block.pred_begin(), predE = block.pred_end();
+         predIt != predE; ++predIt) {
+      auto branch = cast<BranchOpInterface>((*predIt)->getTerminator());
+      unsigned succIndex = predIt.getSuccessorIndex();
+      SuccessorOperands succOperands = branch.getSuccessorOperands(succIndex);
+      succOperands.erase(argIdx);
+    }
+  }
+  return success(!argsToErase.empty());
+}
+
+/// This optimization drops redundant argument to blocks. I.e., if a given
+/// argument to a block receives the same value from each of the block
+/// predecessors, we can remove the argument from the block and use directly the
+/// original value. This is a simple example:
+///
+/// %cond = llvm.call @rand() : () -> i1
+/// %val0 = llvm.mlir.constant(1 : i64) : i64
+/// %val1 = llvm.mlir.constant(2 : i64) : i64
+/// %val2 = llvm.mlir.constant(3 : i64) : i64
+/// llvm.cond_br %cond, ^bb1(%val0 : i64, %val1 : i64), ^bb2(%val0 : i64, %val2
+/// : i64)
+///
+/// ^bb1(%arg0 : i64, %arg1 : i64):
+///    llvm.call @foo(%arg0, %arg1)
+///
+/// The previous IR can be rewritten as:
+/// %cond = llvm.call @rand() : () -> i1
+/// %val0 = llvm.mlir.constant(1 : i64) : i64
+/// %val1 = llvm.mlir.constant(2 : i64) : i64
+/// %val2 = llvm.mlir.constant(3 : i64) : i64
+/// llvm.cond_br %cond, ^bb1(%val1 : i64), ^bb2(%val2 : i64)
+///
+/// ^bb1(%arg0 : i64):
+///    llvm.call @foo(%val0, %arg0)
+///
+static LogicalResult dropRedundantArguments(RewriterBase &rewriter,
+                                            MutableArrayRef<Region> regions) {
+  llvm::SmallSetVector<Region *, 1> worklist;
+  for (Region &region : regions)
+    worklist.insert(&region);
+  bool anyChanged = false;
+  while (!worklist.empty()) {
+    Region *region = worklist.pop_back_val();
+
+    // Add any nested regions to the worklist.
+    for (Block &block : *region) {
+      anyChanged =
+          succeeded(dropRedundantArguments(rewriter, block)) || anyChanged;
+
+      for (Operation &op : block)
+        for (Region &nestedRegion : op.getRegions())
+          worklist.insert(&nestedRegion);
+    }
+  }
+  return success(anyChanged);
+}
+
 //===----------------------------------------------------------------------===//
 // Region Simplification
 //===----------------------------------------------------------------------===//
@@ -728,11 +1040,17 @@ static LogicalResult mergeIdenticalBlocks(RewriterBase &rewriter,
 /// elimination, as well as some other DCE. This function returns success if any
 /// of the regions were simplified, failure otherwise.
 LogicalResult mlir::simplifyRegions(RewriterBase &rewriter,
-                                    MutableArrayRef<Region> regions) {
+                                    MutableArrayRef<Region> regions,
+                                    bool mergeBlocks) {
   bool eliminatedBlocks = succeeded(eraseUnreachableBlocks(rewriter, regions));
   bool eliminatedOpsOrArgs = succeeded(runRegionDCE(rewriter, regions));
-  bool mergedIdenticalBlocks =
-      succeeded(mergeIdenticalBlocks(rewriter, regions));
+  bool mergedIdenticalBlocks = false;
+  bool droppedRedundantArguments = false;
+  if (mergeBlocks) {
+    mergedIdenticalBlocks = succeeded(mergeIdenticalBlocks(rewriter, regions));
+    droppedRedundantArguments =
+        succeeded(dropRedundantArguments(rewriter, regions));
+  }
   return success(eliminatedBlocks || eliminatedOpsOrArgs ||
-                 mergedIdenticalBlocks);
+                 mergedIdenticalBlocks || droppedRedundantArguments);
 }

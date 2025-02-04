@@ -17,7 +17,6 @@
 #include "llvm/MC/MCInst.h"
 #include "llvm/MC/MCInstrInfo.h"
 #include "llvm/Support/ErrorHandling.h"
-#include "llvm/Support/FormattedStream.h"
 using namespace llvm;
 
 #define DEBUG_TYPE "asm-printer"
@@ -25,6 +24,10 @@ using namespace llvm;
 // Include the auto-generated portion of the assembly writer.
 #define PRINT_ALIAS_INSTR
 #include "MSP430GenAsmWriter.inc"
+
+void MSP430InstPrinter::printRegName(raw_ostream &O, MCRegister Reg) {
+  O << getRegisterName(Reg);
+}
 
 void MSP430InstPrinter::printInst(const MCInst *MI, uint64_t Address,
                                   StringRef Annot, const MCSubtargetInfo &STI,

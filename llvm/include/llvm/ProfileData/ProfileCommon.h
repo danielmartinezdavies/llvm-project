@@ -28,14 +28,19 @@
 
 namespace llvm {
 
+extern cl::opt<bool> UseContextLessSummary;
+extern cl::opt<int> ProfileSummaryCutoffHot;
+extern cl::opt<int> ProfileSummaryCutoffCold;
+extern cl::opt<unsigned> ProfileSummaryHugeWorkingSetSizeThreshold;
+extern cl::opt<unsigned> ProfileSummaryLargeWorkingSetSizeThreshold;
+extern cl::opt<uint64_t> ProfileSummaryHotCount;
+extern cl::opt<uint64_t> ProfileSummaryColdCount;
+
 namespace sampleprof {
 
 class FunctionSamples;
 
 } // end namespace sampleprof
-
-inline const char *getHotSectionPrefix() { return "hot"; }
-inline const char *getUnlikelySectionPrefix() { return "unlikely"; }
 
 class ProfileSummaryBuilder {
 private:
@@ -74,12 +79,12 @@ public:
 class InstrProfSummaryBuilder final : public ProfileSummaryBuilder {
   uint64_t MaxInternalBlockCount = 0;
 
-  inline void addEntryCount(uint64_t Count);
-  inline void addInternalCount(uint64_t Count);
-
 public:
   InstrProfSummaryBuilder(std::vector<uint32_t> Cutoffs)
       : ProfileSummaryBuilder(std::move(Cutoffs)) {}
+
+  void addEntryCount(uint64_t Count);
+  void addInternalCount(uint64_t Count);
 
   void addRecord(const InstrProfRecord &);
   std::unique_ptr<ProfileSummary> getSummary();

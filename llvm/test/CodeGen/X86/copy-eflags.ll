@@ -43,7 +43,6 @@ define dso_local i32 @test1() nounwind {
 ;
 ; X64-LABEL: test1:
 ; X64:       # %bb.0: # %entry
-; X64-NEXT:    pushq %rax
 ; X64-NEXT:    movzbl b(%rip), %ecx
 ; X64-NEXT:    leal 1(%rcx), %eax
 ; X64-NEXT:    movb %al, b(%rip)
@@ -57,11 +56,12 @@ define dso_local i32 @test1() nounwind {
 ; X64-NEXT:    testb %dl, %dl
 ; X64-NEXT:    jne .LBB0_2
 ; X64-NEXT:  # %bb.1: # %if.then
+; X64-NEXT:    pushq %rax
 ; X64-NEXT:    movsbl %al, %edi
 ; X64-NEXT:    callq external
+; X64-NEXT:    addq $8, %rsp
 ; X64-NEXT:  .LBB0_2: # %if.end
 ; X64-NEXT:    xorl %eax, %eax
-; X64-NEXT:    popq %rcx
 ; X64-NEXT:    retq
 entry:
   %bval = load i8, ptr @b
@@ -211,7 +211,7 @@ define dso_local void @PR37100(i8 %arg1, i16 %arg2, i64 %arg3, i8 %arg4, ptr %pt
 ; X32-NEXT:    movb {{[0-9]+}}(%esp), %ch
 ; X32-NEXT:    movb {{[0-9]+}}(%esp), %cl
 ; X32-NEXT:    jmp .LBB3_1
-; X32-NEXT:    .p2align 4, 0x90
+; X32-NEXT:    .p2align 4
 ; X32-NEXT:  .LBB3_5: # %bb1
 ; X32-NEXT:    # in Loop: Header=BB3_1 Depth=1
 ; X32-NEXT:    movl %esi, %eax
@@ -247,25 +247,25 @@ define dso_local void @PR37100(i8 %arg1, i16 %arg2, i64 %arg3, i8 %arg4, ptr %pt
 ;
 ; X64-LABEL: PR37100:
 ; X64:       # %bb.0: # %bb
-; X64-NEXT:    movq %rdx, %rsi
-; X64-NEXT:    movl {{[0-9]+}}(%rsp), %r10d
-; X64-NEXT:    movzbl %cl, %r11d
-; X64-NEXT:    .p2align 4, 0x90
+; X64-NEXT:    movq %rdx, %r10
+; X64-NEXT:    movl {{[0-9]+}}(%rsp), %esi
+; X64-NEXT:    movzbl %cl, %ecx
+; X64-NEXT:    .p2align 4
 ; X64-NEXT:  .LBB3_1: # %bb1
 ; X64-NEXT:    # =>This Inner Loop Header: Depth=1
 ; X64-NEXT:    movsbq %dil, %rax
-; X64-NEXT:    xorl %ecx, %ecx
-; X64-NEXT:    cmpq %rax, %rsi
-; X64-NEXT:    setl %cl
-; X64-NEXT:    negl %ecx
-; X64-NEXT:    cmpq %rax, %rsi
+; X64-NEXT:    xorl %r11d, %r11d
+; X64-NEXT:    cmpq %rax, %r10
+; X64-NEXT:    setl %r11b
+; X64-NEXT:    negl %r11d
+; X64-NEXT:    cmpq %rax, %r10
 ; X64-NEXT:    movzbl %al, %edi
-; X64-NEXT:    cmovgel %r11d, %edi
+; X64-NEXT:    cmovgel %ecx, %edi
 ; X64-NEXT:    movb %dil, (%r8)
-; X64-NEXT:    cmovgel (%r9), %ecx
-; X64-NEXT:    movl %r10d, %eax
+; X64-NEXT:    cmovgel (%r9), %r11d
+; X64-NEXT:    movl %esi, %eax
 ; X64-NEXT:    cltd
-; X64-NEXT:    idivl %ecx
+; X64-NEXT:    idivl %r11d
 ; X64-NEXT:    jmp .LBB3_1
 bb:
   br label %bb1

@@ -13,6 +13,7 @@
 #include "llvm/Analysis/ScalarEvolution.h"
 #include "llvm/IR/Dominators.h"
 #include "llvm/IR/PassManagerImpl.h"
+#include <optional>
 
 using namespace llvm;
 
@@ -90,7 +91,7 @@ bool LoopAnalysisManagerFunctionProxy::Result::invalidate(
   // cache and so we walk the preorder list in reverse to form a valid
   // postorder.
   for (Loop *L : reverse(PreOrderLoops)) {
-    Optional<PreservedAnalyses> InnerPA;
+    std::optional<PreservedAnalyses> InnerPA;
 
     // Check to see whether the preserved set needs to be adjusted based on
     // function-level analysis invalidation triggering deferred invalidation
@@ -132,7 +133,7 @@ LoopAnalysisManagerFunctionProxy::run(Function &F,
                                       FunctionAnalysisManager &AM) {
   return Result(*InnerAM, AM.getResult<LoopAnalysis>(F));
 }
-}
+} // namespace llvm
 
 PreservedAnalyses llvm::getLoopPassPreservedAnalyses() {
   PreservedAnalyses PA;

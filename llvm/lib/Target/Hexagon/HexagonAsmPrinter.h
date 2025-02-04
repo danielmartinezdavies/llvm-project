@@ -1,4 +1,4 @@
-//===- HexagonAsmPrinter.h - Print machine code to an Hexagon .s file -----===//
+//===- HexagonAsmPrinter.h - Print machine code -----------------*- C++ -*-===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -28,6 +28,8 @@ class TargetMachine;
 
   class HexagonAsmPrinter : public AsmPrinter {
     const HexagonSubtarget *Subtarget = nullptr;
+
+    void emitAttributes();
 
   public:
     explicit HexagonAsmPrinter(TargetMachine &TM,
@@ -68,6 +70,8 @@ class TargetMachine;
                          const char *ExtraCode, raw_ostream &OS) override;
     bool PrintAsmMemoryOperand(const MachineInstr *MI, unsigned OpNo,
                                const char *ExtraCode, raw_ostream &OS) override;
+    void emitStartOfAsmFile(Module &M) override;
+    void emitEndOfAsmFile(Module &M) override;
   };
 
 } // end namespace llvm

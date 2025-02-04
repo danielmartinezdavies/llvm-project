@@ -35,7 +35,7 @@ struct CommandOption {
   std::string Description;
 
   CommandOption() = default;
-  CommandOption(Record *Option) {
+  CommandOption(const Record *Option) {
     if (Option->getValue("Groups")) {
       // The user specified a list of groups.
       auto Groups = Option->getValueAsListOfInts("Groups");
@@ -120,12 +120,11 @@ static void emitOption(const CommandOption &O, raw_ostream &OS) {
   if (!O.Completions.empty()) {
     std::vector<std::string> CompletionArgs;
     for (llvm::StringRef Completion : O.Completions)
-      CompletionArgs.push_back("CommandCompletions::e" + Completion.str() +
-                               "Completion");
+      CompletionArgs.push_back("e" + Completion.str() + "Completion");
 
     OS << llvm::join(CompletionArgs.begin(), CompletionArgs.end(), " | ");
   } else
-    OS << "CommandCompletions::eNoCompletion";
+    OS << "CompletionType::eNoCompletion";
 
   // Add the argument type.
   OS << ", eArgType";
@@ -146,11 +145,9 @@ static void emitOption(const CommandOption &O, raw_ostream &OS) {
 }
 
 /// Emits all option initializers to the raw_ostream.
-static void emitOptions(std::string Command, std::vector<Record *> Records,
+static void emitOptions(std::string Command, ArrayRef<const Record *> Records,
                         raw_ostream &OS) {
-  std::vector<CommandOption> Options;
-  for (Record *R : Records)
-    Options.emplace_back(R);
+  std::vector<CommandOption> Options(Records.begin(), Records.end());
 
   std::string ID = Command;
   std::replace(ID.begin(), ID.end(), ' ', '_');
@@ -171,10 +168,11 @@ static void emitOptions(std::string Command, std::vector<Record *> Records,
   OS << "#endif // " << Command << " command\n\n";
 }
 
-void lldb_private::EmitOptionDefs(RecordKeeper &Records, raw_ostream &OS) {
-  emitSourceFileHeader("Options for LLDB command line commands.", OS);
+void lldb_private::EmitOptionDefs(const RecordKeeper &Records,
+                                  raw_ostream &OS) {
+  emitSourceFileHeader("Options for LLDB command line commands.", OS, Records);
 
-  std::vector<Record *> Options = Records.getAllDerivedDefinitions("Option");
+  ArrayRef<const Record *> Options = Records.getAllDerivedDefinitions("Option");
   for (auto &CommandRecordPair : getRecordsByName(Options, "Command")) {
     emitOptions(CommandRecordPair.first, CommandRecordPair.second, OS);
   }

@@ -12,10 +12,9 @@
 #include "clang/Lex/MacroArgs.h"
 #include "clang/Lex/PPCallbacks.h"
 #include "clang/Lex/Preprocessor.h"
+#include <stack>
 
-namespace clang {
-namespace tidy {
-namespace bugprone {
+namespace clang::tidy::bugprone {
 
 namespace {
 class MacroRepeatedPPCallbacks : public PPCallbacks {
@@ -175,6 +174,4 @@ void MacroRepeatedSideEffectsCheck::registerPPCallbacks(
   PP->addPPCallbacks(::std::make_unique<MacroRepeatedPPCallbacks>(*this, *PP));
 }
 
-} // namespace bugprone
-} // namespace tidy
-} // namespace clang
+} // namespace clang::tidy::bugprone

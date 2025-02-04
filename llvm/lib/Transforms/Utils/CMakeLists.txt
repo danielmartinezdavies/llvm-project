@@ -16,9 +16,12 @@ add_llvm_component_library(LLVMTransformUtils
   CodeExtractor.cpp
   CodeLayout.cpp
   CodeMoverUtils.cpp
+  ControlFlowUtils.cpp
   CtorUtils.cpp
+  CountVisits.cpp
   Debugify.cpp
   DemoteRegToStack.cpp
+  DXILUpgrade.cpp
   EntryExitInstrumenter.cpp
   EscapeEnumerator.cpp
   Evaluator.cpp
@@ -32,10 +35,13 @@ add_llvm_component_library(LLVMTransformUtils
   InlineFunction.cpp
   InjectTLIMappings.cpp
   InstructionNamer.cpp
+  Instrumentation.cpp
   IntegerDivision.cpp
+  IRNormalizer.cpp
   LCSSA.cpp
   LibCallsShrinkWrap.cpp
   Local.cpp
+  LoopConstrainer.cpp
   LoopPeel.cpp
   LoopRotationUtils.cpp
   LoopSimplify.cpp
@@ -46,9 +52,11 @@ add_llvm_component_library(LLVMTransformUtils
   LoopVersioning.cpp
   LowerAtomic.cpp
   LowerGlobalDtors.cpp
+  LowerIFunc.cpp
   LowerInvoke.cpp
   LowerMemIntrinsics.cpp
   LowerSwitch.cpp
+  LowerVectorIntrinsics.cpp
   MatrixUtils.cpp
   MemoryOpRemark.cpp
   MemoryTaggingSupport.cpp
@@ -56,6 +64,7 @@ add_llvm_component_library(LLVMTransformUtils
   MetaRenamer.cpp
   MisExpect.cpp
   ModuleUtils.cpp
+  MoveAutoInit.cpp
   NameAnonGlobals.cpp
   PredicateInfo.cpp
   PromoteMemoryToRegister.cpp
@@ -92,4 +101,5 @@ add_llvm_component_library(LLVMTransformUtils
   Analysis
   Core
   Support
+  TargetParser
   )

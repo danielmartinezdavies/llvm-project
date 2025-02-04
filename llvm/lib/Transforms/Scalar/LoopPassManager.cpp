@@ -14,7 +14,6 @@
 #include "llvm/Analysis/ScalarEvolution.h"
 #include "llvm/Analysis/TargetLibraryInfo.h"
 #include "llvm/Analysis/TargetTransformInfo.h"
-#include "llvm/Support/TimeProfiler.h"
 
 using namespace llvm;
 
@@ -59,7 +58,7 @@ void PassManager<Loop, LoopAnalysisManager, LoopStandardAnalysisResults &,
       P->printPipeline(OS, MapClassName2PassName);
     }
     if (Idx + 1 < Size)
-      OS << ",";
+      OS << ',';
   }
 }
 
@@ -84,9 +83,10 @@ LoopPassManager::runWithLoopNestPasses(Loop &L, LoopAnalysisManager &AM,
   // invalid when encountering a loop-nest pass.
   std::unique_ptr<LoopNest> LoopNestPtr;
   bool IsLoopNestPtrValid = false;
+  Loop *OuterMostLoop = &L;
 
   for (size_t I = 0, E = IsLoopNestPass.size(); I != E; ++I) {
-    Optional<PreservedAnalyses> PassPA;
+    std::optional<PreservedAnalyses> PassPA;
     if (!IsLoopNestPass[I]) {
       // The `I`-th pass is a loop pass.
       auto &Pass = LoopPasses[LoopPassIndex++];
@@ -97,10 +97,18 @@ LoopPassManager::runWithLoopNestPasses(Loop &L, LoopAnalysisManager &AM,
 
       // If the loop-nest object calculated before is no longer valid,
       // re-calculate it here before running the loop-nest pass.
-      if (!IsLoopNestPtrValid) {
-        LoopNestPtr = LoopNest::getLoopNest(L, AR.SE);
+      //
+      // FIXME: PreservedAnalysis should not be abused to tell if the
+      // status of loopnest has been changed. We should use and only
+      // use LPMUpdater for this purpose.
+      if (!IsLoopNestPtrValid || U.isLoopNestChanged()) {
+        while (auto *ParentLoop = OuterMostLoop->getParentLoop())
+          OuterMostLoop = ParentLoop;
+        LoopNestPtr = LoopNest::getLoopNest(*OuterMostLoop, AR.SE);
         IsLoopNestPtrValid = true;
+        U.markLoopNestChanged(false);
       }
+
       PassPA = runSinglePass(*LoopNestPtr, Pass, AM, AR, U, PI);
     }
 
@@ -118,7 +126,7 @@ LoopPassManager::runWithLoopNestPasses(Loop &L, LoopAnalysisManager &AM,
 
     // Update the analysis manager as each pass runs and potentially
     // invalidates analyses.
-    AM.invalidate(L, *PassPA);
+    AM.invalidate(IsLoopNestPass[I] ? *OuterMostLoop : L, *PassPA);
 
     // Finally, we intersect the final preserved analyses to compute the
     // aggregate preserved set for this pass manager.
@@ -130,7 +138,7 @@ LoopPassManager::runWithLoopNestPasses(Loop &L, LoopAnalysisManager &AM,
     // After running the loop pass, the parent loop might change and we need to
     // notify the updater, otherwise U.ParentL might gets outdated and triggers
     // assertion failures in addSiblingLoops and addChildLoops.
-    U.setParentLoop(L.getParentLoop());
+    U.setParentLoop((IsLoopNestPass[I] ? *OuterMostLoop : L).getParentLoop());
   }
   return PA;
 }
@@ -148,7 +156,8 @@ LoopPassManager::runWithoutLoopNestPasses(Loop &L, LoopAnalysisManager &AM,
   // instrumenting callbacks for the passes later.
   PassInstrumentation PI = AM.getResult<PassInstrumentationAnalysis>(L, AR);
   for (auto &Pass : LoopPasses) {
-    Optional<PreservedAnalyses> PassPA = runSinglePass(L, Pass, AM, AR, U, PI);
+    std::optional<PreservedAnalyses> PassPA =
+        runSinglePass(L, Pass, AM, AR, U, PI);
 
     // `PassPA` is `None` means that the before-pass callbacks in
     // `PassInstrumentation` return false. The pass does not run in this case,
@@ -183,7 +192,7 @@ void FunctionToLoopPassAdaptor::printPipeline(
     raw_ostream &OS, function_ref<StringRef(StringRef)> MapClassName2PassName) {
   OS << (UseMemorySSA ? "loop-mssa(" : "loop(");
   Pass->printPipeline(OS, MapClassName2PassName);
-  OS << ")";
+  OS << ')';
 }
 PreservedAnalyses FunctionToLoopPassAdaptor::run(Function &F,
                                                  FunctionAnalysisManager &AM) {
@@ -259,10 +268,9 @@ PreservedAnalyses FunctionToLoopPassAdaptor::run(Function &F,
   PI.pushBeforeNonSkippedPassCallback([&LAR, &LI](StringRef PassID, Any IR) {
     if (isSpecialPass(PassID, {"PassManager"}))
       return;
-    assert(any_isa<const Loop *>(IR) || any_isa<const LoopNest *>(IR));
-    const Loop *L = any_isa<const Loop *>(IR)
-                        ? any_cast<const Loop *>(IR)
-                        : &any_cast<const LoopNest *>(IR)->getOutermostLoop();
+    assert(llvm::any_cast<const Loop *>(&IR));
+    const Loop **LPtr = llvm::any_cast<const Loop *>(&IR);
+    const Loop *L = LPtr ? *LPtr : nullptr;
     assert(L && "Loop should be valid for printing");
 
     // Verify the loop structure and LCSSA form before visiting the loop.
@@ -281,7 +289,7 @@ PreservedAnalyses FunctionToLoopPassAdaptor::run(Function &F,
     Updater.CurrentL = L;
     Updater.SkipCurrentLoop = false;
 
-#ifndef NDEBUG
+#if LLVM_ENABLE_ABI_BREAKING_CHECKS
     // Save a parent loop pointer for asserts.
     Updater.ParentL = L->getParentLoop();
 #endif
@@ -291,11 +299,7 @@ PreservedAnalyses FunctionToLoopPassAdaptor::run(Function &F,
     if (!PI.runBeforePass<Loop>(*Pass, *L))
       continue;
 
-    PreservedAnalyses PassPA;
-    {
-      TimeTraceScope TimeScope(Pass->name());
-      PassPA = Pass->run(*L, LAM, LAR, Updater);
-    }
+    PreservedAnalyses PassPA = Pass->run(*L, LAM, LAR, Updater);
 
     // Do not pass deleted Loop into the instrumentation.
     if (Updater.skipCurrentLoop())
@@ -305,7 +309,8 @@ PreservedAnalyses FunctionToLoopPassAdaptor::run(Function &F,
 
     if (LAR.MSSA && !PassPA.getChecker<MemorySSAAnalysis>().preserved())
       report_fatal_error("Loop pass manager using MemorySSA contains a pass "
-                         "that does not preserve MemorySSA");
+                         "that does not preserve MemorySSA",
+                         /*gen_crash_diag*/ false);
 
 #ifndef NDEBUG
     // LoopAnalysisResults should always be valid.

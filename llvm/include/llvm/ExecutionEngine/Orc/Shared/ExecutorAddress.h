@@ -20,6 +20,9 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include <cassert>
+#if __has_feature(ptrauth_calls)
+#include <ptrauth.h>
+#endif
 #include <type_traits>
 
 namespace llvm {
@@ -31,13 +34,41 @@ using ExecutorAddrDiff = uint64_t;
 class ExecutorAddr {
 public:
   /// A wrap/unwrap function that leaves pointers unmodified.
-  template <typename T> using rawPtr = llvm::identity<T>;
+  template <typename T> using rawPtr = llvm::identity<T *>;
+
+#if __has_feature(ptrauth_calls)
+  template <typename T> class PtrauthSignDefault {
+  public:
+    constexpr T *operator()(T *P) {
+      if (std::is_function_v<T>)
+        return ptrauth_sign_unauthenticated(P, ptrauth_key_function_pointer, 0);
+      else
+        return P;
+    }
+  };
+
+  template <typename T> class PtrauthStripDefault {
+  public:
+    constexpr T *operator()(T *P) {
+      return ptrauth_strip(P, ptrauth_key_function_pointer);
+    }
+  };
+
+  /// Default wrap function to use on this host.
+  template <typename T> using defaultWrap = PtrauthSignDefault<T>;
+
+  /// Default unwrap function to use on this host.
+  template <typename T> using defaultUnwrap = PtrauthStripDefault<T>;
+
+#else
 
   /// Default wrap function to use on this host.
   template <typename T> using defaultWrap = rawPtr<T>;
 
   /// Default unwrap function to use on this host.
   template <typename T> using defaultUnwrap = rawPtr<T>;
+
+#endif
 
   /// Merges a tag into the raw address value:
   ///   P' = P | (TagValue << TagOffset).
@@ -76,7 +107,7 @@ public:
 
   /// Create an ExecutorAddr from the given pointer.
   /// Warning: This should only be used when JITing in-process.
-  template <typename T, typename UnwrapFn = defaultUnwrap<T *>>
+  template <typename T, typename UnwrapFn = defaultUnwrap<T>>
   static ExecutorAddr fromPtr(T *Ptr, UnwrapFn &&Unwrap = UnwrapFn()) {
     return ExecutorAddr(
         static_cast<uint64_t>(reinterpret_cast<uintptr_t>(Unwrap(Ptr))));
@@ -84,7 +115,7 @@ public:
 
   /// Cast this ExecutorAddr to a pointer of the given type.
   /// Warning: This should only be used when JITing in-process.
-  template <typename T, typename WrapFn = defaultWrap<T>>
+  template <typename T, typename WrapFn = defaultWrap<std::remove_pointer_t<T>>>
   std::enable_if_t<std::is_pointer<T>::value, T>
   toPtr(WrapFn &&Wrap = WrapFn()) const {
     uintptr_t IntPtr = static_cast<uintptr_t>(Addr);
@@ -94,7 +125,7 @@ public:
 
   /// Cast this ExecutorAddr to a pointer of the given function type.
   /// Warning: This should only be used when JITing in-process.
-  template <typename T, typename WrapFn = defaultWrap<T *>>
+  template <typename T, typename WrapFn = defaultWrap<T>>
   std::enable_if_t<std::is_function<T>::value, T *>
   toPtr(WrapFn &&Wrap = WrapFn()) const {
     uintptr_t IntPtr = static_cast<uintptr_t>(Addr);
@@ -206,6 +237,27 @@ struct ExecutorAddrRange {
                          const ExecutorAddrRange &RHS) {
     return !(LHS == RHS);
   }
+  friend bool operator<(const ExecutorAddrRange &LHS,
+                        const ExecutorAddrRange &RHS) {
+    return LHS.Start < RHS.Start ||
+           (LHS.Start == RHS.Start && LHS.End < RHS.End);
+  }
+  friend bool operator<=(const ExecutorAddrRange &LHS,
+                         const ExecutorAddrRange &RHS) {
+    return LHS.Start < RHS.Start ||
+           (LHS.Start == RHS.Start && LHS.End <= RHS.End);
+  }
+  friend bool operator>(const ExecutorAddrRange &LHS,
+                        const ExecutorAddrRange &RHS) {
+    return LHS.Start > RHS.Start ||
+           (LHS.Start == RHS.Start && LHS.End > RHS.End);
+  }
+  friend bool operator>=(const ExecutorAddrRange &LHS,
+                         const ExecutorAddrRange &RHS) {
+    return LHS.Start > RHS.Start ||
+           (LHS.Start == RHS.Start && LHS.End >= RHS.End);
+  }
+
   bool contains(ExecutorAddr Addr) const { return Start <= Addr && Addr < End; }
   bool overlaps(const ExecutorAddrRange &Other) {
     return !(Other.End <= Start || End <= Other.Start);

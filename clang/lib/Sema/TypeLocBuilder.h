@@ -53,6 +53,9 @@ public:
       delete[] Buffer;
   }
 
+  TypeLocBuilder(const TypeLocBuilder &) = delete;
+  TypeLocBuilder &operator=(const TypeLocBuilder &) = delete;
+
   /// Ensures that this buffer has at least as much capacity as described.
   void reserve(size_t Requested) {
     if (Requested > Capacity)
@@ -63,6 +66,10 @@ public:
   /// Pushes a copy of the given TypeLoc onto this builder.  The builder
   /// must be empty for this to work.
   void pushFullCopy(TypeLoc L);
+
+  /// Pushes 'T' with all locations pointing to 'Loc'.
+  /// The builder must be empty for this to work.
+  void pushTrivial(ASTContext &Context, QualType T, SourceLocation Loc);
 
   /// Pushes space for a typespec TypeLoc.  Invalidates any TypeLocs
   /// previously retrieved from this builder.

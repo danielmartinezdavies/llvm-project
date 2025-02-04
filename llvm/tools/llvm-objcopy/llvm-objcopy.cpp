@@ -42,8 +42,7 @@
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/ErrorOr.h"
 #include "llvm/Support/FileUtilities.h"
-#include "llvm/Support/Host.h"
-#include "llvm/Support/InitLLVM.h"
+#include "llvm/Support/LLVMDriver.h"
 #include "llvm/Support/Memory.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/Process.h"
@@ -51,11 +50,11 @@
 #include "llvm/Support/StringSaver.h"
 #include "llvm/Support/WithColor.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/TargetParser/Host.h"
 #include <algorithm>
 #include <cassert>
 #include <cstdlib>
 #include <memory>
-#include <string>
 #include <system_error>
 #include <utility>
 
@@ -122,6 +121,7 @@ static Error executeObjcopyOnRawBinary(ConfigManager &ConfigMgr,
   case FileFormat::Binary:
   case FileFormat::IHex:
   case FileFormat::Unspecified:
+  case FileFormat::SREC:
     Expected<const ELFConfig &> ELFConfig = ConfigMgr.getELFConfig();
     if (!ELFConfig)
       return ELFConfig.takeError();
@@ -223,8 +223,7 @@ static Error executeObjcopy(ConfigManager &ConfigMgr) {
   return Error::success();
 }
 
-int llvm_objcopy_main(int argc, char **argv) {
-  InitLLVM X(argc, argv);
+int llvm_objcopy_main(int argc, char **argv, const llvm::ToolContext &) {
   ToolName = argv[0];
 
   // Expand response files.
@@ -240,7 +239,7 @@ int llvm_objcopy_main(int argc, char **argv) {
                               : cl::TokenizeGNUCommandLine,
                           NewArgv);
 
-  auto Args = makeArrayRef(NewArgv).drop_front();
+  auto Args = ArrayRef(NewArgv).drop_front();
   Expected<DriverConfig> DriverConfig = getDriverConfig(Args);
 
   if (!DriverConfig) {
@@ -249,6 +248,8 @@ int llvm_objcopy_main(int argc, char **argv) {
     return 1;
   }
   for (ConfigManager &ConfigMgr : DriverConfig->CopyConfigs) {
+    assert(!ConfigMgr.Common.ErrorCallback);
+    ConfigMgr.Common.ErrorCallback = reportWarning;
     if (Error E = executeObjcopy(ConfigMgr)) {
       logAllUnhandledErrors(std::move(E), WithColor::error(errs(), ToolName));
       return 1;

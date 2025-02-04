@@ -107,6 +107,7 @@ enum : uint32_t {
   SG_FVMLIB = 0x2u,
   SG_NORELOC = 0x4u,
   SG_PROTECTED_VERSION_1 = 0x8u,
+  SG_READ_ONLY = 0x10u,
 
   // Constant masks for the "flags" field in llvm::MachO::section and
   // llvm::MachO::section_64
@@ -175,8 +176,11 @@ enum SectionType : uint32_t {
   /// S_THREAD_LOCAL_INIT_FUNCTION_POINTERS - Section with thread local
   /// variable initialization pointers to functions.
   S_THREAD_LOCAL_INIT_FUNCTION_POINTERS = 0x15u,
+  /// S_INIT_FUNC_OFFSETS - Section with 32-bit offsets to initializer
+  /// functions.
+  S_INIT_FUNC_OFFSETS = 0x16u,
 
-  LAST_KNOWN_SECTION_TYPE = S_THREAD_LOCAL_INIT_FUNCTION_POINTERS
+  LAST_KNOWN_SECTION_TYPE = S_INIT_FUNC_OFFSETS
 };
 
 enum : uint32_t {
@@ -369,6 +373,7 @@ enum StabType {
   N_SSYM = 0x60u,
   N_SO = 0x64u,
   N_OSO = 0x66u,
+  N_LIB = 0x68u,
   N_LSYM = 0x80u,
   N_BINCL = 0x82u,
   N_SOL = 0x84u,
@@ -469,6 +474,8 @@ enum RelocationInfoType {
   ARM64_RELOC_TLVP_LOAD_PAGEOFF12 = 9,
   // Must be followed by ARM64_RELOC_PAGE21 or ARM64_RELOC_PAGEOFF12.
   ARM64_RELOC_ADDEND = 10,
+  // An authenticated pointer.
+  ARM64_RELOC_AUTHENTICATED_POINTER = 11,
 
   // Constant values for the r_type field in an x86_64 architecture
   // llvm::MachO::relocation_info or llvm::MachO::scattered_relocation_info
@@ -491,21 +498,14 @@ enum { VM_PROT_READ = 0x1, VM_PROT_WRITE = 0x2, VM_PROT_EXECUTE = 0x4 };
 
 // Values for platform field in build_version_command.
 enum PlatformType {
-  PLATFORM_UNKNOWN = 0,
-  PLATFORM_MACOS = 1,
-  PLATFORM_IOS = 2,
-  PLATFORM_TVOS = 3,
-  PLATFORM_WATCHOS = 4,
-  PLATFORM_BRIDGEOS = 5,
-  PLATFORM_MACCATALYST = 6,
-  PLATFORM_IOSSIMULATOR = 7,
-  PLATFORM_TVOSSIMULATOR = 8,
-  PLATFORM_WATCHOSSIMULATOR = 9,
-  PLATFORM_DRIVERKIT = 10,
+#define PLATFORM(platform, id, name, build_name, target, tapi_target,          \
+                 marketing)                                                    \
+  PLATFORM_##platform = id,
+#include "MachO.def"
 };
 
 // Values for tools enum in build_tool_version.
-enum { TOOL_CLANG = 1, TOOL_SWIFT = 2, TOOL_LD = 3 };
+enum { TOOL_CLANG = 1, TOOL_SWIFT = 2, TOOL_LD = 3, TOOL_LLD = 4 };
 
 // Structs from <mach-o/loader.h>
 
@@ -865,6 +865,12 @@ struct build_version_command {
   uint32_t ntools;   // number of tool entries following this
 };
 
+struct dyld_env_command {
+  uint32_t cmd;
+  uint32_t cmdsize;
+  uint32_t name;
+};
+
 struct dyld_info_command {
   uint32_t cmd;
   uint32_t cmdsize;
@@ -886,12 +892,17 @@ struct linker_option_command {
   uint32_t count;
 };
 
+union lc_str {
+  uint32_t offset;
+};
+
 struct fileset_entry_command {
   uint32_t cmd;
   uint32_t cmdsize;
   uint64_t vmaddr;
   uint64_t fileoff;
-  uint32_t entry_id;
+  union lc_str entry_id;
+  uint32_t reserved;
 };
 
 // The symseg_command is obsolete and no longer supported.
@@ -1012,7 +1023,7 @@ struct nlist_64 {
 };
 
 // Values for dyld_chained_fixups_header::imports_format.
-enum {
+enum ChainedImportFormat {
   DYLD_CHAINED_IMPORT = 1,
   DYLD_CHAINED_IMPORT_ADDEND = 2,
   DYLD_CHAINED_IMPORT_ADDEND64 = 3,
@@ -1027,8 +1038,8 @@ enum {
 // Values for dyld_chained_starts_in_segment::page_start.
 enum {
   DYLD_CHAINED_PTR_START_NONE = 0xFFFF,
-  DYLD_CHAINED_PTR_START_MULTI = 0x8000,
-  DYLD_CHAINED_PTR_START_LAST = 0x8000,
+  DYLD_CHAINED_PTR_START_MULTI = 0x8000, // page which has multiple starts
+  DYLD_CHAINED_PTR_START_LAST = 0x8000,  // last chain_start for a given page
 };
 
 // Values for dyld_chained_starts_in_segment::pointer_format.
@@ -1061,7 +1072,7 @@ struct dyld_chained_fixups_header {
 };
 
 /// dyld_chained_starts_in_image is embedded in LC_DYLD_CHAINED_FIXUPS payload.
-/// Each each seg_info_offset entry is the offset into this struct for that
+/// Each seg_info_offset entry is the offset into this struct for that
 /// segment followed by pool of dyld_chain_starts_in_segment data.
 struct dyld_chained_starts_in_image {
   uint32_t seg_count;
@@ -1101,6 +1112,27 @@ struct dyld_chained_import_addend64 {
   uint64_t reserved : 15;
   uint64_t name_offset : 32;
   uint64_t addend;
+};
+
+// The `bind` field (most significant bit) of the encoded fixup determines
+// whether it is dyld_chained_ptr_64_bind or dyld_chained_ptr_64_rebase.
+
+// DYLD_CHAINED_PTR_64/DYLD_CHAINED_PTR_64_OFFSET
+struct dyld_chained_ptr_64_bind {
+  uint64_t ordinal : 24;
+  uint64_t addend : 8;
+  uint64_t reserved : 19;
+  uint64_t next : 12;
+  uint64_t bind : 1; // set to 1
+};
+
+// DYLD_CHAINED_PTR_64/DYLD_CHAINED_PTR_64_OFFSET
+struct dyld_chained_ptr_64_rebase {
+  uint64_t target : 36;
+  uint64_t high8 : 8;
+  uint64_t reserved : 7;
+  uint64_t next : 12;
+  uint64_t bind : 1; // set to 0
 };
 
 // Byte order swapping functions for MachO structs
@@ -1401,7 +1433,8 @@ inline void swapStruct(fileset_entry_command &C) {
   sys::swapByteOrder(C.cmdsize);
   sys::swapByteOrder(C.vmaddr);
   sys::swapByteOrder(C.fileoff);
-  sys::swapByteOrder(C.entry_id);
+  sys::swapByteOrder(C.entry_id.offset);
+  sys::swapByteOrder(C.reserved);
 }
 
 inline void swapStruct(version_min_command &C) {
@@ -1604,11 +1637,43 @@ enum CPUSubTypeARM {
   CPU_SUBTYPE_ARM_V7EM = 16
 };
 
-enum CPUSubTypeARM64 {
+enum CPUSubTypeARM64 : uint32_t {
   CPU_SUBTYPE_ARM64_ALL = 0,
   CPU_SUBTYPE_ARM64_V8 = 1,
   CPU_SUBTYPE_ARM64E = 2,
+
+  // arm64e uses the capability bits to encode ptrauth ABI information.
+  // Bit 63 marks the binary as Versioned.
+  CPU_SUBTYPE_ARM64E_VERSIONED_PTRAUTH_ABI_MASK = 0x80000000U,
+  // Bit 62 marks the binary as using a kernel ABI.
+  CPU_SUBTYPE_ARM64E_KERNEL_PTRAUTH_ABI_MASK = 0x40000000U,
+  // Bits [59:56] hold the 4-bit ptrauth ABI version.
+  CPU_SUBTYPE_ARM64E_PTRAUTH_MASK = 0x0f000000U,
 };
+
+inline unsigned CPU_SUBTYPE_ARM64E_PTRAUTH_VERSION(uint32_t ST) {
+  return (ST & CPU_SUBTYPE_ARM64E_PTRAUTH_MASK) >> 24;
+}
+
+inline uint32_t
+CPU_SUBTYPE_ARM64E_WITH_PTRAUTH_VERSION(unsigned PtrAuthABIVersion,
+                                        bool PtrAuthKernelABIVersion) {
+  assert((PtrAuthABIVersion <= 0xF) &&
+         "ptrauth abi version must fit in 4 bits");
+  return CPU_SUBTYPE_ARM64E | CPU_SUBTYPE_ARM64E_VERSIONED_PTRAUTH_ABI_MASK |
+         (PtrAuthKernelABIVersion
+              ? (uint32_t)CPU_SUBTYPE_ARM64E_KERNEL_PTRAUTH_ABI_MASK
+              : 0) |
+         (PtrAuthABIVersion << 24);
+}
+
+inline bool CPU_SUBTYPE_ARM64E_IS_VERSIONED_PTRAUTH_ABI(uint32_t ST) {
+  return ST & CPU_SUBTYPE_ARM64E_VERSIONED_PTRAUTH_ABI_MASK;
+}
+
+inline bool CPU_SUBTYPE_ARM64E_IS_KERNEL_PTRAUTH_ABI(uint32_t ST) {
+  return ST & CPU_SUBTYPE_ARM64E_KERNEL_PTRAUTH_ABI_MASK;
+}
 
 enum CPUSubTypeARM64_32 { CPU_SUBTYPE_ARM64_32_V8 = 1 };
 
@@ -1635,6 +1700,8 @@ enum CPUSubTypePowerPC {
 
 Expected<uint32_t> getCPUType(const Triple &T);
 Expected<uint32_t> getCPUSubType(const Triple &T);
+Expected<uint32_t> getCPUSubType(const Triple &T, unsigned PtrAuthABIVersion,
+                                 bool PtrAuthKernelABIVersion);
 
 struct x86_thread_state32_t {
   uint32_t eax;
@@ -2317,7 +2384,7 @@ struct CS_CodeDirectory {
   uint64_t execSegFlags; /* executable segment flags */
 };
 
-static_assert(sizeof(CS_CodeDirectory) == 88, "");
+static_assert(sizeof(CS_CodeDirectory) == 88);
 
 struct CS_BlobIndex {
   uint32_t type;   /* type of entry */

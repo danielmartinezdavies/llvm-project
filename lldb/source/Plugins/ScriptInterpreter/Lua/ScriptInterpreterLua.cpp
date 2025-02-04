@@ -11,7 +11,7 @@
 #include "lldb/Breakpoint/StoppointCallbackContext.h"
 #include "lldb/Core/Debugger.h"
 #include "lldb/Core/PluginManager.h"
-#include "lldb/Core/StreamFile.h"
+#include "lldb/Host/StreamFile.h"
 #include "lldb/Interpreter/CommandReturnObject.h"
 #include "lldb/Target/ExecutionContext.h"
 #include "lldb/Utility/Stream.h"
@@ -40,8 +40,8 @@ public:
                           ScriptInterpreterLua &script_interpreter,
                           ActiveIOHandler active_io_handler = eIOHandlerNone)
       : IOHandlerEditline(debugger, IOHandler::Type::LuaInterpreter, "lua",
-                          ">>> ", "..> ", true, debugger.GetUseColor(), 0,
-                          *this, nullptr),
+                          llvm::StringRef(">>> "), llvm::StringRef("..> "),
+                          true, debugger.GetUseColor(), 0, *this),
         m_script_interpreter(script_interpreter),
         m_active_io_handler(active_io_handler) {
     llvm::cantFail(m_script_interpreter.GetLua().ChangeIO(
@@ -111,7 +111,7 @@ public:
               io_handler.GetUserData());
       for (BreakpointOptions &bp_options : *bp_options_vec) {
         Status error = m_script_interpreter.SetBreakpointCommandCallback(
-            bp_options, data.c_str());
+            bp_options, data.c_str(), /*is_callback=*/false);
         if (error.Fail())
           *io_handler.GetErrorStreamFileSP() << error.AsCString() << '\n';
       }
@@ -121,7 +121,8 @@ public:
       auto *wp_options =
           static_cast<WatchpointOptions *>(io_handler.GetUserData());
       m_script_interpreter.SetWatchpointCommandCallback(wp_options,
-                                                        data.c_str());
+                                                        data.c_str(),
+                                                        /*is_callback=*/false);
       io_handler.SetIsDone(true);
     } break;
     case eIOHandlerNone:
@@ -218,8 +219,9 @@ bool ScriptInterpreterLua::LoadScriptingModule(
     FileSpec extra_search_dir) {
 
   if (llvm::Error e = m_lua->LoadModule(filename)) {
-    error.SetErrorStringWithFormatv("lua failed to import '{0}': {1}\n",
-                                    filename, llvm::toString(std::move(e)));
+    error = Status::FromErrorStringWithFormatv(
+        "lua failed to import '{0}': {1}\n", filename,
+        llvm::toString(std::move(e)));
     return false;
   }
   return true;
@@ -348,43 +350,45 @@ Status ScriptInterpreterLua::SetBreakpointCommandCallbackFunction(
 }
 
 Status ScriptInterpreterLua::SetBreakpointCommandCallback(
-    BreakpointOptions &bp_options, const char *command_body_text) {
+    BreakpointOptions &bp_options, const char *command_body_text,
+    bool is_callback) {
   return RegisterBreakpointCallback(bp_options, command_body_text, {});
 }
 
 Status ScriptInterpreterLua::RegisterBreakpointCallback(
     BreakpointOptions &bp_options, const char *command_body_text,
     StructuredData::ObjectSP extra_args_sp) {
-  Status error;
   auto data_up = std::make_unique<CommandDataLua>(extra_args_sp);
-  error = m_lua->RegisterBreakpointCallback(data_up.get(), command_body_text);
-  if (error.Fail())
-    return error;
+  llvm::Error err =
+      m_lua->RegisterBreakpointCallback(data_up.get(), command_body_text);
+  if (err)
+    return Status::FromError(std::move(err));
   auto baton_sp =
       std::make_shared<BreakpointOptions::CommandBaton>(std::move(data_up));
   bp_options.SetCallback(ScriptInterpreterLua::BreakpointCallbackFunction,
                          baton_sp);
-  return error;
+  return {};
 }
 
 void ScriptInterpreterLua::SetWatchpointCommandCallback(
-    WatchpointOptions *wp_options, const char *command_body_text) {
+    WatchpointOptions *wp_options, const char *command_body_text,
+    bool is_callback) {
   RegisterWatchpointCallback(wp_options, command_body_text, {});
 }
 
 Status ScriptInterpreterLua::RegisterWatchpointCallback(
     WatchpointOptions *wp_options, const char *command_body_text,
     StructuredData::ObjectSP extra_args_sp) {
-  Status error;
   auto data_up = std::make_unique<WatchpointOptions::CommandData>();
-  error = m_lua->RegisterWatchpointCallback(data_up.get(), command_body_text);
-  if (error.Fail())
-    return error;
+  llvm::Error err =
+      m_lua->RegisterWatchpointCallback(data_up.get(), command_body_text);
+  if (err)
+    return Status::FromError(std::move(err));
   auto baton_sp =
       std::make_shared<WatchpointOptions::CommandBaton>(std::move(data_up));
   wp_options->SetCallback(ScriptInterpreterLua::WatchpointCallbackFunction,
                           baton_sp);
-  return error;
+  return {};
 }
 
 lldb::ScriptInterpreterSP

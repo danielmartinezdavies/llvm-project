@@ -28,6 +28,7 @@
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/FormatVariadic.h"
 #include <cassert>
+#include <optional>
 #include <vector>
 
 using namespace clang;
@@ -35,10 +36,7 @@ using namespace ento;
 
 bool CheckerManager::hasPathSensitiveCheckers() const {
   const auto IfAnyAreNonEmpty = [](const auto &... Callbacks) -> bool {
-    bool Result = false;
-    // FIXME: Use fold expressions in C++17.
-    LLVM_ATTRIBUTE_UNUSED int Unused[]{0, (Result |= !Callbacks.empty())...};
-    return Result;
+    return (!Callbacks.empty() || ...);
   };
   return IfAnyAreNonEmpty(
       StmtCheckers, PreObjCMessageCheckers, ObjCMessageNilCheckers,
@@ -48,16 +46,6 @@ bool CheckerManager::hasPathSensitiveCheckers() const {
       NewAllocatorCheckers, LiveSymbolsCheckers, DeadSymbolsCheckers,
       RegionChangesCheckers, PointerEscapeCheckers, EvalAssumeCheckers,
       EvalCallCheckers, EndOfTranslationUnitCheckers);
-}
-
-void CheckerManager::finishedCheckerRegistration() {
-#ifndef NDEBUG
-  // Make sure that for every event that has listeners, there is at least
-  // one dispatcher registered for it.
-  for (const auto &Event : Events)
-    assert(Event.second.HasDispatcher &&
-           "No dispatcher registered for an event");
-#endif
 }
 
 void CheckerManager::reportInvalidCheckerOptionValue(
@@ -78,13 +66,10 @@ void CheckerManager::runCheckersOnASTDecl(const Decl *D, AnalysisManager& mgr,
   assert(D);
 
   unsigned DeclKind = D->getKind();
-  CachedDeclCheckers *checkers = nullptr;
-  CachedDeclCheckersMapTy::iterator CCI = CachedDeclCheckersMap.find(DeclKind);
-  if (CCI != CachedDeclCheckersMap.end()) {
-    checkers = &(CCI->second);
-  } else {
+  auto [CCI, Inserted] = CachedDeclCheckersMap.try_emplace(DeclKind);
+  CachedDeclCheckers *checkers = &(CCI->second);
+  if (Inserted) {
     // Find the checkers that should run for this Decl and cache them.
-    checkers = &CachedDeclCheckersMap[DeclKind];
     for (const auto &info : DeclCheckers)
       if (info.IsForDeclFn(D))
         checkers->push_back(info.CheckFn);
@@ -656,7 +641,7 @@ void CheckerManager::runCheckersForEvalCall(ExplodedNodeSet &Dst,
                                             ExprEngine &Eng,
                                             const EvalCallOptions &CallOpts) {
   for (auto *const Pred : Src) {
-    Optional<CheckerNameRef> evaluatorChecker;
+    std::optional<CheckerNameRef> evaluatorChecker;
 
     ExplodedNodeSet checkDst;
     NodeBuilder B(Pred, checkDst, Eng.getBuilderContext());
@@ -681,7 +666,6 @@ void CheckerManager::runCheckersForEvalCall(ExplodedNodeSet &Dst,
           std::string Buf;
           llvm::raw_string_ostream OS(Buf);
           Call.dump(OS);
-          OS.flush();
           return Buf;
         };
         std::string AssertionMessage = llvm::formatv(
@@ -909,14 +893,13 @@ CheckerManager::getCachedStmtCheckersFor(const Stmt *S, bool isPreVisit) {
   assert(S);
 
   unsigned Key = (S->getStmtClass() << 1) | unsigned(isPreVisit);
-  CachedStmtCheckersMapTy::iterator CCI = CachedStmtCheckersMap.find(Key);
-  if (CCI != CachedStmtCheckersMap.end())
-    return CCI->second;
-
-  // Find the checkers that should run for this Stmt and cache them.
-  CachedStmtCheckers &Checkers = CachedStmtCheckersMap[Key];
-  for (const auto &Info : StmtCheckers)
-    if (Info.IsPreVisit == isPreVisit && Info.IsForStmtFn(S))
-      Checkers.push_back(Info.CheckFn);
+  auto [CCI, Inserted] = CachedStmtCheckersMap.try_emplace(Key);
+  CachedStmtCheckers &Checkers = CCI->second;
+  if (Inserted) {
+    // Find the checkers that should run for this Stmt and cache them.
+    for (const auto &Info : StmtCheckers)
+      if (Info.IsPreVisit == isPreVisit && Info.IsForStmtFn(S))
+        Checkers.push_back(Info.CheckFn);
+  }
   return Checkers;
 }

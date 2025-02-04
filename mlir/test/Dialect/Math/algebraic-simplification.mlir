@@ -38,8 +38,8 @@ func.func @pow_cube(%arg0: f32, %arg1 : vector<4xf32>) -> (f32, vector<4xf32>) {
 
 // CHECK-LABEL: @pow_recip
 func.func @pow_recip(%arg0: f32, %arg1 : vector<4xf32>) -> (f32, vector<4xf32>) {
-  // CHECK: %[[CST_S:.*]] = arith.constant 1.0{{.*}} : f32
-  // CHECK: %[[CST_V:.*]] = arith.constant dense<1.0{{.*}}> : vector<4xf32>
+  // CHECK-DAG: %[[CST_S:.*]] = arith.constant 1.0{{.*}} : f32
+  // CHECK-DAG: %[[CST_V:.*]] = arith.constant dense<1.0{{.*}}> : vector<4xf32>
   // CHECK: %[[SCALAR:.*]] = arith.divf %[[CST_S]], %arg0
   // CHECK: %[[VECTOR:.*]] = arith.divf %[[CST_V]], %arg1
   // CHECK: return %[[SCALAR]], %[[VECTOR]]
@@ -74,6 +74,22 @@ func.func @pow_rsqrt(%arg0: f32, %arg1 : vector<4xf32>) -> (f32, vector<4xf32>) 
   return %0, %1 : f32, vector<4xf32>
 }
 
+// CHECK-LABEL: @pow_0_75
+func.func @pow_0_75(%arg0: f32, %arg1 : vector<4xf32>) -> (f32, vector<4xf32>) {
+  // CHECK: %[[SQRT1S:.*]] = math.sqrt %arg0
+  // CHECK: %[[SQRT2S:.*]] = math.sqrt %[[SQRT1S]]
+  // CHECK: %[[SCALAR:.*]] = arith.mulf %[[SQRT1S]], %[[SQRT2S]]
+  // CHECK: %[[SQRT1V:.*]] = math.sqrt %arg1
+  // CHECK: %[[SQRT2V:.*]] = math.sqrt %[[SQRT1V]]
+  // CHECK: %[[VECTOR:.*]] = arith.mulf %[[SQRT1V]], %[[SQRT2V]]
+  // CHECK: return %[[SCALAR]], %[[VECTOR]]
+  %c = arith.constant 0.75 : f32
+  %v = arith.constant dense <0.75> : vector<4xf32>
+  %0 = math.powf %arg0, %c : f32
+  %1 = math.powf %arg1, %v : vector<4xf32>
+  return %0, %1 : f32, vector<4xf32>
+}
+
 // CHECK-LABEL: @ipowi_zero_exp(
 // CHECK-SAME: %[[ARG0:.+]]: i32
 // CHECK-SAME: %[[ARG1:.+]]: vector<4xi32>
@@ -94,8 +110,8 @@ func.func @ipowi_zero_exp(%arg0: i32, %arg1: vector<4xi32>) -> (i32, vector<4xi3
 // CHECK-SAME: %[[ARG1:.+]]: vector<4xi32>
 // CHECK-SAME: -> (i32, vector<4xi32>, i32, vector<4xi32>) {
 func.func @ipowi_exp_one(%arg0: i32, %arg1: vector<4xi32>) -> (i32, vector<4xi32>, i32, vector<4xi32>) {
-  // CHECK: %[[CST_S:.*]] = arith.constant 1 : i32
-  // CHECK: %[[CST_V:.*]] = arith.constant dense<1> : vector<4xi32>
+  // CHECK-DAG: %[[CST_S:.*]] = arith.constant 1 : i32
+  // CHECK-DAG: %[[CST_V:.*]] = arith.constant dense<1> : vector<4xi32>
   // CHECK: %[[SCALAR:.*]] = arith.divsi %[[CST_S]], %[[ARG0]]
   // CHECK: %[[VECTOR:.*]] = arith.divsi %[[CST_V]], %[[ARG1]]
   // CHECK: return %[[ARG0]], %[[ARG1]], %[[SCALAR]], %[[VECTOR]]
@@ -115,8 +131,8 @@ func.func @ipowi_exp_one(%arg0: i32, %arg1: vector<4xi32>) -> (i32, vector<4xi32
 // CHECK-SAME: %[[ARG1:.+]]: vector<4xi32>
 // CHECK-SAME: -> (i32, vector<4xi32>, i32, vector<4xi32>) {
 func.func @ipowi_exp_two(%arg0: i32, %arg1: vector<4xi32>) -> (i32, vector<4xi32>, i32, vector<4xi32>) {
-  // CHECK: %[[CST_S:.*]] = arith.constant 1 : i32
-  // CHECK: %[[CST_V:.*]] = arith.constant dense<1> : vector<4xi32>
+  // CHECK-DAG: %[[CST_S:.*]] = arith.constant 1 : i32
+  // CHECK-DAG: %[[CST_V:.*]] = arith.constant dense<1> : vector<4xi32>
   // CHECK: %[[SCALAR0:.*]] = arith.muli %[[ARG0]], %[[ARG0]]
   // CHECK: %[[VECTOR0:.*]] = arith.muli %[[ARG1]], %[[ARG1]]
   // CHECK: %[[SCALAR1:.*]] = arith.divsi %[[CST_S]], %[[ARG0]]
@@ -140,8 +156,8 @@ func.func @ipowi_exp_two(%arg0: i32, %arg1: vector<4xi32>) -> (i32, vector<4xi32
 // CHECK-SAME: %[[ARG1:.+]]: vector<4xi32>
 // CHECK-SAME: -> (i32, vector<4xi32>, i32, vector<4xi32>) {
 func.func @ipowi_exp_three(%arg0: i32, %arg1: vector<4xi32>) -> (i32, vector<4xi32>, i32, vector<4xi32>) {
-  // CHECK: %[[CST_S:.*]] = arith.constant 1 : i32
-  // CHECK: %[[CST_V:.*]] = arith.constant dense<1> : vector<4xi32>
+  // CHECK-DAG: %[[CST_S:.*]] = arith.constant 1 : i32
+  // CHECK-DAG: %[[CST_V:.*]] = arith.constant dense<1> : vector<4xi32>
   // CHECK: %[[SMUL0:.*]] = arith.muli %[[ARG0]], %[[ARG0]]
   // CHECK: %[[SCALAR0:.*]] = arith.muli %[[SMUL0]], %[[ARG0]]
   // CHECK: %[[VMUL0:.*]] = arith.muli %[[ARG1]], %[[ARG1]]
@@ -184,8 +200,8 @@ func.func @fpowi_zero_exp(%arg0: f32, %arg1: vector<4xf32>) -> (f32, vector<4xf3
 // CHECK-SAME: %[[ARG1:.+]]: vector<4xf32>
 // CHECK-SAME: -> (f32, vector<4xf32>, f32, vector<4xf32>) {
 func.func @fpowi_exp_one(%arg0: f32, %arg1: vector<4xf32>) -> (f32, vector<4xf32>, f32, vector<4xf32>) {
-  // CHECK: %[[CST_S:.*]] = arith.constant 1.000000e+00 : f32
-  // CHECK: %[[CST_V:.*]] = arith.constant dense<1.000000e+00> : vector<4xf32>
+  // CHECK-DAG: %[[CST_S:.*]] = arith.constant 1.000000e+00 : f32
+  // CHECK-DAG: %[[CST_V:.*]] = arith.constant dense<1.000000e+00> : vector<4xf32>
   // CHECK: %[[SCALAR:.*]] = arith.divf %[[CST_S]], %[[ARG0]]
   // CHECK: %[[VECTOR:.*]] = arith.divf %[[CST_V]], %[[ARG1]]
   // CHECK: return %[[ARG0]], %[[ARG1]], %[[SCALAR]], %[[VECTOR]]
@@ -205,8 +221,8 @@ func.func @fpowi_exp_one(%arg0: f32, %arg1: vector<4xf32>) -> (f32, vector<4xf32
 // CHECK-SAME: %[[ARG1:.+]]: vector<4xf32>
 // CHECK-SAME: -> (f32, vector<4xf32>, f32, vector<4xf32>) {
 func.func @fpowi_exp_two(%arg0: f32, %arg1: vector<4xf32>) -> (f32, vector<4xf32>, f32, vector<4xf32>) {
-  // CHECK: %[[CST_S:.*]] = arith.constant 1.000000e+00 : f32
-  // CHECK: %[[CST_V:.*]] = arith.constant dense<1.000000e+00> : vector<4xf32>
+  // CHECK-DAG: %[[CST_S:.*]] = arith.constant 1.000000e+00 : f32
+  // CHECK-DAG: %[[CST_V:.*]] = arith.constant dense<1.000000e+00> : vector<4xf32>
   // CHECK: %[[SCALAR0:.*]] = arith.mulf %[[ARG0]], %[[ARG0]]
   // CHECK: %[[VECTOR0:.*]] = arith.mulf %[[ARG1]], %[[ARG1]]
   // CHECK: %[[SCALAR1:.*]] = arith.divf %[[CST_S]], %[[ARG0]]
@@ -230,8 +246,8 @@ func.func @fpowi_exp_two(%arg0: f32, %arg1: vector<4xf32>) -> (f32, vector<4xf32
 // CHECK-SAME: %[[ARG1:.+]]: vector<4xf32>
 // CHECK-SAME: -> (f32, vector<4xf32>, f32, vector<4xf32>) {
 func.func @fpowi_exp_three(%arg0: f32, %arg1: vector<4xf32>) -> (f32, vector<4xf32>, f32, vector<4xf32>) {
-  // CHECK: %[[CST_S:.*]] = arith.constant 1.000000e+00 : f32
-  // CHECK: %[[CST_V:.*]] = arith.constant dense<1.000000e+00> : vector<4xf32>
+  // CHECK-DAG: %[[CST_S:.*]] = arith.constant 1.000000e+00 : f32
+  // CHECK-DAG: %[[CST_V:.*]] = arith.constant dense<1.000000e+00> : vector<4xf32>
   // CHECK: %[[SMUL0:.*]] = arith.mulf %[[ARG0]], %[[ARG0]]
   // CHECK: %[[SCALAR0:.*]] = arith.mulf %[[SMUL0]], %[[ARG0]]
   // CHECK: %[[VMUL0:.*]] = arith.mulf %[[ARG1]], %[[ARG1]]

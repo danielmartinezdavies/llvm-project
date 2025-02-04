@@ -32,12 +32,8 @@ Breaking changes
 COFF Improvements
 -----------------
 
-* ...
-
 MinGW Improvements
 ------------------
-
-* ...
 
 MachO Improvements
 ------------------
@@ -45,3 +41,5 @@ MachO Improvements
 WebAssembly Improvements
 ------------------------
 
+Fixes
+#####

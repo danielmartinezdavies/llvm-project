@@ -16,6 +16,7 @@
 
 #include "mlir-c/AffineMap.h"
 #include "mlir-c/IR.h"
+#include "mlir-c/IntegerSet.h"
 #include "mlir-c/Support.h"
 
 #ifdef __cplusplus
@@ -23,7 +24,13 @@ extern "C" {
 #endif
 
 /// Returns an empty attribute.
-MLIR_CAPI_EXPORTED MlirAttribute mlirAttributeGetNull();
+MLIR_CAPI_EXPORTED MlirAttribute mlirAttributeGetNull(void);
+
+//===----------------------------------------------------------------------===//
+// Location attribute.
+//===----------------------------------------------------------------------===//
+
+MLIR_CAPI_EXPORTED bool mlirAttributeIsALocation(MlirAttribute attr);
 
 //===----------------------------------------------------------------------===//
 // Affine map attribute.
@@ -38,6 +45,9 @@ MLIR_CAPI_EXPORTED MlirAttribute mlirAffineMapAttrGet(MlirAffineMap map);
 
 /// Returns the affine map wrapped in the given affine map attribute.
 MLIR_CAPI_EXPORTED MlirAffineMap mlirAffineMapAttrGetValue(MlirAttribute attr);
+
+/// Returns the typeID of an AffineMap attribute.
+MLIR_CAPI_EXPORTED MlirTypeID mlirAffineMapAttrGetTypeID(void);
 
 //===----------------------------------------------------------------------===//
 // Array attribute.
@@ -57,6 +67,9 @@ MLIR_CAPI_EXPORTED intptr_t mlirArrayAttrGetNumElements(MlirAttribute attr);
 /// Returns pos-th element stored in the given array attribute.
 MLIR_CAPI_EXPORTED MlirAttribute mlirArrayAttrGetElement(MlirAttribute attr,
                                                          intptr_t pos);
+
+/// Returns the typeID of an Array attribute.
+MLIR_CAPI_EXPORTED MlirTypeID mlirArrayAttrGetTypeID(void);
 
 //===----------------------------------------------------------------------===//
 // Dictionary attribute.
@@ -83,6 +96,9 @@ mlirDictionaryAttrGetElement(MlirAttribute attr, intptr_t pos);
 MLIR_CAPI_EXPORTED MlirAttribute
 mlirDictionaryAttrGetElementByName(MlirAttribute attr, MlirStringRef name);
 
+/// Returns the typeID of a Dictionary attribute.
+MLIR_CAPI_EXPORTED MlirTypeID mlirDictionaryAttrGetTypeID(void);
+
 //===----------------------------------------------------------------------===//
 // Floating point attribute.
 //===----------------------------------------------------------------------===//
@@ -108,6 +124,9 @@ MLIR_CAPI_EXPORTED MlirAttribute mlirFloatAttrDoubleGetChecked(MlirLocation loc,
 /// Returns the value stored in the given floating point attribute, interpreting
 /// the value as double.
 MLIR_CAPI_EXPORTED double mlirFloatAttrGetValueDouble(MlirAttribute attr);
+
+/// Returns the typeID of a Float attribute.
+MLIR_CAPI_EXPORTED MlirTypeID mlirFloatAttrGetTypeID(void);
 
 //===----------------------------------------------------------------------===//
 // Integer attribute.
@@ -136,6 +155,9 @@ MLIR_CAPI_EXPORTED int64_t mlirIntegerAttrGetValueSInt(MlirAttribute attr);
 /// is of unsigned type and fits into an unsigned 64-bit integer.
 MLIR_CAPI_EXPORTED uint64_t mlirIntegerAttrGetValueUInt(MlirAttribute attr);
 
+/// Returns the typeID of an Integer attribute.
+MLIR_CAPI_EXPORTED MlirTypeID mlirIntegerAttrGetTypeID(void);
+
 //===----------------------------------------------------------------------===//
 // Bool attribute.
 //===----------------------------------------------------------------------===//
@@ -155,6 +177,17 @@ MLIR_CAPI_EXPORTED bool mlirBoolAttrGetValue(MlirAttribute attr);
 
 /// Checks whether the given attribute is an integer set attribute.
 MLIR_CAPI_EXPORTED bool mlirAttributeIsAIntegerSet(MlirAttribute attr);
+
+/// Creates an integer set attribute wrapping the given set. The attribute
+/// belongs to the same context as the integer set.
+MLIR_CAPI_EXPORTED MlirAttribute mlirIntegerSetAttrGet(MlirIntegerSet set);
+
+/// Returns the integer set wrapped in the given integer set attribute.
+MLIR_CAPI_EXPORTED MlirIntegerSet
+mlirIntegerSetAttrGetValue(MlirAttribute attr);
+
+/// Returns the typeID of an IntegerSet attribute.
+MLIR_CAPI_EXPORTED MlirTypeID mlirIntegerSetAttrGetTypeID(void);
 
 //===----------------------------------------------------------------------===//
 // Opaque attribute.
@@ -179,6 +212,9 @@ mlirOpaqueAttrGetDialectNamespace(MlirAttribute attr);
 /// the context in which the attribute lives.
 MLIR_CAPI_EXPORTED MlirStringRef mlirOpaqueAttrGetData(MlirAttribute attr);
 
+/// Returns the typeID of an Opaque attribute.
+MLIR_CAPI_EXPORTED MlirTypeID mlirOpaqueAttrGetTypeID(void);
+
 //===----------------------------------------------------------------------===//
 // String attribute.
 //===----------------------------------------------------------------------===//
@@ -199,6 +235,9 @@ MLIR_CAPI_EXPORTED MlirAttribute mlirStringAttrTypedGet(MlirType type,
 /// Returns the attribute values as a string reference. The data remains live as
 /// long as the context in which the attribute lives.
 MLIR_CAPI_EXPORTED MlirStringRef mlirStringAttrGetValue(MlirAttribute attr);
+
+/// Returns the typeID of a String attribute.
+MLIR_CAPI_EXPORTED MlirTypeID mlirStringAttrGetTypeID(void);
 
 //===----------------------------------------------------------------------===//
 // SymbolRef attribute.
@@ -233,6 +272,13 @@ mlirSymbolRefAttrGetNumNestedReferences(MlirAttribute attr);
 MLIR_CAPI_EXPORTED MlirAttribute
 mlirSymbolRefAttrGetNestedReference(MlirAttribute attr, intptr_t pos);
 
+/// Returns the typeID of an SymbolRef attribute.
+MLIR_CAPI_EXPORTED MlirTypeID mlirSymbolRefAttrGetTypeID(void);
+
+/// Creates a DisctinctAttr with the referenced attribute.
+MLIR_CAPI_EXPORTED MlirAttribute
+mlirDisctinctAttrCreate(MlirAttribute referencedAttr);
+
 //===----------------------------------------------------------------------===//
 // Flat SymbolRef attribute.
 //===----------------------------------------------------------------------===//
@@ -264,6 +310,9 @@ MLIR_CAPI_EXPORTED MlirAttribute mlirTypeAttrGet(MlirType type);
 /// Returns the type stored in the given type attribute.
 MLIR_CAPI_EXPORTED MlirType mlirTypeAttrGetValue(MlirAttribute attr);
 
+/// Returns the typeID of a Type attribute.
+MLIR_CAPI_EXPORTED MlirTypeID mlirTypeAttrGetTypeID(void);
+
 //===----------------------------------------------------------------------===//
 // Unit attribute.
 //===----------------------------------------------------------------------===//
@@ -273,6 +322,9 @@ MLIR_CAPI_EXPORTED bool mlirAttributeIsAUnit(MlirAttribute attr);
 
 /// Creates a unit attribute in the given context.
 MLIR_CAPI_EXPORTED MlirAttribute mlirUnitAttrGet(MlirContext ctx);
+
+/// Returns the typeID of a Unit attribute.
+MLIR_CAPI_EXPORTED MlirTypeID mlirUnitAttrGetTypeID(void);
 
 //===----------------------------------------------------------------------===//
 // Elements attributes.
@@ -299,6 +351,8 @@ MLIR_CAPI_EXPORTED int64_t mlirElementsAttrGetNumElements(MlirAttribute attr);
 //===----------------------------------------------------------------------===//
 // Dense array attribute.
 //===----------------------------------------------------------------------===//
+
+MLIR_CAPI_EXPORTED MlirTypeID mlirDenseArrayAttrGetTypeID(void);
 
 /// Checks whether the given attribute is a dense array attribute.
 MLIR_CAPI_EXPORTED bool mlirAttributeIsADenseBoolArray(MlirAttribute attr);
@@ -363,6 +417,9 @@ MLIR_CAPI_EXPORTED double mlirDenseF64ArrayGetElement(MlirAttribute attr,
 MLIR_CAPI_EXPORTED bool mlirAttributeIsADenseElements(MlirAttribute attr);
 MLIR_CAPI_EXPORTED bool mlirAttributeIsADenseIntElements(MlirAttribute attr);
 MLIR_CAPI_EXPORTED bool mlirAttributeIsADenseFPElements(MlirAttribute attr);
+
+/// Returns the typeID of an DenseIntOrFPElements attribute.
+MLIR_CAPI_EXPORTED MlirTypeID mlirDenseIntOrFPElementsAttrGetTypeID(void);
 
 /// Creates a dense elements attribute with the given Shaped type and elements
 /// in the same context as the type.
@@ -499,6 +556,8 @@ MLIR_CAPI_EXPORTED int64_t
 mlirDenseElementsAttrGetInt64Value(MlirAttribute attr, intptr_t pos);
 MLIR_CAPI_EXPORTED uint64_t
 mlirDenseElementsAttrGetUInt64Value(MlirAttribute attr, intptr_t pos);
+MLIR_CAPI_EXPORTED uint64_t
+mlirDenseElementsAttrGetIndexValue(MlirAttribute attr, intptr_t pos);
 MLIR_CAPI_EXPORTED float mlirDenseElementsAttrGetFloatValue(MlirAttribute attr,
                                                             intptr_t pos);
 MLIR_CAPI_EXPORTED double
@@ -509,6 +568,94 @@ mlirDenseElementsAttrGetStringValue(MlirAttribute attr, intptr_t pos);
 /// Returns the raw data of the given dense elements attribute.
 MLIR_CAPI_EXPORTED const void *
 mlirDenseElementsAttrGetRawData(MlirAttribute attr);
+
+//===----------------------------------------------------------------------===//
+// Resource blob attributes.
+//===----------------------------------------------------------------------===//
+
+MLIR_CAPI_EXPORTED bool
+mlirAttributeIsADenseResourceElements(MlirAttribute attr);
+
+/// Unlike the typed accessors below, constructs the attribute with a raw
+/// data buffer and no type/alignment checking. Use a more strongly typed
+/// accessor if possible. If dataIsMutable is false, then an immutable
+/// AsmResourceBlob will be created and that passed data contents will be
+/// treated as const.
+/// If the deleter is non NULL, then it will be called when the data buffer
+/// can no longer be accessed (passing userData to it).
+MLIR_CAPI_EXPORTED MlirAttribute mlirUnmanagedDenseResourceElementsAttrGet(
+    MlirType shapedType, MlirStringRef name, void *data, size_t dataLength,
+    size_t dataAlignment, bool dataIsMutable,
+    void (*deleter)(void *userData, const void *data, size_t size,
+                    size_t align),
+    void *userData);
+
+MLIR_CAPI_EXPORTED MlirAttribute mlirUnmanagedDenseBoolResourceElementsAttrGet(
+    MlirType shapedType, MlirStringRef name, intptr_t numElements,
+    const int *elements);
+MLIR_CAPI_EXPORTED MlirAttribute mlirUnmanagedDenseUInt8ResourceElementsAttrGet(
+    MlirType shapedType, MlirStringRef name, intptr_t numElements,
+    const uint8_t *elements);
+MLIR_CAPI_EXPORTED MlirAttribute mlirUnmanagedDenseInt8ResourceElementsAttrGet(
+    MlirType shapedType, MlirStringRef name, intptr_t numElements,
+    const int8_t *elements);
+MLIR_CAPI_EXPORTED MlirAttribute
+mlirUnmanagedDenseUInt16ResourceElementsAttrGet(MlirType shapedType,
+                                                MlirStringRef name,
+                                                intptr_t numElements,
+                                                const uint16_t *elements);
+MLIR_CAPI_EXPORTED MlirAttribute mlirUnmanagedDenseInt16ResourceElementsAttrGet(
+    MlirType shapedType, MlirStringRef name, intptr_t numElements,
+    const int16_t *elements);
+MLIR_CAPI_EXPORTED MlirAttribute
+mlirUnmanagedDenseUInt32ResourceElementsAttrGet(MlirType shapedType,
+                                                MlirStringRef name,
+                                                intptr_t numElements,
+                                                const uint32_t *elements);
+MLIR_CAPI_EXPORTED MlirAttribute mlirUnmanagedDenseInt32ResourceElementsAttrGet(
+    MlirType shapedType, MlirStringRef name, intptr_t numElements,
+    const int32_t *elements);
+MLIR_CAPI_EXPORTED MlirAttribute
+mlirUnmanagedDenseUInt64ResourceElementsAttrGet(MlirType shapedType,
+                                                MlirStringRef name,
+                                                intptr_t numElements,
+                                                const uint64_t *elements);
+MLIR_CAPI_EXPORTED MlirAttribute mlirUnmanagedDenseInt64ResourceElementsAttrGet(
+    MlirType shapedType, MlirStringRef name, intptr_t numElements,
+    const int64_t *elements);
+MLIR_CAPI_EXPORTED MlirAttribute mlirUnmanagedDenseFloatResourceElementsAttrGet(
+    MlirType shapedType, MlirStringRef name, intptr_t numElements,
+    const float *elements);
+MLIR_CAPI_EXPORTED MlirAttribute
+mlirUnmanagedDenseDoubleResourceElementsAttrGet(MlirType shapedType,
+                                                MlirStringRef name,
+                                                intptr_t numElements,
+                                                const double *elements);
+
+/// Returns the pos-th value (flat contiguous indexing) of a specific type
+/// contained by the given dense resource elements attribute.
+MLIR_CAPI_EXPORTED bool
+mlirDenseBoolResourceElementsAttrGetValue(MlirAttribute attr, intptr_t pos);
+MLIR_CAPI_EXPORTED int8_t
+mlirDenseInt8ResourceElementsAttrGetValue(MlirAttribute attr, intptr_t pos);
+MLIR_CAPI_EXPORTED uint8_t
+mlirDenseUInt8ResourceElementsAttrGetValue(MlirAttribute attr, intptr_t pos);
+MLIR_CAPI_EXPORTED int16_t
+mlirDenseInt16ResourceElementsAttrGetValue(MlirAttribute attr, intptr_t pos);
+MLIR_CAPI_EXPORTED uint16_t
+mlirDenseUInt16ResourceElementsAttrGetValue(MlirAttribute attr, intptr_t pos);
+MLIR_CAPI_EXPORTED int32_t
+mlirDenseInt32ResourceElementsAttrGetValue(MlirAttribute attr, intptr_t pos);
+MLIR_CAPI_EXPORTED uint32_t
+mlirDenseUInt32ResourceElementsAttrGetValue(MlirAttribute attr, intptr_t pos);
+MLIR_CAPI_EXPORTED int64_t
+mlirDenseInt64ResourceElementsAttrGetValue(MlirAttribute attr, intptr_t pos);
+MLIR_CAPI_EXPORTED uint64_t
+mlirDenseUInt64ResourceElementsAttrGetValue(MlirAttribute attr, intptr_t pos);
+MLIR_CAPI_EXPORTED float
+mlirDenseFloatResourceElementsAttrGetValue(MlirAttribute attr, intptr_t pos);
+MLIR_CAPI_EXPORTED double
+mlirDenseDoubleResourceElementsAttrGetValue(MlirAttribute attr, intptr_t pos);
 
 //===----------------------------------------------------------------------===//
 // Sparse elements attribute.
@@ -534,6 +681,35 @@ mlirSparseElementsAttrGetIndices(MlirAttribute attr);
 /// given sparse elements attribute.
 MLIR_CAPI_EXPORTED MlirAttribute
 mlirSparseElementsAttrGetValues(MlirAttribute attr);
+
+/// Returns the typeID of a SparseElements attribute.
+MLIR_CAPI_EXPORTED MlirTypeID mlirSparseElementsAttrGetTypeID(void);
+
+//===----------------------------------------------------------------------===//
+// Strided layout attribute.
+//===----------------------------------------------------------------------===//
+
+// Checks wheather the given attribute is a strided layout attribute.
+MLIR_CAPI_EXPORTED bool mlirAttributeIsAStridedLayout(MlirAttribute attr);
+
+// Creates a strided layout attribute from given strides and offset.
+MLIR_CAPI_EXPORTED MlirAttribute
+mlirStridedLayoutAttrGet(MlirContext ctx, int64_t offset, intptr_t numStrides,
+                         const int64_t *strides);
+
+// Returns the offset in the given strided layout layout attribute.
+MLIR_CAPI_EXPORTED int64_t mlirStridedLayoutAttrGetOffset(MlirAttribute attr);
+
+// Returns the number of strides in the given strided layout attribute.
+MLIR_CAPI_EXPORTED intptr_t
+mlirStridedLayoutAttrGetNumStrides(MlirAttribute attr);
+
+// Returns the pos-th stride stored in the given strided layout attribute.
+MLIR_CAPI_EXPORTED int64_t mlirStridedLayoutAttrGetStride(MlirAttribute attr,
+                                                          intptr_t pos);
+
+/// Returns the typeID of a StridedLayout attribute.
+MLIR_CAPI_EXPORTED MlirTypeID mlirStridedLayoutAttrGetTypeID(void);
 
 #ifdef __cplusplus
 }

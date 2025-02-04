@@ -8,15 +8,15 @@
 
 #include "UseEqualsDefaultCheck.h"
 #include "../utils/LexerUtils.h"
+#include "../utils/Matchers.h"
 #include "clang/AST/ASTContext.h"
 #include "clang/ASTMatchers/ASTMatchFinder.h"
 #include "clang/Lex/Lexer.h"
+#include <optional>
 
 using namespace clang::ast_matchers;
 
-namespace clang {
-namespace tidy {
-namespace modernize {
+namespace clang::tidy::modernize {
 
 static const char SpecialFunction[] = "SpecialFunction";
 
@@ -26,7 +26,7 @@ getAllNamedFields(const CXXRecordDecl *Record) {
   std::set<const FieldDecl *> Result;
   for (const auto *Field : Record->fields()) {
     // Static data members are not in this range.
-    if (Field->isUnnamedBitfield())
+    if (Field->isUnnamedBitField())
       continue;
     Result.insert(Field);
   }
@@ -216,22 +216,38 @@ void UseEqualsDefaultCheck::storeOptions(ClangTidyOptions::OptionMap &Opts) {
   Options.store(Opts, "IgnoreMacros", IgnoreMacros);
 }
 
+namespace {
+AST_MATCHER(CXXMethodDecl, isOutOfLine) { return Node.isOutOfLine(); }
+} // namespace
+
 void UseEqualsDefaultCheck::registerMatchers(MatchFinder *Finder) {
-  // Skip unions since constructors with empty bodies behave differently
-  // in comparison with structs/classes.
+  // Skip unions/union-like classes since their constructors behave differently
+  // when defaulted vs. empty.
+  auto IsUnionLikeClass = recordDecl(
+      anyOf(isUnion(),
+            has(fieldDecl(isImplicit(), hasType(cxxRecordDecl(isUnion()))))));
+
+  const LangOptions &LangOpts = getLangOpts();
+  auto IsPublicOrOutOfLineUntilCPP20 =
+      LangOpts.CPlusPlus20
+          ? cxxConstructorDecl()
+          : cxxConstructorDecl(anyOf(isOutOfLine(), isPublic()));
 
   // Destructor.
-  Finder->addMatcher(cxxDestructorDecl(unless(hasParent(recordDecl(isUnion()))),
-                                       isDefinition())
-                         .bind(SpecialFunction),
-                     this);
+  Finder->addMatcher(
+      cxxDestructorDecl(isDefinition(), unless(ofClass(IsUnionLikeClass)))
+          .bind(SpecialFunction),
+      this);
+  // Constructor.
   Finder->addMatcher(
       cxxConstructorDecl(
-          unless(hasParent(recordDecl(isUnion()))), isDefinition(),
+          isDefinition(), unless(ofClass(IsUnionLikeClass)),
+          unless(hasParent(functionTemplateDecl())),
           anyOf(
               // Default constructor.
-              allOf(unless(hasAnyConstructorInitializer(isWritten())),
-                    parameterCountIs(0)),
+              allOf(parameterCountIs(0),
+                    unless(hasAnyConstructorInitializer(isWritten())),
+                    unless(isVariadic()), IsPublicOrOutOfLineUntilCPP20),
               // Copy constructor.
               allOf(isCopyConstructor(),
                     // Discard constructors that can be used as a copy
@@ -242,12 +258,18 @@ void UseEqualsDefaultCheck::registerMatchers(MatchFinder *Finder) {
       this);
   // Copy-assignment operator.
   Finder->addMatcher(
-      cxxMethodDecl(unless(hasParent(recordDecl(isUnion()))), isDefinition(),
-                    isCopyAssignmentOperator(),
+      cxxMethodDecl(isDefinition(), isCopyAssignmentOperator(),
+                    unless(ofClass(IsUnionLikeClass)),
+                    unless(hasParent(functionTemplateDecl())),
                     // isCopyAssignmentOperator() allows the parameter to be
                     // passed by value, and in this case it cannot be
                     // defaulted.
-                    hasParameter(0, hasType(lValueReferenceType())))
+                    hasParameter(0, hasType(lValueReferenceType())),
+                    // isCopyAssignmentOperator() allows non lvalue reference
+                    // return types, and in this case it cannot be defaulted.
+                    returns(qualType(hasCanonicalType(
+                        allOf(lValueReferenceType(pointee(type())),
+                              unless(matchers::isReferenceToConst()))))))
           .bind(SpecialFunction),
       this);
 }
@@ -277,12 +299,18 @@ void UseEqualsDefaultCheck::check(const MatchFinder::MatchResult &Result) {
   if (!SpecialFunctionDecl->isCopyAssignmentOperator() && !Body->body_empty())
     return;
 
+  // If body contain any preprocesor derictives, don't warn.
+  if (IgnoreMacros && utils::lexer::rangeContainsExpansionsOrDirectives(
+                          Body->getSourceRange(), *Result.SourceManager,
+                          Result.Context->getLangOpts()))
+    return;
+
   // If there are comments inside the body, don't do the change.
   bool ApplyFix = SpecialFunctionDecl->isCopyAssignmentOperator() ||
                   bodyEmpty(Result.Context, Body);
 
   std::vector<FixItHint> RemoveInitializers;
-  unsigned MemberType;
+  unsigned MemberType = 0;
   if (const auto *Ctor = dyn_cast<CXXConstructorDecl>(SpecialFunctionDecl)) {
     if (Ctor->getNumParams() == 0) {
       MemberType = 0;
@@ -317,10 +345,13 @@ void UseEqualsDefaultCheck::check(const MatchFinder::MatchResult &Result) {
   Diag << MemberType;
 
   if (ApplyFix) {
+    SourceLocation UnifiedEnd = utils::lexer::getUnifiedEndLoc(
+        *Body, Result.Context->getSourceManager(),
+        Result.Context->getLangOpts());
     // Skipping comments, check for a semicolon after Body->getSourceRange()
-    Optional<Token> Token = utils::lexer::findNextTokenSkippingComments(
-        Body->getSourceRange().getEnd().getLocWithOffset(1),
-        Result.Context->getSourceManager(), Result.Context->getLangOpts());
+    std::optional<Token> Token = utils::lexer::findNextTokenSkippingComments(
+        UnifiedEnd, Result.Context->getSourceManager(),
+        Result.Context->getLangOpts());
     StringRef Replacement =
         Token && Token->is(tok::semi) ? "= default" : "= default;";
     Diag << FixItHint::CreateReplacement(Body->getSourceRange(), Replacement)
@@ -328,6 +359,4 @@ void UseEqualsDefaultCheck::check(const MatchFinder::MatchResult &Result) {
   }
 }
 
-} // namespace modernize
-} // namespace tidy
-} // namespace clang
+} // namespace clang::tidy::modernize

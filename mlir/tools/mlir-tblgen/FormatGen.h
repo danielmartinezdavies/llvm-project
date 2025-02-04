@@ -15,7 +15,6 @@
 #define MLIR_TOOLS_MLIRTBLGEN_FORMATGEN_H_
 
 #include "mlir/Support/LLVM.h"
-#include "mlir/Support/LogicalResult.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/StringSet.h"
 #include "llvm/Support/Allocator.h"
@@ -60,6 +59,7 @@ public:
     keyword_start,
     kw_attr_dict,
     kw_attr_dict_w_keyword,
+    kw_prop_dict,
     kw_custom,
     kw_functional_type,
     kw_oilist,
@@ -234,7 +234,15 @@ private:
 class VariableElement : public FormatElementBase<FormatElement::Variable> {
 public:
   /// These are the kinds of variables.
-  enum Kind { Attribute, Operand, Region, Result, Successor, Parameter };
+  enum Kind {
+    Attribute,
+    Operand,
+    Region,
+    Result,
+    Successor,
+    Parameter,
+    Property
+  };
 
   /// Get the kind of variable.
   Kind getKind() const { return kind; }
@@ -287,6 +295,7 @@ public:
   /// These are the kinds of directives.
   enum Kind {
     AttrDict,
+    PropDict,
     Custom,
     FunctionalType,
     OIList,
@@ -378,34 +387,48 @@ public:
   /// Create an optional group with the given child elements.
   OptionalElement(std::vector<FormatElement *> &&thenElements,
                   std::vector<FormatElement *> &&elseElements,
-                  unsigned anchorIndex, unsigned parseStart)
+                  unsigned thenParseStart, unsigned elseParseStart,
+                  FormatElement *anchor, bool inverted)
       : thenElements(std::move(thenElements)),
-        elseElements(std::move(elseElements)), anchorIndex(anchorIndex),
-        parseStart(parseStart) {}
+        elseElements(std::move(elseElements)), thenParseStart(thenParseStart),
+        elseParseStart(elseParseStart), anchor(anchor), inverted(inverted) {}
 
-  /// Return the `then` elements of the optional group.
-  ArrayRef<FormatElement *> getThenElements() const { return thenElements; }
+  /// Return the `then` elements of the optional group. Drops the first
+  /// `thenParseStart` whitespace elements if `parseable` is true.
+  ArrayRef<FormatElement *> getThenElements(bool parseable = false) const {
+    return llvm::ArrayRef(thenElements)
+        .drop_front(parseable ? thenParseStart : 0);
+  }
 
-  /// Return the `else` elements of the optional group.
-  ArrayRef<FormatElement *> getElseElements() const { return elseElements; }
+  /// Return the `else` elements of the optional group. Drops the first
+  /// `elseParseStart` whitespace elements if `parseable` is true.
+  ArrayRef<FormatElement *> getElseElements(bool parseable = false) const {
+    return llvm::ArrayRef(elseElements)
+        .drop_front(parseable ? elseParseStart : 0);
+  }
 
   /// Return the anchor of the optional group.
-  FormatElement *getAnchor() const { return thenElements[anchorIndex]; }
+  FormatElement *getAnchor() const { return anchor; }
 
-  /// Return the index of the first element to be parsed.
-  unsigned getParseStart() const { return parseStart; }
+  /// Return true if the optional group is inverted.
+  bool isInverted() const { return inverted; }
 
 private:
   /// The child elements emitted when the anchor is present.
   std::vector<FormatElement *> thenElements;
   /// The child elements emitted when the anchor is not present.
   std::vector<FormatElement *> elseElements;
-  /// The index of the anchor element of the optional group within
-  /// `thenElements`.
-  unsigned anchorIndex;
   /// The index of the first element that is parsed in `thenElements`. That is,
   /// the first non-whitespace element.
-  unsigned parseStart;
+  unsigned thenParseStart;
+  /// The index of the first element that is parsed in `elseElements`. That is,
+  /// the first non-whitespace element.
+  unsigned elseParseStart;
+  /// The anchor element of the optional group.
+  FormatElement *anchor;
+  /// Whether the optional group condition is inverted and the anchor element is
+  /// in the else group.
+  bool inverted;
 };
 
 //===----------------------------------------------------------------------===//
@@ -471,9 +494,12 @@ protected:
   FailureOr<FormatElement *> parseDirective(Context ctx);
   /// Parse an optional group.
   FailureOr<FormatElement *> parseOptionalGroup(Context ctx);
-
   /// Parse a custom directive.
   FailureOr<FormatElement *> parseCustomDirective(llvm::SMLoc loc, Context ctx);
+  /// Parse a ref directive.
+  FailureOr<FormatElement *> parseRefDirective(SMLoc loc, Context context);
+  /// Parse a qualified directive.
+  FailureOr<FormatElement *> parseQualifiedDirective(SMLoc loc, Context ctx);
 
   /// Parse a format-specific variable kind.
   virtual FailureOr<FormatElement *>
@@ -496,7 +522,12 @@ protected:
   virtual LogicalResult
   verifyOptionalGroupElements(llvm::SMLoc loc,
                               ArrayRef<FormatElement *> elements,
-                              Optional<unsigned> anchorIndex) = 0;
+                              FormatElement *anchor) = 0;
+
+  /// Mark 'element' as qualified. If 'element' cannot be qualified an error
+  /// should be emitted and failure returned.
+  virtual LogicalResult markQualified(llvm::SMLoc loc,
+                                      FormatElement *element) = 0;
 
   //===--------------------------------------------------------------------===//
   // Lexer Utilities

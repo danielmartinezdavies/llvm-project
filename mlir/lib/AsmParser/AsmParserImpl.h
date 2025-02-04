@@ -13,6 +13,8 @@
 #include "mlir/AsmParser/AsmParserState.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/OpImplementation.h"
+#include "llvm/Support/Base64.h"
+#include <optional>
 
 namespace mlir {
 namespace detail {
@@ -112,6 +114,11 @@ public:
   /// Parse a `,` token if present.
   ParseResult parseOptionalComma() override {
     return success(parser.consumeIf(Token::comma));
+  }
+
+  /// Parses a `...`.
+  ParseResult parseEllipsis() override {
+    return parser.parseToken(Token::ellipsis, "expected '...'");
   }
 
   /// Parses a `...` if present.
@@ -219,6 +226,16 @@ public:
     return success(parser.consumeIf(Token::plus));
   }
 
+  /// Parses a '-' token.
+  ParseResult parseMinus() override {
+    return parser.parseToken(Token::minus, "expected '-'");
+  }
+
+  /// Parses a '-' token if present.
+  ParseResult parseOptionalMinus() override {
+    return success(parser.consumeIf(Token::minus));
+  }
+
   /// Parse a '|' token.
   ParseResult parseVerticalBar() override {
     return parser.parseToken(Token::vertical_bar, "expected '|'");
@@ -240,41 +257,63 @@ public:
     return success();
   }
 
-  /// Parse a floating point value from the stream.
-  ParseResult parseFloat(double &result) override {
+  /// Parses a Base64 encoded string of bytes.
+  ParseResult parseBase64Bytes(std::vector<char> *bytes) override {
+    auto loc = getCurrentLocation();
+    if (!parser.getToken().is(Token::string))
+      return emitError(loc, "expected string");
+
+    if (bytes) {
+      // decodeBase64 doesn't modify its input so we can use the token spelling
+      // and just slice off the quotes/whitespaces if there are any. Whitespace
+      // and quotes cannot appear as part of a (standard) base64 encoded string,
+      // so this is safe to do.
+      StringRef b64QuotedString = parser.getTokenSpelling();
+      StringRef b64String =
+          b64QuotedString.ltrim("\"  \t\n\v\f\r").rtrim("\" \t\n\v\f\r");
+      if (auto err = llvm::decodeBase64(b64String, *bytes))
+        return emitError(loc, toString(std::move(err)));
+    }
+
+    parser.consumeToken();
+    return success();
+  }
+
+  /// Parse a floating point value with given semantics from the stream. Since
+  /// this implementation parses the string as double precision and only
+  /// afterwards converts the value to the requested semantic, precision may be
+  /// lost.
+  ParseResult parseFloat(const llvm::fltSemantics &semantics,
+                         APFloat &result) override {
     bool isNegative = parser.consumeIf(Token::minus);
     Token curTok = parser.getToken();
-    SMLoc loc = curTok.getLoc();
+    std::optional<APFloat> apResult;
+    if (failed(parser.parseFloatFromLiteral(apResult, curTok, isNegative,
+                                            semantics)))
+      return failure();
+    parser.consumeToken();
+    result = *apResult;
+    return success();
+  }
 
-    // Check for a floating point value.
-    if (curTok.is(Token::floatliteral)) {
-      auto val = curTok.getFloatingPointValue();
-      if (!val)
-        return emitError(loc, "floating point value too large");
-      parser.consumeToken(Token::floatliteral);
-      result = isNegative ? -*val : *val;
-      return success();
-    }
+  /// Parse a floating point value from the stream.
+  ParseResult parseFloat(double &result) override {
+    llvm::APFloat apResult(0.0);
+    if (parseFloat(APFloat::IEEEdouble(), apResult))
+      return failure();
 
-    // Check for a hexadecimal float value.
-    if (curTok.is(Token::integer)) {
-      Optional<APFloat> apResult;
-      if (failed(parser.parseFloatFromIntegerLiteral(
-              apResult, curTok, isNegative, APFloat::IEEEdouble(),
-              /*typeSizeInBits=*/64)))
-        return failure();
-
-      parser.consumeToken(Token::integer);
-      result = apResult->convertToDouble();
-      return success();
-    }
-
-    return emitError(loc, "expected floating point literal");
+    result = apResult.convertToDouble();
+    return success();
   }
 
   /// Parse an optional integer value from the stream.
   OptionalParseResult parseOptionalInteger(APInt &result) override {
     return parser.parseOptionalInteger(result);
+  }
+
+  /// Parse an optional integer value from the stream.
+  OptionalParseResult parseOptionalDecimalInteger(APInt &result) override {
+    return parser.parseOptionalDecimalInteger(result);
   }
 
   /// Parse a list of comma-separated items with an optional delimiter.  If a
@@ -402,6 +441,10 @@ public:
                                              Type type) override {
     return parser.parseOptionalAttribute(result, type);
   }
+  OptionalParseResult parseOptionalAttribute(SymbolRefAttr &result,
+                                             Type type) override {
+    return parser.parseOptionalAttribute(result, type);
+  }
 
   /// Parse a named dictionary into 'result' if it is present.
   ParseResult parseOptionalAttrDict(NamedAttrList &result) override {
@@ -423,8 +466,16 @@ public:
     return parser.parseAffineMapReference(map);
   }
 
+  /// Parse an affine expr instance into 'expr' using the already computed
+  /// mapping from symbols to affine expressions in 'symbolSet'.
+  ParseResult
+  parseAffineExpr(ArrayRef<std::pair<StringRef, AffineExpr>> symbolSet,
+                  AffineExpr &expr) override {
+    return parser.parseAffineExprReference(symbolSet, expr);
+  }
+
   /// Parse an integer set instance into 'set'.
-  ParseResult printIntegerSet(IntegerSet &set) override {
+  ParseResult parseIntegerSet(IntegerSet &set) override {
     return parser.parseIntegerSetReference(set);
   }
 
@@ -434,14 +485,12 @@ public:
 
   /// Parse an optional @-identifier and store it (without the '@' symbol) in a
   /// string attribute named 'attrName'.
-  ParseResult parseOptionalSymbolName(StringAttr &result, StringRef attrName,
-                                      NamedAttrList &attrs) override {
+  ParseResult parseOptionalSymbolName(StringAttr &result) override {
     Token atToken = parser.getToken();
     if (atToken.isNot(Token::at_identifier))
       return failure();
 
     result = getBuilder().getStringAttr(atToken.getSymbolReference());
-    attrs.push_back(getBuilder().getNamedAttr(attrName, result));
     parser.consumeToken();
 
     // If we are populating the assembly parser state, record this as a symbol
@@ -529,6 +578,14 @@ public:
 
   ParseResult parseXInDimensionList() override {
     return parser.parseXInDimensionList();
+  }
+
+  LogicalResult pushCyclicParsing(const void *opaquePointer) override {
+    return success(parser.getState().cyclicParsingStack.insert(opaquePointer));
+  }
+
+  void popCyclicParsing() override {
+    parser.getState().cyclicParsingStack.pop_back();
   }
 
   //===--------------------------------------------------------------------===//

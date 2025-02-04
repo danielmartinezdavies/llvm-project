@@ -171,14 +171,14 @@ bool HexagonGenExtract::convert(Instruction *In) {
     // this value.
     if (!LogicalSR && (SR > SL))
       return false;
-    APInt A = APInt(BW, ~0ULL).lshr(SR).shl(SL);
+    APInt A = APInt(BW, ~0ULL, true).lshr(SR).shl(SL);
     CM = ConstantInt::get(Ctx, A);
   }
 
   // CM is the shifted-left mask. Shift it back right to remove the zero
   // bits on least-significant positions.
   APInt M = CM->getValue().lshr(SL);
-  uint32_t T = M.countTrailingOnes();
+  uint32_t T = M.countr_one();
 
   // During the shifts some of the bits will be lost. Calculate how many
   // of the original value will remain after shift right and then left.
@@ -211,9 +211,8 @@ bool HexagonGenExtract::convert(Instruction *In) {
   IRBuilder<> IRB(In);
   Intrinsic::ID IntId = (BW == 32) ? Intrinsic::hexagon_S2_extractu
                                    : Intrinsic::hexagon_S2_extractup;
-  Module *Mod = BB->getParent()->getParent();
-  Function *ExtF = Intrinsic::getDeclaration(Mod, IntId);
-  Value *NewIn = IRB.CreateCall(ExtF, {BF, IRB.getInt32(W), IRB.getInt32(SR)});
+  Value *NewIn =
+      IRB.CreateIntrinsic(IntId, {}, {BF, IRB.getInt32(W), IRB.getInt32(SR)});
   if (SL != 0)
     NewIn = IRB.CreateShl(NewIn, SL, CSL->getName());
   In->replaceAllUsesWith(NewIn);

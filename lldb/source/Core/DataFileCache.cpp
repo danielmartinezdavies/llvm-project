@@ -15,7 +15,6 @@
 #include "lldb/Utility/LLDBLog.h"
 #include "lldb/Utility/Log.h"
 #include "llvm/Support/CachePruning.h"
-#include "llvm/Support/MemoryBuffer.h"
 
 using namespace lldb_private;
 
@@ -55,7 +54,8 @@ DataFileCache::DataFileCache(llvm::StringRef path, llvm::CachePruningPolicy poli
   // m_take_ownership member variable to indicate if we need to take
   // ownership.
 
-  auto add_buffer = [this](unsigned task, std::unique_ptr<llvm::MemoryBuffer> m) {
+  auto add_buffer = [this](unsigned task, const llvm::Twine &moduleName,
+                           std::unique_ptr<llvm::MemoryBuffer> m) {
     if (m_take_ownership)
       m_mem_buff_up = std::move(m);
   };
@@ -81,7 +81,7 @@ DataFileCache::GetCachedData(llvm::StringRef key) {
   // turn take ownership of the member buffer that is passed to the callback and
   // put it into a member variable.
   llvm::Expected<llvm::AddStreamFn> add_stream_or_err =
-      m_cache_callback(task, key);
+      m_cache_callback(task, key, "");
   m_take_ownership = false;
   // At this point we either already called the "add_buffer" lambda with
   // the data or we haven't. We can tell if we got the cached data by checking
@@ -113,7 +113,7 @@ bool DataFileCache::SetCachedData(llvm::StringRef key,
   // add_buffer lambda function from the constructor which will ignore the
   // data.
   llvm::Expected<llvm::AddStreamFn> add_stream_or_err =
-      m_cache_callback(task, key);
+      m_cache_callback(task, key, "");
   // If we reach this code then we either already called the callback with
   // the data or we haven't. We can tell if we had the cached data by checking
   // the CacheAddStream function pointer value below.
@@ -128,7 +128,7 @@ bool DataFileCache::SetCachedData(llvm::StringRef key,
     // want to write the data.
     if (add_stream) {
       llvm::Expected<std::unique_ptr<llvm::CachedFileStream>> file_or_err =
-          add_stream(task);
+          add_stream(task, "");
       if (file_or_err) {
         llvm::CachedFileStream *cfs = file_or_err->get();
         cfs->OS->write((const char *)data.data(), data.size());
@@ -238,7 +238,7 @@ bool CacheSignature::Decode(const lldb_private::DataExtractor &data,
       const uint8_t length = data.GetU8(offset_ptr);
       const uint8_t *bytes = (const uint8_t *)data.GetData(offset_ptr, length);
       if (bytes != nullptr && length > 0)
-        m_uuid = UUID::fromData(llvm::ArrayRef<uint8_t>(bytes, length));
+        m_uuid = UUID(llvm::ArrayRef<uint8_t>(bytes, length));
     } break;
     case eSignatureModTime: {
       uint32_t mod_time = data.GetU32(offset_ptr);
@@ -264,14 +264,12 @@ bool CacheSignature::Decode(const lldb_private::DataExtractor &data,
 }
 
 uint32_t ConstStringTable::Add(ConstString s) {
-  auto pos = m_string_to_offset.find(s);
-  if (pos != m_string_to_offset.end())
-    return pos->second;
-  const uint32_t offset = m_next_offset;
-  m_strings.push_back(s);
-  m_string_to_offset[s] = offset;
-  m_next_offset += s.GetLength() + 1;
-  return offset;
+  auto [pos, inserted] = m_string_to_offset.try_emplace(s, m_next_offset);
+  if (inserted) {
+    m_strings.push_back(s);
+    m_next_offset += s.GetLength() + 1;
+  }
+  return pos->second;
 }
 
 static const llvm::StringRef kStringTableIdentifier("STAB");
@@ -285,7 +283,7 @@ bool ConstStringTable::Encode(DataEncoder &encoder) {
   size_t length_offset = encoder.GetByteSize();
   encoder.AppendU32(0); // Total length of all strings which will be fixed up.
   size_t strtab_offset = encoder.GetByteSize();
-  encoder.AppendU8(0); // Start the string table with with an empty string.
+  encoder.AppendU8(0); // Start the string table with an empty string.
   for (auto s: m_strings) {
     // Make sure all of the offsets match up with what we handed out!
     assert(m_string_to_offset.find(s)->second ==

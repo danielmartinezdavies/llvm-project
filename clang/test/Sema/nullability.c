@@ -167,7 +167,7 @@ void conditional_expr(int c) {
 
   p = c ? nonnullP2 : nonnullP2;
   p = c ? nonnullP2 : nullableP2; // expected-warning{{implicit conversion from nullable pointer 'IntP _Nullable' (aka 'int *') to non-nullable pointer type 'int * _Nonnull'}}
-  p = c ? nullableP2 : nonnullP2; // expected-warning{{implicit conversion from nullable pointer 'NullableIntP1' (aka 'int *') to non-nullable pointer type 'int * _Nonnull'}}
+  p = c ? nullableP2 : nonnullP2; // expected-warning{{implicit conversion from nullable pointer 'IntP _Nullable' (aka 'int *') to non-nullable pointer type 'int * _Nonnull'}}
   p = c ? nullableP2 : nullableP2; // expected-warning{{implicit conversion from nullable pointer 'NullableIntP1' (aka 'int *') to non-nullable pointer type 'int * _Nonnull'}}
 }
 
@@ -248,3 +248,5 @@ void arraysInBlocks(void) {
   void (^withTypedefBad)(INTS _Nonnull [2]) = // expected-error {{nullability specifier '_Nonnull' cannot be applied to non-pointer type 'INTS' (aka 'int[4]')}}
       ^(INTS _Nonnull x[2]) {}; // expected-error {{nullability specifier '_Nonnull' cannot be applied to non-pointer type 'INTS' (aka 'int[4]')}}
 }
+
+struct _Nullable NotCplusplusClass {}; // expected-error {{'_Nullable' attribute only applies to classes}}

@@ -12,7 +12,6 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/Transforms/Utils/CodeMoverUtils.h"
-#include "llvm/ADT/Optional.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/Analysis/DependenceAnalysis.h"
 #include "llvm/Analysis/PostDominators.h"
@@ -58,9 +57,9 @@ class ControlConditions {
 public:
   /// Return a ControlConditions which stores all conditions required to execute
   /// \p BB from \p Dominator. If \p MaxLookup is non-zero, it limits the
-  /// number of conditions to collect. Return None if not all conditions are
-  /// collected successfully, or we hit the limit.
-  static const Optional<ControlConditions>
+  /// number of conditions to collect. Return std::nullopt if not all conditions
+  /// are collected successfully, or we hit the limit.
+  static const std::optional<ControlConditions>
   collectControlConditions(const BasicBlock &BB, const BasicBlock &Dominator,
                            const DominatorTree &DT,
                            const PostDominatorTree &PDT,
@@ -105,9 +104,12 @@ static bool domTreeLevelBefore(DominatorTree *DT, const Instruction *InstA,
   return DA->getLevel() < DB->getLevel();
 }
 
-const Optional<ControlConditions> ControlConditions::collectControlConditions(
-    const BasicBlock &BB, const BasicBlock &Dominator, const DominatorTree &DT,
-    const PostDominatorTree &PDT, unsigned MaxLookup) {
+const std::optional<ControlConditions>
+ControlConditions::collectControlConditions(const BasicBlock &BB,
+                                            const BasicBlock &Dominator,
+                                            const DominatorTree &DT,
+                                            const PostDominatorTree &PDT,
+                                            unsigned MaxLookup) {
   assert(DT.dominates(&Dominator, &BB) && "Expecting Dominator to dominate BB");
 
   ControlConditions Conditions;
@@ -129,7 +131,7 @@ const Optional<ControlConditions> ControlConditions::collectControlConditions(
     // Limitation: can only handle branch instruction currently.
     const BranchInst *BI = dyn_cast<BranchInst>(IDom->getTerminator());
     if (!BI)
-      return None;
+      return std::nullopt;
 
     bool Inserted = false;
     if (PDT.dominates(CurBlock, IDom)) {
@@ -149,13 +151,13 @@ const Optional<ControlConditions> ControlConditions::collectControlConditions(
       Inserted = Conditions.addControlCondition(
           ControlCondition(BI->getCondition(), false));
     } else
-      return None;
+      return std::nullopt;
 
     if (Inserted)
       ++NumConditions;
 
     if (MaxLookup != 0 && NumConditions > MaxLookup)
-      return None;
+      return std::nullopt;
 
     CurBlock = IDom;
   } while (CurBlock != &Dominator);
@@ -249,16 +251,16 @@ bool llvm::isControlFlowEquivalent(const BasicBlock &BB0, const BasicBlock &BB1,
                     << " and " << BB1.getName() << " is "
                     << CommonDominator->getName() << "\n");
 
-  const Optional<ControlConditions> BB0Conditions =
+  const std::optional<ControlConditions> BB0Conditions =
       ControlConditions::collectControlConditions(BB0, *CommonDominator, DT,
                                                   PDT);
-  if (BB0Conditions == None)
+  if (BB0Conditions == std::nullopt)
     return false;
 
-  const Optional<ControlConditions> BB1Conditions =
+  const std::optional<ControlConditions> BB1Conditions =
       ControlConditions::collectControlConditions(BB1, *CommonDominator, DT,
                                                   PDT);
-  if (BB1Conditions == None)
+  if (BB1Conditions == std::nullopt)
     return false;
 
   return BB0Conditions->isEquivalent(*BB1Conditions);
@@ -334,9 +336,22 @@ bool llvm::isSafeToMoveBefore(Instruction &I, Instruction &InsertPoint,
 
   if (isReachedBefore(&I, &InsertPoint, &DT, PDT))
     for (const Use &U : I.uses())
-      if (auto *UserInst = dyn_cast<Instruction>(U.getUser()))
-        if (UserInst != &InsertPoint && !DT.dominates(&InsertPoint, U))
+      if (auto *UserInst = dyn_cast<Instruction>(U.getUser())) {
+        // If InsertPoint is in a BB that comes after I, then we cannot move if
+        // I is used in the terminator of the current BB.
+        if (I.getParent() == InsertPoint.getParent() &&
+            UserInst == I.getParent()->getTerminator())
           return false;
+        if (UserInst != &InsertPoint && !DT.dominates(&InsertPoint, U)) {
+          // If UserInst is an instruction that appears later in the same BB as
+          // I, then it is okay to move since I will still be available when
+          // UserInst is executed.
+          if (CheckForEntireBlock && I.getParent() == UserInst->getParent() &&
+              DT.dominates(&I, UserInst))
+            continue;
+          return false;
+        }
+      }
   if (isReachedBefore(&InsertPoint, &I, &DT, PDT))
     for (const Value *Op : I.operands())
       if (auto *OpInst = dyn_cast<Instruction>(Op)) {
@@ -412,10 +427,10 @@ void llvm::moveInstructionsToTheBeginning(BasicBlock &FromBB, BasicBlock &ToBB,
                                           DependenceInfo &DI) {
   for (Instruction &I :
        llvm::make_early_inc_range(llvm::drop_begin(llvm::reverse(FromBB)))) {
-    Instruction *MovePos = ToBB.getFirstNonPHIOrDbg();
+    BasicBlock::iterator MovePos = ToBB.getFirstNonPHIOrDbg();
 
     if (isSafeToMoveBefore(I, *MovePos, DT, &PDT, &DI))
-      I.moveBefore(MovePos);
+      I.moveBeforePreserving(MovePos);
   }
 }
 
@@ -427,7 +442,7 @@ void llvm::moveInstructionsToTheEnd(BasicBlock &FromBB, BasicBlock &ToBB,
   while (FromBB.size() > 1) {
     Instruction &I = FromBB.front();
     if (isSafeToMoveBefore(I, *MovePos, DT, &PDT, &DI))
-      I.moveBefore(MovePos);
+      I.moveBeforePreserving(MovePos->getIterator());
   }
 }
 

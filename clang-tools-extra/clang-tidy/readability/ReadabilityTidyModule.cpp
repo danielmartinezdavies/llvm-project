@@ -10,6 +10,9 @@
 #include "../ClangTidyModule.h"
 #include "../ClangTidyModuleRegistry.h"
 #include "AvoidConstParamsInDecls.h"
+#include "AvoidNestedConditionalOperatorCheck.h"
+#include "AvoidReturnWithVoidValueCheck.h"
+#include "AvoidUnconditionalPreprocessorIfCheck.h"
 #include "BracesAroundStatementsCheck.h"
 #include "ConstReturnTypeCheck.h"
 #include "ContainerContainsCheck.h"
@@ -19,6 +22,7 @@
 #include "DeleteNullPointerCheck.h"
 #include "DuplicateIncludeCheck.h"
 #include "ElseAfterReturnCheck.h"
+#include "EnumInitialValueCheck.h"
 #include "FunctionCognitiveComplexityCheck.h"
 #include "FunctionSizeCheck.h"
 #include "IdentifierLengthCheck.h"
@@ -28,20 +32,25 @@
 #include "IsolateDeclarationCheck.h"
 #include "MagicNumbersCheck.h"
 #include "MakeMemberFunctionConstCheck.h"
+#include "MathMissingParenthesesCheck.h"
 #include "MisleadingIndentationCheck.h"
 #include "MisplacedArrayIndexCheck.h"
 #include "NamedParameterCheck.h"
 #include "NonConstParameterCheck.h"
+#include "OperatorsRepresentationCheck.h"
 #include "QualifiedAutoCheck.h"
 #include "RedundantAccessSpecifiersCheck.h"
+#include "RedundantCastingCheck.h"
 #include "RedundantControlFlowCheck.h"
 #include "RedundantDeclarationCheck.h"
 #include "RedundantFunctionPtrDereferenceCheck.h"
+#include "RedundantInlineSpecifierCheck.h"
 #include "RedundantMemberInitCheck.h"
 #include "RedundantPreprocessorCheck.h"
 #include "RedundantSmartptrGetCheck.h"
 #include "RedundantStringCStrCheck.h"
 #include "RedundantStringInitCheck.h"
+#include "ReferenceToConstructedTemporaryCheck.h"
 #include "SimplifyBooleanExprCheck.h"
 #include "SimplifySubscriptExprCheck.h"
 #include "StaticAccessedThroughInstanceCheck.h"
@@ -51,9 +60,9 @@
 #include "UniqueptrDeleteReleaseCheck.h"
 #include "UppercaseLiteralSuffixCheck.h"
 #include "UseAnyOfAllOfCheck.h"
+#include "UseStdMinMaxCheck.h"
 
-namespace clang {
-namespace tidy {
+namespace clang::tidy {
 namespace readability {
 
 class ReadabilityModule : public ClangTidyModule {
@@ -61,6 +70,12 @@ public:
   void addCheckFactories(ClangTidyCheckFactories &CheckFactories) override {
     CheckFactories.registerCheck<AvoidConstParamsInDecls>(
         "readability-avoid-const-params-in-decls");
+    CheckFactories.registerCheck<AvoidNestedConditionalOperatorCheck>(
+        "readability-avoid-nested-conditional-operator");
+    CheckFactories.registerCheck<AvoidReturnWithVoidValueCheck>(
+        "readability-avoid-return-with-void-value");
+    CheckFactories.registerCheck<AvoidUnconditionalPreprocessorIfCheck>(
+        "readability-avoid-unconditional-preprocessor-if");
     CheckFactories.registerCheck<BracesAroundStatementsCheck>(
         "readability-braces-around-statements");
     CheckFactories.registerCheck<ConstReturnTypeCheck>(
@@ -79,6 +94,8 @@ public:
         "readability-duplicate-include");
     CheckFactories.registerCheck<ElseAfterReturnCheck>(
         "readability-else-after-return");
+    CheckFactories.registerCheck<EnumInitialValueCheck>(
+        "readability-enum-initial-value");
     CheckFactories.registerCheck<FunctionCognitiveComplexityCheck>(
         "readability-function-cognitive-complexity");
     CheckFactories.registerCheck<FunctionSizeCheck>(
@@ -89,6 +106,10 @@ public:
         "readability-identifier-naming");
     CheckFactories.registerCheck<ImplicitBoolConversionCheck>(
         "readability-implicit-bool-conversion");
+    CheckFactories.registerCheck<MathMissingParenthesesCheck>(
+        "readability-math-missing-parentheses");
+    CheckFactories.registerCheck<RedundantInlineSpecifierCheck>(
+        "readability-redundant-inline-specifier");
     CheckFactories.registerCheck<InconsistentDeclarationParameterNameCheck>(
         "readability-inconsistent-declaration-parameter-name");
     CheckFactories.registerCheck<IsolateDeclarationCheck>(
@@ -101,16 +122,22 @@ public:
         "readability-misleading-indentation");
     CheckFactories.registerCheck<MisplacedArrayIndexCheck>(
         "readability-misplaced-array-index");
+    CheckFactories.registerCheck<OperatorsRepresentationCheck>(
+        "readability-operators-representation");
     CheckFactories.registerCheck<QualifiedAutoCheck>(
         "readability-qualified-auto");
     CheckFactories.registerCheck<RedundantAccessSpecifiersCheck>(
         "readability-redundant-access-specifiers");
+    CheckFactories.registerCheck<RedundantCastingCheck>(
+        "readability-redundant-casting");
     CheckFactories.registerCheck<RedundantFunctionPtrDereferenceCheck>(
         "readability-redundant-function-ptr-dereference");
     CheckFactories.registerCheck<RedundantMemberInitCheck>(
         "readability-redundant-member-init");
     CheckFactories.registerCheck<RedundantPreprocessorCheck>(
         "readability-redundant-preprocessor");
+    CheckFactories.registerCheck<ReferenceToConstructedTemporaryCheck>(
+        "readability-reference-to-constructed-temporary");
     CheckFactories.registerCheck<SimplifySubscriptExprCheck>(
         "readability-simplify-subscript-expr");
     CheckFactories.registerCheck<StaticAccessedThroughInstanceCheck>(
@@ -143,6 +170,8 @@ public:
         "readability-uppercase-literal-suffix");
     CheckFactories.registerCheck<UseAnyOfAllOfCheck>(
         "readability-use-anyofallof");
+    CheckFactories.registerCheck<UseStdMinMaxCheck>(
+        "readability-use-std-min-max");
   }
 };
 
@@ -156,5 +185,4 @@ static ClangTidyModuleRegistry::Add<ReadabilityModule>
 // and thus register the ReadabilityModule.
 volatile int ReadabilityModuleAnchorSource = 0;
 
-} // namespace tidy
-} // namespace clang
+} // namespace clang::tidy

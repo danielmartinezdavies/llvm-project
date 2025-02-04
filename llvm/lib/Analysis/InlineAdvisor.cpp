@@ -13,6 +13,7 @@
 
 #include "llvm/Analysis/InlineAdvisor.h"
 #include "llvm/ADT/Statistic.h"
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/Analysis/AssumptionCache.h"
 #include "llvm/Analysis/InlineCost.h"
 #include "llvm/Analysis/OptimizationRemarkEmitter.h"
@@ -22,6 +23,7 @@
 #include "llvm/Analysis/TargetTransformInfo.h"
 #include "llvm/Analysis/Utils/ImportedFunctionsInliningStatistics.h"
 #include "llvm/IR/DebugInfoMetadata.h"
+#include "llvm/IR/Module.h"
 #include "llvm/IR/PassManager.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/raw_ostream.h"
@@ -61,7 +63,9 @@ static cl::opt<bool>
                         cl::desc("If true, annotate inline advisor remarks "
                                  "with LTO and pass information."));
 
+namespace llvm {
 extern cl::opt<InlinerFunctionImportStatsOpts> InlinerFunctionImportStats;
+} // namespace llvm
 
 namespace {
 using namespace llvm::ore;
@@ -128,7 +132,7 @@ void DefaultInlineAdvice::recordInliningImpl() {
                                Advisor->getAnnotatedInlinePassName());
 }
 
-llvm::Optional<llvm::InlineCost> static getDefaultInlineAdvice(
+std::optional<llvm::InlineCost> static getDefaultInlineAdvice(
     CallBase &CB, FunctionAnalysisManager &FAM, const InlineParams &Params) {
   Function &Caller = *CB.getCaller();
   ProfileSummaryInfo *PSI =
@@ -147,9 +151,9 @@ llvm::Optional<llvm::InlineCost> static getDefaultInlineAdvice(
     return FAM.getResult<TargetLibraryAnalysis>(F);
   };
 
+  Function &Callee = *CB.getCalledFunction();
+  auto &CalleeTTI = FAM.getResult<TargetIRAnalysis>(Callee);
   auto GetInlineCost = [&](CallBase &CB) {
-    Function &Callee = *CB.getCalledFunction();
-    auto &CalleeTTI = FAM.getResult<TargetIRAnalysis>(Callee);
     bool RemarksEnabled =
         Callee.getContext().getDiagHandlerPtr()->isMissedOptRemarkEnabled(
             DEBUG_TYPE);
@@ -157,7 +161,7 @@ llvm::Optional<llvm::InlineCost> static getDefaultInlineAdvice(
                          GetBFI, PSI, RemarksEnabled ? &ORE : nullptr);
   };
   return llvm::shouldInline(
-      CB, GetInlineCost, ORE,
+      CB, CalleeTTI, GetInlineCost, ORE,
       Params.EnableDeferral.value_or(EnableInlineDeferral));
 }
 
@@ -194,11 +198,21 @@ void InlineAdvice::recordInliningWithCalleeDeleted() {
 }
 
 AnalysisKey InlineAdvisorAnalysis::Key;
+AnalysisKey PluginInlineAdvisorAnalysis::Key;
 
 bool InlineAdvisorAnalysis::Result::tryCreate(
     InlineParams Params, InliningAdvisorMode Mode,
     const ReplayInlinerSettings &ReplaySettings, InlineContext IC) {
   auto &FAM = MAM.getResult<FunctionAnalysisManagerModuleProxy>(M).getManager();
+  if (MAM.isPassRegistered<PluginInlineAdvisorAnalysis>()) {
+    auto &DA = MAM.getResult<PluginInlineAdvisorAnalysis>(M);
+    Advisor.reset(DA.Factory(M, FAM, Params, IC));
+    return !!Advisor;
+  }
+  auto GetDefaultAdvice = [&FAM, Params](CallBase &CB) {
+    auto OIC = getDefaultInlineAdvice(CB, FAM, Params);
+    return OIC.has_value();
+  };
   switch (Mode) {
   case InliningAdvisorMode::Default:
     LLVM_DEBUG(dbgs() << "Using default inliner heuristic.\n");
@@ -212,20 +226,14 @@ bool InlineAdvisorAnalysis::Result::tryCreate(
     }
     break;
   case InliningAdvisorMode::Development:
-#ifdef LLVM_HAVE_TF_API
+#ifdef LLVM_HAVE_TFLITE
     LLVM_DEBUG(dbgs() << "Using development-mode inliner policy.\n");
-    Advisor =
-        llvm::getDevelopmentModeAdvisor(M, MAM, [&FAM, Params](CallBase &CB) {
-          auto OIC = getDefaultInlineAdvice(CB, FAM, Params);
-          return OIC.hasValue();
-        });
+    Advisor = llvm::getDevelopmentModeAdvisor(M, MAM, GetDefaultAdvice);
 #endif
     break;
   case InliningAdvisorMode::Release:
-#ifdef LLVM_HAVE_TF_AOT
     LLVM_DEBUG(dbgs() << "Using release-mode inliner policy.\n");
-    Advisor = llvm::getReleaseModeAdvisor(M, MAM);
-#endif
+    Advisor = llvm::getReleaseModeAdvisor(M, MAM, GetDefaultAdvice);
     break;
   }
 
@@ -238,7 +246,8 @@ bool InlineAdvisorAnalysis::Result::tryCreate(
 /// \p TotalSecondaryCost will be set to the estimated cost of inlining the
 /// caller if \p CB is suppressed for inlining.
 static bool
-shouldBeDeferred(Function *Caller, InlineCost IC, int &TotalSecondaryCost,
+shouldBeDeferred(Function *Caller, TargetTransformInfo &CalleeTTI,
+                 InlineCost IC, int &TotalSecondaryCost,
                  function_ref<InlineCost(CallBase &CB)> GetInlineCost) {
   // For now we only handle local or inline functions.
   if (!Caller->hasLocalLinkage() && !Caller->hasLinkOnceODRLinkage())
@@ -311,7 +320,7 @@ shouldBeDeferred(Function *Caller, InlineCost IC, int &TotalSecondaryCost,
   // be removed entirely.  We did not account for this above unless there
   // is only one caller of Caller.
   if (ApplyLastCallBonus)
-    TotalSecondaryCost -= InlineConstants::LastCallToStaticBonus;
+    TotalSecondaryCost -= CalleeTTI.getInliningLastCallToStaticBonus();
 
   // If InlineDeferralScale is negative, then ignore the cost of primary
   // inlining -- IC.getCost() multiplied by the number of callers to Caller.
@@ -362,10 +371,10 @@ void llvm::setInlineRemark(CallBase &CB, StringRef Message) {
 
 /// Return the cost only if the inliner should attempt to inline at the given
 /// CallSite. If we return the cost, we will emit an optimisation remark later
-/// using that cost, so we won't do so from this function. Return None if
-/// inlining should not be attempted.
-Optional<InlineCost>
-llvm::shouldInline(CallBase &CB,
+/// using that cost, so we won't do so from this function. Return std::nullopt
+/// if inlining should not be attempted.
+std::optional<InlineCost>
+llvm::shouldInline(CallBase &CB, TargetTransformInfo &CalleeTTI,
                    function_ref<InlineCost(CallBase &CB)> GetInlineCost,
                    OptimizationRemarkEmitter &ORE, bool EnableDeferral) {
   using namespace ore;
@@ -400,12 +409,12 @@ llvm::shouldInline(CallBase &CB,
       });
     }
     setInlineRemark(CB, inlineCostStr(IC));
-    return None;
+    return std::nullopt;
   }
 
   int TotalSecondaryCost = 0;
-  if (EnableDeferral &&
-      shouldBeDeferred(Caller, IC, TotalSecondaryCost, GetInlineCost)) {
+  if (EnableDeferral && shouldBeDeferred(Caller, CalleeTTI, IC,
+                                         TotalSecondaryCost, GetInlineCost)) {
     LLVM_DEBUG(dbgs() << "    NOT Inlining: " << CB
                       << " Cost = " << IC.getCost()
                       << ", outer Cost = " << TotalSecondaryCost << '\n');
@@ -417,7 +426,7 @@ llvm::shouldInline(CallBase &CB,
              << "' in other contexts";
     });
     setInlineRemark(CB, "deferred");
-    return None;
+    return std::nullopt;
   }
 
   LLVM_DEBUG(dbgs() << "    Inlining " << inlineCostStr(IC) << ", Call: " << CB
@@ -512,7 +521,7 @@ void llvm::emitInlinedIntoBasedOnCost(
 }
 
 InlineAdvisor::InlineAdvisor(Module &M, FunctionAnalysisManager &FAM,
-                             Optional<InlineContext> IC)
+                             std::optional<InlineContext> IC)
     : M(M), FAM(FAM), IC(IC),
       AnnotatedInlinePassName((IC && AnnotateInlinePhase)
                                   ? llvm::AnnotateInlinePassName(*IC)

@@ -9,7 +9,6 @@
 #include "llvm/ExecutionEngine/Orc/EPCGenericJITLinkMemoryManager.h"
 
 #include "llvm/ExecutionEngine/JITLink/JITLink.h"
-#include "llvm/ExecutionEngine/Orc/LookupAndRecordAddrs.h"
 #include "llvm/ExecutionEngine/Orc/Shared/OrcRTBridge.h"
 
 #include <limits>
@@ -47,8 +46,7 @@ public:
     for (auto &KV : Segs) {
       assert(KV.second.ContentSize <= std::numeric_limits<size_t>::max());
       FR.Segments.push_back(tpctypes::SegFinalizeRequest{
-          tpctypes::toWireProtectionFlags(
-              toSysMemoryProtectionFlags(KV.first.getMemProt())),
+          KV.first,
           KV.second.Addr,
           alignTo(KV.second.ContentSize + KV.second.ZeroFillSize,
                   Parent.EPC.getPageSize()),
@@ -159,7 +157,7 @@ void EPCGenericJITLinkMemoryManager::completeAllocation(
     auto &SegInfo = SegInfos[AG];
     SegInfo.ContentSize = Seg.ContentSize;
     SegInfo.ZeroFillSize = Seg.ZeroFillSize;
-    SegInfo.Addr = ExecutorAddr(Seg.Addr);
+    SegInfo.Addr = Seg.Addr;
     SegInfo.WorkingMem = Seg.WorkingMem;
   }
 

@@ -6,6 +6,8 @@ add_lldb_library(lldbPluginABIARC PLUGIN
     lldbSymbol
     lldbTarget
     lldbPluginProcessUtility
+    lldbValueObject
   LINK_COMPONENTS
     Support
+    TargetParser
   )

@@ -10,13 +10,15 @@
 #define LLDB_SOURCE_PLUGINS_OBJECTFILE_MACH_O_OBJECTFILEMACHO_H
 
 #include "lldb/Core/Address.h"
-#include "lldb/Core/FileSpecList.h"
 #include "lldb/Host/SafeMachO.h"
 #include "lldb/Symbol/ObjectFile.h"
+#include "lldb/Symbol/SaveCoreOptions.h"
 #include "lldb/Utility/FileSpec.h"
+#include "lldb/Utility/FileSpecList.h"
 #include "lldb/Utility/RangeMap.h"
 #include "lldb/Utility/StreamString.h"
 #include "lldb/Utility/UUID.h"
+#include <optional>
 
 // This class needs to be hidden as eventually belongs in a plugin that
 // will export the ObjectFile protocol
@@ -61,8 +63,7 @@ public:
                                         lldb_private::ModuleSpecList &specs);
 
   static bool SaveCore(const lldb::ProcessSP &process_sp,
-                       const lldb_private::FileSpec &outfile,
-                       lldb::SaveCoreStyle &core_style,
+                       lldb_private::SaveCoreOptions &options,
                        lldb_private::Status &error);
 
   static bool MagicBytesMatch(lldb::DataBufferSP data_sp, lldb::addr_t offset,
@@ -88,6 +89,8 @@ public:
   bool IsDynamicLoader() const;
 
   bool IsSharedCacheBinary() const;
+
+  bool IsKext() const;
 
   uint32_t GetAddressByteSize() const override;
 
@@ -117,13 +120,18 @@ public:
 
   uint32_t GetNumThreadContexts() override;
 
+  std::vector<std::tuple<lldb::offset_t, lldb::offset_t>>
+  FindLC_NOTEByName(std::string name);
+
   std::string GetIdentifierString() override;
 
-  lldb::addr_t GetAddressMask() override;
+  lldb_private::AddressableBits GetAddressableBits() override;
 
   bool GetCorefileMainBinaryInfo(lldb::addr_t &value, bool &value_is_offset,
                                  lldb_private::UUID &uuid,
                                  ObjectFile::BinaryType &type) override;
+
+  bool GetCorefileThreadExtraInfos(std::vector<lldb::tid_t> &tids) override;
 
   bool LoadCoreFileImages(lldb_private::Process &process) override;
 
@@ -142,11 +150,15 @@ public:
 
   bool GetIsDynamicLinkEditor() override;
 
+  bool CanTrustAddressRanges() override;
+
   static bool ParseHeader(lldb_private::DataExtractor &data,
                           lldb::offset_t *data_offset_ptr,
                           llvm::MachO::mach_header &header);
 
   bool AllowAssemblyEmulationUnwindPlans() override;
+
+  lldb_private::Section *GetMachHeaderSection();
 
   // PluginInterface protocol
   llvm::StringRef GetPluginName() override { return GetPluginNameStatic(); }
@@ -189,8 +201,6 @@ protected:
   /// does not match the process' shared cache UUID, this optimization
   /// should not be used.
   void GetLLDBSharedCacheUUID(lldb::addr_t &base_addir, lldb_private::UUID &uuid);
-
-  lldb_private::Section *GetMachHeaderSection();
 
   lldb::addr_t CalculateSectionLoadAddressForMemoryImage(
       lldb::addr_t mach_header_load_address,
@@ -246,6 +256,19 @@ protected:
     bool IsValid() { return all_image_infos.size() > 0; }
   };
 
+  // The LC_SYMTAB's symtab_command structure uses 32-bit file offsets
+  // for two fields, but ObjectFileMachO needs to calculate the offsets
+  // in virtual address layout from the start of the TEXT segment, and
+  // that span may be larger than 4GB.
+  struct SymtabCommandLargeOffsets {
+    uint32_t cmd = 0;          /* LC_SYMTAB */
+    uint32_t cmdsize = 0;      /* sizeof(struct symtab_command) */
+    lldb::offset_t symoff = 0; /* symbol table offset */
+    uint32_t nsyms = 0;        /* number of symbol table entries */
+    lldb::offset_t stroff = 0; /* string table offset */
+    uint32_t strsize = 0;      /* string table size in bytes */
+  };
+
   /// Get the list of binary images that were present in the process
   /// when the corefile was produced.
   /// \return
@@ -261,13 +284,13 @@ protected:
   static lldb_private::ConstString GetSegmentNameOBJC();
   static lldb_private::ConstString GetSegmentNameLINKEDIT();
   static lldb_private::ConstString GetSegmentNameDWARF();
+  static lldb_private::ConstString GetSegmentNameLLVM_COV();
   static lldb_private::ConstString GetSectionNameEHFrame();
 
   llvm::MachO::dysymtab_command m_dysymtab;
-  std::vector<llvm::MachO::segment_command_64> m_mach_segments;
   std::vector<llvm::MachO::section_64> m_mach_sections;
-  llvm::Optional<llvm::VersionTuple> m_min_os_version;
-  llvm::Optional<llvm::VersionTuple> m_sdk_versions;
+  std::optional<llvm::VersionTuple> m_min_os_version;
+  std::optional<llvm::VersionTuple> m_sdk_versions;
   typedef lldb_private::RangeVector<uint32_t, uint32_t> FileRangeArray;
   lldb_private::Address m_entry_point_address;
   FileRangeArray m_thread_context_offsets;

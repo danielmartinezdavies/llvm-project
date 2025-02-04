@@ -84,7 +84,7 @@ class FileManager : public RefCountedBase<FileManager> {
   /// VirtualDirectoryEntries/VirtualFileEntries above.
   ///
   llvm::StringMap<llvm::ErrorOr<DirectoryEntry &>, llvm::BumpPtrAllocator>
-  SeenDirEntries;
+      SeenDirEntries;
 
   /// A cache that maps paths to file entries (either real or
   /// virtual) we have looked up, or an error that occurred when we looked up
@@ -102,7 +102,7 @@ class FileManager : public RefCountedBase<FileManager> {
       SeenBypassFileEntries;
 
   /// The file entry for stdin, if it has been accessed through the FileManager.
-  Optional<FileEntryRef> STDIN;
+  OptionalFileEntryRef STDIN;
 
   /// The canonical names of files and directories .
   llvm::DenseMap<const void *, llvm::StringRef> CanonicalNames;
@@ -114,12 +114,18 @@ class FileManager : public RefCountedBase<FileManager> {
   ///
   unsigned NextFileUID;
 
+  /// Statistics gathered during the lifetime of the FileManager.
+  unsigned NumDirLookups = 0;
+  unsigned NumFileLookups = 0;
+  unsigned NumDirCacheMisses = 0;
+  unsigned NumFileCacheMisses = 0;
+
   // Caching.
   std::unique_ptr<FileSystemStatCache> StatCache;
 
   std::error_code getStatValue(StringRef Path, llvm::vfs::Status &Status,
-                               bool isFile,
-                               std::unique_ptr<llvm::vfs::File> *F);
+                               bool isFile, std::unique_ptr<llvm::vfs::File> *F,
+                               bool IsText = true);
 
   /// Add all ancestors of the given path (pointing to either a file
   /// or a directory) as virtual directories.
@@ -166,8 +172,8 @@ public:
                                                     bool CacheFailure = true);
 
   /// Get a \c DirectoryEntryRef if it exists, without doing anything on error.
-  llvm::Optional<DirectoryEntryRef>
-  getOptionalDirectoryRef(StringRef DirName, bool CacheFailure = true) {
+  OptionalDirectoryEntryRef getOptionalDirectoryRef(StringRef DirName,
+                                                    bool CacheFailure = true) {
     return llvm::expectedToOptional(getDirectoryRef(DirName, CacheFailure));
   }
 
@@ -184,6 +190,8 @@ public:
   ///
   /// \param CacheFailure If true and the file does not exist, we'll cache
   /// the failure to find this file.
+  LLVM_DEPRECATED("Functions returning DirectoryEntry are deprecated.",
+                  "getOptionalDirectoryRef()")
   llvm::ErrorOr<const DirectoryEntry *>
   getDirectory(StringRef DirName, bool CacheFailure = true);
 
@@ -201,6 +209,8 @@ public:
   ///
   /// \param CacheFailure If true and the file does not exist, we'll cache
   /// the failure to find this file.
+  LLVM_DEPRECATED("Functions returning FileEntry are deprecated.",
+                  "getOptionalFileRef()")
   llvm::ErrorOr<const FileEntry *>
   getFile(StringRef Filename, bool OpenFile = false, bool CacheFailure = true);
 
@@ -220,7 +230,8 @@ public:
   /// the failure to find this file.
   llvm::Expected<FileEntryRef> getFileRef(StringRef Filename,
                                           bool OpenFile = false,
-                                          bool CacheFailure = true);
+                                          bool CacheFailure = true,
+                                          bool IsText = true);
 
   /// Get the FileEntryRef for stdin, returning an error if stdin cannot be
   /// read.
@@ -231,9 +242,9 @@ public:
   llvm::Expected<FileEntryRef> getSTDIN();
 
   /// Get a FileEntryRef if it exists, without doing anything on error.
-  llvm::Optional<FileEntryRef> getOptionalFileRef(StringRef Filename,
-                                                  bool OpenFile = false,
-                                                  bool CacheFailure = true) {
+  OptionalFileEntryRef getOptionalFileRef(StringRef Filename,
+                                          bool OpenFile = false,
+                                          bool CacheFailure = true) {
     return llvm::expectedToOptional(
         getFileRef(Filename, OpenFile, CacheFailure));
   }
@@ -243,6 +254,14 @@ public:
   const FileSystemOptions &getFileSystemOpts() const { return FileSystemOpts; }
 
   llvm::vfs::FileSystem &getVirtualFileSystem() const { return *FS; }
+  llvm::IntrusiveRefCntPtr<llvm::vfs::FileSystem>
+  getVirtualFileSystemPtr() const {
+    return FS;
+  }
+
+  /// Enable or disable tracking of VFS usage. Used to not track full header
+  /// search and implicit modulemap lookup.
+  void trackVFSUsage(bool Active);
 
   void setVirtualFileSystem(IntrusiveRefCntPtr<llvm::vfs::FileSystem> FS) {
     this->FS = std::move(FS);
@@ -255,6 +274,8 @@ public:
   FileEntryRef getVirtualFileRef(StringRef Filename, off_t Size,
                                  time_t ModificationTime);
 
+  LLVM_DEPRECATED("Functions returning FileEntry are deprecated.",
+                  "getVirtualFileRef()")
   const FileEntry *getVirtualFile(StringRef Filename, off_t Size,
                                   time_t ModificationTime);
 
@@ -266,24 +287,34 @@ public:
   /// bypasses all mapping and uniquing, blindly creating a new FileEntry.
   /// There is no attempt to deduplicate these; if you bypass the same file
   /// twice, you get two new file entries.
-  llvm::Optional<FileEntryRef> getBypassFile(FileEntryRef VFE);
+  OptionalFileEntryRef getBypassFile(FileEntryRef VFE);
 
   /// Open the specified file as a MemoryBuffer, returning a new
   /// MemoryBuffer if successful, otherwise returning null.
+  /// The IsText parameter controls whether the file should be opened as a text
+  /// or binary file, and should be set to false if the file contents should be
+  /// treated as binary.
   llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>>
-  getBufferForFile(const FileEntry *Entry, bool isVolatile = false,
-                   bool RequiresNullTerminator = true);
+  getBufferForFile(FileEntryRef Entry, bool isVolatile = false,
+                   bool RequiresNullTerminator = true,
+                   std::optional<int64_t> MaybeLimit = std::nullopt,
+                   bool IsText = true);
   llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>>
   getBufferForFile(StringRef Filename, bool isVolatile = false,
-                   bool RequiresNullTerminator = true) {
-    return getBufferForFileImpl(Filename, /*FileSize=*/-1, isVolatile,
-                                RequiresNullTerminator);
+                   bool RequiresNullTerminator = true,
+                   std::optional<int64_t> MaybeLimit = std::nullopt,
+                   bool IsText = true) const {
+    return getBufferForFileImpl(Filename,
+                                /*FileSize=*/MaybeLimit.value_or(-1),
+                                isVolatile, RequiresNullTerminator, IsText);
   }
 
 private:
   llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>>
   getBufferForFileImpl(StringRef Filename, int64_t FileSize, bool isVolatile,
-                       bool RequiresNullTerminator);
+                       bool RequiresNullTerminator, bool IsText) const;
+
+  DirectoryEntry *&getRealDirEntry(const llvm::vfs::Status &Status);
 
 public:
   /// Get the 'stat' information for the given \p Path.
@@ -307,25 +338,36 @@ public:
   bool makeAbsolutePath(SmallVectorImpl<char> &Path) const;
 
   /// Produce an array mapping from the unique IDs assigned to each
-  /// file to the corresponding FileEntry pointer.
-  void GetUniqueIDMapping(
-                    SmallVectorImpl<const FileEntry *> &UIDToFiles) const;
+  /// file to the corresponding FileEntryRef.
+  void
+  GetUniqueIDMapping(SmallVectorImpl<OptionalFileEntryRef> &UIDToFiles) const;
 
   /// Retrieve the canonical name for a given directory.
   ///
   /// This is a very expensive operation, despite its results being cached,
   /// and should only be used when the physical layout of the file system is
   /// required, which is (almost) never.
-  StringRef getCanonicalName(const DirectoryEntry *Dir);
+  StringRef getCanonicalName(DirectoryEntryRef Dir);
 
   /// Retrieve the canonical name for a given file.
   ///
   /// This is a very expensive operation, despite its results being cached,
   /// and should only be used when the physical layout of the file system is
   /// required, which is (almost) never.
-  StringRef getCanonicalName(const FileEntry *File);
+  StringRef getCanonicalName(FileEntryRef File);
 
+private:
+  /// Retrieve the canonical name for a given file or directory.
+  ///
+  /// The first param is a key in the CanonicalNames array.
+  StringRef getCanonicalName(const void *Entry, StringRef Name);
+
+public:
   void PrintStats() const;
+
+  /// Import statistics from a child FileManager and add them to this current
+  /// FileManager.
+  void AddStats(const FileManager &Other);
 };
 
 } // end namespace clang

@@ -16,27 +16,36 @@ add_public_tablegen_target(LoongArchCommonTableGen)
 
 add_llvm_target(LoongArchCodeGen
   LoongArchAsmPrinter.cpp
+  LoongArchDeadRegisterDefinitions.cpp
+  LoongArchExpandAtomicPseudoInsts.cpp
+  LoongArchExpandPseudoInsts.cpp
   LoongArchFrameLowering.cpp
   LoongArchInstrInfo.cpp
   LoongArchISelDAGToDAG.cpp
   LoongArchISelLowering.cpp
   LoongArchMCInstLower.cpp
+  LoongArchMergeBaseOffset.cpp
+  LoongArchOptWInstrs.cpp
   LoongArchRegisterInfo.cpp
   LoongArchSubtarget.cpp
   LoongArchTargetMachine.cpp
+  LoongArchTargetTransformInfo.cpp
 
   LINK_COMPONENTS
   Analysis
   AsmPrinter
   CodeGen
+  CodeGenTypes
   Core
-  MC
   LoongArchDesc
   LoongArchInfo
+  MC
+  Scalar
   SelectionDAG
   Support
   Target
-  GlobalISel
+  TargetParser
+  TransformUtils
 
   ADD_TO_COMPONENT
   LoongArch

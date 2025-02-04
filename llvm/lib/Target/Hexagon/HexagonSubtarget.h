@@ -70,7 +70,7 @@ class HexagonSubtarget : public HexagonGenSubtargetInfo {
 public:
   Hexagon::ArchEnum HexagonArchVersion;
   Hexagon::ArchEnum HexagonHVXVersion = Hexagon::ArchEnum::NoArch;
-  CodeGenOpt::Level OptLevel;
+  CodeGenOptLevel OptLevel;
   /// True if the target should use Back-Skip-Back scheduling. This is the
   /// default for V60.
   bool UseBSBScheduling;
@@ -95,11 +95,11 @@ private:
   enum HexagonProcFamilyEnum { Others, TinyCore };
 
   std::string CPUString;
+  HexagonProcFamilyEnum HexagonProcFamily = Others;
   Triple TargetTriple;
 
   // The following objects can use the TargetTriple, so they must be
   // declared after it.
-  HexagonProcFamilyEnum HexagonProcFamily = Others;
   HexagonInstrInfo InstrInfo;
   HexagonRegisterInfo RegInfo;
   HexagonTargetLowering TLInfo;
@@ -198,6 +198,33 @@ public:
   bool hasV69OpsOnly() const {
     return getHexagonArchVersion() == Hexagon::ArchEnum::V69;
   }
+  bool hasV71Ops() const {
+    return getHexagonArchVersion() >= Hexagon::ArchEnum::V71;
+  }
+  bool hasV71OpsOnly() const {
+    return getHexagonArchVersion() == Hexagon::ArchEnum::V71;
+  }
+  bool hasV73Ops() const {
+    return getHexagonArchVersion() >= Hexagon::ArchEnum::V73;
+  }
+  bool hasV73OpsOnly() const {
+    return getHexagonArchVersion() == Hexagon::ArchEnum::V73;
+  }
+  bool hasV75Ops() const {
+    return getHexagonArchVersion() >= Hexagon::ArchEnum::V75;
+  }
+  bool hasV75OpsOnly() const {
+    return getHexagonArchVersion() == Hexagon::ArchEnum::V75;
+  }
+  bool hasV79Ops() const {
+    return getHexagonArchVersion() >= Hexagon::ArchEnum::V79;
+  }
+  bool hasV79OpsOnly() const {
+    return getHexagonArchVersion() == Hexagon::ArchEnum::V79;
+  }
+  bool useHVXV79Ops() const {
+    return HexagonHVXVersion >= Hexagon::ArchEnum::V79;
+  }
 
   bool useAudioOps() const { return UseAudioOps; }
   bool useCompound() const { return UseCompound; }
@@ -242,6 +269,12 @@ public:
   }
   bool useHVXV69Ops() const {
     return HexagonHVXVersion >= Hexagon::ArchEnum::V69;
+  }
+  bool useHVXV71Ops() const {
+    return HexagonHVXVersion >= Hexagon::ArchEnum::V71;
+  }
+  bool useHVXV73Ops() const {
+    return HexagonHVXVersion >= Hexagon::ArchEnum::V73;
   }
   bool useHVX128BOps() const { return useHVXOps() && UseHVX128BOps; }
   bool useHVX64BOps() const { return useHVXOps() && UseHVX64BOps; }
@@ -290,7 +323,8 @@ public:
   /// Perform target specific adjustments to the latency of a schedule
   /// dependency.
   void adjustSchedDependency(SUnit *Def, int DefOpIdx, SUnit *Use, int UseOpIdx,
-                             SDep &Dep) const override;
+                             SDep &Dep,
+                             const TargetSchedModel *SchedModel) const override;
 
   unsigned getVectorLength() const {
     assert(useHVXOps());
@@ -306,12 +340,12 @@ public:
     static MVT TypesV68[] = {MVT::i8, MVT::i16, MVT::i32, MVT::f16, MVT::f32};
 
     if (useHVXV68Ops() && useHVXFloatingPoint())
-      return makeArrayRef(TypesV68);
-    return makeArrayRef(Types);
+      return ArrayRef(TypesV68);
+    return ArrayRef(Types);
   }
 
   bool isHVXElementType(MVT Ty, bool IncludeBool = false) const;
-  bool isHVXVectorType(MVT VecTy, bool IncludeBool = false) const;
+  bool isHVXVectorType(EVT VecTy, bool IncludeBool = false) const;
   bool isTypeForHVX(Type *VecTy, bool IncludeBool = false) const;
 
   Align getTypeAlignment(MVT Ty) const {
@@ -322,6 +356,8 @@ public:
 
   unsigned getL1CacheLineSize() const;
   unsigned getL1PrefetchDistance() const;
+
+  Intrinsic::ID getIntrinsicId(unsigned Opc) const;
 
 private:
   // Helper function responsible for increasing the latency only.

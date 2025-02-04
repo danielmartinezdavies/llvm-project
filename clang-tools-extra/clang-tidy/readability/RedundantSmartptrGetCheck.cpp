@@ -12,9 +12,7 @@
 
 using namespace clang::ast_matchers;
 
-namespace clang {
-namespace tidy {
-namespace readability {
+namespace clang::tidy::readability {
 
 namespace {
 internal::Matcher<Expr> callToGet(const internal::Matcher<Decl> &OnClass) {
@@ -166,12 +164,14 @@ void RedundantSmartptrGetCheck::check(const MatchFinder::MatchResult &Result) {
   StringRef SmartptrText = Lexer::getSourceText(
       CharSourceRange::getTokenRange(Smartptr->getSourceRange()),
       *Result.SourceManager, getLangOpts());
+  // Check if the last two characters are "->" and remove them
+  if (SmartptrText.ends_with("->")) {
+    SmartptrText = SmartptrText.drop_back(2);
+  }
   // Replace foo->get() with *foo, and foo.get() with foo.
   std::string Replacement = Twine(IsPtrToPtr ? "*" : "", SmartptrText).str();
   diag(GetCall->getBeginLoc(), "redundant get() call on smart pointer")
       << FixItHint::CreateReplacement(SR, Replacement);
 }
 
-} // namespace readability
-} // namespace tidy
-} // namespace clang
+} // namespace clang::tidy::readability

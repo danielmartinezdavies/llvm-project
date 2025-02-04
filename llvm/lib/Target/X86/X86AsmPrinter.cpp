@@ -14,6 +14,7 @@
 #include "X86AsmPrinter.h"
 #include "MCTargetDesc/X86ATTInstPrinter.h"
 #include "MCTargetDesc/X86BaseInfo.h"
+#include "MCTargetDesc/X86MCTargetDesc.h"
 #include "MCTargetDesc/X86TargetStreamer.h"
 #include "TargetInfo/X86TargetInfo.h"
 #include "X86InstrInfo.h"
@@ -24,8 +25,10 @@
 #include "llvm/CodeGen/MachineConstantPool.h"
 #include "llvm/CodeGen/MachineModuleInfoImpls.h"
 #include "llvm/CodeGen/TargetLoweringObjectFileImpl.h"
+#include "llvm/CodeGenTypes/MachineValueType.h"
 #include "llvm/IR/DerivedTypes.h"
 #include "llvm/IR/InlineAsm.h"
+#include "llvm/IR/InstIterator.h"
 #include "llvm/IR/Mangler.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/Type.h"
@@ -33,6 +36,7 @@
 #include "llvm/MC/MCCodeEmitter.h"
 #include "llvm/MC/MCContext.h"
 #include "llvm/MC/MCExpr.h"
+#include "llvm/MC/MCInst.h"
 #include "llvm/MC/MCInstBuilder.h"
 #include "llvm/MC/MCSectionCOFF.h"
 #include "llvm/MC/MCSectionELF.h"
@@ -42,14 +46,13 @@
 #include "llvm/MC/TargetRegistry.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
-#include "llvm/Support/MachineValueType.h"
 #include "llvm/Target/TargetMachine.h"
 
 using namespace llvm;
 
 X86AsmPrinter::X86AsmPrinter(TargetMachine &TM,
                              std::unique_ptr<MCStreamer> Streamer)
-    : AsmPrinter(TM, std::move(Streamer)), SM(*this), FM(*this) {}
+    : AsmPrinter(TM, std::move(Streamer)), FM(*this) {}
 
 //===----------------------------------------------------------------------===//
 // Primitive Helper Functions.
@@ -64,11 +67,10 @@ bool X86AsmPrinter::runOnMachineFunction(MachineFunction &MF) {
   CodeEmitter.reset(TM.getTarget().createMCCodeEmitter(
       *Subtarget->getInstrInfo(), MF.getContext()));
 
-  EmitFPOData =
-      Subtarget->isTargetWin32() && MF.getMMI().getModule()->getCodeViewFlag();
+  const Module *M = MF.getFunction().getParent();
+  EmitFPOData = Subtarget->isTargetWin32() && M->getCodeViewFlag();
 
-  IndCSPrefix =
-      MF.getMMI().getModule()->getModuleFlag("indirect_branch_cs_prefix");
+  IndCSPrefix = M->getModuleFlag("indirect_branch_cs_prefix");
 
   SetupMachineFunction(MF);
 
@@ -98,19 +100,19 @@ bool X86AsmPrinter::runOnMachineFunction(MachineFunction &MF) {
 
 void X86AsmPrinter::emitFunctionBodyStart() {
   if (EmitFPOData) {
-    if (auto *XTS =
-        static_cast<X86TargetStreamer *>(OutStreamer->getTargetStreamer()))
-      XTS->emitFPOProc(
-          CurrentFnSym,
-          MF->getInfo<X86MachineFunctionInfo>()->getArgumentStackSize());
+    auto *XTS =
+        static_cast<X86TargetStreamer *>(OutStreamer->getTargetStreamer());
+    XTS->emitFPOProc(
+        CurrentFnSym,
+        MF->getInfo<X86MachineFunctionInfo>()->getArgumentStackSize());
   }
 }
 
 void X86AsmPrinter::emitFunctionBodyEnd() {
   if (EmitFPOData) {
-    if (auto *XTS =
-            static_cast<X86TargetStreamer *>(OutStreamer->getTargetStreamer()))
-      XTS->emitFPOEndProc();
+    auto *XTS =
+        static_cast<X86TargetStreamer *>(OutStreamer->getTargetStreamer());
+    XTS->emitFPOEndProc();
   }
 }
 
@@ -510,7 +512,9 @@ void X86AsmPrinter::PrintIntelMemReference(const MachineInstr *MI,
 
   if (!DispSpec.isImm()) {
     if (NeedPlus) O << " + ";
-    PrintOperand(MI, OpNo + X86::AddrDisp, O);
+    // Do not add `offset` operator. Matches the behaviour of
+    // X86IntelInstPrinter::printMemReference.
+    PrintSymbolOperand(DispSpec, O);
   } else {
     int64_t DispVal = DispSpec.getImm();
     if (DispVal || (!IndexReg.getReg() && !HasBaseReg)) {
@@ -526,6 +530,86 @@ void X86AsmPrinter::PrintIntelMemReference(const MachineInstr *MI,
     }
   }
   O << ']';
+}
+
+const MCSubtargetInfo *X86AsmPrinter::getIFuncMCSubtargetInfo() const {
+  assert(Subtarget);
+  return Subtarget;
+}
+
+void X86AsmPrinter::emitMachOIFuncStubBody(Module &M, const GlobalIFunc &GI,
+                                           MCSymbol *LazyPointer) {
+  // _ifunc:
+  //   jmpq *lazy_pointer(%rip)
+
+  OutStreamer->emitInstruction(
+      MCInstBuilder(X86::JMP32m)
+          .addReg(X86::RIP)
+          .addImm(1)
+          .addReg(0)
+          .addOperand(MCOperand::createExpr(
+              MCSymbolRefExpr::create(LazyPointer, OutContext)))
+          .addReg(0),
+      *Subtarget);
+}
+
+void X86AsmPrinter::emitMachOIFuncStubHelperBody(Module &M,
+                                                 const GlobalIFunc &GI,
+                                                 MCSymbol *LazyPointer) {
+  // _ifunc.stub_helper:
+  //   push %rax
+  //   push %rdi
+  //   push %rsi
+  //   push %rdx
+  //   push %rcx
+  //   push %r8
+  //   push %r9
+  //   callq foo
+  //   movq %rax,lazy_pointer(%rip)
+  //   pop %r9
+  //   pop %r8
+  //   pop %rcx
+  //   pop %rdx
+  //   pop %rsi
+  //   pop %rdi
+  //   pop %rax
+  //   jmpq *lazy_pointer(%rip)
+
+  for (int Reg :
+       {X86::RAX, X86::RDI, X86::RSI, X86::RDX, X86::RCX, X86::R8, X86::R9})
+    OutStreamer->emitInstruction(MCInstBuilder(X86::PUSH64r).addReg(Reg),
+                                 *Subtarget);
+
+  OutStreamer->emitInstruction(
+      MCInstBuilder(X86::CALL64pcrel32)
+          .addOperand(MCOperand::createExpr(lowerConstant(GI.getResolver()))),
+      *Subtarget);
+
+  OutStreamer->emitInstruction(
+      MCInstBuilder(X86::MOV64mr)
+          .addReg(X86::RIP)
+          .addImm(1)
+          .addReg(0)
+          .addOperand(MCOperand::createExpr(
+              MCSymbolRefExpr::create(LazyPointer, OutContext)))
+          .addReg(0)
+          .addReg(X86::RAX),
+      *Subtarget);
+
+  for (int Reg :
+       {X86::R9, X86::R8, X86::RCX, X86::RDX, X86::RSI, X86::RDI, X86::RAX})
+    OutStreamer->emitInstruction(MCInstBuilder(X86::POP64r).addReg(Reg),
+                                 *Subtarget);
+
+  OutStreamer->emitInstruction(
+      MCInstBuilder(X86::JMP32m)
+          .addReg(X86::RIP)
+          .addImm(1)
+          .addReg(0)
+          .addOperand(MCOperand::createExpr(
+              MCSymbolRefExpr::create(LazyPointer, OutContext)))
+          .addReg(0),
+      *Subtarget);
 }
 
 static bool printAsmMRegister(const X86AsmPrinter &P, const MachineOperand &MO,
@@ -546,6 +630,8 @@ static bool printAsmMRegister(const X86AsmPrinter &P, const MachineOperand &MO,
     break;
   case 'h': // Print QImode high register
     Reg = getX86SubSuperRegister(Reg, 8, true);
+    if (!Reg.isValid())
+      return true;
     break;
   case 'w': // Print HImode register
     Reg = getX86SubSuperRegister(Reg, 16);
@@ -688,6 +774,14 @@ bool X86AsmPrinter::PrintAsmOperand(const MachineInstr *MI, unsigned OpNo,
       PrintOperand(MI, OpNo, O);
       return false;
 
+    case 'p': {
+      const MachineOperand &MO = MI->getOperand(OpNo);
+      if (MO.getType() != MachineOperand::MO_GlobalAddress)
+        return true;
+      PrintSymbolOperand(MO, O);
+      return false;
+    }
+
     case 'P': // This is the operand of a call, treat specially.
       PrintPCRelImm(MI, OpNo, O);
       return false;
@@ -762,8 +856,8 @@ void X86AsmPrinter::emitStartOfAsmFile(Module &M) {
 
     if (FeatureFlagsAnd) {
       // Emit a .note.gnu.property section with the flags.
-      if (!TT.isArch32Bit() && !TT.isArch64Bit())
-        llvm_unreachable("CFProtection used on invalid architecture!");
+      assert((TT.isArch32Bit() || TT.isArch64Bit()) &&
+             "CFProtection used on invalid architecture!");
       MCSection *Cur = OutStreamer->getCurrentSectionOnly();
       MCSection *Nt = MMI->getContext().getELFSection(
           ".note.gnu.property", ELF::SHT_NOTE, ELF::SHF_ALLOC);
@@ -783,7 +877,6 @@ void X86AsmPrinter::emitStartOfAsmFile(Module &M) {
       OutStreamer->emitInt32(FeatureFlagsAnd);            // data
       emitAlignment(WordSize == 4 ? Align(4) : Align(8)); // padding
 
-      OutStreamer->endSection(Nt);
       OutStreamer->switchSection(Cur);
     }
   }
@@ -792,14 +885,13 @@ void X86AsmPrinter::emitStartOfAsmFile(Module &M) {
     OutStreamer->switchSection(getObjFileLowering().getTextSection());
 
   if (TT.isOSBinFormatCOFF()) {
-    // Emit an absolute @feat.00 symbol.  This appears to be some kind of
-    // compiler features bitfield read by link.exe.
+    // Emit an absolute @feat.00 symbol.
     MCSymbol *S = MMI->getContext().getOrCreateSymbol(StringRef("@feat.00"));
     OutStreamer->beginCOFFSymbolDef(S);
     OutStreamer->emitCOFFSymbolStorageClass(COFF::IMAGE_SYM_CLASS_STATIC);
     OutStreamer->emitCOFFSymbolType(COFF::IMAGE_SYM_DTYPE_NULL);
     OutStreamer->endCOFFSymbolDef();
-    int64_t Feat00Flags = 0;
+    int64_t Feat00Value = 0;
 
     if (TT.getArch() == Triple::x86) {
       // According to the PE-COFF spec, the LSB of this value marks the object
@@ -807,24 +899,27 @@ void X86AsmPrinter::emitStartOfAsmFile(Module &M) {
       // must be registered in .sxdata.  Use of any unregistered handlers will
       // cause the process to terminate immediately.  LLVM does not know how to
       // register any SEH handlers, so its object files should be safe.
-      Feat00Flags |= 1;
+      Feat00Value |= COFF::Feat00Flags::SafeSEH;
     }
 
     if (M.getModuleFlag("cfguard")) {
-      Feat00Flags |= 0x800; // Object is CFG-aware.
+      // Object is CFG-aware.
+      Feat00Value |= COFF::Feat00Flags::GuardCF;
     }
 
     if (M.getModuleFlag("ehcontguard")) {
-      Feat00Flags |= 0x4000; // Object also has EHCont.
+      // Object also has EHCont.
+      Feat00Value |= COFF::Feat00Flags::GuardEHCont;
     }
 
     if (M.getModuleFlag("ms-kernel")) {
-      Feat00Flags |= 0x40000000; // Object is compiled with /kernel.
+      // Object is compiled with /kernel.
+      Feat00Value |= COFF::Feat00Flags::Kernel;
     }
 
     OutStreamer->emitSymbolAttribute(S, MCSA_Global);
     OutStreamer->emitAssignment(
-        S, MCConstantExpr::create(Feat00Flags, MMI->getContext()));
+        S, MCConstantExpr::create(Feat00Value, MMI->getContext()));
   }
   OutStreamer->emitSyntaxDirective();
 
@@ -881,6 +976,33 @@ static void emitNonLazyStubs(MachineModuleInfo *MMI, MCStreamer &OutStreamer) {
   }
 }
 
+/// True if this module is being built for windows/msvc, and uses floating
+/// point. This is used to emit an undefined reference to _fltused. This is
+/// needed in Windows kernel or driver contexts to find and prevent code from
+/// modifying non-GPR registers.
+///
+/// TODO: It would be better if this was computed from MIR by looking for
+/// selected floating-point instructions.
+static bool usesMSVCFloatingPoint(const Triple &TT, const Module &M) {
+  // Only needed for MSVC
+  if (!TT.isWindowsMSVCEnvironment())
+    return false;
+
+  for (const Function &F : M) {
+    for (const Instruction &I : instructions(F)) {
+      if (I.getType()->isFPOrFPVectorTy())
+        return true;
+
+      for (const auto &Op : I.operands()) {
+        if (Op->getType()->isFPOrFPVectorTy())
+          return true;
+      }
+    }
+  }
+
+  return false;
+}
+
 void X86AsmPrinter::emitEndOfAsmFile(Module &M) {
   const Triple &TT = TM.getTargetTriple();
 
@@ -889,8 +1011,7 @@ void X86AsmPrinter::emitEndOfAsmFile(Module &M) {
     // global table for symbol lookup.
     emitNonLazyStubs(MMI, *OutStreamer);
 
-    // Emit stack and fault map information.
-    emitStackMaps(SM);
+    // Emit fault map information.
     FM.serializeToFaultMapSection();
 
     // This flag tells the linker that no global symbols contain code that fall
@@ -900,7 +1021,7 @@ void X86AsmPrinter::emitEndOfAsmFile(Module &M) {
     // safe to set.
     OutStreamer->emitAssemblerFlag(MCAF_SubsectionsViaSymbols);
   } else if (TT.isOSBinFormatCOFF()) {
-    if (MMI->usesMSVCFloatingPoint()) {
+    if (usesMSVCFloatingPoint(TT, M)) {
       // In Windows' libcmt.lib, there is a file which is linked in only if the
       // symbol _fltused is referenced. Linking this in causes some
       // side-effects:
@@ -920,9 +1041,7 @@ void X86AsmPrinter::emitEndOfAsmFile(Module &M) {
       OutStreamer->emitSymbolAttribute(S, MCSA_Global);
       return;
     }
-    emitStackMaps(SM);
   } else if (TT.isOSBinFormatELF()) {
-    emitStackMaps(SM);
     FM.serializeToFaultMapSection();
   }
 
@@ -948,7 +1067,7 @@ void X86AsmPrinter::emitEndOfAsmFile(Module &M) {
 //===----------------------------------------------------------------------===//
 
 // Force static initialization.
-extern "C" LLVM_EXTERNAL_VISIBILITY void LLVMInitializeX86AsmPrinter() {
+extern "C" LLVM_C_ABI void LLVMInitializeX86AsmPrinter() {
   RegisterAsmPrinter<X86AsmPrinter> X(getTheX86_32Target());
   RegisterAsmPrinter<X86AsmPrinter> Y(getTheX86_64Target());
 }

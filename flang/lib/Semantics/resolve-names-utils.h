@@ -51,11 +51,6 @@ parser::MessageFixedText WithSeverity(
 bool IsIntrinsicOperator(const SemanticsContext &, const SourceName &);
 bool IsLogicalConstant(const SemanticsContext &, const SourceName &);
 
-// Some intrinsic operators have more than one name (e.g. `operator(.eq.)` and
-// `operator(==)`). GetAllNames() returns them all, including symbolName.
-std::forward_list<std::string> GetAllNames(
-    const SemanticsContext &, const SourceName &);
-
 template <typename T>
 MaybeIntExpr EvaluateIntExpr(SemanticsContext &context, const T &expr) {
   if (MaybeExpr maybeExpr{
@@ -144,6 +139,12 @@ private:
     std::optional<ConstantSubscript> substringStart;
   } currObject_; // equivalence object currently being constructed
 };
+
+// Duplicates a subprogram's dummy arguments and result, if any, and
+// maps all of the symbols in their expressions.
+struct SymbolAndTypeMappings;
+void MapSubprogramToNewSymbols(const Symbol &oldSymbol, Symbol &newSymbol,
+    Scope &newScope, SymbolAndTypeMappings * = nullptr);
 
 } // namespace Fortran::semantics
 #endif // FORTRAN_SEMANTICS_RESOLVE_NAMES_H_

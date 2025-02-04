@@ -9,13 +9,18 @@
 #ifndef MEMREF_OPS
 #define MEMREF_OPS
 
-include "mlir/Dialect/Arithmetic/IR/ArithmeticBase.td"
+include "mlir/Dialect/Arith/IR/ArithBase.td"
 include "mlir/Dialect/MemRef/IR/MemRefBase.td"
 include "mlir/Interfaces/CastInterfaces.td"
 include "mlir/Interfaces/ControlFlowInterfaces.td"
 include "mlir/Interfaces/CopyOpInterface.td"
+include "mlir/Interfaces/InferIntRangeInterface.td"
+include "mlir/Interfaces/InferTypeOpInterface.td"
+include "mlir/Interfaces/MemorySlotInterfaces.td"
+include "mlir/Interfaces/ShapedOpInterfaces.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
 include "mlir/Interfaces/ViewLikeInterface.td"
+include "mlir/IR/OpAsmInterface.td"
 include "mlir/IR/SymbolInterfaces.td"
 
 /// A TypeAttr for memref types.
@@ -68,7 +73,8 @@ class AllocLikeOp<string mnemonic,
                        Variadic<Index>:$symbolOperands,
                        ConfinedAttr<OptionalAttr<I64Attr>,
                                 [IntMinValue<0>]>:$alignment);
-  let results = (outs Res<AnyMemRef, "", [MemAlloc<resource>]>:$memref);
+  let results = (outs Res<AnyMemRef, "",
+                          [MemAlloc<resource, 0, FullEffect>]>:$memref);
 
   let builders = [
     OpBuilder<(ins "MemRefType":$memrefType,
@@ -91,12 +97,37 @@ class AllocLikeOp<string mnemonic,
               static_cast<int32_t>(symbolOperands.size())}));
       if (alignment)
         $_state.addAttribute(getAlignmentAttrStrName(), alignment);
-    }]>];
+    }]>,
+    OpBuilder<(ins "ArrayRef<OpFoldResult>":$sizes, "Type":$elementType,
+                   CArg<"Attribute", "{}">:$memorySpace), [{
+      SmallVector<int64_t> staticShape;
+      SmallVector<Value> dynamicSizes;
+      dispatchIndexOpFoldResults(sizes, dynamicSizes, staticShape);
+      MemRefLayoutAttrInterface layout;
+      MemRefType memrefType = MemRefType::get(staticShape, elementType, layout,
+                                              memorySpace);
+      return build($_builder, $_state, memrefType, dynamicSizes);
+    }]>
+  ];
 
   let extraClassDeclaration = [{
     static StringRef getAlignmentAttrStrName() { return "alignment"; }
 
-    MemRefType getType() { return getResult().getType().cast<MemRefType>(); }
+    MemRefType getType() { return ::llvm::cast<MemRefType>(getResult().getType()); }
+
+    SmallVector<OpFoldResult> getMixedSizes() {
+      SmallVector<OpFoldResult> result;
+      unsigned ctr = 0;
+      OpBuilder b(getContext());
+      for (int64_t i = 0, e = getType().getRank(); i < e; ++i) {
+        if (getType().isDynamicDim(i)) {
+          result.push_back(getDynamicSizes()[ctr++]);
+        } else {
+          result.push_back(b.getIndexAttr(getType().getShape()[i]));
+        }
+      }
+      return result;
+    }
   }];
 
   let assemblyFormat = [{
@@ -134,7 +165,8 @@ def AssumeAlignmentOp : MemRef_Op<"assume_alignment"> {
 // AllocOp
 //===----------------------------------------------------------------------===//
 
-def MemRef_AllocOp : AllocLikeOp<"alloc", DefaultResource, []> {
+def MemRef_AllocOp : AllocLikeOp<"alloc", DefaultResource, [
+    DeclareOpInterfaceMethods<OpAsmOpInterface, ["getAsmResultNames"]>]> {
   let summary = "memory allocation operation";
   let description = [{
     The `alloc` operation allocates a region of memory, as specified by its
@@ -179,10 +211,113 @@ def MemRef_AllocOp : AllocLikeOp<"alloc", DefaultResource, []> {
 }
 
 //===----------------------------------------------------------------------===//
+// ReallocOp
+//===----------------------------------------------------------------------===//
+
+
+def MemRef_ReallocOp : MemRef_Op<"realloc"> {
+  let summary = "memory reallocation operation";
+  let description = [{
+    The `realloc` operation changes the size of a memory region. The memory
+    region is specified by a 1D source memref and the size of the new memory
+    region is specified by a 1D result memref type and an optional dynamic Value
+    of `Index` type. The source and the result memref must be in the same memory
+    space and have the same element type.
+
+    The operation may move the memory region to a new location. In this case,
+    the content of the memory block is preserved up to the lesser of the new
+    and old sizes. If the new size if larger, the value of the extended memory
+    is undefined. This is consistent with the ISO C realloc.
+
+    The operation returns an SSA value for the memref.
+
+    Example:
+
+    ```mlir
+    %0 = memref.realloc %src : memref<64xf32> to memref<124xf32>
+    ```
+
+    The source memref may have a dynamic shape, in which case, the compiler will
+    generate code to extract its size from the runtime data structure for the
+    memref.
+
+    ```mlir
+    %1 = memref.realloc %src : memref<?xf32> to memref<124xf32>
+    ```
+
+    If the result memref has a dynamic shape, a result dimension operand is
+    needed to spefify its dynamic dimension. In the example below, the ssa value
+    '%d' specifies the unknown dimension of the result memref.
+
+    ```mlir
+    %2 = memref.realloc %src(%d) : memref<?xf32> to memref<?xf32>
+    ```
+
+    An optional `alignment` attribute may be specified to ensure that the
+    region of memory that will be indexed is aligned at the specified byte
+    boundary.  This is consistent with the fact that memref.alloc supports such
+    an optional alignment attribute. Note that in ISO C standard, neither alloc
+    nor realloc supports alignment, though there is aligned_alloc but not
+    aligned_realloc.
+
+    ```mlir
+    %3 = memref.realloc %src {alignment = 8} : memref<64xf32> to memref<124xf32>
+    ```
+
+    Referencing the memref through the old SSA value after realloc is undefined
+    behavior.
+
+    ```mlir
+    %new = memref.realloc %old : memref<64xf32> to memref<124xf32>
+    %4 = memref.load %new[%index]   // ok
+    %5 = memref.load %old[%index]   // undefined behavior
+    ```
+  }];
+
+  // Note that we conceptually mark the operands as freeing the incoming
+  // memref and allocating the outcoming memref, even though this may not
+  // physically happen on each execution.
+
+  let arguments = (ins Arg<MemRefRankOf<[AnyType], [1]>, "",
+                                        [MemFreeAt<0, FullEffect>]>:$source,
+                   Optional<Index>:$dynamicResultSize,
+                   ConfinedAttr<OptionalAttr<I64Attr>,
+                                [IntMinValue<0>]>:$alignment);
+
+  let results = (outs Res<MemRefRankOf<[AnyType], [1]>, "",
+                                       [MemAlloc<DefaultResource, 1,
+                                                 FullEffect>]>);
+
+  let builders = [
+    OpBuilder<(ins "MemRefType":$resultType,
+                  "Value":$source,
+                  CArg<"Value", "Value()">:$dynamicResultSize), [{
+      return build($_builder, $_state, resultType, source, dynamicResultSize,
+                   IntegerAttr());
+    }]>];
+
+    let extraClassDeclaration = [{
+    /// The result of a realloc is always a memref.
+    MemRefType getType() { return ::llvm::cast<MemRefType>(getResult().getType()); }
+  }];
+
+  let assemblyFormat = [{
+    $source (`(` $dynamicResultSize^ `)`)? attr-dict
+    `:` type($source) `to` type(results)
+  }];
+
+  let hasCanonicalizer = 1;
+  let hasVerifier = 1;
+}
+
+//===----------------------------------------------------------------------===//
 // AllocaOp
 //===----------------------------------------------------------------------===//
 
-def MemRef_AllocaOp : AllocLikeOp<"alloca", AutomaticAllocationScopeResource> {
+def MemRef_AllocaOp : AllocLikeOp<"alloca", AutomaticAllocationScopeResource,[
+    DeclareOpInterfaceMethods<OpAsmOpInterface, ["getAsmResultNames"]>,
+    DeclareOpInterfaceMethods<PromotableAllocationOpInterface>,
+    DeclareOpInterfaceMethods<DestructurableAllocationOpInterface>]> {
   let summary = "stack memory allocation operation";
   let description = [{
     The `alloca` operation allocates memory on the stack, to be automatically
@@ -230,7 +365,7 @@ def MemRef_AllocaScopeOp : MemRef_Op<"alloca_scope",
       [AutomaticAllocationScope,
        DeclareOpInterfaceMethods<RegionBranchOpInterface>,
        SingleBlockImplicitTerminator<"AllocaScopeReturnOp">,
-       RecursiveSideEffects,
+       RecursiveMemoryEffects,
        NoRegionArguments]> {
   let summary = "explicitly delimited scope for stack allocation";
   let description = [{
@@ -278,7 +413,7 @@ def MemRef_AllocaScopeOp : MemRef_Op<"alloca_scope",
 
 def MemRef_AllocaScopeReturnOp : MemRef_Op<"alloca_scope.return",
       [HasParent<"AllocaScopeOp">,
-       NoSideEffect,
+       Pure,
        ReturnLike,
        Terminator]> {
   let summary = "terminator for alloca_scope operation";
@@ -304,19 +439,15 @@ def MemRef_AllocaScopeReturnOp : MemRef_Op<"alloca_scope.return",
 //===----------------------------------------------------------------------===//
 
 def MemRef_CastOp : MemRef_Op<"cast", [
-      NoSideEffect, SameOperandsAndResultShape,
       DeclareOpInterfaceMethods<CastOpInterface>,
-      ViewLikeOpInterface,
-      MemRefsNormalizable
+      DeclareOpInterfaceMethods<OpAsmOpInterface, ["getAsmResultNames"]>,
+      MemRefsNormalizable,
+      Pure,
+      SameOperandsAndResultShape,
+      ViewLikeOpInterface
     ]> {
   let summary = "memref cast operation";
   let description = [{
-    Syntax:
-
-    ```
-    operation ::= ssa-id `=` `memref.cast` ssa-use `:` type `to` type
-    ```
-
     The `memref.cast` operation converts a memref from one type to an equivalent
     type with a compatible shape. The source and destination types are
     compatible if:
@@ -343,12 +474,12 @@ def MemRef_CastOp : MemRef_Op<"cast", [
     // The same holds true for offsets and strides.
 
     // Assert that the input dynamic shape matches the destination static stride.
-    %4 = memref.cast %1 : memref<12x4xf32, offset:?, strides: [?, ?]> to
-                          memref<12x4xf32, offset:5, strides: [4, 1]>
+    %4 = memref.cast %1 : memref<12x4xf32, strided<[?, ?], offset: ?>> to
+                          memref<12x4xf32, strided<[4, 1], offset: 5>>
     // Erase static offset and stride information, replacing it with
     // dynamic information.
-    %5 = memref.cast %1 : memref<12x4xf32, offset:5, strides: [4, 1]> to
-                          memref<12x4xf32, offset:?, strides: [?, ?]>
+    %5 = memref.cast %1 : memref<12x4xf32, strided<[4, 1], offset: 5>> to
+                          memref<12x4xf32, strided<[?, ?], offset: ?>>
     ```
 
     b. Either or both memref types are unranked with the same element type, and
@@ -383,8 +514,8 @@ def MemRef_CastOp : MemRef_Op<"cast", [
 // CopyOp
 //===----------------------------------------------------------------------===//
 
-def CopyOp : MemRef_Op<"copy",
-    [CopyOpInterface, SameOperandsElementType, SameOperandsShape]> {
+def CopyOp : MemRef_Op<"copy", [CopyOpInterface, SameOperandsElementType,
+    SameOperandsShape]> {
 
   let description = [{
     Copies the data from the source to the destination memref.
@@ -400,9 +531,9 @@ def CopyOp : MemRef_Op<"copy",
   }];
 
   let arguments = (ins Arg<AnyRankedOrUnrankedMemRef, "the memref to copy from",
-                           [MemRead]>:$source,
+                           [MemReadAt<0, FullEffect>]>:$source,
                        Arg<AnyRankedOrUnrankedMemRef, "the memref to copy to",
-                           [MemWrite]>:$target);
+                           [MemWriteAt<0, FullEffect>]>:$target);
 
   let assemblyFormat = [{
     $source `,` $target attr-dict `:` type($source) `to` type($target)
@@ -432,7 +563,8 @@ def MemRef_DeallocOp : MemRef_Op<"dealloc", [MemRefsNormalizable]> {
     ```
   }];
 
-  let arguments = (ins Arg<AnyRankedOrUnrankedMemRef, "", [MemFree]>:$memref);
+  let arguments = (ins Arg<AnyRankedOrUnrankedMemRef, "",
+                           [MemFreeAt<0, FullEffect>]>:$memref);
 
   let hasFolder = 1;
   let assemblyFormat = "$memref attr-dict `:` type($memref)";
@@ -442,7 +574,12 @@ def MemRef_DeallocOp : MemRef_Op<"dealloc", [MemRefsNormalizable]> {
 // DimOp
 //===----------------------------------------------------------------------===//
 
-def MemRef_DimOp : MemRef_Op<"dim", [NoSideEffect, MemRefsNormalizable]> {
+def MemRef_DimOp : MemRef_Op<"dim", [
+    DeclareOpInterfaceMethods<OpAsmOpInterface, ["getAsmResultNames"]>,
+    MemRefsNormalizable,
+    ConditionallySpeculatable, NoMemoryEffect,
+    ShapedDimOpInterface,
+    DeclareOpInterfaceMethods<InferIntRangeInterface, ["inferResultRangesFromOptional"]>]> {
   let summary = "dimension index operation";
   let description = [{
     The `dim` operation takes a memref and a dimension operand of type `index`.
@@ -468,7 +605,7 @@ def MemRef_DimOp : MemRef_Op<"dim", [NoSideEffect, MemRefsNormalizable]> {
     ```
   }];
 
-  let arguments = (ins AnyRankedOrUnrankedMemRef:$source,
+  let arguments = (ins AnyNon0RankedOrUnrankedMemRef:$source,
                        Index:$index);
   let results = (outs Index:$result);
 
@@ -478,17 +615,24 @@ def MemRef_DimOp : MemRef_Op<"dim", [NoSideEffect, MemRefsNormalizable]> {
 
   let builders = [
     OpBuilder<(ins "Value":$source, "int64_t":$index)>,
-    OpBuilder<(ins "Value":$source, "Value":$index)>
   ];
 
   let extraClassDeclaration = [{
     /// Helper function to get the index as a simple integer if it is constant.
-    Optional<int64_t> getConstantIndex();
+    std::optional<int64_t> getConstantIndex();
+
+    /// Interface method of ShapedDimOpInterface: Return the source memref.
+    Value getShapedValue() { return getSource(); }
+
+    /// Interface method of ShapedDimOpInterface: Return the dimension.
+    OpFoldResult getDimension() { return getIndex(); }
+
+    /// Interface method for ConditionallySpeculatable.
+    Speculation::Speculatability getSpeculatability();
   }];
 
   let hasCanonicalizer = 1;
   let hasFolder = 1;
-  let hasVerifier = 1;
 }
 
 //===----------------------------------------------------------------------===//
@@ -498,6 +642,15 @@ def MemRef_DimOp : MemRef_Op<"dim", [NoSideEffect, MemRefsNormalizable]> {
 def MemRef_DmaStartOp : MemRef_Op<"dma_start"> {
   let summary = "non-blocking DMA operation that starts a transfer";
   let description = [{
+    Syntax:
+
+    ```
+    operation ::= `memref.dma_start` ssa-use`[`ssa-use-list`]` `,`
+                   ssa-use`[`ssa-use-list`]` `,` ssa-use `,`
+                   ssa-use`[`ssa-use-list`]` (`,` ssa-use `,` ssa-use)?
+                  `:` memref-type `,` memref-type `,` memref-type
+    ```
+
     DmaStartOp starts a non-blocking DMA operation that transfers data from a
     source memref to a destination memref. The source and destination memref
     need not be of the same dimensionality, but need to have the same elemental
@@ -538,9 +691,9 @@ def MemRef_DmaStartOp : MemRef_Op<"dma_start"> {
               %num_elt_per_stride :
     ```
 
-    TODO: add additional operands to allow source and destination striding, and
+    * TODO: add additional operands to allow source and destination striding, and
     multiple stride levels.
-    TODO: Consider replacing src/dst memref indices with view memrefs.
+    * TODO: Consider replacing src/dst memref indices with view memrefs.
   }];
   let arguments = (ins Variadic<AnyType>:$operands);
 
@@ -555,9 +708,10 @@ def MemRef_DmaStartOp : MemRef_Op<"dma_start"> {
   let extraClassDeclaration = [{
     // Returns the source MemRefType for this DMA operation.
     Value getSrcMemRef() { return getOperand(0); }
+    OpOperand &getSrcMemRefMutable() { return getOperation()->getOpOperand(0); }
     // Returns the rank (number of indices) of the source MemRefType.
     unsigned getSrcMemRefRank() {
-      return getSrcMemRef().getType().cast<MemRefType>().getRank();
+      return ::llvm::cast<MemRefType>(getSrcMemRef().getType()).getRank();
     }
     // Returns the source memref indices for this DMA operation.
     operand_range getSrcIndices() {
@@ -567,15 +721,16 @@ def MemRef_DmaStartOp : MemRef_Op<"dma_start"> {
 
     // Returns the destination MemRefType for this DMA operations.
     Value getDstMemRef() { return getOperand(1 + getSrcMemRefRank()); }
+    OpOperand &getDstMemRefMutable() { return getOperation()->getOpOperand(1 + getSrcMemRefRank()); }
     // Returns the rank (number of indices) of the destination MemRefType.
     unsigned getDstMemRefRank() {
-      return getDstMemRef().getType().cast<MemRefType>().getRank();
+      return ::llvm::cast<MemRefType>(getDstMemRef().getType()).getRank();
     }
     unsigned getSrcMemorySpace() {
-      return getSrcMemRef().getType().cast<MemRefType>().getMemorySpaceAsInt();
+      return ::llvm::cast<MemRefType>(getSrcMemRef().getType()).getMemorySpaceAsInt();
     }
     unsigned getDstMemorySpace() {
-      return getDstMemRef().getType().cast<MemRefType>().getMemorySpaceAsInt();
+      return ::llvm::cast<MemRefType>(getDstMemRef().getType()).getMemorySpaceAsInt();
     }
 
     // Returns the destination memref indices for this DMA operation.
@@ -594,10 +749,13 @@ def MemRef_DmaStartOp : MemRef_Op<"dma_start"> {
     Value getTagMemRef() {
       return getOperand(1 + getSrcMemRefRank() + 1 + getDstMemRefRank() + 1);
     }
+    OpOperand &getTagMemRefMutable() {
+      return getOperation()->getOpOperand(1 + getSrcMemRefRank() + 1 + getDstMemRefRank() + 1);
+    }
 
     // Returns the rank (number of indices) of the tag MemRefType.
     unsigned getTagMemRefRank() {
-      return getTagMemRef().getType().cast<MemRefType>().getRank();
+      return ::llvm::cast<MemRefType>(getTagMemRef().getType()).getRank();
     }
 
     // Returns the tag memref index for this DMA operation.
@@ -646,6 +804,17 @@ def MemRef_DmaStartOp : MemRef_Op<"dma_start"> {
         return nullptr;
       return getOperand(getNumOperands() - 1);
     }
+
+    void getEffects(
+        SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &
+        effects) {
+      effects.emplace_back(MemoryEffects::Read::get(), &getSrcMemRefMutable(),
+                           SideEffects::DefaultResource::get());
+      effects.emplace_back(MemoryEffects::Write::get(), &getDstMemRefMutable(),
+                           SideEffects::DefaultResource::get());
+      effects.emplace_back(MemoryEffects::Read::get(), &getTagMemRefMutable(),
+                           SideEffects::DefaultResource::get());
+    }
   }];
   let hasCustomAssemblyFormat = 1;
   let hasFolder = 1;
@@ -680,13 +849,18 @@ def MemRef_DmaWaitOp : MemRef_Op<"dma_wait"> {
                        Variadic<Index>:$tagIndices,
                        Index:$numElements);
   let assemblyFormat = [{
-    $tagMemRef `[` $tagIndices `]` `,` $numElements attr-dict `:`
-    type($tagMemRef)
+    $tagMemRef `[` $tagIndices `]` `,` $numElements attr-dict `:` type($tagMemRef)
   }];
   let extraClassDeclaration = [{
     /// Returns the rank (number of indices) of the tag memref.
     unsigned getTagMemRefRank() {
-      return getTagMemRef().getType().cast<MemRefType>().getRank();
+      return ::llvm::cast<MemRefType>(getTagMemRef().getType()).getRank();
+    }
+    void getEffects(
+        SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>> &
+        effects) {
+      effects.emplace_back(MemoryEffects::Read::get(), &getTagMemRefMutable(),
+                           SideEffects::DefaultResource::get());
     }
   }];
   let hasFolder = 1;
@@ -694,11 +868,56 @@ def MemRef_DmaWaitOp : MemRef_Op<"dma_wait"> {
 }
 
 //===----------------------------------------------------------------------===//
-// ExtractMetadataOp
+// ExtractAlignedPointerAsIndexOp
 //===----------------------------------------------------------------------===//
 
-def MemRef_ExtractStridedMetadataOp : MemRef_Op<"extract_strided_metadata",
-    [SameVariadicResultSize]> {
+def MemRef_ExtractAlignedPointerAsIndexOp :
+  MemRef_Op<"extract_aligned_pointer_as_index", [
+    DeclareOpInterfaceMethods<OpAsmOpInterface, ["getAsmResultNames"]>,
+    Pure,
+    SameVariadicResultSize]> {
+  let summary = "Extracts a memref's underlying aligned pointer as an index";
+  let description = [{
+    Extracts the underlying aligned pointer as an index.
+
+    This operation is useful for lowering to lower-level dialects while still
+    avoiding the need to define a pointer type in higher-level dialects such as
+    the memref dialect.
+
+    This operation is intended solely as step during lowering, it has no side
+    effects. A reverse operation that creates a memref from an index interpreted
+    as a pointer is explicitly discouraged.
+
+    Example:
+
+    ```
+      %0 = memref.extract_aligned_pointer_as_index %arg : memref<4x4xf32> -> index
+      %1 = arith.index_cast %0 : index to i64
+      %2 = llvm.inttoptr %1 : i64 to !llvm.ptr
+      call @foo(%2) : (!llvm.ptr) ->()
+    ```
+  }];
+
+  let arguments = (ins
+    AnyRankedOrUnrankedMemRef:$source
+  );
+  let results = (outs Index:$aligned_pointer);
+
+  let assemblyFormat = [{
+    $source `:` type($source) `->` type(results) attr-dict
+  }];
+}
+
+//===----------------------------------------------------------------------===//
+// ExtractStridedMetadataOp
+//===----------------------------------------------------------------------===//
+
+def MemRef_ExtractStridedMetadataOp : MemRef_Op<"extract_strided_metadata", [
+    DeclareOpInterfaceMethods<OpAsmOpInterface, ["getAsmResultNames"]>,
+    Pure,
+    SameVariadicResultSize,
+    ViewLikeOpInterface,
+    InferTypeOpAdaptor]> {
   let summary = "Extracts a buffer base with offset and strides";
   let description = [{
     Extracts a base buffer, offset and strides. This op allows additional layers
@@ -710,18 +929,18 @@ def MemRef_ExtractStridedMetadataOp : MemRef_Op<"extract_strided_metadata",
 
     This operation is also useful for completeness to the existing memref.dim op.
     While accessing strides, offsets and the base pointer independently is not
-    available, this is useful for composing with its natural complement op: 
+    available, this is useful for composing with its natural complement op:
     `memref.reinterpret_cast`.
 
     Intended Use Cases:
 
     The main use case is to expose the logic for manipulate memref metadata at a
-    higher level than the LLVM dialect. 
+    higher level than the LLVM dialect.
     This makes lowering more progressive and brings the following benefits:
       - not all users of MLIR want to lower to LLVM and the information to e.g.
         lower to library calls---like libxsmm---or to SPIR-V was not available.
-      - foldings and canonicalizations can happen at a higher level in MLIR: 
-        before this op existed, lowering to LLVM would create large amounts of 
+      - foldings and canonicalizations can happen at a higher level in MLIR:
+        before this op existed, lowering to LLVM would create large amounts of
         LLVMIR. Even when LLVM does a good job at folding the low-level IR from
         a performance perspective, it is unnecessarily opaque and inefficient to
         send unkempt IR to LLVM.
@@ -729,11 +948,11 @@ def MemRef_ExtractStridedMetadataOp : MemRef_Op<"extract_strided_metadata",
     Example:
 
     ```mlir
-      %base, %offset, %sizes:2, %strides:2 = 
-        memref.extract_strided_metadata %memref : 
+      %base, %offset, %sizes:2, %strides:2 =
+        memref.extract_strided_metadata %memref :
           memref<10x?xf32>, index, index, index, index, index
 
-      // After folding, the type of %m2 can be memref<10x?xf32> and further 
+      // After folding, the type of %m2 can be memref<10x?xf32> and further
       // folded to %memref.
       %m2 = memref.reinterpret_cast %base to
           offset: [%offset],
@@ -756,6 +975,27 @@ def MemRef_ExtractStridedMetadataOp : MemRef_Op<"extract_strided_metadata",
   let assemblyFormat = [{
     $source `:` type($source) `->` type(results) attr-dict
   }];
+
+  let extraClassDeclaration = [{
+    /// Return a vector of all the static or dynamic sizes of the op, while
+    /// statically inferring the sizes of the dynamic sizes, when possible.
+    /// This is best effort.
+    /// E.g., if `getSizes` returns `[%dyn_size0, %dyn_size1]`, but the
+    /// source memref type is `memref<2x8xi16>`, this method will
+    /// return `[2, 8]`.
+    /// Similarly if the resulting memref type is `memref<2x?xi16>`, but
+    /// `%dyn_size1` can statically be pinned to a constant value, this
+    /// constant value is returned instead of `%dyn_size`.
+    SmallVector<OpFoldResult> getConstifiedMixedSizes();
+    /// Similar to `getConstifiedMixedSizes` but for strides.
+    SmallVector<OpFoldResult> getConstifiedMixedStrides();
+    /// Similar to `getConstifiedMixedSizes` but for the offset.
+    OpFoldResult getConstifiedMixedOffset();
+
+    ::mlir::Value getViewSource() { return getSource(); }
+  }];
+
+  let hasFolder = 1;
 }
 
 //===----------------------------------------------------------------------===//
@@ -766,7 +1006,7 @@ def GenericAtomicRMWOp : MemRef_Op<"generic_atomic_rmw", [
       SingleBlockImplicitTerminator<"AtomicYieldOp">,
       TypesMatchWith<"result type matches element type of memref",
                      "memref", "result",
-                     "$_self.cast<MemRefType>().getElementType()">
+                     "::llvm::cast<MemRefType>($_self).getElementType()">
     ]> {
   let summary = "atomic read-modify-write operation with a region";
   let description = [{
@@ -793,7 +1033,7 @@ def GenericAtomicRMWOp : MemRef_Op<"generic_atomic_rmw", [
   }];
 
   let arguments = (ins
-      MemRefOf<[AnySignlessInteger, AnyFloat]>:$memref,
+      Arg<MemRefOf<[AnySignlessInteger, AnyFloat]>, "the reference to read from and write to", [MemRead, MemWrite]>:$memref,
       Variadic<Index>:$indices);
 
   let results = (outs
@@ -813,7 +1053,7 @@ def GenericAtomicRMWOp : MemRef_Op<"generic_atomic_rmw", [
       return getRegion().getArgument(0);
     }
     MemRefType getMemRefType() {
-      return getMemref().getType().cast<MemRefType>();
+      return ::llvm::cast<MemRefType>(getMemref().getType());
     }
   }];
   let hasCustomAssemblyFormat = 1;
@@ -822,7 +1062,7 @@ def GenericAtomicRMWOp : MemRef_Op<"generic_atomic_rmw", [
 
 def AtomicYieldOp : MemRef_Op<"atomic_yield", [
       HasParent<"GenericAtomicRMWOp">,
-      NoSideEffect,
+      Pure,
       Terminator
     ]> {
   let summary = "yield operation for GenericAtomicRMWOp";
@@ -841,7 +1081,7 @@ def AtomicYieldOp : MemRef_Op<"atomic_yield", [
 //===----------------------------------------------------------------------===//
 
 def MemRef_GetGlobalOp : MemRef_Op<"get_global",
-    [NoSideEffect, DeclareOpInterfaceMethods<SymbolUserOpInterface>]> {
+    [Pure, DeclareOpInterfaceMethods<SymbolUserOpInterface>]> {
   let summary = "get the memref pointing to a global variable";
   let description = [{
      The `memref.get_global` operation retrieves the memref pointing to a
@@ -922,7 +1162,7 @@ def MemRef_GlobalOp : MemRef_Op<"global", [Symbol]> {
   let extraClassDeclaration = [{
      bool isExternal() { return !getInitialValue(); }
      bool isUninitialized() {
-       return !isExternal() && getInitialValue()->isa<UnitAttr>();
+       return !isExternal() && ::llvm::isa<UnitAttr>(*getInitialValue());
      }
      /// Returns the constant initial value if the memref.global is a constant,
      /// or null otherwise.
@@ -938,8 +1178,10 @@ def MemRef_GlobalOp : MemRef_Op<"global", [Symbol]> {
 def LoadOp : MemRef_Op<"load",
      [TypesMatchWith<"result type matches element type of 'memref'",
                      "memref", "result",
-                     "$_self.cast<MemRefType>().getElementType()">,
-                     MemRefsNormalizable]> {
+                     "::llvm::cast<MemRefType>($_self).getElementType()">,
+      MemRefsNormalizable,
+      DeclareOpInterfaceMethods<PromotableMemOpInterface>,
+      DeclareOpInterfaceMethods<DestructurableAccessorOpInterface>]> {
   let summary = "load operation";
   let description = [{
     The `load` op reads an element from a memref specified by an index list. The
@@ -980,22 +1222,15 @@ def LoadOp : MemRef_Op<"load",
 
   let arguments = (ins Arg<AnyMemRef, "the reference to load from",
                            [MemRead]>:$memref,
-                       Variadic<Index>:$indices);
+                       Variadic<Index>:$indices,
+                       DefaultValuedOptionalAttr<BoolAttr, "false">:$nontemporal);
   let results = (outs AnyType:$result);
-
-  let builders = [
-    OpBuilder<(ins "Value":$memref, CArg<"ValueRange", "{}">:$indices), [{
-      auto memrefType = memref.getType().cast<MemRefType>();
-      $_state.addOperands(memref);
-      $_state.addOperands(indices);
-      $_state.types.push_back(memrefType.getElementType());
-    }]>];
 
   let extraClassDeclaration = [{
     Value getMemRef() { return getOperand(0); }
     void setMemRef(Value value) { setOperand(0, value); }
     MemRefType getMemRefType() {
-      return getMemRef().getType().cast<MemRefType>();
+      return ::llvm::cast<MemRefType>(getMemRef().getType());
     }
   }];
 
@@ -1003,6 +1238,54 @@ def LoadOp : MemRef_Op<"load",
   let hasVerifier = 1;
 
   let assemblyFormat = "$memref `[` $indices `]` attr-dict `:` type($memref)";
+}
+
+//===----------------------------------------------------------------------===//
+// MemorySpaceCastOp
+//===----------------------------------------------------------------------===//
+def MemRef_MemorySpaceCastOp : MemRef_Op<"memory_space_cast", [
+      DeclareOpInterfaceMethods<CastOpInterface>,
+      DeclareOpInterfaceMethods<OpAsmOpInterface, ["getAsmResultNames"]>,
+      MemRefsNormalizable,
+      Pure,
+      SameOperandsAndResultElementType,
+      SameOperandsAndResultShape,
+      ViewLikeOpInterface
+    ]> {
+  let summary = "memref memory space cast operation";
+  let description = [{
+    This operation casts memref values between memory spaces.
+    The input and result will be memrefs of the same types and shape that alias
+    the same underlying memory, though, for some casts on some targets,
+    the underlying values of the pointer stored in the memref may be affected
+    by the cast.
+
+    The input and result must have the same shape, element type, rank, and layout.
+
+    If the source and target address spaces are the same, this operation is a noop.
+
+    Example:
+
+    ```mlir
+    // Cast a GPU private memory attribution into a generic pointer
+    %2 = memref.memory_space_cast %1 : memref<?xf32, 5> to memref<?xf32>
+    // Cast a generic pointer to workgroup-local memory
+    %4 = memref.memory_space_cast %3 : memref<5x4xi32> to memref<5x34xi32, 3>
+    // Cast between two non-default memory spaces
+    %6 = memref.memory_space_cast %5
+      : memref<*xmemref<?xf32>, 5> to memref<*xmemref<?xf32>, 3>
+    ```
+  }];
+
+  let arguments = (ins AnyRankedOrUnrankedMemRef:$source);
+  let results = (outs AnyRankedOrUnrankedMemRef:$dest);
+  let assemblyFormat = "$source attr-dict `:` type($source) `to` type($dest)";
+
+  let extraClassDeclaration = [{
+    Value getViewSource() { return getSource(); }
+  }];
+
+  let hasFolder = 1;
 }
 
 //===----------------------------------------------------------------------===//
@@ -1036,7 +1319,7 @@ def MemRef_PrefetchOp : MemRef_Op<"prefetch"> {
 
   let extraClassDeclaration = [{
     MemRefType getMemRefType() {
-      return getMemref().getType().cast<MemRefType>();
+      return ::llvm::cast<MemRefType>(getMemref().getType());
     }
     static StringRef getLocalityHintAttrStrName() { return "localityHint"; }
     static StringRef getIsWriteAttrStrName() { return "isWrite"; }
@@ -1054,8 +1337,12 @@ def MemRef_PrefetchOp : MemRef_Op<"prefetch"> {
 
 def MemRef_ReinterpretCastOp
   : MemRef_OpWithOffsetSizesAndStrides<"reinterpret_cast", [
-      NoSideEffect, AttrSizedOperandSegments, ViewLikeOpInterface,
-      OffsetSizeAndStrideOpInterface, MemRefsNormalizable
+      DeclareOpInterfaceMethods<OpAsmOpInterface, ["getAsmResultNames"]>,
+      AttrSizedOperandSegments,
+      MemRefsNormalizable,
+      Pure,
+      OffsetSizeAndStrideOpInterface,
+      ViewLikeOpInterface
     ]> {
   let summary = "memref reinterpret cast operation";
   let description = [{
@@ -1067,13 +1354,31 @@ def MemRef_ReinterpretCastOp
       offset: [0],
       sizes: [%size0, 10],
       strides: [1, %stride1]
-    : memref<?x?xf32> to memref<?x10xf32, offset: 0, strides: [1, ?]>
+    : memref<?x?xf32> to memref<?x10xf32, strided<[1, ?], offset: 0>>
 
     memref.reinterpret_cast %unranked to
       offset: [%offset],
       sizes: [%size0, %size1],
       strides: [%stride0, %stride1]
-    : memref<*xf32> to memref<?x?xf32, offset: ?, strides: [?, ?]>
+    : memref<*xf32> to memref<?x?xf32, strided<[?, ?], offset: ?>>
+    ```
+
+    This operation creates a new memref descriptor using the base of the
+    source and applying the input arguments to the other metadata.
+    In other words:
+    ```mlir
+    %dst = memref.reinterpret_cast %src to
+      offset: [%offset],
+      sizes: [%sizes],
+      strides: [%strides]
+    ```
+    means that `%dst`'s descriptor will be:
+    ```mlir
+    %dst.base = %src.base
+    %dst.aligned = %src.aligned
+    %dst.offset = %offset
+    %dst.sizes = %sizes
+    %dst.strides = %strides
     ```
   }];
 
@@ -1081,21 +1386,18 @@ def MemRef_ReinterpretCastOp
                        Variadic<Index>:$offsets,
                        Variadic<Index>:$sizes,
                        Variadic<Index>:$strides,
-                       I64ArrayAttr:$static_offsets,
-                       I64ArrayAttr:$static_sizes,
-                       I64ArrayAttr:$static_strides);
+                       DenseI64ArrayAttr:$static_offsets,
+                       DenseI64ArrayAttr:$static_sizes,
+                       DenseI64ArrayAttr:$static_strides);
   let results = (outs AnyMemRef:$result);
 
   let assemblyFormat = [{
     $source `to` `offset` `` `:`
-    custom<DynamicIndexList>($offsets, $static_offsets,
-                               "ShapedType::kDynamicStrideOrOffset")
+    custom<DynamicIndexList>($offsets, $static_offsets)
     `` `,` `sizes` `` `:`
-    custom<DynamicIndexList>($sizes, $static_sizes,
-                               "ShapedType::kDynamicSize")
+    custom<DynamicIndexList>($sizes, $static_sizes)
     `` `,` `strides` `` `:`
-    custom<DynamicIndexList>($strides, $static_strides,
-                               "ShapedType::kDynamicStrideOrOffset")
+    custom<DynamicIndexList>($strides, $static_strides)
     attr-dict `:` type($source) `to` type($result)
   }];
 
@@ -1106,6 +1408,10 @@ def MemRef_ReinterpretCastOp
     OpBuilder<(ins "MemRefType":$resultType, "Value":$source,
       "OpFoldResult":$offset, "ArrayRef<OpFoldResult>":$sizes,
       "ArrayRef<OpFoldResult>":$strides,
+      CArg<"ArrayRef<NamedAttribute>", "{}">:$attrs)>,
+    // Build a ReinterpretCastOp and infer the result type.
+    OpBuilder<(ins "Value":$source, "OpFoldResult":$offset,
+      "ArrayRef<OpFoldResult>":$sizes, "ArrayRef<OpFoldResult>":$strides,
       CArg<"ArrayRef<NamedAttribute>", "{}">:$attrs)>,
     // Build a ReinterpretCastOp with static entries.
     OpBuilder<(ins "MemRefType":$resultType, "Value":$source,
@@ -1121,34 +1427,47 @@ def MemRef_ReinterpretCastOp
 
   let extraClassDeclaration = extraBaseClassDeclaration # [{
     // The result of the op is always a ranked memref.
-    MemRefType getType() { return getResult().getType().cast<MemRefType>(); }
+    MemRefType getType() { return getResult().getType(); }
     Value getViewSource() { return getSource(); }
 
-    /// Return the rank of the source ShapedType.
-    unsigned getResultRank() {
-      return getResult().getType().cast<ShapedType>().getRank();
-    }
+    /// Return the rank of the result type.
+    unsigned getResultRank() { return getType().getRank(); }
 
     /// Return the expected rank of each of the`static_offsets`, `static_sizes`
     /// and `static_strides` attributes.
     std::array<unsigned, 3> getArrayAttrMaxRanks() {
-      unsigned resultRank = getResult().getType().cast<ShapedType>().getRank();
+      unsigned resultRank = getType().getRank();
       return {1, resultRank, resultRank};
     }
 
     /// Return the number of leading operands before the `offsets`, `sizes` and
     /// and `strides` operands.
     static unsigned getOffsetSizeAndStrideStartOperandIndex() { return 1; }
+
+    /// Return a vector of all the static or dynamic sizes of the op, while
+    /// statically inferring the sizes of the dynamic sizes, when possible.
+    /// This is best effort.
+    /// E.g., if `getMixedSizes` returns `[2, %dyn_size]`, but the resulting
+    /// memref type is `memref<2x8xi16>`, this method will return `[2, 8]`.
+    /// Similarly if the resulting memref type is `memref<2x?xi16>`, but
+    /// `%dyn_size` can statically be pinned to a constant value, this
+    /// constant value is returned instead of `%dyn_size`.
+    SmallVector<OpFoldResult> getConstifiedMixedSizes();
+    /// Similar to `getConstifiedMixedSizes` but for strides.
+    SmallVector<OpFoldResult> getConstifiedMixedStrides();
+    /// Similar to `getConstifiedMixedSizes` but for the offset.
+    OpFoldResult getConstifiedMixedOffset();
   }];
 
   let hasFolder = 1;
+  let hasCanonicalizer = 1;
 }
 
 //===----------------------------------------------------------------------===//
 // RankOp
 //===----------------------------------------------------------------------===//
 
-def MemRef_RankOp : MemRef_Op<"rank", [NoSideEffect]> {
+def MemRef_RankOp : MemRef_Op<"rank", [Pure]> {
   let summary = "rank operation";
   let description = [{
     The `memref.rank` operation takes a memref operand and returns its rank.
@@ -1173,7 +1492,9 @@ def MemRef_RankOp : MemRef_Op<"rank", [NoSideEffect]> {
 //===----------------------------------------------------------------------===//
 
 def MemRef_ReshapeOp: MemRef_Op<"reshape", [
-    ViewLikeOpInterface, NoSideEffect]>  {
+    DeclareOpInterfaceMethods<OpAsmOpInterface, ["getAsmResultNames"]>,
+    Pure,
+    ViewLikeOpInterface]>  {
   let summary = "memref reshape operation";
   let description = [{
     The `reshape` operation converts a memref from one type to an
@@ -1210,7 +1531,8 @@ def MemRef_ReshapeOp: MemRef_Op<"reshape", [
   }];
 
   let arguments = (ins AnyRankedOrUnrankedMemRef:$source,
-                       MemRefRankOf<[AnySignlessInteger, Index], [1]>:$shape);
+                       Arg<MemRefRankOf<[AnySignlessInteger, Index], [1]>,
+                       "dynamically-sized shape", [MemRead]>:$shape);
   let results = (outs AnyRankedOrUnrankedMemRef:$result);
 
   let builders = [OpBuilder<
@@ -1221,7 +1543,7 @@ def MemRef_ReshapeOp: MemRef_Op<"reshape", [
      }]>];
 
   let extraClassDeclaration = [{
-    MemRefType getType() { return getResult().getType().cast<MemRefType>(); }
+    MemRefType getType() { return ::llvm::cast<MemRefType>(getResult().getType()); }
     Value getViewSource() { return getSource(); }
   }];
 
@@ -1237,8 +1559,7 @@ def MemRef_ReshapeOp: MemRef_Op<"reshape", [
 
 class MemRef_ReassociativeReshapeOp<string mnemonic, list<Trait> traits = []> :
     MemRef_Op<mnemonic, !listconcat(traits,
-      [NoSideEffect, ViewLikeOpInterface])>,
-    Arguments<(ins AnyStridedMemRef:$src, IndexListArrayAttr:$reassociation)>,
+      [Pure, ViewLikeOpInterface])>,
     Results<(outs AnyStridedMemRef:$result)>{
 
   code commonExtraClassDeclaration = [{
@@ -1250,21 +1571,17 @@ class MemRef_ReassociativeReshapeOp<string mnemonic, list<Trait> traits = []> :
       SmallVector<ReassociationIndices, 4> reassociationIndices;
       for (auto attr : getReassociation())
         reassociationIndices.push_back(llvm::to_vector<2>(
-            llvm::map_range(attr.cast<ArrayAttr>(), [&](Attribute indexAttr) {
-              return indexAttr.cast<IntegerAttr>().getInt();
+            llvm::map_range(::llvm::cast<ArrayAttr>(attr), [&](Attribute indexAttr) {
+              return ::llvm::cast<IntegerAttr>(indexAttr).getInt();
             })));
       return reassociationIndices;
     };
 
-    MemRefType getSrcType() { return getSrc().getType().cast<MemRefType>(); }
+    MemRefType getSrcType() { return ::llvm::cast<MemRefType>(getSrc().getType()); }
 
-    MemRefType getResultType() { return getResult().getType().cast<MemRefType>(); }
+    MemRefType getResultType() { return ::llvm::cast<MemRefType>(getResult().getType()); }
 
     Value getViewSource() { return getSrc(); }
-  }];
-
-  let assemblyFormat = [{
-    $src $reassociation attr-dict `:` type($src) `into` type($result)
   }];
 
   let hasFolder = 1;
@@ -1272,7 +1589,9 @@ class MemRef_ReassociativeReshapeOp<string mnemonic, list<Trait> traits = []> :
   let hasVerifier = 1;
 }
 
-def MemRef_ExpandShapeOp : MemRef_ReassociativeReshapeOp<"expand_shape"> {
+def MemRef_ExpandShapeOp : MemRef_ReassociativeReshapeOp<"expand_shape", [
+    DeclareOpInterfaceMethods<OpAsmOpInterface, ["getAsmResultNames"]>,
+    DeclareOpInterfaceMethods<ReifyRankedShapedTypeOpInterface>]> {
   let summary = "operation to produce a memref with a higher rank.";
   let description = [{
     The `memref.expand_shape` op produces a new view with a higher rank whose
@@ -1282,18 +1601,14 @@ def MemRef_ExpandShapeOp : MemRef_ReassociativeReshapeOp<"expand_shape"> {
     or copies.
 
     A reassociation is defined as a grouping of dimensions and is represented
-    with an array of I64ArrayAttr attributes.
+    with an array of DenseI64ArrayAttr attributes.
 
     Example:
 
     ```mlir
-    %r = memref.expand_shape %0 [[0, 1], [2]]
-        : memref<?x?xf32> into memref<?x5x?xf32>
+    %r = memref.expand_shape %0 [[0, 1], [2]] output_shape [%sz0, %sz1, 32]
+        : memref<?x32xf32> into memref<?x?x32xf32>
     ```
-
-    At most one dimension of a reassociation group (e.g., [0, 1] above) may be
-    dynamic in the result type. Otherwise, the op would be ambiguous, as it
-    would not be clear how the source dimension is extended.
 
     If an op can be statically proven to be invalid (e.g, an expansion from
     `memref<10xf32>` to `memref<2x6xf32>`), it is rejected by the verifier. If
@@ -1311,41 +1626,87 @@ def MemRef_ExpandShapeOp : MemRef_ReassociativeReshapeOp<"expand_shape"> {
     there must be a dynamic result dimension in the corresponding reassociation
     group. Same for strides.
 
+    The representation for the output shape supports a partially-static
+    specification via attributes specified through the `static_output_shape`
+    argument.  A special sentinel value `ShapedType::kDynamic` encodes that the
+    corresponding entry has a dynamic value.  There must be exactly as many SSA
+    inputs in `output_shape` as there are `ShapedType::kDynamic` entries in
+    `static_output_shape`.
+
     Note: This op currently assumes that the inner strides are of the
     source/result layout map are the faster-varying ones.
+  }];
+
+  let arguments = (ins AnyStridedMemRef:$src, IndexListArrayAttr:$reassociation,
+                       Variadic<Index>:$output_shape,
+                       DenseI64ArrayAttr:$static_output_shape);
+
+  let assemblyFormat = [{
+    $src $reassociation `output_shape`
+    custom<DynamicIndexList>($output_shape, $static_output_shape) attr-dict `:`
+    type($src) `into` type($result)
   }];
 
   let builders = [
     // Builders using ReassociationIndices.
     OpBuilder<(ins "Type":$resultType, "Value":$src,
       "ArrayRef<ReassociationIndices>":$reassociation,
-      CArg<"ArrayRef<NamedAttribute>", "{}">:$attrs),
-    [{
-      build($_builder, $_state, resultType, src, attrs);
-      $_state.addAttribute("reassociation",
-                          getReassociationIndicesAttribute($_builder, reassociation));
-    }]>,
+      "ArrayRef<OpFoldResult>":$outputShape)>,
+
+    // It will infer output shape using inferOutputShape() method.
+    OpBuilder<(ins "Type":$resultType, "Value":$src,
+      "ArrayRef<ReassociationIndices>":$reassociation)>,
 
     // Builder using ReassociationExprs.
     OpBuilder<(ins "Type":$resultType, "Value":$src,
+      "ArrayRef<ReassociationExprs>":$reassociation),
+    [{
+      auto reassociationIndices =
+          convertReassociationMapsToIndices(reassociation);
+      build($_builder, $_state, resultType, src, reassociationIndices);
+    }]>,
+
+    OpBuilder<(ins "Type":$resultType, "Value":$src,
       "ArrayRef<ReassociationExprs>":$reassociation,
-      CArg<"ArrayRef<NamedAttribute>", "{}">:$attrs),
+      "ArrayRef<OpFoldResult>":$outputShape),
     [{
       auto reassociationMaps =
-          convertReassociationMapsToIndices($_builder, reassociation);
-      build($_builder, $_state, resultType, src, reassociationMaps, attrs);
+          convertReassociationMapsToIndices(reassociation);
+      build($_builder, $_state, resultType, src, reassociationMaps,
+            outputShape);
     }]>,
+
+    // Builder that infers the result layout map. The result shape must be
+    // specified. Otherwise, the op may be ambiguous. The output shape for
+    // the op will be inferred using the inferOutputShape() method.
+    OpBuilder<(ins "ArrayRef<int64_t>":$resultShape, "Value":$src,
+               "ArrayRef<ReassociationIndices>":$reassociation)>,
 
     // Builder that infers the result layout map. The result shape must be
     // specified. Otherwise, the op may be ambiguous.
     OpBuilder<(ins "ArrayRef<int64_t>":$resultShape, "Value":$src,
-               "ArrayRef<ReassociationIndices>":$reassociation)>
+               "ArrayRef<ReassociationIndices>":$reassociation,
+               "ArrayRef<OpFoldResult>":$outputShape)>
   ];
-  let extraClassDeclaration = commonExtraClassDeclaration;
+
+  let extraClassDeclaration = commonExtraClassDeclaration # [{
+    static FailureOr<MemRefType> computeExpandedType(
+        MemRefType srcType, ArrayRef<int64_t> resultShape,
+        ArrayRef<ReassociationIndices> reassociation);
+
+    // Infer the output shape for a memref.expand_shape when it is possible
+    // to do so.
+    static FailureOr<SmallVector<OpFoldResult>> inferOutputShape(
+        OpBuilder &b, Location loc, MemRefType expandedType,
+        ArrayRef<ReassociationIndices> reassociation,
+        ArrayRef<OpFoldResult> inputShape);
+  }];
+
   let hasVerifier = 1;
 }
 
-def MemRef_CollapseShapeOp : MemRef_ReassociativeReshapeOp<"collapse_shape"> {
+def MemRef_CollapseShapeOp : MemRef_ReassociativeReshapeOp<"collapse_shape", [
+    DeclareOpInterfaceMethods<OpAsmOpInterface, ["getAsmResultNames"]>]> {
   let summary = "operation to produce a memref with a smaller rank.";
   let description = [{
     The `memref.collapse_shape` op produces a new view with a smaller rank
@@ -1362,7 +1723,7 @@ def MemRef_CollapseShapeOp : MemRef_ReassociativeReshapeOp<"collapse_shape"> {
     type.
 
     A reassociation is defined as a continuous grouping of dimensions and is
-    represented with an array of I64ArrayAttr attribute.
+    represented with an array of DenseI64ArrayAttr attribute.
 
     Note: Only the dimensions within a reassociation group must be contiguous.
     The remaining dimensions may be non-contiguous.
@@ -1388,6 +1749,13 @@ def MemRef_CollapseShapeOp : MemRef_ReassociativeReshapeOp<"collapse_shape"> {
     Note: This op currently assumes that the inner strides are of the
     source/result layout map are the faster-varying ones.
   }];
+
+  let arguments = (ins AnyStridedMemRef:$src, IndexListArrayAttr:$reassociation);
+
+  let assemblyFormat = [{
+    $src $reassociation attr-dict `:` type($src) `into` type($result)
+  }];
+
   let builders = [
     // Builders for a contracting reshape whose result type is computed from
     // `src` and `reassociation`.
@@ -1399,7 +1767,7 @@ def MemRef_CollapseShapeOp : MemRef_ReassociativeReshapeOp<"collapse_shape"> {
       CArg<"ArrayRef<NamedAttribute>", "{}">:$attrs),
     [{
       auto reassociationMaps =
-          convertReassociationMapsToIndices($_builder, reassociation);
+          convertReassociationMapsToIndices(reassociation);
       build($_builder, $_state, src, reassociationMaps, attrs);
     }]>,
 
@@ -1408,24 +1776,28 @@ def MemRef_CollapseShapeOp : MemRef_ReassociativeReshapeOp<"collapse_shape"> {
       "ArrayRef<ReassociationIndices>":$reassociation,
       CArg<"ArrayRef<NamedAttribute>", "{}">:$attrs),
     [{
-      build($_builder, $_state, resultType, src, attrs);
       $_state.addAttribute("reassociation",
                           getReassociationIndicesAttribute($_builder, reassociation));
+      build($_builder, $_state, resultType, src, attrs);
     }]>,
     OpBuilder<(ins "Type":$resultType, "Value":$src,
       "ArrayRef<ReassociationExprs>":$reassociation,
       CArg<"ArrayRef<NamedAttribute>", "{}">:$attrs),
     [{
       auto reassociationMaps =
-          convertReassociationMapsToIndices($_builder, reassociation);
+          convertReassociationMapsToIndices(reassociation);
       build($_builder, $_state, resultType, src, reassociationMaps, attrs);
     }]>
   ];
+
   let extraClassDeclaration = commonExtraClassDeclaration # [{
     /// Return `true` if this source MemRef type is guaranteed to be collapsible
     /// according to the given reassociation indices. In the presence of dynamic
     /// strides this is usually not the case.
     static bool isGuaranteedCollapsible(
+        MemRefType srcType, ArrayRef<ReassociationIndices> reassociation);
+
+    static MemRefType computeCollapsedType(
         MemRefType srcType, ArrayRef<ReassociationIndices> reassociation);
   }];
 
@@ -1439,8 +1811,10 @@ def MemRef_CollapseShapeOp : MemRef_ReassociativeReshapeOp<"collapse_shape"> {
 def MemRef_StoreOp : MemRef_Op<"store",
      [TypesMatchWith<"type of 'value' matches element type of 'memref'",
                      "memref", "value",
-                     "$_self.cast<MemRefType>().getElementType()">,
-                     MemRefsNormalizable]> {
+                     "::llvm::cast<MemRefType>($_self).getElementType()">,
+      MemRefsNormalizable,
+      DeclareOpInterfaceMethods<PromotableMemOpInterface>,
+      DeclareOpInterfaceMethods<DestructurableAccessorOpInterface>]> {
   let summary = "store operation";
   let description = [{
     Store a value to a memref location given by indices. The value stored should
@@ -1474,7 +1848,8 @@ def MemRef_StoreOp : MemRef_Op<"store",
   let arguments = (ins AnyType:$value,
                        Arg<AnyMemRef, "the reference to store to",
                            [MemWrite]>:$memref,
-                       Variadic<Index>:$indices);
+                       Variadic<Index>:$indices,
+                       DefaultValuedOptionalAttr<BoolAttr, "false">:$nontemporal);
 
   let builders = [
     OpBuilder<(ins "Value":$valueToStore, "Value":$memref), [{
@@ -1488,7 +1863,7 @@ def MemRef_StoreOp : MemRef_Op<"store",
       Value getMemRef() { return getOperand(1); }
       void setMemRef(Value value) { setOperand(1, value); }
       MemRefType getMemRefType() {
-        return getMemRef().getType().cast<MemRefType>();
+        return ::llvm::cast<MemRefType>(getMemRef().getType());
       }
   }];
 
@@ -1505,8 +1880,11 @@ def MemRef_StoreOp : MemRef_Op<"store",
 //===----------------------------------------------------------------------===//
 
 def SubViewOp : MemRef_OpWithOffsetSizesAndStrides<"subview", [
-    DeclareOpInterfaceMethods<ViewLikeOpInterface>, NoSideEffect,
-    AttrSizedOperandSegments, OffsetSizeAndStrideOpInterface
+    DeclareOpInterfaceMethods<OpAsmOpInterface, ["getAsmResultNames"]>,
+    DeclareOpInterfaceMethods<ViewLikeOpInterface>,
+    AttrSizedOperandSegments,
+    OffsetSizeAndStrideOpInterface,
+    Pure
   ]> {
   let summary = "memref subview operation";
   let description = [{
@@ -1527,8 +1905,7 @@ def SubViewOp : MemRef_OpWithOffsetSizesAndStrides<"subview", [
     The representation based on offsets, sizes and strides support a
     partially-static specification via attributes specified through the
     `static_offsets`, `static_sizes` and `static_strides` arguments. A special
-    sentinel value ShapedType::kDynamicSize and
-    ShapedType::kDynamicStrideOrOffset encodes that the corresponding entry has
+    sentinel value ShapedType::kDynamic encodes that the corresponding entry has
     a dynamic value.
 
     A subview operation may additionally reduce the rank of the resulting view
@@ -1638,7 +2015,7 @@ def SubViewOp : MemRef_OpWithOffsetSizesAndStrides<"subview", [
     // After rank reducing:
     // (d0, d1) -> (4 * d0 + d1 + 210)
     %3 = memref.subview %2[3, 4, 2][1, 6, 3][1, 1, 1] :
-      memref<8x16x4xf32> to memref<6x3xf32, offset: 210, strides: [4, 1]>
+      memref<8x16x4xf32> to memref<6x3xf32, strided<[4, 1], offset: 210>>
     ```
   }];
 
@@ -1646,30 +2023,27 @@ def SubViewOp : MemRef_OpWithOffsetSizesAndStrides<"subview", [
                        Variadic<Index>:$offsets,
                        Variadic<Index>:$sizes,
                        Variadic<Index>:$strides,
-                       I64ArrayAttr:$static_offsets,
-                       I64ArrayAttr:$static_sizes,
-                       I64ArrayAttr:$static_strides);
+                       DenseI64ArrayAttr:$static_offsets,
+                       DenseI64ArrayAttr:$static_sizes,
+                       DenseI64ArrayAttr:$static_strides);
   let results = (outs AnyMemRef:$result);
 
   let assemblyFormat = [{
     $source ``
-    custom<DynamicIndexList>($offsets, $static_offsets,
-                               "ShapedType::kDynamicStrideOrOffset")
-    custom<DynamicIndexList>($sizes, $static_sizes,
-                               "ShapedType::kDynamicSize")
-    custom<DynamicIndexList>($strides, $static_strides,
-                               "ShapedType::kDynamicStrideOrOffset")
+    custom<DynamicIndexList>($offsets, $static_offsets)
+    custom<DynamicIndexList>($sizes, $static_sizes)
+    custom<DynamicIndexList>($strides, $static_strides)
     attr-dict `:` type($source) `to` type($result)
   }];
 
   let builders = [
-    // Build a SubViewOp with mixed static and dynamic entries and custom
-    // result type. If the type passed is nullptr, it is inferred.
+    // Build a SubViewOp with mixed static and dynamic entries and inferred
+    // result type.
     OpBuilder<(ins "Value":$source, "ArrayRef<OpFoldResult>":$offsets,
       "ArrayRef<OpFoldResult>":$sizes, "ArrayRef<OpFoldResult>":$strides,
       CArg<"ArrayRef<NamedAttribute>", "{}">:$attrs)>,
-    // Build a SubViewOp with mixed static and dynamic entries and inferred
-    // result type.
+    // Build a SubViewOp with mixed static and dynamic entries and custom
+    // result type. If the type passed is nullptr, it is inferred.
     OpBuilder<(ins "MemRefType":$resultType, "Value":$source,
       "ArrayRef<OpFoldResult>":$offsets, "ArrayRef<OpFoldResult>":$sizes,
       "ArrayRef<OpFoldResult>":$strides,
@@ -1698,11 +2072,11 @@ def SubViewOp : MemRef_OpWithOffsetSizesAndStrides<"subview", [
   let extraClassDeclaration = extraBaseClassDeclaration # [{
     /// Returns the type of the base memref operand.
     MemRefType getSourceType() {
-      return getSource().getType().cast<MemRefType>();
+      return ::llvm::cast<MemRefType>(getSource().getType());
     }
 
     /// The result of a subview is always a memref.
-    MemRefType getType() { return getResult().getType().cast<MemRefType>(); }
+    MemRefType getType() { return ::llvm::cast<MemRefType>(getResult().getType()); }
 
     /// A subview result type can be fully inferred from the source type and the
     /// static representation of offsets, sizes and strides. Special sentinels
@@ -1748,6 +2122,15 @@ def SubViewOp : MemRef_OpWithOffsetSizesAndStrides<"subview", [
     /// Return the dimensions of the source type that are dropped when
     /// the result is rank-reduced.
     llvm::SmallBitVector getDroppedDims();
+
+    /// Given a `value`, asserted to be of MemRefType, build a SubViewOp that
+    /// results in a rank reduction to the desired memref shape and return the
+    /// new value created.
+    /// If the shape of `value` is already the `desiredShape`, just return
+    /// `value`.
+    /// If the shape of `value` cannot be rank-reduced to `desiredShape`, fail.
+    static FailureOr<Value> rankReduceIfNeeded(
+      OpBuilder &b, Location loc, Value value, ArrayRef<int64_t> desiredShape);
   }];
 
   let hasCanonicalizer = 1;
@@ -1756,40 +2139,12 @@ def SubViewOp : MemRef_OpWithOffsetSizesAndStrides<"subview", [
 }
 
 //===----------------------------------------------------------------------===//
-// TensorStoreOp
-//===----------------------------------------------------------------------===//
-
-def TensorStoreOp : MemRef_Op<"tensor_store",
-    [SameOperandsShape, SameOperandsElementType,
-     TypesMatchWith<"type of 'value' matches tensor equivalent of 'memref'",
-                    "memref", "tensor",
-                    "getTensorTypeFromMemRefType($_self)">]> {
-  let summary = "tensor store operation";
-  let description = [{
-    Stores the contents of a tensor into a memref. The first operand is a value
-    of tensor type, the second operand is a value of memref type. The shapes and
-    element types of these must match, and are specified by the memref type.
-
-    Example:
-
-    ```mlir
-    %9 = dim %8, 1 : tensor<4x?xf32>
-    %10 = memref.alloc(%9) : memref<4x?xf32, #layout, memspace0>
-    memref.tensor_store %8, %10 : memref<4x?xf32, #layout, memspace0>
-    ```
-  }];
-
-  let arguments = (ins AnyTensor:$tensor, Arg<AnyRankedOrUnrankedMemRef,
-                       "the reference to store to", [MemWrite]>:$memref);
-
-  let assemblyFormat = "$tensor `,` $memref attr-dict `:` type($memref)";
-}
-
-//===----------------------------------------------------------------------===//
 // TransposeOp
 //===----------------------------------------------------------------------===//
 
-def MemRef_TransposeOp : MemRef_Op<"transpose", [NoSideEffect]>,
+def MemRef_TransposeOp : MemRef_Op<"transpose", [
+    DeclareOpInterfaceMethods<OpAsmOpInterface, ["getAsmResultNames"]>,
+    Pure]>,
     Arguments<(ins AnyStridedMemRef:$in, AffineMapAttr:$permutation)>,
     Results<(outs AnyStridedMemRef)> {
   let summary = "`transpose` produces a new strided memref (metadata-only)";
@@ -1811,7 +2166,6 @@ def MemRef_TransposeOp : MemRef_Op<"transpose", [NoSideEffect]>,
 
   let extraClassDeclaration = [{
     static StringRef getPermutationAttrStrName() { return "permutation"; }
-    ShapedType getShapedType() { return getIn().getType().cast<ShapedType>(); }
   }];
 
   let hasCustomAssemblyFormat = 1;
@@ -1824,7 +2178,9 @@ def MemRef_TransposeOp : MemRef_Op<"transpose", [NoSideEffect]>,
 //===----------------------------------------------------------------------===//
 
 def MemRef_ViewOp : MemRef_Op<"view", [
-    DeclareOpInterfaceMethods<ViewLikeOpInterface>, NoSideEffect]> {
+    DeclareOpInterfaceMethods<OpAsmOpInterface, ["getAsmResultNames"]>,
+    DeclareOpInterfaceMethods<ViewLikeOpInterface>,
+    Pure]> {
   let summary = "memref view operation";
   let description = [{
     The "view" operation extracts an N-D contiguous memref with empty layout map
@@ -1870,7 +2226,7 @@ def MemRef_ViewOp : MemRef_Op<"view", [
 
   let extraClassDeclaration = [{
     /// The result of a view is always a memref.
-    MemRefType getType() { return getResult().getType().cast<MemRefType>(); }
+    MemRefType getType() { return ::llvm::cast<MemRefType>(getResult().getType()); }
 
     /// Returns the dynamic sizes for this view operation. This is redundant
     /// with `sizes` but needed in template implementations. More specifically:
@@ -1901,7 +2257,7 @@ def AtomicRMWOp : MemRef_Op<"atomic_rmw", [
       AllTypesMatch<["value", "result"]>,
       TypesMatchWith<"value type matches element type of memref",
                      "memref", "value",
-                     "$_self.cast<MemRefType>().getElementType()">
+                     "::llvm::cast<MemRefType>($_self).getElementType()">
     ]> {
   let summary = "atomic read-modify-write operation";
   let description = [{
@@ -1923,7 +2279,7 @@ def AtomicRMWOp : MemRef_Op<"atomic_rmw", [
   let arguments = (ins
       AtomicRMWKindAttr:$kind,
       AnyTypeOf<[AnySignlessInteger, AnyFloat]>:$value,
-      MemRefOf<[AnySignlessInteger, AnyFloat]>:$memref,
+      Arg<MemRefOf<[AnySignlessInteger, AnyFloat]>, "the reference to read from and write to", [MemRead, MemWrite]>:$memref,
       Variadic<Index>:$indices);
   let results = (outs AnyTypeOf<[AnySignlessInteger, AnyFloat]>:$result);
 
@@ -1934,7 +2290,7 @@ def AtomicRMWOp : MemRef_Op<"atomic_rmw", [
 
   let extraClassDeclaration = [{
     MemRefType getMemRefType() {
-      return getMemref().getType().cast<MemRefType>();
+      return ::llvm::cast<MemRefType>(getMemref().getType());
     }
   }];
   let hasFolder = 1;

@@ -108,14 +108,21 @@ protected:
 
   void updateCallsiteSamples();
 
-  StringRef getCalleeNameForOffset(uint64_t TargetOffset);
+  void filterAmbiguousProfile(SampleProfileMap &Profiles);
+
+  bool filterAmbiguousProfile(FunctionSamples &FS);
+
+  StringRef getCalleeNameForAddress(uint64_t TargetAddress);
 
   void computeSummaryAndThreshold(SampleProfileMap &ProfileMap);
 
-  void calculateAndShowDensity(const SampleProfileMap &Profiles);
+  void calculateBodySamplesAndSize(const FunctionSamples &FSamples,
+                                   uint64_t &TotalBodySamples,
+                                   uint64_t &FuncBodySize);
 
-  double calculateDensity(const SampleProfileMap &Profiles,
-                          uint64_t HotCntThreshold);
+  double calculateDensity(const SampleProfileMap &Profiles);
+
+  void calculateAndShowDensity(const SampleProfileMap &Profiles);
 
   void showDensitySuggestion(double Density);
 
@@ -127,6 +134,10 @@ protected:
   // Collect profiled Functions for llvm sample profile input.
   virtual bool collectFunctionsFromLLVMProfile(
       std::unordered_set<const BinaryFunction *> &ProfiledFunctions) = 0;
+
+  // List of function prefix to filter out.
+  static constexpr const char *FuncPrefixsToFilter[] = {"__cxx_global_var_init",
+                                                        "__tls_init"};
 
   // Thresholds from profile summary to answer isHotCount/isColdCount queries.
   uint64_t HotCountThreshold;
@@ -157,7 +168,7 @@ private:
   void generateLineNumBasedProfile();
   void generateProbeBasedProfile();
   RangeSample preprocessRangeCounter(const RangeSample &RangeCounter);
-  FunctionSamples &getTopLevelFunctionProfile(StringRef FuncName);
+  FunctionSamples &getTopLevelFunctionProfile(FunctionId FuncName);
   // Helper function to get the leaf frame's FunctionProfile by traversing the
   // inline stack and meanwhile it adds the total samples for each frame's
   // function profile.
@@ -334,18 +345,18 @@ private:
 
   // Fill in function body samples from probes
   void populateBodySamplesWithProbes(const RangeSample &RangeCounter,
-                                     SampleContextFrames ContextStack);
+                                     const AddrBasedCtxKey *CtxKey);
   // Fill in boundary samples for a call probe
   void populateBoundarySamplesWithProbes(const BranchSample &BranchCounter,
-                                         SampleContextFrames ContextStack);
+                                         const AddrBasedCtxKey *CtxKey);
 
   ContextTrieNode *
-  getContextNodeForLeafProbe(SampleContextFrames ContextStack,
+  getContextNodeForLeafProbe(const AddrBasedCtxKey *CtxKey,
                              const MCDecodedPseudoProbe *LeafProbe);
 
   // Helper function to get FunctionSamples for the leaf probe
   FunctionSamples &
-  getFunctionProfileForLeafProbe(SampleContextFrames ContextStack,
+  getFunctionProfileForLeafProbe(const AddrBasedCtxKey *CtxKey,
                                  const MCDecodedPseudoProbe *LeafProbe);
 
   void convertToProfileMap(ContextTrieNode &Node,
@@ -357,6 +368,13 @@ private:
 
   bool collectFunctionsFromLLVMProfile(
       std::unordered_set<const BinaryFunction *> &ProfiledFunctions) override;
+
+  void initializeMissingFrameInferrer();
+
+  // Given an input `Context`, output `NewContext` with inferred missing tail
+  // call frames.
+  void inferMissingFrames(const SmallVectorImpl<uint64_t> &Context,
+                          SmallVectorImpl<uint64_t> &NewContext);
 
   ContextTrieNode &getRootContext() { return ContextTracker.getRootContext(); };
 

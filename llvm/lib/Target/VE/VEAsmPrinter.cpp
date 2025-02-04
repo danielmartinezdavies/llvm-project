@@ -17,17 +17,14 @@
 #include "TargetInfo/VETargetInfo.h"
 #include "VE.h"
 #include "VEInstrInfo.h"
-#include "VETargetMachine.h"
 #include "llvm/CodeGen/AsmPrinter.h"
 #include "llvm/CodeGen/MachineInstr.h"
 #include "llvm/CodeGen/MachineModuleInfoImpls.h"
-#include "llvm/CodeGen/MachineRegisterInfo.h"
 #include "llvm/CodeGen/TargetLoweringObjectFileImpl.h"
 #include "llvm/IR/Mangler.h"
 #include "llvm/MC/MCAsmInfo.h"
 #include "llvm/MC/MCContext.h"
 #include "llvm/MC/MCInst.h"
-#include "llvm/MC/MCInstBuilder.h"
 #include "llvm/MC/MCStreamer.h"
 #include "llvm/MC/MCSymbol.h"
 #include "llvm/MC/TargetRegistry.h"
@@ -57,8 +54,8 @@ public:
 
   void emitInstruction(const MachineInstr *MI) override;
 
-  static const char *getRegisterName(unsigned RegNo) {
-    return VEInstPrinter::getRegisterName(RegNo);
+  static const char *getRegisterName(MCRegister Reg) {
+    return VEInstPrinter::getRegisterName(Reg);
   }
   void printOperand(const MachineInstr *MI, int OpNum, raw_ostream &OS);
   bool PrintAsmOperand(const MachineInstr *MI, unsigned OpNo,

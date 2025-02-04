@@ -11,12 +11,11 @@
 
 #include "../ClangTidyCheck.h"
 
-namespace clang {
-namespace tidy {
-namespace readability {
+namespace clang::tidy::readability {
 
-/// Finds usages of `container.count()` and `find() == end()` which should be
-/// replaced by a call to the `container.contains()` method introduced in C++20.
+/// Finds usages of `container.count()` and
+/// `container.find() == container.end()` which should be replaced by a call
+/// to the `container.contains()` method.
 ///
 /// For the user-facing documentation see:
 /// http://clang.llvm.org/extra/clang-tidy/checks/readability/container-contains.html
@@ -26,15 +25,14 @@ public:
       : ClangTidyCheck(Name, Context) {}
   void registerMatchers(ast_matchers::MatchFinder *Finder) final;
   void check(const ast_matchers::MatchFinder::MatchResult &Result) final;
-
-protected:
   bool isLanguageVersionSupported(const LangOptions &LO) const final {
-    return LO.CPlusPlus20;
+    return LO.CPlusPlus;
+  }
+  std::optional<TraversalKind> getCheckTraversalKind() const override {
+    return TK_AsIs;
   }
 };
 
-} // namespace readability
-} // namespace tidy
-} // namespace clang
+} // namespace clang::tidy::readability
 
 #endif // LLVM_CLANG_TOOLS_EXTRA_CLANG_TIDY_READABILITY_CONTAINERCONTAINSCHECK_H

@@ -11,9 +11,7 @@
 
 #include "../ClangTidyCheck.h"
 
-namespace clang {
-namespace tidy {
-namespace readability {
+namespace clang::tidy::readability {
 
 /// Detects redundant access specifiers inside classes, structs, and unions.
 ///
@@ -23,8 +21,7 @@ class RedundantAccessSpecifiersCheck : public ClangTidyCheck {
 public:
   RedundantAccessSpecifiersCheck(StringRef Name, ClangTidyContext *Context)
       : ClangTidyCheck(Name, Context),
-        CheckFirstDeclaration(
-            Options.getLocalOrGlobal("CheckFirstDeclaration", false)) {}
+        CheckFirstDeclaration(Options.get("CheckFirstDeclaration", false)) {}
   bool isLanguageVersionSupported(const LangOptions &LangOpts) const override {
     return LangOpts.CPlusPlus;
   }
@@ -35,8 +32,6 @@ private:
   const bool CheckFirstDeclaration;
 };
 
-} // namespace readability
-} // namespace tidy
-} // namespace clang
+} // namespace clang::tidy::readability
 
 #endif // LLVM_CLANG_TOOLS_EXTRA_CLANG_TIDY_READABILITY_REDUNDANTACCESSSPECIFIERSCHECK_H

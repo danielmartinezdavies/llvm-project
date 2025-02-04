@@ -12,9 +12,6 @@
 //===----------------------------------------------------------------------===//
 
 #include "X86.h"
-#include "X86InstrBuilder.h"
-#include "X86InstrInfo.h"
-#include "X86MachineFunctionInfo.h"
 #include "X86Subtarget.h"
 #include "llvm/CodeGen/MachineFunctionPass.h"
 #include "llvm/CodeGen/MachineModuleInfo.h"
@@ -22,7 +19,7 @@
 #include "llvm/ProfileData/SampleProf.h"
 #include "llvm/ProfileData/SampleProfReader.h"
 #include "llvm/Support/Debug.h"
-#include "llvm/Transforms/IPO/SampleProfile.h"
+#include <optional>
 using namespace llvm;
 
 #define DEBUG_TYPE "x86-discriminate-memops"
@@ -73,7 +70,9 @@ public:
 
 bool IsPrefetchOpcode(unsigned Opcode) {
   return Opcode == X86::PREFETCHNTA || Opcode == X86::PREFETCHT0 ||
-         Opcode == X86::PREFETCHT1 || Opcode == X86::PREFETCHT2;
+         Opcode == X86::PREFETCHT1 || Opcode == X86::PREFETCHT2 ||
+         Opcode == X86::PREFETCHIT0 || Opcode == X86::PREFETCHIT1 ||
+         Opcode == X86::PREFETCHRST2;
 }
 } // end anonymous namespace
 
@@ -143,8 +142,8 @@ bool X86DiscriminateMemOps::runOnMachineFunction(MachineFunction &MF) {
       if (!TryInsert.second || !HasDebug) {
         unsigned BF, DF, CI = 0;
         DILocation::decodeDiscriminator(DI->getDiscriminator(), BF, DF, CI);
-        Optional<unsigned> EncodedDiscriminator = DILocation::encodeDiscriminator(
-            MemOpDiscriminators[L] + 1, DF, CI);
+        std::optional<unsigned> EncodedDiscriminator =
+            DILocation::encodeDiscriminator(MemOpDiscriminators[L] + 1, DF, CI);
 
         if (!EncodedDiscriminator) {
           // FIXME(mtrofin): The assumption is that this scenario is infrequent/OK

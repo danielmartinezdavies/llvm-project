@@ -11,13 +11,14 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "CheckExprLifetime.h"
 #include "clang/AST/ASTConsumer.h"
 #include "clang/AST/Attr.h"
 #include "clang/AST/Expr.h"
 #include "clang/Basic/TargetInfo.h"
 #include "clang/Lex/Preprocessor.h"
 #include "clang/Sema/Lookup.h"
-#include "clang/Sema/SemaInternal.h"
+#include <optional>
 using namespace clang;
 
 //===----------------------------------------------------------------------===//
@@ -34,6 +35,7 @@ Sema::PragmaStackSentinelRAII::PragmaStackSentinelRAII(Sema &S,
     S.BSSSegStack.SentinelAction(PSK_Push, SlotLabel);
     S.ConstSegStack.SentinelAction(PSK_Push, SlotLabel);
     S.CodeSegStack.SentinelAction(PSK_Push, SlotLabel);
+    S.StrictGuardStackCheckStack.SentinelAction(PSK_Push, SlotLabel);
   }
 }
 
@@ -44,6 +46,7 @@ Sema::PragmaStackSentinelRAII::~PragmaStackSentinelRAII() {
     S.BSSSegStack.SentinelAction(PSK_Pop, SlotLabel);
     S.ConstSegStack.SentinelAction(PSK_Pop, SlotLabel);
     S.CodeSegStack.SentinelAction(PSK_Pop, SlotLabel);
+    S.StrictGuardStackCheckStack.SentinelAction(PSK_Pop, SlotLabel);
   }
 }
 
@@ -114,7 +117,7 @@ void Sema::inferGslPointerAttribute(NamedDecl *ND,
   if (!Parent)
     return;
 
-  static llvm::StringSet<> Containers{
+  static const llvm::StringSet<> Containers{
       "array",
       "basic_string",
       "deque",
@@ -134,9 +137,9 @@ void Sema::inferGslPointerAttribute(NamedDecl *ND,
       "unordered_multimap",
   };
 
-  static llvm::StringSet<> Iterators{"iterator", "const_iterator",
-                                     "reverse_iterator",
-                                     "const_reverse_iterator"};
+  static const llvm::StringSet<> Iterators{"iterator", "const_iterator",
+                                           "reverse_iterator",
+                                           "const_reverse_iterator"};
 
   if (Parent->isInStdNamespace() && Iterators.count(ND->getName()) &&
       Containers.count(Parent->getName()))
@@ -162,7 +165,7 @@ void Sema::inferGslPointerAttribute(TypedefNameDecl *TD) {
 }
 
 void Sema::inferGslOwnerPointerAttribute(CXXRecordDecl *Record) {
-  static llvm::StringSet<> StdOwners{
+  static const llvm::StringSet<> StdOwners{
       "any",
       "array",
       "basic_regex",
@@ -186,10 +189,11 @@ void Sema::inferGslOwnerPointerAttribute(CXXRecordDecl *Record) {
       "unordered_multimap",
       "variant",
   };
-  static llvm::StringSet<> StdPointers{
+  static const llvm::StringSet<> StdPointers{
       "basic_string_view",
       "reference_wrapper",
       "regex_iterator",
+      "span",
   };
 
   if (!Record->getIdentifier())
@@ -212,6 +216,116 @@ void Sema::inferGslOwnerPointerAttribute(CXXRecordDecl *Record) {
   inferGslPointerAttribute(Record, Record);
 }
 
+void Sema::inferLifetimeBoundAttribute(FunctionDecl *FD) {
+  if (FD->getNumParams() == 0)
+    return;
+
+  if (unsigned BuiltinID = FD->getBuiltinID()) {
+    // Add lifetime attribute to std::move, std::fowrard et al.
+    switch (BuiltinID) {
+    case Builtin::BIaddressof:
+    case Builtin::BI__addressof:
+    case Builtin::BI__builtin_addressof:
+    case Builtin::BIas_const:
+    case Builtin::BIforward:
+    case Builtin::BIforward_like:
+    case Builtin::BImove:
+    case Builtin::BImove_if_noexcept:
+      if (ParmVarDecl *P = FD->getParamDecl(0u);
+          !P->hasAttr<LifetimeBoundAttr>())
+        P->addAttr(
+            LifetimeBoundAttr::CreateImplicit(Context, FD->getLocation()));
+      break;
+    default:
+      break;
+    }
+    return;
+  }
+  if (auto *CMD = dyn_cast<CXXMethodDecl>(FD)) {
+    const auto *CRD = CMD->getParent();
+    if (!CRD->isInStdNamespace() || !CRD->getIdentifier())
+      return;
+
+    if (isa<CXXConstructorDecl>(CMD)) {
+      auto *Param = CMD->getParamDecl(0);
+      if (Param->hasAttr<LifetimeBoundAttr>())
+        return;
+      if (CRD->getName() == "basic_string_view" &&
+          Param->getType()->isPointerType()) {
+        // construct from a char array pointed by a pointer.
+        //   basic_string_view(const CharT* s);
+        //   basic_string_view(const CharT* s, size_type count);
+        Param->addAttr(
+            LifetimeBoundAttr::CreateImplicit(Context, FD->getLocation()));
+      } else if (CRD->getName() == "span") {
+        // construct from a reference of array.
+        //   span(std::type_identity_t<element_type> (&arr)[N]);
+        const auto *LRT = Param->getType()->getAs<LValueReferenceType>();
+        if (LRT && LRT->getPointeeType().IgnoreParens()->isArrayType())
+          Param->addAttr(
+              LifetimeBoundAttr::CreateImplicit(Context, FD->getLocation()));
+      }
+    }
+  }
+}
+
+void Sema::inferLifetimeCaptureByAttribute(FunctionDecl *FD) {
+  auto *MD = dyn_cast_if_present<CXXMethodDecl>(FD);
+  if (!MD || !MD->getParent()->isInStdNamespace())
+    return;
+  auto Annotate = [this](const FunctionDecl *MD) {
+    // Do not infer if any parameter is explicitly annotated.
+    for (ParmVarDecl *PVD : MD->parameters())
+      if (PVD->hasAttr<LifetimeCaptureByAttr>())
+        return;
+    for (ParmVarDecl *PVD : MD->parameters()) {
+      // Methods in standard containers that capture values typically accept
+      // reference-type parameters, e.g., `void push_back(const T& value)`.
+      // We only apply the lifetime_capture_by attribute to parameters of
+      // pointer-like reference types (`const T&`, `T&&`).
+      if (PVD->getType()->isReferenceType() &&
+          sema::isGLSPointerType(PVD->getType().getNonReferenceType())) {
+        int CaptureByThis[] = {LifetimeCaptureByAttr::THIS};
+        PVD->addAttr(
+            LifetimeCaptureByAttr::CreateImplicit(Context, CaptureByThis, 1));
+      }
+    }
+  };
+
+  if (!MD->getIdentifier()) {
+    static const llvm::StringSet<> MapLikeContainer{
+        "map",
+        "multimap",
+        "unordered_map",
+        "unordered_multimap",
+    };
+    // Infer for the map's operator []:
+    //    std::map<string_view, ...> m;
+    //    m[ReturnString(..)] = ...; // !dangling references in m.
+    if (MD->getOverloadedOperator() == OO_Subscript &&
+        MapLikeContainer.contains(MD->getParent()->getName()))
+      Annotate(MD);
+    return;
+  }
+  static const llvm::StringSet<> CapturingMethods{
+      "insert", "insert_or_assign", "push", "push_front", "push_back"};
+  if (!CapturingMethods.contains(MD->getName()))
+    return;
+  Annotate(MD);
+}
+
+void Sema::inferNullableClassAttribute(CXXRecordDecl *CRD) {
+  static const llvm::StringSet<> Nullable{
+      "auto_ptr",         "shared_ptr", "unique_ptr",         "exception_ptr",
+      "coroutine_handle", "function",   "move_only_function",
+  };
+
+  if (CRD->isInStdNamespace() && Nullable.count(CRD->getName()) &&
+      !CRD->hasAttr<TypeNullableAttr>())
+    for (Decl *Redecl : CRD->redecls())
+      Redecl->addAttr(TypeNullableAttr::CreateImplicit(Context));
+}
+
 void Sema::ActOnPragmaOptionsAlign(PragmaOptionsAlignKind Kind,
                                    SourceLocation PragmaLoc) {
   PragmaMsStackAction Action = Sema::PSK_Reset;
@@ -220,8 +334,6 @@ void Sema::ActOnPragmaOptionsAlign(PragmaOptionsAlignKind Kind,
   switch (Kind) {
     // For most of the platforms we support, native and natural are the same.
     // With XL, native is the same as power, natural means something else.
-    //
-    // FIXME: This is not true on Darwin/PPC.
   case POAK_Native:
   case POAK_Power:
     Action = Sema::PSK_Push_Set;
@@ -335,7 +447,7 @@ void Sema::ActOnPragmaPack(SourceLocation PragmaLoc, PragmaMsStackAction Action,
   AlignPackInfo::Mode ModeVal = CurVal.getAlignMode();
 
   if (Alignment) {
-    Optional<llvm::APSInt> Val;
+    std::optional<llvm::APSInt> Val;
     Val = Alignment->getIntegerConstantExpr(Context);
 
     // pack(0) is like pack(), which just works out since that is what
@@ -425,7 +537,6 @@ bool Sema::ConstantFoldAttrArgs(const AttributeCommonInfo &CI,
         Diag(Note.first, Note.second);
       return false;
     }
-    assert(Eval.Val.hasValue());
     E = ConstantExpr::Create(Context, E, Eval.Val);
   }
 
@@ -562,13 +673,6 @@ void Sema::ActOnPragmaFloatControl(SourceLocation Loc,
   case PFC_Precise:
     NewFPFeatures.setFPPreciseEnabled(true);
     FpPragmaStack.Act(Loc, Action, StringRef(), NewFPFeatures);
-    if (PP.getCurrentFPEvalMethod() ==
-            LangOptions::FPEvalMethodKind::FEM_Indeterminable &&
-        PP.getLastFPEvalPragmaLocation().isValid())
-      // A preceding `pragma float_control(precise,off)` has changed
-      // the value of the evaluation method.
-      // Set it back to its old value.
-      PP.setCurrentFPEvalMethod(SourceLocation(), PP.getLastFPEvalMethod());
     break;
   case PFC_NoPrecise:
     if (CurFPFeatures.getExceptionMode() == LangOptions::FPE_Strict)
@@ -578,10 +682,6 @@ void Sema::ActOnPragmaFloatControl(SourceLocation Loc,
     else
       NewFPFeatures.setFPPreciseEnabled(false);
     FpPragmaStack.Act(Loc, Action, StringRef(), NewFPFeatures);
-    PP.setLastFPEvalMethod(PP.getCurrentFPEvalMethod());
-    // `AllowFPReassoc` or `AllowReciprocal` option is enabled.
-    PP.setCurrentFPEvalMethod(
-        Loc, LangOptions::FPEvalMethodKind::FEM_Indeterminable);
     break;
   case PFC_Except:
     if (!isPreciseFPEnabled())
@@ -605,12 +705,6 @@ void Sema::ActOnPragmaFloatControl(SourceLocation Loc,
     }
     FpPragmaStack.Act(Loc, Action, StringRef(), NewFPFeatures);
     NewFPFeatures = FpPragmaStack.CurrentValue;
-    if (CurFPFeatures.getAllowFPReassociate() ||
-        CurFPFeatures.getAllowReciprocal())
-      // Since we are popping the pragma, we don't want to be passing
-      // a location here.
-      PP.setCurrentFPEvalMethod(SourceLocation(),
-                                CurFPFeatures.getFPEvalMethod());
     break;
   }
   CurFPFeatures = NewFPFeatures.applyOverrides(getLangOpts());
@@ -700,12 +794,10 @@ bool Sema::UnifySection(StringRef SectionName, int SectionFlags,
   if (auto A = Decl->getAttr<SectionAttr>())
     if (A->isImplicit())
       PragmaLocation = A->getLocation();
-  auto SectionIt = Context.SectionInfos.find(SectionName);
-  if (SectionIt == Context.SectionInfos.end()) {
-    Context.SectionInfos[SectionName] =
-        ASTContext::SectionInfo(Decl, PragmaLocation, SectionFlags);
+  auto [SectionIt, Inserted] = Context.SectionInfos.try_emplace(
+      SectionName, Decl, PragmaLocation, SectionFlags);
+  if (Inserted)
     return false;
-  }
   // A pre-declared section takes precedence w/o diagnostic.
   const auto &Section = SectionIt->second;
   if (Section.SectionFlags == SectionFlags ||
@@ -774,6 +866,17 @@ void Sema::ActOnPragmaMSSeg(SourceLocation PragmaLocation,
   Stack->Act(PragmaLocation, Action, StackSlotLabel, SegmentName);
 }
 
+/// Called on well formed \#pragma strict_gs_check().
+void Sema::ActOnPragmaMSStrictGuardStackCheck(SourceLocation PragmaLocation,
+                                              PragmaMsStackAction Action,
+                                              bool Value) {
+  if (Action & PSK_Pop && StrictGuardStackCheckStack.Stack.empty())
+    Diag(PragmaLocation, diag::warn_pragma_pop_failed) << "strict_gs_check"
+                                                       << "stack empty";
+
+  StrictGuardStackCheckStack.Act(PragmaLocation, Action, StringRef(), Value);
+}
+
 /// Called on well formed \#pragma bss_seg().
 void Sema::ActOnPragmaMSSection(SourceLocation PragmaLocation,
                                 int SectionFlags, StringLiteral *SegmentName) {
@@ -830,7 +933,7 @@ void Sema::ActOnPragmaUnused(const Token &IdTok, Scope *curScope,
 
   IdentifierInfo *Name = IdTok.getIdentifierInfo();
   LookupResult Lookup(*this, Name, IdTok.getLocation(), LookupOrdinaryName);
-  LookupParsedName(Lookup, curScope, nullptr, true);
+  LookupName(Lookup, curScope, /*AllowBuiltinCreation=*/true);
 
   if (Lookup.empty()) {
     Diag(PragmaLoc, diag::warn_pragma_unused_undeclared_var)
@@ -850,34 +953,17 @@ void Sema::ActOnPragmaUnused(const Token &IdTok, Scope *curScope,
     Diag(PragmaLoc, diag::warn_used_but_marked_unused) << Name;
 
   VD->addAttr(UnusedAttr::CreateImplicit(Context, IdTok.getLocation(),
-                                         AttributeCommonInfo::AS_Pragma,
                                          UnusedAttr::GNU_unused));
-}
-
-void Sema::AddCFAuditedAttribute(Decl *D) {
-  IdentifierInfo *Ident;
-  SourceLocation Loc;
-  std::tie(Ident, Loc) = PP.getPragmaARCCFCodeAuditedInfo();
-  if (!Loc.isValid()) return;
-
-  // Don't add a redundant or conflicting attribute.
-  if (D->hasAttr<CFAuditedTransferAttr>() ||
-      D->hasAttr<CFUnknownTransferAttr>())
-    return;
-
-  AttributeCommonInfo Info(Ident, SourceRange(Loc),
-                           AttributeCommonInfo::AS_Pragma);
-  D->addAttr(CFAuditedTransferAttr::CreateImplicit(Context, Info));
 }
 
 namespace {
 
-Optional<attr::SubjectMatchRule>
+std::optional<attr::SubjectMatchRule>
 getParentAttrMatcherRule(attr::SubjectMatchRule Rule) {
   using namespace attr;
   switch (Rule) {
   default:
-    return None;
+    return std::nullopt;
 #define ATTR_MATCH_RULE(Value, Spelling, IsAbstract)
 #define ATTR_MATCH_SUB_RULE(Value, Spelling, IsAbstract, Parent, IsNegated)    \
   case Value:                                                                  \
@@ -947,7 +1033,7 @@ void Sema::ActOnPragmaAttributeAttribute(
         RulesToFirstSpecifiedNegatedSubRule;
     for (const auto &Rule : Rules) {
       attr::SubjectMatchRule MatchRule = attr::SubjectMatchRule(Rule.first);
-      Optional<attr::SubjectMatchRule> ParentRule =
+      std::optional<attr::SubjectMatchRule> ParentRule =
           getParentAttrMatcherRule(MatchRule);
       if (!ParentRule)
         continue;
@@ -971,7 +1057,7 @@ void Sema::ActOnPragmaAttributeAttribute(
     bool IgnoreNegatedSubRules = false;
     for (const auto &Rule : Rules) {
       attr::SubjectMatchRule MatchRule = attr::SubjectMatchRule(Rule.first);
-      Optional<attr::SubjectMatchRule> ParentRule =
+      std::optional<attr::SubjectMatchRule> ParentRule =
           getParentAttrMatcherRule(MatchRule);
       if (!ParentRule)
         continue;
@@ -1136,6 +1222,16 @@ void Sema::PrintPragmaAttributeInstantiationPoint() {
                diag::note_pragma_attribute_applied_decl_here);
 }
 
+void Sema::DiagnosePrecisionLossInComplexDivision() {
+  for (auto &[Type, Num] : ExcessPrecisionNotSatisfied) {
+    assert(LocationOfExcessPrecisionNotSatisfied.isValid() &&
+           "expected a valid source location");
+    Diag(LocationOfExcessPrecisionNotSatisfied,
+         diag::warn_excess_precision_not_supported)
+        << static_cast<bool>(Num);
+  }
+}
+
 void Sema::DiagnoseUnterminatedPragmaAttribute() {
   if (PragmaAttributeStack.empty())
     return;
@@ -1213,6 +1309,8 @@ void Sema::AddOptnoneAttributeIfNoConflicts(FunctionDecl *FD,
 }
 
 void Sema::AddImplicitMSFunctionNoBuiltinAttr(FunctionDecl *FD) {
+  if (FD->isDeleted() || FD->isDefaulted())
+    return;
   SmallVector<StringRef> V(MSFunctionNoBuiltins.begin(),
                            MSFunctionNoBuiltins.end());
   if (!MSFunctionNoBuiltins.empty())
@@ -1241,7 +1339,6 @@ void Sema::AddPushedVisibilityAttribute(Decl *D) {
   D->addAttr(VisibilityAttr::CreateImplicit(Context, type, loc));
 }
 
-/// FreeVisContext - Deallocate and null out VisContext.
 void Sema::FreeVisContext() {
   delete static_cast<VisStack*>(VisContext);
   VisContext = nullptr;
@@ -1279,19 +1376,19 @@ void Sema::ActOnPragmaFPContract(SourceLocation Loc,
     NewFPFeatures.setAllowFPContractWithinStatement();
     break;
   case LangOptions::FPM_Fast:
+  case LangOptions::FPM_FastHonorPragmas:
     NewFPFeatures.setAllowFPContractAcrossStatement();
     break;
   case LangOptions::FPM_Off:
     NewFPFeatures.setDisallowFPContract();
     break;
-  case LangOptions::FPM_FastHonorPragmas:
-    llvm_unreachable("Should not happen");
   }
   FpPragmaStack.Act(Loc, Sema::PSK_Set, StringRef(), NewFPFeatures);
   CurFPFeatures = NewFPFeatures.applyOverrides(getLangOpts());
 }
 
-void Sema::ActOnPragmaFPReassociate(SourceLocation Loc, bool IsEnabled) {
+void Sema::ActOnPragmaFPValueChangingOption(SourceLocation Loc,
+                                            PragmaFPKind Kind, bool IsEnabled) {
   if (IsEnabled) {
     // For value unsafe context, combining this pragma with eval method
     // setting is not recommended. See comment in function FixupInvocation#506.
@@ -1307,10 +1404,21 @@ void Sema::ActOnPragmaFPReassociate(SourceLocation Loc, bool IsEnabled) {
       Reason = 0;
     if (Reason != -1)
       Diag(Loc, diag::err_setting_eval_method_used_in_unsafe_context)
-          << Reason << 4;
+          << Reason << (Kind == PFK_Reassociate ? 4 : 5);
   }
+
   FPOptionsOverride NewFPFeatures = CurFPFeatureOverrides();
-  NewFPFeatures.setAllowFPReassociateOverride(IsEnabled);
+  switch (Kind) {
+  case PFK_Reassociate:
+    NewFPFeatures.setAllowFPReassociateOverride(IsEnabled);
+    break;
+  case PFK_Reciprocal:
+    NewFPFeatures.setAllowReciprocalOverride(IsEnabled);
+    break;
+  default:
+    llvm_unreachable("unhandled value changing pragma fp");
+  }
+
   FpPragmaStack.Act(Loc, PSK_Set, StringRef(), NewFPFeatures);
   CurFPFeatures = NewFPFeatures.applyOverrides(getLangOpts());
 }
@@ -1341,6 +1449,15 @@ void Sema::ActOnPragmaFEnvAccess(SourceLocation Loc, bool IsEnabled) {
       Diag(Loc, diag::err_pragma_fenv_requires_precise);
   }
   NewFPFeatures.setAllowFEnvAccessOverride(IsEnabled);
+  NewFPFeatures.setRoundingMathOverride(IsEnabled);
+  FpPragmaStack.Act(Loc, PSK_Set, StringRef(), NewFPFeatures);
+  CurFPFeatures = NewFPFeatures.applyOverrides(getLangOpts());
+}
+
+void Sema::ActOnPragmaCXLimitedRange(SourceLocation Loc,
+                                     LangOptions::ComplexRangeKind Range) {
+  FPOptionsOverride NewFPFeatures = CurFPFeatureOverrides();
+  NewFPFeatures.setComplexRangeOverride(Range);
   FpPragmaStack.Act(Loc, PSK_Set, StringRef(), NewFPFeatures);
   CurFPFeatures = NewFPFeatures.applyOverrides(getLangOpts());
 }

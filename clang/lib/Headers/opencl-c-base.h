@@ -45,6 +45,12 @@
 #define __opencl_c_ext_fp32_local_atomic_add 1
 #define __opencl_c_ext_fp32_global_atomic_min_max 1
 #define __opencl_c_ext_fp32_local_atomic_min_max 1
+#define __opencl_c_ext_image_raw10_raw12 1
+#define __opencl_c_ext_image_unorm_int_2_101010 1
+#define cl_khr_kernel_clock 1
+#define __opencl_c_kernel_clock_scope_device 1
+#define __opencl_c_kernel_clock_scope_work_group 1
+#define __opencl_c_kernel_clock_scope_sub_group 1
 
 #endif // defined(__SPIR__) || defined(__SPIRV__)
 #endif // (defined(__OPENCL_CPP_VERSION__) || __OPENCL_C_VERSION__ >= 200)
@@ -74,6 +80,25 @@
 #define __opencl_c_atomic_scope_all_devices 1
 #define __opencl_c_read_write_images 1
 #endif // defined(__SPIR__)
+
+// Undefine any feature macros that have been explicitly disabled using
+// an __undef_<feature> macro.
+#ifdef __undef___opencl_c_work_group_collective_functions
+#undef __opencl_c_work_group_collective_functions
+#endif
+#ifdef __undef___opencl_c_atomic_order_seq_cst
+#undef __opencl_c_atomic_order_seq_cst
+#endif
+#ifdef __undef___opencl_c_atomic_scope_device
+#undef __opencl_c_atomic_scope_device
+#endif
+#ifdef __undef___opencl_c_atomic_scope_all_devices
+#undef __opencl_c_atomic_scope_all_devices
+#endif
+#ifdef __undef___opencl_c_read_write_images
+#undef __opencl_c_read_write_images
+#endif
+
 #endif // (__OPENCL_CPP_VERSION__ == 202100 || __OPENCL_C_VERSION__ == 300)
 
 #if !defined(__opencl_c_generic_address_space)
@@ -455,6 +480,16 @@ typedef enum memory_order
 #define CLK_HALF_FLOAT        0x10DD
 #define CLK_FLOAT             0x10DE
 #define CLK_UNORM_INT24       0x10DF
+#if __OPENCL_C_VERSION__ >= CL_VERSION_3_0
+#define CLK_UNORM_INT_101010_2 0x10E0
+#endif // __OPENCL_C_VERSION__ >= CL_VERSION_3_0
+#ifdef __opencl_c_ext_image_raw10_raw12
+#define CLK_UNSIGNED_INT_RAW10_EXT 0x10E3
+#define CLK_UNSIGNED_INT_RAW12_EXT 0x10E4
+#endif // __opencl_c_ext_image_raw10_raw12
+#ifdef __opencl_c_ext_image_unorm_int_2_101010
+#define CLK_UNORM_INT_2_101010_EXT 0x10E5
+#endif // __opencl_c_ext_image_unorm_int_2_101010
 
 // Channel order, numbering must be aligned with cl_channel_order in cl.h
 //

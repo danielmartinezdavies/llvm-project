@@ -6,8 +6,6 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "PassDetail.h"
-#include "flang/Optimizer/Builder/Array.h"
 #include "flang/Optimizer/Builder/BoxValue.h"
 #include "flang/Optimizer/Builder/FIRBuilder.h"
 #include "flang/Optimizer/Builder/Factory.h"
@@ -15,12 +13,17 @@
 #include "flang/Optimizer/Builder/Todo.h"
 #include "flang/Optimizer/Dialect/FIRDialect.h"
 #include "flang/Optimizer/Dialect/FIROpsSupport.h"
-#include "flang/Optimizer/Support/FIRContext.h"
+#include "flang/Optimizer/Dialect/Support/FIRContext.h"
 #include "flang/Optimizer/Transforms/Passes.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "llvm/Support/Debug.h"
+
+namespace fir {
+#define GEN_PASS_DEF_ARRAYVALUECOPY
+#include "flang/Optimizer/Transforms/Passes.h.inc"
+} // namespace fir
 
 #define DEBUG_TYPE "flang-array-value-copy"
 
@@ -61,16 +64,18 @@ namespace {
 ///
 /// If none of the array values overlap in storage and the accesses are not
 /// loop-carried, then the arrays are conflict-free and no copies are required.
-class ArrayCopyAnalysis {
+class ArrayCopyAnalysisBase {
 public:
-  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(ArrayCopyAnalysis)
-
   using ConflictSetT = llvm::SmallPtrSet<mlir::Operation *, 16>;
   using UseSetT = llvm::SmallPtrSet<mlir::OpOperand *, 8>;
   using LoadMapSetsT = llvm::DenseMap<mlir::Operation *, UseSetT>;
   using AmendAccessSetT = llvm::SmallPtrSet<mlir::Operation *, 4>;
 
-  ArrayCopyAnalysis(mlir::Operation *op) : operation{op} { construct(op); }
+  ArrayCopyAnalysisBase(mlir::Operation *op, bool optimized)
+      : operation{op}, optimizeConflicts(optimized) {
+    construct(op);
+  }
+  virtual ~ArrayCopyAnalysisBase() = default;
 
   mlir::Operation *getOperation() const { return operation; }
 
@@ -113,6 +118,27 @@ private:
   LoadMapSetsT loadMapSets;
   // Set of array_access ops associated with array_amend ops.
   AmendAccessSetT amendAccesses;
+  bool optimizeConflicts;
+};
+
+// Optimized array copy analysis that takes into account Fortran
+// variable attributes to prove that no conflict is possible
+// and reduce the number of temporary arrays.
+class ArrayCopyAnalysisOptimized : public ArrayCopyAnalysisBase {
+public:
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(ArrayCopyAnalysisOptimized)
+
+  ArrayCopyAnalysisOptimized(mlir::Operation *op)
+      : ArrayCopyAnalysisBase(op, /*optimized=*/true) {}
+};
+
+// Unoptimized array copy analysis used at O0.
+class ArrayCopyAnalysis : public ArrayCopyAnalysisBase {
+public:
+  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(ArrayCopyAnalysis)
+
+  ArrayCopyAnalysis(mlir::Operation *op)
+      : ArrayCopyAnalysisBase(op, /*optimized=*/false) {}
 };
 } // namespace
 
@@ -161,7 +187,7 @@ public:
     LLVM_DEBUG(llvm::dbgs() << "popset: " << *op << '\n');
     auto popFn = [&](auto rop) {
       assert(val && "op must have a result value");
-      auto resNum = val.cast<mlir::OpResult>().getResultNumber();
+      auto resNum = mlir::cast<mlir::OpResult>(val).getResultNumber();
       llvm::SmallVector<mlir::Value> results;
       rop.resultToSourceOps(results, resNum);
       for (auto u : results)
@@ -270,7 +296,7 @@ public:
     visited.insert(val);
 
     // Process a block argument.
-    if (auto ba = val.dyn_cast<mlir::BlockArgument>()) {
+    if (auto ba = mlir::dyn_cast<mlir::BlockArgument>(val)) {
       collectArrayMentionFrom(ba);
       return;
     }
@@ -328,7 +354,7 @@ private:
 
 /// Find all the array operations that access the array value that is loaded by
 /// the array load operation, `load`.
-void ArrayCopyAnalysis::arrayMentions(
+void ArrayCopyAnalysisBase::arrayMentions(
     llvm::SmallVectorImpl<mlir::Operation *> &mentions, ArrayLoadOp load) {
   mentions.clear();
   auto lmIter = loadMapSets.find(load);
@@ -435,9 +461,9 @@ void ArrayCopyAnalysis::arrayMentions(
 }
 
 static bool hasPointerType(mlir::Type type) {
-  if (auto boxTy = type.dyn_cast<BoxType>())
+  if (auto boxTy = mlir::dyn_cast<BoxType>(type))
     type = boxTy.getEleTy();
-  return type.isa<fir::PointerType>();
+  return mlir::isa<fir::PointerType>(type);
 }
 
 // This is a NF performance hack. It makes a simple test that the slices of the
@@ -486,7 +512,7 @@ static bool mutuallyExclusiveSliceRange(ArrayLoadOp ld, ArrayMergeStoreOp st) {
     auto isPositiveConstant = [](mlir::Value v) -> bool {
       if (auto conOp =
               mlir::dyn_cast<mlir::arith::ConstantOp>(v.getDefiningOp()))
-        if (auto iattr = conOp.getValue().dyn_cast<mlir::IntegerAttr>())
+        if (auto iattr = mlir::dyn_cast<mlir::IntegerAttr>(conOp.getValue()))
           return iattr.getInt() > 0;
       return false;
     };
@@ -537,14 +563,18 @@ static bool mutuallyExclusiveSliceRange(ArrayLoadOp ld, ArrayMergeStoreOp st) {
 /// Is there a conflict between the array value that was updated and to be
 /// stored to `st` and the set of arrays loaded (`reach`) and used to compute
 /// the updated value?
+/// If `optimize` is true, use the variable attributes to prove that
+/// there is no conflict.
 static bool conflictOnLoad(llvm::ArrayRef<mlir::Operation *> reach,
-                           ArrayMergeStoreOp st) {
+                           ArrayMergeStoreOp st, bool optimize) {
   mlir::Value load;
   mlir::Value addr = st.getMemref();
   const bool storeHasPointerType = hasPointerType(addr.getType());
   for (auto *op : reach)
     if (auto ld = mlir::dyn_cast<ArrayLoadOp>(op)) {
       mlir::Type ldTy = ld.getMemref().getType();
+      auto globalOpName = mlir::OperationName(fir::GlobalOp::getOperationName(),
+                                              ld.getContext());
       if (ld.getMemref() == addr) {
         if (mutuallyExclusiveSliceRange(ld, st))
           continue;
@@ -556,18 +586,33 @@ static bool conflictOnLoad(llvm::ArrayRef<mlir::Operation *> reach,
           return true;
         }
         load = ld;
-      } else if ((hasPointerType(ldTy) || storeHasPointerType)) {
-        // TODO: Use target attribute to restrict this case further.
-        // TODO: Check if types can also allow ruling out some cases. For now,
-        // the fact that equivalences is using pointer attribute to enforce
-        // aliasing is preventing any attempt to do so, and in general, it may
-        // be wrong to use this if any of the types is a complex or a derived
-        // for which it is possible to create a pointer to a part with a
-        // different type than the whole, although this deserve some more
-        // investigation because existing compiler behavior seem to diverge
-        // here.
+      } else if (storeHasPointerType) {
+        if (optimize && !hasPointerType(ldTy) &&
+            !valueMayHaveFirAttributes(
+                ld.getMemref(),
+                {getTargetAttrName(),
+                 fir::GlobalOp::getTargetAttrName(globalOpName).strref()}))
+          continue;
+
+        return true;
+      } else if (hasPointerType(ldTy)) {
+        if (optimize && !storeHasPointerType &&
+            !valueMayHaveFirAttributes(
+                addr,
+                {getTargetAttrName(),
+                 fir::GlobalOp::getTargetAttrName(globalOpName).strref()}))
+          continue;
+
         return true;
       }
+      // TODO: Check if types can also allow ruling out some cases. For now,
+      // the fact that equivalences is using pointer attribute to enforce
+      // aliasing is preventing any attempt to do so, and in general, it may
+      // be wrong to use this if any of the types is a complex or a derived
+      // for which it is possible to create a pointer to a part with a
+      // different type than the whole, although this deserve some more
+      // investigation because existing compiler behavior seem to diverge
+      // here.
     }
   return false;
 }
@@ -670,8 +715,8 @@ amendingAccess(llvm::ArrayRef<mlir::Operation *> mentions) {
 // Are any conflicts present? The conflicts detected here are described above.
 static bool conflictDetected(llvm::ArrayRef<mlir::Operation *> reach,
                              llvm::ArrayRef<mlir::Operation *> mentions,
-                             ArrayMergeStoreOp st) {
-  return conflictOnLoad(reach, st) || conflictOnMerge(mentions);
+                             ArrayMergeStoreOp st, bool optimize) {
+  return conflictOnLoad(reach, st, optimize) || conflictOnMerge(mentions);
 }
 
 // Assume that any call to a function that uses host-associations will be
@@ -680,10 +725,10 @@ static bool
 conservativeCallConflict(llvm::ArrayRef<mlir::Operation *> reaches) {
   return llvm::any_of(reaches, [](mlir::Operation *op) {
     if (auto call = mlir::dyn_cast<fir::CallOp>(op))
-      if (auto callee =
-              call.getCallableForCallee().dyn_cast<mlir::SymbolRefAttr>()) {
+      if (auto callee = mlir::dyn_cast<mlir::SymbolRefAttr>(
+              call.getCallableForCallee())) {
         auto module = op->getParentOfType<mlir::ModuleOp>();
-        return hasHostAssociationArgument(
+        return isInternalProcedure(
             module.lookupSymbol<mlir::func::FuncOp>(callee));
       }
     return false;
@@ -692,7 +737,7 @@ conservativeCallConflict(llvm::ArrayRef<mlir::Operation *> reaches) {
 
 /// Constructor of the array copy analysis.
 /// This performs the analysis and saves the intermediate results.
-void ArrayCopyAnalysis::construct(mlir::Operation *topLevelOp) {
+void ArrayCopyAnalysisBase::construct(mlir::Operation *topLevelOp) {
   topLevelOp->walk([&](Operation *op) {
     if (auto st = mlir::dyn_cast<fir::ArrayMergeStoreOp>(op)) {
       llvm::SmallVector<mlir::Operation *> values;
@@ -701,7 +746,7 @@ void ArrayCopyAnalysis::construct(mlir::Operation *topLevelOp) {
       llvm::SmallVector<mlir::Operation *> mentions;
       arrayMentions(mentions,
                     mlir::cast<ArrayLoadOp>(st.getOriginal().getDefiningOp()));
-      bool conflict = conflictDetected(values, mentions, st);
+      bool conflict = conflictDetected(values, mentions, st, optimizeConflicts);
       bool refConflict = conflictOnReference(mentions);
       if (callConflict || conflict || refConflict) {
         LLVM_DEBUG(llvm::dbgs()
@@ -751,7 +796,7 @@ class ArrayLoadConversion : public mlir::OpRewritePattern<ArrayLoadOp> {
 public:
   using OpRewritePattern::OpRewritePattern;
 
-  mlir::LogicalResult
+  llvm::LogicalResult
   matchAndRewrite(ArrayLoadOp load,
                   mlir::PatternRewriter &rewriter) const override {
     LLVM_DEBUG(llvm::dbgs() << "replace load " << load << " with undef.\n");
@@ -765,7 +810,7 @@ class ArrayMergeStoreConversion
 public:
   using OpRewritePattern::OpRewritePattern;
 
-  mlir::LogicalResult
+  llvm::LogicalResult
   matchAndRewrite(ArrayMergeStoreOp store,
                   mlir::PatternRewriter &rewriter) const override {
     LLVM_DEBUG(llvm::dbgs() << "marking store " << store << " as dead.\n");
@@ -779,6 +824,16 @@ static mlir::Type getEleTy(mlir::Type ty) {
   auto eleTy = unwrapSequenceType(unwrapPassByRefType(ty));
   // FIXME: keep ptr/heap/ref information.
   return ReferenceType::get(eleTy);
+}
+
+// This is an unsafe way to deduce this (won't be true in internal
+// procedure or inside select-rank for assumed-size). Only here to satisfy
+// legacy code until removed.
+static bool isAssumedSize(llvm::SmallVectorImpl<mlir::Value> &extents) {
+  if (extents.empty())
+    return false;
+  auto cstLen = fir::getIntIfConstant(extents.back());
+  return cstLen.has_value() && *cstLen == -1;
 }
 
 // Extract extents from the ShapeOp/ShapeShiftOp into the result vector.
@@ -799,7 +854,7 @@ static bool getAdjustedExtents(mlir::Location loc,
     emitFatalError(loc, "not a fir.shape/fir.shape_shift op");
   }
   auto idxTy = rewriter.getIndexType();
-  if (factory::isAssumedSize(result)) {
+  if (isAssumedSize(result)) {
     // Use slice information to compute the extent of the column.
     auto one = rewriter.create<mlir::arith::ConstantIndexOp>(loc, 1);
     mlir::Value size = one;
@@ -809,8 +864,7 @@ static bool getAdjustedExtents(mlir::Location loc,
         auto triples = sliceOp.getTriples();
         const std::size_t tripleSize = triples.size();
         auto module = arrLoad->getParentOfType<mlir::ModuleOp>();
-        fir::KindMapping kindMap = getKindMapping(module);
-        FirOpBuilder builder(rewriter, kindMap);
+        FirOpBuilder builder(rewriter, module);
         size = builder.genExtentFromTriplet(loc, triples[tripleSize - 3],
                                             triples[tripleSize - 2],
                                             triples[tripleSize - 1], idxTy);
@@ -837,9 +891,9 @@ static mlir::Value getOrReadExtentsAndShapeOp(
   if (arrLoad->hasAttr(fir::getOptionalAttrName()))
     fir::emitFatalError(
         loc, "shapes from array load of OPTIONAL arrays must not be used");
-  if (auto boxTy = arrLoad.getMemref().getType().dyn_cast<BoxType>()) {
+  if (auto boxTy = mlir::dyn_cast<BoxType>(arrLoad.getMemref().getType())) {
     auto rank =
-        dyn_cast_ptrOrBoxEleTy(boxTy).cast<SequenceType>().getDimension();
+        mlir::cast<SequenceType>(dyn_cast_ptrOrBoxEleTy(boxTy)).getDimension();
     auto idxTy = rewriter.getIndexType();
     for (decltype(rank) dim = 0; dim < rank; ++dim) {
       auto dimVal = rewriter.create<mlir::arith::ConstantIndexOp>(loc, dim);
@@ -875,7 +929,7 @@ static mlir::Type toRefType(mlir::Type ty) {
 static llvm::SmallVector<mlir::Value>
 getTypeParamsIfRawData(mlir::Location loc, FirOpBuilder &builder,
                        ArrayLoadOp arrLoad, mlir::Type ty) {
-  if (ty.isa<BoxType>())
+  if (mlir::isa<BoxType>(ty))
     return {};
   return fir::factory::getTypeParams(loc, builder, arrLoad);
 }
@@ -893,11 +947,10 @@ static mlir::Value genCoorOp(mlir::PatternRewriter &rewriter,
     originated = factory::originateIndices(loc, rewriter, alloc.getType(),
                                            shape, indices);
   auto seqTy = dyn_cast_ptrOrBoxEleTy(alloc.getType());
-  assert(seqTy && seqTy.isa<SequenceType>());
-  const auto dimension = seqTy.cast<SequenceType>().getDimension();
+  assert(seqTy && mlir::isa<SequenceType>(seqTy));
+  const auto dimension = mlir::cast<SequenceType>(seqTy).getDimension();
   auto module = load->getParentOfType<mlir::ModuleOp>();
-  fir::KindMapping kindMap = getKindMapping(module);
-  FirOpBuilder builder(rewriter, kindMap);
+  FirOpBuilder builder(rewriter, module);
   auto typeparams = getTypeParamsIfRawData(loc, builder, load, alloc.getType());
   mlir::Value result = rewriter.create<ArrayCoorOp>(
       loc, eleTy, alloc, shape, slice,
@@ -914,7 +967,7 @@ static mlir::Value getCharacterLen(mlir::Location loc, FirOpBuilder &builder,
                                    ArrayLoadOp load, CharacterType charTy) {
   auto charLenTy = builder.getCharacterLengthType();
   if (charTy.hasDynamicLen()) {
-    if (load.getMemref().getType().isa<BoxType>()) {
+    if (mlir::isa<BoxType>(load.getMemref().getType())) {
       // The loaded array is an emboxed value. Get the CHARACTER length from
       // the box value.
       auto eleSzInBytes =
@@ -961,8 +1014,7 @@ void genArrayCopy(mlir::Location loc, mlir::PatternRewriter &rewriter,
   // Reverse the indices so they are in column-major order.
   std::reverse(indices.begin(), indices.end());
   auto module = arrLoad->getParentOfType<mlir::ModuleOp>();
-  fir::KindMapping kindMap = getKindMapping(module);
-  FirOpBuilder builder(rewriter, kindMap);
+  FirOpBuilder builder(rewriter, module);
   auto fromAddr = rewriter.create<ArrayCoorOp>(
       loc, getEleTy(src.getType()), src, shapeOp,
       CopyIn && copyUsingSlice ? sliceOp : mlir::Value{},
@@ -975,7 +1027,7 @@ void genArrayCopy(mlir::Location loc, mlir::PatternRewriter &rewriter,
       getTypeParamsIfRawData(loc, builder, arrLoad, dst.getType()));
   auto eleTy = unwrapSequenceType(unwrapPassByRefType(dst.getType()));
   // Copy from (to) object to (from) temp copy of same object.
-  if (auto charTy = eleTy.dyn_cast<CharacterType>()) {
+  if (auto charTy = mlir::dyn_cast<CharacterType>(eleTy)) {
     auto len = getCharacterLen(loc, builder, arrLoad, charTy);
     CharBoxValue toChar(toAddr, len);
     CharBoxValue fromChar(fromAddr, len);
@@ -997,11 +1049,10 @@ genArrayLoadTypeParameters(mlir::Location loc, mlir::PatternRewriter &rewriter,
     auto eleTy =
         unwrapSequenceType(unwrapPassByRefType(load.getMemref().getType()));
     if (hasDynamicSize(eleTy)) {
-      if (auto charTy = eleTy.dyn_cast<CharacterType>()) {
-        assert(load.getMemref().getType().isa<BoxType>());
+      if (auto charTy = mlir::dyn_cast<CharacterType>(eleTy)) {
+        assert(mlir::isa<BoxType>(load.getMemref().getType()));
         auto module = load->getParentOfType<mlir::ModuleOp>();
-        fir::KindMapping kindMap = getKindMapping(module);
-        FirOpBuilder builder(rewriter, kindMap);
+        FirOpBuilder builder(rewriter, module);
         return {getCharacterLen(loc, builder, load, charTy)};
       }
       TODO(loc, "unhandled dynamic type parameters");
@@ -1016,7 +1067,7 @@ findNonconstantExtents(mlir::Type memrefTy,
                        llvm::ArrayRef<mlir::Value> extents) {
   llvm::SmallVector<mlir::Value> nce;
   auto arrTy = unwrapPassByRefType(memrefTy);
-  auto seqTy = arrTy.cast<SequenceType>();
+  auto seqTy = mlir::cast<SequenceType>(arrTy);
   for (auto [s, x] : llvm::zip(seqTy.getShape(), extents))
     if (s == SequenceType::getUnknownExtent())
       nce.emplace_back(x);
@@ -1050,17 +1101,15 @@ allocateArrayTemp(mlir::Location loc, mlir::PatternRewriter &rewriter,
     // The allocatable component descriptors need to be set to a clean
     // deallocated status before anything is done with them.
     mlir::Value box = rewriter.create<fir::EmboxOp>(
-        loc, fir::BoxType::get(baseType), allocmem, shape,
+        loc, fir::BoxType::get(allocmem.getType()), allocmem, shape,
         /*slice=*/mlir::Value{}, typeParams);
     auto module = load->getParentOfType<mlir::ModuleOp>();
-    fir::KindMapping kindMap = getKindMapping(module);
-    FirOpBuilder builder(rewriter, kindMap);
+    FirOpBuilder builder(rewriter, module);
     runtime::genDerivedTypeInitialize(builder, loc, box);
     // Any allocatable component that may have been allocated must be
     // deallocated during the clean-up.
     auto cleanup = [=](mlir::PatternRewriter &r) {
-      fir::KindMapping kindMap = getKindMapping(module);
-      FirOpBuilder builder(r, kindMap);
+      FirOpBuilder builder(r, module);
       runtime::genDerivedTypeDestroy(builder, loc, box);
       r.create<FreeMemOp>(loc, allocmem);
     };
@@ -1082,7 +1131,7 @@ class ArrayUpdateConversionBase : public mlir::OpRewritePattern<ArrayOp> {
 public:
   // TODO: Implement copy/swap semantics?
   explicit ArrayUpdateConversionBase(mlir::MLIRContext *ctx,
-                                     const ArrayCopyAnalysis &a,
+                                     const ArrayCopyAnalysisBase &a,
                                      const OperationUseMapT &m)
       : mlir::OpRewritePattern<ArrayOp>{ctx}, analysis{a}, useMap{m} {}
 
@@ -1188,18 +1237,18 @@ public:
   }
 
 protected:
-  const ArrayCopyAnalysis &analysis;
+  const ArrayCopyAnalysisBase &analysis;
   const OperationUseMapT &useMap;
 };
 
 class ArrayUpdateConversion : public ArrayUpdateConversionBase<ArrayUpdateOp> {
 public:
   explicit ArrayUpdateConversion(mlir::MLIRContext *ctx,
-                                 const ArrayCopyAnalysis &a,
+                                 const ArrayCopyAnalysisBase &a,
                                  const OperationUseMapT &m)
       : ArrayUpdateConversionBase{ctx, a, m} {}
 
-  mlir::LogicalResult
+  llvm::LogicalResult
   matchAndRewrite(ArrayUpdateOp update,
                   mlir::PatternRewriter &rewriter) const override {
     auto loc = update.getLoc();
@@ -1223,11 +1272,11 @@ public:
 class ArrayModifyConversion : public ArrayUpdateConversionBase<ArrayModifyOp> {
 public:
   explicit ArrayModifyConversion(mlir::MLIRContext *ctx,
-                                 const ArrayCopyAnalysis &a,
+                                 const ArrayCopyAnalysisBase &a,
                                  const OperationUseMapT &m)
       : ArrayUpdateConversionBase{ctx, a, m} {}
 
-  mlir::LogicalResult
+  llvm::LogicalResult
   matchAndRewrite(ArrayModifyOp modify,
                   mlir::PatternRewriter &rewriter) const override {
     auto loc = modify.getLoc();
@@ -1249,7 +1298,7 @@ public:
                                 const OperationUseMapT &m)
       : OpRewritePattern{ctx}, useMap{m} {}
 
-  mlir::LogicalResult
+  llvm::LogicalResult
   matchAndRewrite(ArrayFetchOp fetch,
                   mlir::PatternRewriter &rewriter) const override {
     auto *op = fetch.getOperation();
@@ -1276,11 +1325,11 @@ private:
 class ArrayAccessConversion : public ArrayUpdateConversionBase<ArrayAccessOp> {
 public:
   explicit ArrayAccessConversion(mlir::MLIRContext *ctx,
-                                 const ArrayCopyAnalysis &a,
+                                 const ArrayCopyAnalysisBase &a,
                                  const OperationUseMapT &m)
       : ArrayUpdateConversionBase{ctx, a, m} {}
 
-  mlir::LogicalResult
+  llvm::LogicalResult
   matchAndRewrite(ArrayAccessOp access,
                   mlir::PatternRewriter &rewriter) const override {
     auto *op = access.getOperation();
@@ -1313,7 +1362,7 @@ public:
   explicit ArrayAmendConversion(mlir::MLIRContext *ctx)
       : OpRewritePattern{ctx} {}
 
-  mlir::LogicalResult
+  llvm::LogicalResult
   matchAndRewrite(ArrayAmendOp amend,
                   mlir::PatternRewriter &rewriter) const override {
     auto *op = amend.getOperation();
@@ -1326,8 +1375,12 @@ public:
 };
 
 class ArrayValueCopyConverter
-    : public ArrayValueCopyBase<ArrayValueCopyConverter> {
+    : public fir::impl::ArrayValueCopyBase<ArrayValueCopyConverter> {
 public:
+  ArrayValueCopyConverter() = default;
+  ArrayValueCopyConverter(const fir::ArrayValueCopyOptions &options)
+      : Base(options) {}
+
   void runOnOperation() override {
     auto func = getOperation();
     LLVM_DEBUG(llvm::dbgs() << "\n\narray-value-copy pass on function '"
@@ -1335,19 +1388,24 @@ public:
     auto *context = &getContext();
 
     // Perform the conflict analysis.
-    const auto &analysis = getAnalysis<ArrayCopyAnalysis>();
-    const auto &useMap = analysis.getUseMap();
+    const ArrayCopyAnalysisBase *analysis;
+    if (optimizeConflicts)
+      analysis = &getAnalysis<ArrayCopyAnalysisOptimized>();
+    else
+      analysis = &getAnalysis<ArrayCopyAnalysis>();
+
+    const auto &useMap = analysis->getUseMap();
 
     mlir::RewritePatternSet patterns1(context);
     patterns1.insert<ArrayFetchConversion>(context, useMap);
-    patterns1.insert<ArrayUpdateConversion>(context, analysis, useMap);
-    patterns1.insert<ArrayModifyConversion>(context, analysis, useMap);
-    patterns1.insert<ArrayAccessConversion>(context, analysis, useMap);
+    patterns1.insert<ArrayUpdateConversion>(context, *analysis, useMap);
+    patterns1.insert<ArrayModifyConversion>(context, *analysis, useMap);
+    patterns1.insert<ArrayAccessConversion>(context, *analysis, useMap);
     patterns1.insert<ArrayAmendConversion>(context);
     mlir::ConversionTarget target(*context);
-    target.addLegalDialect<FIROpsDialect, mlir::scf::SCFDialect,
-                           mlir::arith::ArithmeticDialect,
-                           mlir::func::FuncDialect>();
+    target
+        .addLegalDialect<FIROpsDialect, mlir::scf::SCFDialect,
+                         mlir::arith::ArithDialect, mlir::func::FuncDialect>();
     target.addIllegalOp<ArrayAccessOp, ArrayAmendOp, ArrayFetchOp,
                         ArrayUpdateOp, ArrayModifyOp>();
     // Rewrite the array fetch and array update ops.
@@ -1372,6 +1430,7 @@ public:
 };
 } // namespace
 
-std::unique_ptr<mlir::Pass> fir::createArrayValueCopyPass() {
-  return std::make_unique<ArrayValueCopyConverter>();
+std::unique_ptr<mlir::Pass>
+fir::createArrayValueCopyPass(fir::ArrayValueCopyOptions options) {
+  return std::make_unique<ArrayValueCopyConverter>(options);
 }

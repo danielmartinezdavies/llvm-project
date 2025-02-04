@@ -70,7 +70,7 @@
 // RUN:   | FileCheck -match-full-lines %s --check-prefix=CHECK-NO-MATH-ERRNO
 // CHECK-NO-MATH-ERRNO: #define __NO_MATH_ERRNO__ 1
 //
-// RUN: %clang_cc1 %s -E -dM -ffinite-math-only -o - \
+// RUN: %clang_cc1 %s -E -dM -menable-no-nans -menable-no-infs -o - \
 // RUN:   | FileCheck -match-full-lines %s --check-prefix=CHECK-FINITE-MATH-ONLY
 // CHECK-FINITE-MATH-ONLY: #define __FINITE_MATH_ONLY__ 1
 //
@@ -118,12 +118,15 @@
 // RUN:   | FileCheck -match-full-lines %s --check-prefix=CHECK-SYNC_CAS_ARMv6
 // CHECK-SYNC_CAS_ARMv6-NOT: __GCC_HAVE_SYNC_COMPARE_AND_SWAP
 //
+// RUN: %clang_cc1 %s -E -dM -o - -triple mips -target-cpu mips1 \
+// RUN:   | FileCheck -match-full-lines %s --check-prefix=CHECK-SYNC_CAS_MIPS32_MIPS1
 // RUN: %clang_cc1 %s -E -dM -o - -triple mips -target-cpu mips2 \
 // RUN:   | FileCheck -match-full-lines %s --check-prefix=CHECK-SYNC_CAS_MIPS \
 // RUN:         --check-prefix=CHECK-SYNC_CAS_MIPS32
 // RUN: %clang_cc1 %s -E -dM -o - -triple mips64 -target-cpu mips3 \
 // RUN:   | FileCheck -match-full-lines %s --check-prefix=CHECK-SYNC_CAS_MIPS \
 // RUN:         --check-prefix=CHECK-SYNC_CAS_MIPS64
+// CHECK-SYNC_CAS_MIPS32_MIPS1-NOT: __GCC_HAVE_SYNC_COMPARE_AND_SWAP
 // CHECK-SYNC_CAS_MIPS: #define __GCC_HAVE_SYNC_COMPARE_AND_SWAP_1 1
 // CHECK-SYNC_CAS_MIPS: #define __GCC_HAVE_SYNC_COMPARE_AND_SWAP_2 1
 // CHECK-SYNC_CAS_MIPS: #define __GCC_HAVE_SYNC_COMPARE_AND_SWAP_4 1
@@ -233,6 +236,16 @@
 // CHECK-SPIRV64-DAG: #define __SPIRV64__ 1
 // CHECK-SPIRV64-NOT: #define __SPIRV32__ 1
 
+// RUN: %clang_cc1 %s -E -dM -o - -x cl -triple spirv64-amd-amdhsa \
+// RUN:   | FileCheck -match-full-lines %s --check-prefix=CHECK-SPIRV64-AMDGCN
+// CHECK-SPIRV64-AMDGCN-DAG: #define __IMAGE_SUPPORT__ 1
+// CHECK-SPIRV64-AMDGCN-DAG: #define __SPIRV__ 1
+// CHECK-SPIRV64-AMDGCN-DAG: #define __SPIRV64__ 1
+// CHECK-SPIRV64-AMDGCN-DAG: #define __AMD__ 1
+// CHECK-SPIRV64-AMDGCN-DAG: #define __AMDGCN__ 1
+// CHECK-SPIRV64-AMDGCN-DAG: #define __AMDGPU__ 1
+// CHECK-SPIRV64-AMDGCN-NOT: #define __SPIRV32__ 1
+
 // RUN: %clang_cc1 %s -E -dM -o - -x hip -triple x86_64-unknown-linux-gnu \
 // RUN:   | FileCheck -match-full-lines %s --check-prefix=CHECK-HIP
 // CHECK-HIP: #define __HIPCC__ 1
@@ -287,3 +300,20 @@
 // RUN:   -fcuda-is-device -fgpu-default-stream=per-thread \
 // RUN:   | FileCheck -match-full-lines %s --check-prefix=CHECK-PTH
 // CHECK-PTH: #define HIP_API_PER_THREAD_DEFAULT_STREAM 1
+
+// RUN: %clang_cc1 %s -E -dM -o - -x hip --hipstdpar -triple x86_64-unknown-linux-gnu \
+// RUN:   | FileCheck -match-full-lines %s --check-prefix=CHECK-HIPSTDPAR
+// CHECK-HIPSTDPAR: #define __HIPSTDPAR__ 1
+// CHECK-HIPSTDPAR-NOT: #define __HIPSTDPAR_INTERPOSE_ALLOC__ 1
+
+// RUN: %clang_cc1 %s -E -dM -o - -x hip --hipstdpar --hipstdpar-interpose-alloc \
+// RUN:  -triple x86_64-unknown-linux-gnu | FileCheck -match-full-lines %s \
+// RUN:  --check-prefix=CHECK-HIPSTDPAR-INTERPOSE
+// CHECK-HIPSTDPAR-INTERPOSE: #define __HIPSTDPAR_INTERPOSE_ALLOC__ 1
+// CHECK-HIPSTDPAR-INTERPOSE: #define __HIPSTDPAR__ 1
+
+// RUN: %clang_cc1 %s -E -dM -o - -x hip --hipstdpar --hipstdpar-interpose-alloc \
+// RUN:  -triple amdgcn-amd-amdhsa -fcuda-is-device | FileCheck -match-full-lines \
+// RUN:  %s --check-prefix=CHECK-HIPSTDPAR-INTERPOSE-DEV-NEG
+// CHECK-HIPSTDPAR-INTERPOSE-DEV-NEG: #define __HIPSTDPAR__ 1
+// CHECK-HIPSTDPAR-INTERPOSE-DEV-NEG-NOT: #define __HIPSTDPAR_INTERPOSE_ALLOC__ 1

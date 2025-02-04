@@ -1,4 +1,4 @@
-//===----- ExpandLargeDivRem.h - Expand large div/rem ---------------------===//
+//===- ExpandLargeDivRem.h --------------------------------------*- C++ -*-===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -13,17 +13,18 @@
 
 namespace llvm {
 
-/// Expands div/rem instructions with a bitwidth above a threshold
-/// into a loop.
-/// This is useful for backends like x86 that cannot lower divisions
-/// with more than 128 bits.
-class ExpandLargeDivRemPass : public PassInfoMixin<ExpandLargeDivRemPass> {
-public:
-  PreservedAnalyses run(Function &F, FunctionAnalysisManager &AM);
+class TargetMachine;
 
-  // The backend asserts when seeing large div/rem instructions.
-  static bool isRequired() { return true; }
+class ExpandLargeDivRemPass : public PassInfoMixin<ExpandLargeDivRemPass> {
+private:
+  const TargetMachine *TM;
+
+public:
+  explicit ExpandLargeDivRemPass(const TargetMachine *TM_) : TM(TM_) {}
+
+  PreservedAnalyses run(Function &F, FunctionAnalysisManager &AM);
 };
+
 } // end namespace llvm
 
 #endif // LLVM_CODEGEN_EXPANDLARGEDIVREM_H

@@ -1,4 +1,4 @@
-// RUN: mlir-opt %s -test-transform-dialect-interpreter -canonicalize -split-input-file | FileCheck %s
+// RUN: mlir-opt %s -transform-interpreter -canonicalize -split-input-file | FileCheck %s
 
 func.func @gemm(%a : memref<?x?xf32>, %b : memref<?x?xf32>, %c : memref<?x?xf32>)
 {
@@ -15,28 +15,30 @@ func.func @gemm(%a : memref<?x?xf32>, %b : memref<?x?xf32>, %c : memref<?x?xf32>
 //      CHECK: scf.for
 //      CHECK:   scf.for
 //      CHECK:     scf.for
-//      CHECK:       %[[T7:.+]] = memref.subview %[[ARG0]]
-//      CHECK:       %[[T12:.+]] = memref.subview %[[ARG1]]
-//      CHECK:       %[[T17:.+]] = memref.subview %[[ARG2]]
-//      CHECK:       %[[A0:.*]] = memref.alloc() : memref<1024xi8>
-//      CHECK:       %[[V0:.*]] = memref.view %[[A0]][%[[C0]]][] : memref<1024xi8> to memref<16x16xf32>
-//      CHECK:       %[[T19:.+]] = memref.subview %[[V0]]
-//      CHECK:       %[[A1:.*]] = memref.alloc() : memref<1024xi8>
-//      CHECK:       %[[V1:.*]] = memref.view %[[A1]][%[[C0]]][] : memref<1024xi8> to memref<16x16xf32>
-//      CHECK:       %[[T21:.+]] = memref.subview %[[V1]]
-//      CHECK:       memref.copy %[[T7]], %[[T19]]
-//      CHECK:       memref.copy %[[T17]], %[[T21]]
-//      CHECK:       linalg.matmul ins(%[[T19]], %[[T12]]{{.*}} outs(%[[T21]]
-//      CHECK:       memref.copy %[[T21]], %[[T17]]
-//      CHECK:       memref.dealloc %[[A0]]
-//      CHECK:       memref.dealloc %[[A1]]
+//      CHECK:       %[[svA:.+]] = memref.subview %[[ARG0]]
+//      CHECK:       %[[svB:.+]] = memref.subview %[[ARG1]]
+//      CHECK:       %[[svC:.+]] = memref.subview %[[ARG2]]
 
-transform.with_pdl_patterns {
-^bb0(%arg0: !pdl.operation):
-  sequence %arg0 failures(propagate) {
-    ^bb0(%arg1: !pdl.operation):
-      %0 = transform.structured.match ops{["linalg.matmul"]} in %arg1
-      %1, %loops:3 = transform.structured.tile %0 [16, 16, 16]
-      %2 = transform.structured.promote %1 { operands_to_promote = [0, 2], force_full_tiles = [false, false] }
+//      CHECK:       %[[tmpA:.*]] = memref.alloc() : memref<1024xi8>
+//      CHECK:       %[[VA:.*]] = memref.view %[[tmpA]][%[[C0]]][] : memref<1024xi8> to memref<16x16xf32>
+//      CHECK:       %[[svAA:.+]] = memref.subview %[[VA]]
+
+//      CHECK:       %[[tmpC:.*]] = memref.alloc() : memref<1024xi8>
+//      CHECK:       %[[VC:.*]] = memref.view %[[tmpC]][%[[C0]]][] : memref<1024xi8> to memref<16x16xf32>
+//      CHECK:       %[[svCC:.+]] = memref.subview %[[VC]]
+
+//      CHECK:       linalg.copy ins(%[[svA]] : memref<?x?xf32, strided<[?, 1], offset: ?>>) outs(%[[svAA]] : memref<?x?xf32, strided<[16, 1]>>)
+//      CHECK:       linalg.copy ins(%[[svC]] : memref<?x?xf32, strided<[?, 1], offset: ?>>) outs(%[[svCC]] : memref<?x?xf32, strided<[16, 1]>>)
+//      CHECK:       linalg.matmul ins(%[[VA]], %[[svB]]{{.*}} outs(%[[VC]]
+//      CHECK:       linalg.copy ins(%[[svCC]] : memref<?x?xf32, strided<[16, 1]>>) outs(%[[svC]] : memref<?x?xf32, strided<[?, 1], offset: ?>>)
+//      CHECK:       memref.dealloc %[[tmpA]]
+//      CHECK:       memref.dealloc %[[tmpC]]
+
+module attributes {transform.with_named_sequence} {
+  transform.named_sequence @__transform_main(%arg1: !transform.any_op {transform.readonly}) {
+    %0 = transform.structured.match ops{["linalg.matmul"]} in %arg1 : (!transform.any_op) -> !transform.any_op
+    %1, %loops:3 = transform.structured.tile_using_for %0 tile_sizes [16, 16, 16] : (!transform.any_op) -> (!transform.any_op, !transform.any_op, !transform.any_op, !transform.any_op)
+    %2 = transform.structured.promote %1 { operands_to_promote = [0, 2], force_full_tiles = [false, false], use_full_tiles_by_default } : (!transform.any_op) -> !transform.any_op
+    transform.yield
   }
 }

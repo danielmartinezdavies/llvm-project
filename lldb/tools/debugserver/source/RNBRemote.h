@@ -33,6 +33,7 @@ enum class compression_types { zlib_deflate, lz4, lzma, lzfse, none };
 
 class RNBRemote {
 public:
+  // clang-format off
   enum PacketEnum {
     invalid_packet = 0,
     ack,                           // '+'
@@ -136,8 +137,11 @@ public:
     speed_test,                         // 'qSpeedTest:'
     set_detach_on_error,                // 'QSetDetachOnError:'
     query_transfer,                     // 'qXfer:'
+    json_query_dyld_process_state,      // 'jGetDyldProcessState'
+    enable_error_strings,               // 'QEnableErrorStrings'
     unknown_type
   };
+  // clang-format on
 
   typedef rnb_err_t (RNBRemote::*HandlePacketCallback)(const char *p);
 
@@ -195,6 +199,7 @@ public:
   rnb_err_t HandlePacket_qGDBServerVersion(const char *p);
   rnb_err_t HandlePacket_qProcessInfo(const char *p);
   rnb_err_t HandlePacket_qSymbol(const char *p);
+  rnb_err_t HandlePacket_QEnableErrorStrings(const char *p);
   rnb_err_t HandlePacket_QStartNoAckMode(const char *p);
   rnb_err_t HandlePacket_QThreadSuffixSupported(const char *p);
   rnb_err_t HandlePacket_QSetLogging(const char *p);
@@ -246,6 +251,7 @@ public:
   rnb_err_t HandlePacket_qXfer(const char *p);
   rnb_err_t HandlePacket_stop_process(const char *p);
   rnb_err_t HandlePacket_QSetDetachOnError(const char *p);
+  rnb_err_t HandlePacket_jGetDyldProcessState(const char *p);
   rnb_err_t SendStopReplyPacketForThread(nub_thread_t tid);
   rnb_err_t SendHexEncodedBytePacket(const char *header, const void *buf,
                                      size_t buf_len, const char *footer);
@@ -354,6 +360,8 @@ protected:
   rnb_err_t GetPacket(std::string &packet_data, RNBRemote::Packet &packet_info,
                       bool wait);
   rnb_err_t SendPacket(const std::string &);
+  rnb_err_t SendErrorPacket(std::string errcode,
+                            const std::string &errmsg = "");
   std::string CompressString(const std::string &);
 
   void CreatePacketTable();
@@ -403,6 +411,9 @@ protected:
   bool m_enable_compression_next_send_packet;
 
   compression_types m_compression_mode;
+
+  bool m_enable_error_strings; // Whether we can append asciihex error strings
+                               // after Exx error replies
 };
 
 /* We translate the /usr/include/mach/exception_types.h exception types

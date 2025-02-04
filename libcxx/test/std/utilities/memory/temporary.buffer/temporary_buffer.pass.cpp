@@ -8,6 +8,7 @@
 
 // <memory>
 
+// ADDITIONAL_COMPILE_FLAGS: -D_LIBCPP_ENABLE_CXX20_REMOVED_TEMPORARY_BUFFER
 // ADDITIONAL_COMPILE_FLAGS: -D_LIBCPP_DISABLE_DEPRECATION_WARNINGS
 
 // template <class T>
@@ -18,10 +19,10 @@
 //   void
 //   return_temporary_buffer(T* p);
 
-#include <memory>
 #include <cassert>
-
-#include "test_macros.h"
+#include <cstddef>
+#include <memory>
+#include <utility>
 
 int main(int, char**)
 {

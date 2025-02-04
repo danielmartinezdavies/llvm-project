@@ -13,10 +13,11 @@
 #ifndef LLVM_CLANG_LIB_BASIC_TARGETS_MIPS_H
 #define LLVM_CLANG_LIB_BASIC_TARGETS_MIPS_H
 
+#include "OSTargets.h"
 #include "clang/Basic/TargetInfo.h"
 #include "clang/Basic/TargetOptions.h"
-#include "llvm/ADT/Triple.h"
 #include "llvm/Support/Compiler.h"
+#include "llvm/TargetParser/Triple.h"
 
 namespace clang {
 namespace targets {
@@ -28,9 +29,9 @@ class LLVM_LIBRARY_VISIBILITY MipsTargetInfo : public TargetInfo {
     if (ABI == "o32")
       Layout = "m:m-p:32:32-i8:8:32-i16:16:32-i64:64-n32-S64";
     else if (ABI == "n32")
-      Layout = "m:e-p:32:32-i8:8:32-i16:16:32-i64:64-n32:64-S128";
+      Layout = "m:e-p:32:32-i8:8:32-i16:16:32-i64:64-i128:128-n32:64-S128";
     else if (ABI == "n64")
-      Layout = "m:e-i8:8:32-i16:16:32-i64:64-n32:64-S128";
+      Layout = "m:e-i8:8:32-i16:16:32-i64:64-i128:128-n32:64-S128";
     else
       llvm_unreachable("Invalid ABI");
 
@@ -40,7 +41,6 @@ class LLVM_LIBRARY_VISIBILITY MipsTargetInfo : public TargetInfo {
       resetDataLayout(("e-" + Layout).str());
   }
 
-  static const Builtin::Info BuiltinInfo[];
   std::string CPU;
   bool IsMips16;
   bool IsMicromips;
@@ -54,6 +54,7 @@ class LLVM_LIBRARY_VISIBILITY MipsTargetInfo : public TargetInfo {
   bool HasMSA;
   bool DisableMadd4;
   bool UseIndirectJumpHazard;
+  bool NoOddSpreg;
 
 protected:
   enum FPModeEnum { FPXX, FP32, FP64 } FPMode;
@@ -70,7 +71,7 @@ public:
 
     if (Triple.isMIPS32())
       setABI("o32");
-    else if (Triple.getEnvironment() == llvm::Triple::GNUABIN32)
+    else if (Triple.isABIN32())
       setABI("n32");
     else
       setABI("n64");
@@ -85,8 +86,13 @@ public:
     return CPU == "mips32r6" || CPU == "mips64r6";
   }
 
-  bool isFP64Default() const {
-    return CPU == "mips32r6" || ABI == "n32" || ABI == "n64" || ABI == "64";
+  enum FPModeEnum getDefaultFPMode() const {
+    if (CPU == "mips32r6" || ABI == "n32" || ABI == "n64" || ABI == "64")
+      return FP64;
+    else if (CPU == "mips1")
+      return FP32;
+    else
+      return FPXX;
   }
 
   bool isNan2008() const override { return IsNan2008; }
@@ -192,7 +198,7 @@ public:
   void getTargetDefines(const LangOptions &Opts,
                         MacroBuilder &Builder) const override;
 
-  ArrayRef<Builtin::Info> getTargetBuiltins() const override;
+  llvm::SmallVector<Builtin::InfosShard> getTargetBuiltins() const override;
 
   bool hasFeature(StringRef Feature) const override;
 
@@ -226,7 +232,7 @@ public:
         "$msair", "$msacsr", "$msaaccess", "$msasave", "$msamodify",
         "$msarequest", "$msamap", "$msaunmap"
     };
-    return llvm::makeArrayRef(GCCRegNames);
+    return llvm::ArrayRef(GCCRegNames);
   }
 
   bool validateAsmConstraint(const char *&Name,
@@ -237,12 +243,14 @@ public:
     case 'r': // CPU registers.
     case 'd': // Equivalent to "r" unless generating MIPS16 code.
     case 'y': // Equivalent to "r", backward compatibility only.
-    case 'f': // floating-point registers.
     case 'c': // $25 for indirect jumps
     case 'l': // lo register
     case 'x': // hilo register pair
       Info.setAllowsRegister();
       return true;
+    case 'f': // floating-point registers.
+      Info.setAllowsRegister();
+      return FloatABI != SoftFloat;
     case 'I': // Signed 16-bit constant
     case 'J': // Integer 0
     case 'K': // Unsigned 16-bit constant
@@ -279,7 +287,7 @@ public:
     return TargetInfo::convertConstraint(Constraint);
   }
 
-  const char *getClobbers() const override {
+  std::string_view getClobbers() const override {
     // In GCC, $1 is not widely used in generated code (it's used only in a few
     // specific situations), so there is no real need for users to add it to
     // the clobbers list if they want to use it in their inline assembly code.
@@ -313,7 +321,11 @@ public:
     IsSingleFloat = false;
     FloatABI = HardFloat;
     DspRev = NoDSP;
-    FPMode = isFP64Default() ? FP64 : FPXX;
+    NoOddSpreg = false;
+    FPMode = getDefaultFPMode();
+    bool OddSpregGiven = false;
+    bool StrictAlign = false;
+    bool FpGiven = false;
 
     for (const auto &Feature : Features) {
       if (Feature == "+single-float")
@@ -324,6 +336,12 @@ public:
         IsMips16 = true;
       else if (Feature == "+micromips")
         IsMicromips = true;
+      else if (Feature == "+mips32r6" || Feature == "+mips64r6")
+        HasUnalignedAccess = true;
+      // We cannot be sure that the order of strict-align vs mips32r6.
+      // Thus we need an extra variable here.
+      else if (Feature == "+strict-align")
+        StrictAlign = true;
       else if (Feature == "+dsp")
         DspRev = std::max(DspRev, DSP1);
       else if (Feature == "+dspr2")
@@ -332,13 +350,16 @@ public:
         HasMSA = true;
       else if (Feature == "+nomadd4")
         DisableMadd4 = true;
-      else if (Feature == "+fp64")
+      else if (Feature == "+fp64") {
         FPMode = FP64;
-      else if (Feature == "-fp64")
+        FpGiven = true;
+      } else if (Feature == "-fp64") {
         FPMode = FP32;
-      else if (Feature == "+fpxx")
+        FpGiven = true;
+      } else if (Feature == "+fpxx") {
         FPMode = FPXX;
-      else if (Feature == "+nan2008")
+        FpGiven = true;
+      } else if (Feature == "+nan2008")
         IsNan2008 = true;
       else if (Feature == "-nan2008")
         IsNan2008 = false;
@@ -350,6 +371,24 @@ public:
         IsNoABICalls = true;
       else if (Feature == "+use-indirect-jump-hazard")
         UseIndirectJumpHazard = true;
+      else if (Feature == "+nooddspreg") {
+        NoOddSpreg = true;
+        OddSpregGiven = false;
+      } else if (Feature == "-nooddspreg") {
+        NoOddSpreg = false;
+        OddSpregGiven = true;
+      }
+    }
+
+    if (FPMode == FPXX && !OddSpregGiven)
+      NoOddSpreg = true;
+
+    if (StrictAlign)
+      HasUnalignedAccess = false;
+
+    if (HasMSA && !FpGiven) {
+      FPMode = FP64;
+      Features.push_back("+fp64");
     }
 
     setDataLayout();
@@ -395,8 +434,8 @@ public:
         {{"ra"}, "$31"}
     };
     if (ABI == "o32")
-      return llvm::makeArrayRef(O32RegAliases);
-    return llvm::makeArrayRef(NewABIRegAliases);
+      return llvm::ArrayRef(O32RegAliases);
+    return llvm::ArrayRef(NewABIRegAliases);
   }
 
   bool hasInt128Type() const override {
@@ -407,6 +446,46 @@ public:
 
   bool validateTarget(DiagnosticsEngine &Diags) const override;
   bool hasBitIntType() const override { return true; }
+
+  std::pair<unsigned, unsigned> hardwareInterferenceSizes() const override {
+    return std::make_pair(32, 32);
+  }
+};
+
+class LLVM_LIBRARY_VISIBILITY WindowsMipsTargetInfo
+    : public WindowsTargetInfo<MipsTargetInfo> {
+  const llvm::Triple Triple;
+
+public:
+  WindowsMipsTargetInfo(const llvm::Triple &Triple, const TargetOptions &Opts);
+
+  void getVisualStudioDefines(const LangOptions &Opts,
+                              MacroBuilder &Builder) const;
+
+  BuiltinVaListKind getBuiltinVaListKind() const override;
+
+  CallingConvCheckResult checkCallingConvention(CallingConv CC) const override;
+};
+
+// Windows MIPS, MS (C++) ABI
+class LLVM_LIBRARY_VISIBILITY MicrosoftMipsTargetInfo
+    : public WindowsMipsTargetInfo {
+public:
+  MicrosoftMipsTargetInfo(const llvm::Triple &Triple,
+                          const TargetOptions &Opts);
+
+  void getTargetDefines(const LangOptions &Opts,
+                        MacroBuilder &Builder) const override;
+};
+
+// MIPS MinGW target
+class LLVM_LIBRARY_VISIBILITY MinGWMipsTargetInfo
+    : public WindowsMipsTargetInfo {
+public:
+  MinGWMipsTargetInfo(const llvm::Triple &Triple, const TargetOptions &Opts);
+
+  void getTargetDefines(const LangOptions &Opts,
+                        MacroBuilder &Builder) const override;
 };
 } // namespace targets
 } // namespace clang

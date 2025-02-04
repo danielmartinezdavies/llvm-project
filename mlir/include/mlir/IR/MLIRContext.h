@@ -11,24 +11,29 @@
 
 #include "mlir/Support/LLVM.h"
 #include "mlir/Support/TypeID.h"
+#include "llvm/ADT/ArrayRef.h"
 #include <functional>
 #include <memory>
 #include <vector>
 
 namespace llvm {
-class ThreadPool;
+class ThreadPoolInterface;
 } // namespace llvm
 
 namespace mlir {
-class DebugActionManager;
+namespace tracing {
+class Action;
+}
 class DiagnosticEngine;
 class Dialect;
 class DialectRegistry;
+class DynamicDialect;
 class InFlightDiagnostic;
 class Location;
 class MLIRContextImpl;
 class RegisteredOperationName;
 class StorageUniquer;
+class IRUnit;
 
 /// MLIRContext is the top-level object for a collection of MLIR operations. It
 /// holds immortal uniqued objects like types, and the tables used to unique
@@ -45,7 +50,7 @@ class StorageUniquer;
 /// To control better thread spawning, an externally owned ThreadPool can be
 /// injected in the context. For example:
 ///
-///  llvm::ThreadPool myThreadPool;
+///  llvm::DefaultThreadPool myThreadPool;
 ///  while (auto *request = nextCompilationRequests()) {
 ///    MLIRContext ctx(registry, MLIRContext::Threading::DISABLED);
 ///    ctx.setThreadPool(myThreadPool);
@@ -100,15 +105,23 @@ public:
   /// Load a dialect in the context.
   template <typename Dialect>
   void loadDialect() {
-    getOrLoadDialect<Dialect>();
+    // Do not load the dialect if it is currently loading. This can happen if a
+    // dialect initializer triggers loading the same dialect recursively.
+    if (!isDialectLoading(Dialect::getDialectNamespace()))
+      getOrLoadDialect<Dialect>();
   }
 
   /// Load a list dialects in the context.
   template <typename Dialect, typename OtherDialect, typename... MoreDialects>
   void loadDialect() {
-    getOrLoadDialect<Dialect>();
+    loadDialect<Dialect>();
     loadDialect<OtherDialect, MoreDialects...>();
   }
+
+  /// Get (or create) a dynamic dialect for the given name.
+  DynamicDialect *
+  getOrLoadDynamicDialect(StringRef dialectNamespace,
+                          function_ref<void(DynamicDialect *)> ctor);
 
   /// Load all dialects available in the registry in this context.
   void loadAllAvailableDialects();
@@ -120,9 +133,13 @@ public:
   Dialect *getOrLoadDialect(StringRef name);
 
   /// Return true if we allow to create operation for unregistered dialects.
-  bool allowsUnregisteredDialects();
+  [[nodiscard]] bool allowsUnregisteredDialects();
 
   /// Enables creating operations in unregistered dialects.
+  /// This option is **heavily discouraged**: it is convenient during testing
+  /// but it is not a good practice to use it in production code. Some system
+  /// invariants can be broken (like loading a dialect after creating
+  ///  operations) without being caught by assertions or other means.
   void allowUnregisteredDialects(bool allow = true);
 
   /// Return true if multi-threading is enabled by the context.
@@ -145,7 +162,7 @@ public:
   /// The command line debugging flag `--mlir-disable-threading` will still
   /// prevent threading from being enabled and threading won't be enabled after
   /// this call in this case.
-  void setThreadPool(llvm::ThreadPool &pool);
+  void setThreadPool(llvm::ThreadPoolInterface &pool);
 
   /// Return the number of threads used by the thread pool in this context. The
   /// number of computed hardware threads can change over the lifetime of a
@@ -158,7 +175,7 @@ public:
   /// multithreading be enabled within the context, and should generally not be
   /// used directly. Users should instead prefer the threading utilities within
   /// Threading.h.
-  llvm::ThreadPool &getThreadPool();
+  llvm::ThreadPoolInterface &getThreadPool();
 
   /// Return true if we should attach the operation to diagnostics emitted via
   /// Operation::emit.
@@ -180,6 +197,11 @@ public:
   /// operations.
   ArrayRef<RegisteredOperationName> getRegisteredOperations();
 
+  /// Return a sorted array containing the information for registered operations
+  /// filtered by dialect name.
+  ArrayRef<RegisteredOperationName>
+  getRegisteredOperationsByDialect(StringRef dialectName);
+
   /// Return true if this operation name is registered in this context.
   bool isOperationRegistered(StringRef name);
 
@@ -200,9 +222,6 @@ public:
   /// Returns the storage uniquer used for constructing attribute storage
   /// instances. This should not be used directly.
   StorageUniquer &getAttributeUniquer();
-
-  /// Returns the manager of debug actions within the context.
-  DebugActionManager &getDebugActionManager();
 
   /// These APIs are tracking whether the context will be used in a
   /// multithreading environment: this has no effect other than enabling
@@ -226,7 +245,60 @@ public:
   /// (attributes, operations, types, etc.).
   llvm::hash_code getRegistryHash();
 
+  //===--------------------------------------------------------------------===//
+  // Action API
+  //===--------------------------------------------------------------------===//
+
+  /// Signatures for the action handler that can be registered with the context.
+  using HandlerTy =
+      std::function<void(function_ref<void()>, const tracing::Action &)>;
+
+  /// Register a handler for handling actions that are dispatched through this
+  /// context. A nullptr handler can be set to disable a previously set handler.
+  void registerActionHandler(HandlerTy handler);
+
+  /// Return true if a valid ActionHandler is set.
+  bool hasActionHandler();
+
+  /// Dispatch the provided action to the handler if any, or just execute it.
+  void executeAction(function_ref<void()> actionFn,
+                     const tracing::Action &action) {
+    if (LLVM_UNLIKELY(hasActionHandler()))
+      executeActionInternal(actionFn, action);
+    else
+      actionFn();
+  }
+
+  /// Dispatch the provided action to the handler if any, or just execute it.
+  template <typename ActionTy, typename... Args>
+  void executeAction(function_ref<void()> actionFn, ArrayRef<IRUnit> irUnits,
+                     Args &&...args) {
+    if (LLVM_UNLIKELY(hasActionHandler()))
+      executeActionInternal<ActionTy, Args...>(actionFn, irUnits,
+                                               std::forward<Args>(args)...);
+    else
+      actionFn();
+  }
+
 private:
+  /// Return true if the given dialect is currently loading.
+  bool isDialectLoading(StringRef dialectNamespace);
+
+  /// Internal helper for the dispatch method.
+  void executeActionInternal(function_ref<void()> actionFn,
+                             const tracing::Action &action);
+
+  /// Internal helper for the dispatch method. We get here after checking that
+  /// there is a handler, for the purpose of keeping this code out-of-line. and
+  /// avoid calling the ctor for the Action unnecessarily.
+  template <typename ActionTy, typename... Args>
+  LLVM_ATTRIBUTE_NOINLINE void
+  executeActionInternal(function_ref<void()> actionFn, ArrayRef<IRUnit> irUnits,
+                        Args &&...args) {
+    executeActionInternal(actionFn,
+                          ActionTy(irUnits, std::forward<Args>(args)...));
+  }
+
   const std::unique_ptr<MLIRContextImpl> impl;
 
   MLIRContext(const MLIRContext &) = delete;

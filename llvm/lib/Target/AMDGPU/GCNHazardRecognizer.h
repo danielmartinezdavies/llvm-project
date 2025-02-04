@@ -46,7 +46,7 @@ private:
   const GCNSubtarget &ST;
   const SIInstrInfo &TII;
   const SIRegisterInfo &TRI;
-  TargetSchedModel TSchedModel;
+  const TargetSchedModel &TSchedModel;
   bool RunLdsBranchVmemWARHazardFixup;
 
   /// RegUnits of uses in the current soft memory clause.
@@ -69,6 +69,10 @@ private:
   // Advance over a MachineInstr bundle. Look for hazards in the bundled
   // instructions.
   void processBundle();
+
+  // Run on an individual instruction in hazard recognizer mode. This can be
+  // used on a newly inserted instruction before returning from PreEmitNoops.
+  void runOnInstruction(MachineInstr *MI);
 
   int getWaitStatesSince(IsHazardFn IsHazard, int Limit);
   int getWaitStatesSinceDef(unsigned Reg, IsHazardFn IsHazardDef, int Limit);
@@ -101,6 +105,9 @@ private:
   bool fixVALUPartialForwardingHazard(MachineInstr *MI);
   bool fixVALUTransUseHazard(MachineInstr *MI);
   bool fixWMMAHazards(MachineInstr *MI);
+  bool fixShift64HighRegBug(MachineInstr *MI);
+  bool fixVALUMaskWriteHazard(MachineInstr *MI);
+  bool fixRequiredExportPriority(MachineInstr *MI);
 
   int checkMAIHazards(MachineInstr *MI);
   int checkMAIHazards908(MachineInstr *MI);
@@ -123,6 +130,7 @@ private:
   int checkMFMAPadding(MachineInstr *MI);
   int checkMAIVALUHazards(MachineInstr *MI);
   int checkMAILdStHazards(MachineInstr *MI);
+  int checkPermlaneHazards(MachineInstr *MI);
 
 public:
   GCNHazardRecognizer(const MachineFunction &MF);

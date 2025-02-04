@@ -166,7 +166,7 @@ void f(){
   typename F1<T>:: /*template*/ Iterator<0> Mypos; // expected-error {{use 'template' keyword to treat 'Iterator' as a dependent template name}}
 }
 
-// Tests for &/* fixits radar 7113438.
+// Tests for &/* fixits
 class AD {};
 class BD: public AD {};
 
@@ -211,7 +211,7 @@ public:
 template<class T> struct Mystery;
 template<class T> typedef Mystery<T>::type getMysteriousThing() { // \
   expected-error {{function definition declared 'typedef'}} \
-  expected-error {{missing 'typename' prior to dependent}}
+  expected-warning {{implicit 'typename' is a C++20 extension}}
   return Mystery<T>::get();
 }
 

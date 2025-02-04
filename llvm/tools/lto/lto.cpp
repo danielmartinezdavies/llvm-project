@@ -13,6 +13,7 @@
 
 #include "llvm-c/lto.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/Bitcode/BitcodeReader.h"
 #include "llvm/CodeGen/CommandFlags.h"
@@ -88,6 +89,8 @@ struct LTOToolDiagnosticHandler : public DiagnosticHandler {
   }
 };
 
+static SmallVector<const char *> RuntimeLibcallSymbols;
+
 // Initialize the configured targets if they have not been initialized.
 static void lto_initialize() {
   if (!initialized) {
@@ -108,6 +111,7 @@ static void lto_initialize() {
     LTOContext = &Context;
     LTOContext->setDiagnosticHandler(
         std::make_unique<LTOToolDiagnosticHandler>(), true);
+    RuntimeLibcallSymbols = lto::LTO::getRuntimeLibcallSymbols(Triple());
     initialized = true;
   }
 }
@@ -290,6 +294,8 @@ lto_module_t lto_module_create_in_codegen_context(const void *mem,
       codegen::InitTargetOptionsFromCodeGenFlags(Triple());
   ErrorOr<std::unique_ptr<LTOModule>> M = LTOModule::createFromBuffer(
       unwrap(cg)->getContext(), mem, length, Options, StringRef(path));
+  if (!M)
+    return nullptr;
   return wrap(M->release());
 }
 
@@ -394,7 +400,7 @@ bool lto_codegen_set_pic_model(lto_code_gen_t cg, lto_codegen_model model) {
     unwrap(cg)->setCodePICModel(Reloc::DynamicNoPIC);
     return false;
   case LTO_CODEGEN_PIC_MODEL_DEFAULT:
-    unwrap(cg)->setCodePICModel(None);
+    unwrap(cg)->setCodePICModel(std::nullopt);
     return false;
   }
   sLastErrorString = "Unknown PIC model";
@@ -494,7 +500,7 @@ void lto_codegen_debug_options_array(lto_code_gen_t cg,
   SmallVector<StringRef, 4> Options;
   for (int i = 0; i < number; ++i)
     Options.push_back(options[i]);
-  unwrap(cg)->setCodeGenDebugOptions(makeArrayRef(Options));
+  unwrap(cg)->setCodeGenDebugOptions(ArrayRef(Options));
 }
 
 unsigned int lto_api_version() { return LTO_API_VERSION; }
@@ -526,20 +532,10 @@ thinlto_code_gen_t thinlto_create_codegen(void) {
     if (OptLevel < '0' || OptLevel > '3')
       report_fatal_error("Optimization level must be between 0 and 3");
     CodeGen->setOptLevel(OptLevel - '0');
-    switch (OptLevel) {
-    case '0':
-      CodeGen->setCodeGenOptLevel(CodeGenOpt::None);
-      break;
-    case '1':
-      CodeGen->setCodeGenOptLevel(CodeGenOpt::Less);
-      break;
-    case '2':
-      CodeGen->setCodeGenOptLevel(CodeGenOpt::Default);
-      break;
-    case '3':
-      CodeGen->setCodeGenOptLevel(CodeGenOpt::Aggressive);
-      break;
-    }
+    std::optional<CodeGenOptLevel> CGOptLevelOrNone =
+        CodeGenOpt::getLevel(OptLevel - '0');
+    assert(CGOptLevelOrNone);
+    CodeGen->setCodeGenOptLevel(*CGOptLevelOrNone);
   }
   return wrap(CodeGen);
 }
@@ -671,7 +667,7 @@ lto_bool_t thinlto_codegen_set_pic_model(thinlto_code_gen_t cg,
     unwrap(cg)->setCodePICModel(Reloc::DynamicNoPIC);
     return false;
   case LTO_CODEGEN_PIC_MODEL_DEFAULT:
-    unwrap(cg)->setCodePICModel(None);
+    unwrap(cg)->setCodePICModel(std::nullopt);
     return false;
   }
   sLastErrorString = "Unknown PIC model";
@@ -699,7 +695,6 @@ extern const char *lto_input_get_dependent_library(lto_input_t input,
 }
 
 extern const char *const *lto_runtime_lib_symbols_list(size_t *size) {
-  auto symbols = lto::LTO::getRuntimeLibcallSymbols();
-  *size = symbols.size();
-  return symbols.data();
+  *size = RuntimeLibcallSymbols.size();
+  return RuntimeLibcallSymbols.data();
 }

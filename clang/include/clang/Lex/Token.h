@@ -15,12 +15,14 @@
 
 #include "clang/Basic/SourceLocation.h"
 #include "clang/Basic/TokenKinds.h"
+#include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/StringRef.h"
 #include <cassert>
 
 namespace clang {
 
 class IdentifierInfo;
+class LangOptions;
 
 /// Token - This structure provides full information about a lexed token.
 /// It is not intended to be space efficient, it is intended to return as much
@@ -56,7 +58,7 @@ class Token {
   ///  Annotations (resolved type names, C++ scopes, etc): isAnnotation().
   ///    This is a pointer to sema-specific data for the annotation token.
   ///  Eof:
-  //     This is a pointer to a Decl.
+  ///    This is a pointer to a Decl.
   ///  Other:
   ///    This is null.
   void *PtrData;
@@ -116,8 +118,13 @@ public:
   }
 
   /// Return true if this is any of tok::annot_* kind tokens.
-  bool isAnnotation() const {
-    return tok::isAnnotation(getKind());
+  bool isAnnotation() const { return tok::isAnnotation(getKind()); }
+
+  /// Return true if the token is a keyword that is parsed in the same
+  /// position as a standard attribute, but that has semantic meaning
+  /// and so cannot be a true attribute.
+  bool isRegularKeywordAttribute() const {
+    return tok::isRegularKeywordAttribute(getKind());
   }
 
   /// Return a source location identifier for the specified
@@ -174,6 +181,8 @@ public:
     UintData = 0;
     Loc = SourceLocation().getRawEncoding();
   }
+
+  bool hasPtrData() const { return PtrData != nullptr; }
 
   IdentifierInfo *getIdentifierInfo() const {
     assert(isNot(tok::raw_identifier) &&
@@ -280,6 +289,8 @@ public:
   /// Return the ObjC keyword kind.
   tok::ObjCKeywordKind getObjCKeywordID() const;
 
+  bool isSimpleTypeSpecifier(const LangOptions &LangOpts) const;
+
   /// Return true if this token has trigraphs or escaped newlines in it.
   bool needsCleaning() const { return getFlag(NeedsCleaning); }
 
@@ -328,6 +339,12 @@ struct PPConditionalInfo {
   bool FoundElse;
 };
 
+// Extra information needed for annonation tokens.
+struct PragmaLoopHintInfo {
+  Token PragmaName;
+  Token Option;
+  ArrayRef<Token> Toks;
+};
 } // end namespace clang
 
 #endif // LLVM_CLANG_LEX_TOKEN_H

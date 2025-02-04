@@ -3,10 +3,12 @@ set(LLVM_LINK_COMPONENTS
   ExecutionEngine
   IRReader
   JITLink
+  OrcDebugging
   OrcJIT
   OrcShared
   OrcTargetProcess
   Support
+  TargetParser
   nativecodegen
   )
 

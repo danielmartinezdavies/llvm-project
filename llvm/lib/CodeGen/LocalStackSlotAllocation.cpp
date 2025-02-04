@@ -13,6 +13,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "llvm/CodeGen/LocalStackSlotAllocation.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/SmallVector.h"
@@ -71,7 +72,7 @@ namespace {
     int getFrameIndex() const { return FrameIdx; }
   };
 
-  class LocalStackSlotPass: public MachineFunctionPass {
+  class LocalStackSlotImpl {
     SmallVector<int64_t, 16> LocalOffsets;
 
     /// StackObjSet - A set of stack object indexes
@@ -87,13 +88,20 @@ namespace {
     bool insertFrameReferenceRegisters(MachineFunction &Fn);
 
   public:
+    bool runOnMachineFunction(MachineFunction &MF);
+  };
+
+  class LocalStackSlotPass : public MachineFunctionPass {
+  public:
     static char ID; // Pass identification, replacement for typeid
 
     explicit LocalStackSlotPass() : MachineFunctionPass(ID) {
       initializeLocalStackSlotPassPass(*PassRegistry::getPassRegistry());
     }
 
-    bool runOnMachineFunction(MachineFunction &MF) override;
+    bool runOnMachineFunction(MachineFunction &MF) override {
+      return LocalStackSlotImpl().runOnMachineFunction(MF);
+    }
 
     void getAnalysisUsage(AnalysisUsage &AU) const override {
       AU.setPreservesCFG();
@@ -103,13 +111,24 @@ namespace {
 
 } // end anonymous namespace
 
+PreservedAnalyses
+LocalStackSlotAllocationPass::run(MachineFunction &MF,
+                                  MachineFunctionAnalysisManager &) {
+  bool Changed = LocalStackSlotImpl().runOnMachineFunction(MF);
+  if (!Changed)
+    return PreservedAnalyses::all();
+  auto PA = getMachineFunctionPassPreservedAnalyses();
+  PA.preserveSet<CFGAnalyses>();
+  return PA;
+}
+
 char LocalStackSlotPass::ID = 0;
 
 char &llvm::LocalStackSlotAllocationID = LocalStackSlotPass::ID;
 INITIALIZE_PASS(LocalStackSlotPass, DEBUG_TYPE,
                 "Local Stack Slot Allocation", false, false)
 
-bool LocalStackSlotPass::runOnMachineFunction(MachineFunction &MF) {
+bool LocalStackSlotImpl::runOnMachineFunction(MachineFunction &MF) {
   MachineFrameInfo &MFI = MF.getFrameInfo();
   const TargetRegisterInfo *TRI = MF.getSubtarget().getRegisterInfo();
   unsigned LocalObjectCount = MFI.getObjectIndexEnd();
@@ -139,7 +158,7 @@ bool LocalStackSlotPass::runOnMachineFunction(MachineFunction &MF) {
 }
 
 /// AdjustStackOffset - Helper function used to adjust the stack frame offset.
-void LocalStackSlotPass::AdjustStackOffset(MachineFrameInfo &MFI, int FrameIdx,
+void LocalStackSlotImpl::AdjustStackOffset(MachineFrameInfo &MFI, int FrameIdx,
                                            int64_t &Offset, bool StackGrowsDown,
                                            Align &MaxAlign) {
   // If the stack grows down, add the object size to find the lowest address.
@@ -171,7 +190,7 @@ void LocalStackSlotPass::AdjustStackOffset(MachineFrameInfo &MFI, int FrameIdx,
 
 /// AssignProtectedObjSet - Helper function to assign large stack objects (i.e.,
 /// those required to be close to the Stack Protector) to stack offsets.
-void LocalStackSlotPass::AssignProtectedObjSet(
+void LocalStackSlotImpl::AssignProtectedObjSet(
     const StackObjSet &UnassignedObjs, SmallSet<int, 16> &ProtectedObjs,
     MachineFrameInfo &MFI, bool StackGrowsDown, int64_t &Offset,
     Align &MaxAlign) {
@@ -183,7 +202,7 @@ void LocalStackSlotPass::AssignProtectedObjSet(
 
 /// calculateFrameObjectOffsets - Calculate actual frame offsets for all of the
 /// abstract stack objects.
-void LocalStackSlotPass::calculateFrameObjectOffsets(MachineFunction &Fn) {
+void LocalStackSlotImpl::calculateFrameObjectOffsets(MachineFunction &Fn) {
   // Loop over all of the stack objects, assigning sequential addresses...
   MachineFrameInfo &MFI = Fn.getFrameInfo();
   const TargetFrameLowering &TFI = *Fn.getSubtarget().getFrameLowering();
@@ -281,14 +300,13 @@ lookupCandidateBaseReg(unsigned BaseReg,
   return TRI->isFrameOffsetLegal(&MI, BaseReg, Offset);
 }
 
-bool LocalStackSlotPass::insertFrameReferenceRegisters(MachineFunction &Fn) {
+bool LocalStackSlotImpl::insertFrameReferenceRegisters(MachineFunction &Fn) {
   // Scan the function's instructions looking for frame index references.
   // For each, ask the target if it wants a virtual base register for it
   // based on what we can tell it about where the local will end up in the
   // stack frame. If it wants one, re-use a suitable one we've previously
   // allocated, or if there isn't one that fits the bill, allocate a new one
   // and ask the target to create a defining instruction for it.
-  bool UsedBaseReg = false;
 
   MachineFrameInfo &MFI = Fn.getFrameInfo();
   const TargetRegisterInfo *TRI = Fn.getSubtarget().getRegisterInfo();
@@ -386,18 +404,18 @@ bool LocalStackSlotPass::insertFrameReferenceRegisters(MachineFunction &Fn) {
     // instruction itself will be taken into account by the target,
     // so we don't have to adjust for it here when reusing a base
     // register.
-    if (UsedBaseReg &&
+    if (BaseReg.isValid() &&
         lookupCandidateBaseReg(BaseReg, BaseOffset, FrameSizeAdjust,
                                LocalOffset, MI, TRI)) {
-      LLVM_DEBUG(dbgs() << "  Reusing base register " << BaseReg << "\n");
+      LLVM_DEBUG(dbgs() << "  Reusing base register " << printReg(BaseReg)
+                        << "\n");
       // We found a register to reuse.
       Offset = FrameSizeAdjust + LocalOffset - BaseOffset;
     } else {
       // No previously defined register was in range, so create a new one.
       int64_t InstrOffset = TRI->getFrameIndexInstrOffset(&MI, idx);
 
-      int64_t PrevBaseOffset = BaseOffset;
-      BaseOffset = FrameSizeAdjust + LocalOffset + InstrOffset;
+      int64_t CandBaseOffset = FrameSizeAdjust + LocalOffset + InstrOffset;
 
       // We'd like to avoid creating single-use virtual base registers.
       // Because the FrameRefs are in sorted order, and we've already
@@ -406,12 +424,13 @@ bool LocalStackSlotPass::insertFrameReferenceRegisters(MachineFunction &Fn) {
       // then don't bother creating it.
       if (ref + 1 >= e ||
           !lookupCandidateBaseReg(
-              BaseReg, BaseOffset, FrameSizeAdjust,
+              BaseReg, CandBaseOffset, FrameSizeAdjust,
               FrameReferenceInsns[ref + 1].getLocalOffset(),
-              *FrameReferenceInsns[ref + 1].getMachineInstr(), TRI)) {
-        BaseOffset = PrevBaseOffset;
+              *FrameReferenceInsns[ref + 1].getMachineInstr(), TRI))
         continue;
-      }
+
+      // Save the base offset.
+      BaseOffset = CandBaseOffset;
 
       // Tell the target to insert the instruction to initialize
       // the base register.
@@ -428,7 +447,6 @@ bool LocalStackSlotPass::insertFrameReferenceRegisters(MachineFunction &Fn) {
       Offset = -InstrOffset;
 
       ++NumBaseRegisters;
-      UsedBaseReg = true;
     }
     assert(BaseReg && "Unable to allocate virtual base register!");
 
@@ -440,5 +458,5 @@ bool LocalStackSlotPass::insertFrameReferenceRegisters(MachineFunction &Fn) {
     ++NumReplacements;
   }
 
-  return UsedBaseReg;
+  return BaseReg.isValid();
 }

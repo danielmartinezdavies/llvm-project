@@ -7,8 +7,16 @@
 //===----------------------------------------------------------------------===//
 
 #include "mlir/Analysis/DataFlow/ConstantPropagationAnalysis.h"
+#include "mlir/Analysis/DataFlow/SparseAnalysis.h"
+#include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/OpDefinition.h"
+#include "mlir/IR/Operation.h"
+#include "mlir/IR/Value.h"
+#include "mlir/Support/LLVM.h"
+#include "llvm/ADT/STLExtras.h"
+#include "llvm/Support/Casting.h"
 #include "llvm/Support/Debug.h"
+#include <cassert>
 
 #define DEBUG_TYPE "constant-propagation"
 
@@ -20,16 +28,22 @@ using namespace mlir::dataflow;
 //===----------------------------------------------------------------------===//
 
 void ConstantValue::print(raw_ostream &os) const {
-  if (constant)
-    return constant.print(os);
-  os << "<NO VALUE>";
+  if (isUninitialized()) {
+    os << "<UNINITIALIZED>";
+    return;
+  }
+  if (getConstantValue() == nullptr) {
+    os << "<UNKNOWN>";
+    return;
+  }
+  return getConstantValue().print(os);
 }
 
 //===----------------------------------------------------------------------===//
 // SparseConstantPropagation
 //===----------------------------------------------------------------------===//
 
-void SparseConstantPropagation::visitOperation(
+LogicalResult SparseConstantPropagation::visitOperation(
     Operation *op, ArrayRef<const Lattice<ConstantValue> *> operands,
     ArrayRef<Lattice<ConstantValue> *> results) {
   LLVM_DEBUG(llvm::dbgs() << "SCP: Visiting operation: " << *op << "\n");
@@ -39,14 +53,17 @@ void SparseConstantPropagation::visitOperation(
   // folds as the desire here is for simulated execution, and not general
   // folding.
   if (op->getNumRegions()) {
-    markAllPessimisticFixpoint(results);
-    return;
+    setAllToEntryStates(results);
+    return success();
   }
 
   SmallVector<Attribute, 8> constantOperands;
   constantOperands.reserve(op->getNumOperands());
-  for (auto *operandLattice : operands)
+  for (auto *operandLattice : operands) {
+    if (operandLattice->getValue().isUninitialized())
+      return success();
     constantOperands.push_back(operandLattice->getValue().getConstantValue());
+  }
 
   // Save the original operands and attributes just in case the operation
   // folds in-place. The constant passed in may not correspond to the real
@@ -59,8 +76,8 @@ void SparseConstantPropagation::visitOperation(
   SmallVector<OpFoldResult, 8> foldResults;
   foldResults.reserve(op->getNumResults());
   if (failed(op->fold(constantOperands, foldResults))) {
-    markAllPessimisticFixpoint(results);
-    return;
+    setAllToEntryStates(results);
+    return success();
   }
 
   // If the folding was in-place, mark the results as overdefined and reset
@@ -69,8 +86,8 @@ void SparseConstantPropagation::visitOperation(
   if (foldResults.empty()) {
     op->setOperands(originalOperands);
     op->setAttrs(originalAttrs);
-    markAllPessimisticFixpoint(results);
-    return;
+    setAllToEntryStates(results);
+    return success();
   }
 
   // Merge the fold results into the lattice for this operation.
@@ -80,15 +97,22 @@ void SparseConstantPropagation::visitOperation(
 
     // Merge in the result of the fold, either a constant or a value.
     OpFoldResult foldResult = std::get<1>(it);
-    if (Attribute attr = foldResult.dyn_cast<Attribute>()) {
+    if (Attribute attr = llvm::dyn_cast_if_present<Attribute>(foldResult)) {
       LLVM_DEBUG(llvm::dbgs() << "Folded to constant: " << attr << "\n");
       propagateIfChanged(lattice,
                          lattice->join(ConstantValue(attr, op->getDialect())));
     } else {
       LLVM_DEBUG(llvm::dbgs()
-                 << "Folded to value: " << foldResult.get<Value>() << "\n");
-      AbstractSparseDataFlowAnalysis::join(
-          lattice, *getLatticeElement(foldResult.get<Value>()));
+                 << "Folded to value: " << cast<Value>(foldResult) << "\n");
+      AbstractSparseForwardDataFlowAnalysis::join(
+          lattice, *getLatticeElement(cast<Value>(foldResult)));
     }
   }
+  return success();
+}
+
+void SparseConstantPropagation::setToEntryState(
+    Lattice<ConstantValue> *lattice) {
+  propagateIfChanged(lattice,
+                     lattice->join(ConstantValue::getUnknownConstant()));
 }

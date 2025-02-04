@@ -71,7 +71,7 @@ template <class content_type> class content_iterator {
 
 public:
   using iterator_category = std::forward_iterator_tag;
-  using value_type = content_type;
+  using value_type = const content_type;
   using difference_type = std::ptrdiff_t;
   using pointer = value_type *;
   using reference = value_type &;
@@ -157,6 +157,8 @@ public:
   virtual basic_symbol_iterator symbol_begin() const = 0;
 
   virtual basic_symbol_iterator symbol_end() const = 0;
+
+  virtual bool is64Bit() const = 0;
 
   // convenience wrappers.
   using basic_symbol_iterator_range = iterator_range<basic_symbol_iterator>;

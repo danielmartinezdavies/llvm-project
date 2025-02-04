@@ -16,14 +16,33 @@
 #define LLVM_TRANSFORMS_VECTORIZE_VPLANDOMINATORTREE_H
 
 #include "VPlan.h"
+#include "VPlanCFG.h"
 #include "llvm/ADT/GraphTraits.h"
 #include "llvm/IR/Dominators.h"
+#include "llvm/Support/GenericDomTree.h"
 
 namespace llvm {
 
+template <> struct DomTreeNodeTraits<VPBlockBase> {
+  using NodeType = VPBlockBase;
+  using NodePtr = VPBlockBase *;
+  using ParentPtr = VPlan *;
+
+  static NodePtr getEntryNode(ParentPtr Parent) { return Parent->getEntry(); }
+  static ParentPtr getParent(NodePtr B) { return B->getPlan(); }
+};
+
 /// Template specialization of the standard LLVM dominator tree utility for
 /// VPBlockBases.
-using VPDominatorTree = DomTreeBase<VPBlockBase>;
+class VPDominatorTree : public DominatorTreeBase<VPBlockBase, false> {
+  using Base = DominatorTreeBase<VPBlockBase, false>;
+
+public:
+  VPDominatorTree() = default;
+
+  /// Returns true if \p A properly dominates \p B.
+  bool properlyDominates(const VPRecipeBase *A, const VPRecipeBase *B);
+};
 
 using VPDomTreeNode = DomTreeNodeBase<VPBlockBase>;
 

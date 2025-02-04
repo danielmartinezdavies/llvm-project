@@ -12,9 +12,9 @@ using namespace clang;
 
 namespace {
 
-class TypeLocVisitor : public ExpectedLocationVisitor<TypeLocVisitor> {
+class TypeLocVisitor : public ExpectedLocationVisitor {
 public:
-  bool VisitTypeLoc(TypeLoc TypeLocation) {
+  bool VisitTypeLoc(TypeLoc TypeLocation) override {
     Match(TypeLocation.getType().getAsString(), TypeLocation.getBeginLoc());
     return true;
   }
@@ -86,6 +86,14 @@ TEST(RecursiveASTVisitor, VisitInvalidType) {
   EXPECT_FALSE(Visitor.runOver(
       "__typeof__(struct F*) var[invalid];\n",
       TypeLocVisitor::Lang_C));
+}
+
+TEST(RecursiveASTVisitor, VisitsUsingEnumType) {
+  TypeLocVisitor Visitor;
+  Visitor.ExpectMatch("::A", 2, 12);
+  EXPECT_TRUE(Visitor.runOver("enum class A {}; \n"
+                              "using enum ::A;\n",
+                              TypeLocVisitor::Lang_CXX2a));
 }
 
 } // end anonymous namespace

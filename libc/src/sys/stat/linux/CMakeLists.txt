@@ -5,7 +5,8 @@ add_entrypoint_object(
   HDRS
     ../chmod.h
   DEPENDS
-    libc.include.fcntl
+    libc.hdr.types.mode_t
+    libc.hdr.fcntl_macros
     libc.include.sys_stat
     libc.include.sys_syscall
     libc.src.__support.OSUtil.osutil
@@ -19,6 +20,7 @@ add_entrypoint_object(
   HDRS
     ../fchmod.h
   DEPENDS
+    libc.hdr.types.mode_t
     libc.include.sys_stat
     libc.include.sys_syscall
     libc.src.__support.OSUtil.osutil
@@ -45,7 +47,8 @@ add_entrypoint_object(
   HDRS
     ../mkdir.h
   DEPENDS
-    libc.include.fcntl
+    libc.hdr.types.mode_t
+    libc.hdr.fcntl_macros
     libc.include.sys_stat
     libc.include.sys_syscall
     libc.src.__support.OSUtil.osutil
@@ -62,5 +65,55 @@ add_entrypoint_object(
     libc.include.sys_stat
     libc.include.sys_syscall
     libc.src.__support.OSUtil.osutil
+    libc.src.errno.errno
+)
+
+add_header_library(
+  kernel_statx
+  HDRS
+    kernel_statx.h
+  DEPENDS
+    libc.include.sys_stat
+    libc.include.sys_syscall
+    libc.src.__support.OSUtil.osutil
+    libc.src.__support.common
+)
+
+add_entrypoint_object(
+  stat
+  SRCS
+    stat.cpp
+  HDRS
+    ../stat.h
+  DEPENDS
+    .kernel_statx
+    libc.hdr.fcntl_macros
+    libc.include.sys_stat
+    libc.src.errno.errno
+)
+
+add_entrypoint_object(
+  lstat
+  SRCS
+    lstat.cpp
+  HDRS
+    ../lstat.h
+  DEPENDS
+    .kernel_statx
+    libc.hdr.fcntl_macros
+    libc.include.sys_stat
+    libc.src.errno.errno
+)
+
+add_entrypoint_object(
+  fstat
+  SRCS
+    fstat.cpp
+  HDRS
+    ../fstat.h
+  DEPENDS
+    .kernel_statx
+    libc.hdr.fcntl_macros
+    libc.include.sys_stat
     libc.src.errno.errno
 )

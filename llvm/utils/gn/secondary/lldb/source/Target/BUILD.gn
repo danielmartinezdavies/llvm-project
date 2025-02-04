@@ -11,7 +11,10 @@ lldb_tablegen("TargetPropertiesEnum") {
 
 static_library("Target") {
   output_name = "lldbTarget"
-  configs += [ "//llvm/utils/gn/build:lldb_code" ]
+  configs += [
+    "//llvm/utils/gn/build:clang_code",
+    "//llvm/utils/gn/build:lldb_code",
+  ]
   deps = [
     ":TargetProperties",
     ":TargetPropertiesEnum",
@@ -25,6 +28,7 @@ static_library("Target") {
     "//lldb/source/Plugins/Process/Utility",
     "//lldb/source/Symbol",
     "//lldb/source/Utility",
+    "//lldb/source/ValueObject",
     "//llvm/lib/MC",
     "//llvm/lib/Support",
   ]
@@ -32,6 +36,7 @@ static_library("Target") {
   sources = [
     "ABI.cpp",
     "AssertFrameRecognizer.cpp",
+    "CoreFileMemoryRanges.cpp",
     "DynamicRegisterInfo.cpp",
     "ExecutionContext.cpp",
     "InstrumentationRuntime.cpp",
@@ -55,8 +60,10 @@ static_library("Target") {
     "QueueList.cpp",
     "RegisterContext.cpp",
     "RegisterContextUnwind.cpp",
+    "RegisterFlags.cpp",
     "RegisterNumber.cpp",
     "RemoteAwarePlatform.cpp",
+    "ScriptedThreadPlan.cpp",
     "SectionLoadHistory.cpp",
     "SectionLoadList.cpp",
     "StackFrame.cpp",
@@ -78,9 +85,9 @@ static_library("Target") {
     "ThreadPlanCallFunctionUsingABI.cpp",
     "ThreadPlanCallOnFunctionExit.cpp",
     "ThreadPlanCallUserExpression.cpp",
-    "ThreadPlanPython.cpp",
     "ThreadPlanRunToAddress.cpp",
     "ThreadPlanShouldStopHere.cpp",
+    "ThreadPlanSingleThreadTimeout.cpp",
     "ThreadPlanStack.cpp",
     "ThreadPlanStepInRange.cpp",
     "ThreadPlanStepInstruction.cpp",
@@ -94,10 +101,11 @@ static_library("Target") {
     "ThreadSpec.cpp",
     "Trace.cpp",
     "TraceCursor.cpp",
-    "TraceExporter.cpp",
     "TraceDumper.cpp",
+    "TraceExporter.cpp",
     "UnixSignals.cpp",
     "UnwindAssembly.cpp",
     "UnwindLLDB.cpp",
+    "VerboseTrapFrameRecognizer.cpp",
   ]
 }

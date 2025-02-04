@@ -75,7 +75,7 @@ Error SimpleExecutorMemoryManager::finalize(tpctypes::FinalizeRequest &FR) {
   auto BailOut = [&](Error Err) {
     std::pair<void *, Allocation> AllocToDestroy;
 
-    // Get allocation to destory.
+    // Get allocation to destroy.
     {
       std::lock_guard<std::mutex> Lock(M);
       auto I = Allocations.find(Base.toPtr<void *>());
@@ -132,9 +132,9 @@ Error SimpleExecutorMemoryManager::finalize(tpctypes::FinalizeRequest &FR) {
     assert(Seg.Size <= std::numeric_limits<size_t>::max());
     if (auto EC = sys::Memory::protectMappedMemory(
             {Mem, static_cast<size_t>(Seg.Size)},
-            tpctypes::fromWireProtectionFlags(Seg.Prot)))
+            toSysMemoryProtectionFlags(Seg.RAG.Prot)))
       return BailOut(errorCodeToError(EC));
-    if (Seg.Prot & tpctypes::WPF_Exec)
+    if ((Seg.RAG.Prot & MemProt::Exec) == MemProt::Exec)
       sys::Memory::InvalidateInstructionCache(Mem, Seg.Size);
   }
 
@@ -153,7 +153,7 @@ Error SimpleExecutorMemoryManager::deallocate(
   std::vector<std::pair<void *, Allocation>> AllocPairs;
   AllocPairs.reserve(Bases.size());
 
-  // Get allocation to destory.
+  // Get allocation to destroy.
   Error Err = Error::success();
   {
     std::lock_guard<std::mutex> Lock(M);

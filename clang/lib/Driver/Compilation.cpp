@@ -10,20 +10,16 @@
 #include "clang/Basic/LLVM.h"
 #include "clang/Driver/Action.h"
 #include "clang/Driver/Driver.h"
-#include "clang/Driver/DriverDiagnostic.h"
 #include "clang/Driver/Job.h"
 #include "clang/Driver/Options.h"
 #include "clang/Driver/ToolChain.h"
 #include "clang/Driver/Util.h"
-#include "llvm/ADT/None.h"
-#include "llvm/ADT/STLExtras.h"
-#include "llvm/ADT/SmallVector.h"
-#include "llvm/ADT/Triple.h"
 #include "llvm/Option/ArgList.h"
 #include "llvm/Option/OptSpecifier.h"
 #include "llvm/Option/Option.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/TargetParser/Triple.h"
 #include <cassert>
 #include <string>
 #include <system_error>
@@ -102,7 +98,7 @@ Compilation::getArgsForToolChain(const ToolChain *TC, StringRef BoundArch,
     }
 
     // Add allocated arguments to the final DAL.
-    for (auto ArgPtr : AllocatedArgs)
+    for (auto *ArgPtr : AllocatedArgs)
       Entry->AddSynthesizedArg(ArgPtr);
   }
 
@@ -218,10 +214,11 @@ static bool ActionFailed(const Action *A,
   if (FailingCommands.empty())
     return false;
 
-  // CUDA/HIP can have the same input source code compiled multiple times so do
-  // not compiled again if there are already failures. It is OK to abort the
-  // CUDA pipeline on errors.
-  if (A->isOffloading(Action::OFK_Cuda) || A->isOffloading(Action::OFK_HIP))
+  // CUDA/HIP/SYCL can have the same input source code compiled multiple times
+  // so do not compile again if there are already failures. It is OK to abort
+  // the CUDA/HIP/SYCL pipeline on errors.
+  if (A->isOffloading(Action::OFK_Cuda) || A->isOffloading(Action::OFK_HIP) ||
+      A->isOffloading(Action::OFK_SYCL))
     return true;
 
   for (const auto &CI : FailingCommands)
@@ -297,7 +294,7 @@ void Compilation::initCompilationForDiagnostics() {
   TCArgs.clear();
 
   // Redirect stdout/stderr to /dev/null.
-  Redirects = {None, {""}, {""}};
+  Redirects = {std::nullopt, {""}, {""}};
 
   // Temporary files added by diagnostics should be kept.
   ForceKeepTempFiles = true;
@@ -307,6 +304,6 @@ StringRef Compilation::getSysRoot() const {
   return getDriver().SysRoot;
 }
 
-void Compilation::Redirect(ArrayRef<Optional<StringRef>> Redirects) {
+void Compilation::Redirect(ArrayRef<std::optional<StringRef>> Redirects) {
   this->Redirects = Redirects;
 }

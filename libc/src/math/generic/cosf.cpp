@@ -14,38 +14,36 @@
 #include "src/__support/FPUtil/except_value_utils.h"
 #include "src/__support/FPUtil/multiply_add.h"
 #include "src/__support/common.h"
+#include "src/__support/macros/config.h"
+#include "src/__support/macros/optimization.h"            // LIBC_UNLIKELY
+#include "src/__support/macros/properties/cpu_features.h" // LIBC_TARGET_CPU_HAS_FMA
 
-#include <errno.h>
-
-namespace __llvm_libc {
+namespace LIBC_NAMESPACE_DECL {
 
 // Exceptional cases for cosf.
-static constexpr int COSF_EXCEPTS = 6;
+static constexpr size_t N_EXCEPTS = 6;
 
-static constexpr fputil::ExceptionalValues<float, COSF_EXCEPTS> CosfExcepts{
-    /* inputs */ {
-        0x55325019, // x = 0x1.64a032p43
-        0x5922aa80, // x = 0x1.4555p51
-        0x5aa4542c, // x = 0x1.48a858p54
-        0x5f18b878, // x = 0x1.3170fp63
-        0x6115cb11, // x = 0x1.2b9622p67
-        0x7beef5ef, // x = 0x1.ddebdep120
-    },
-    /* outputs (RZ, RU offset, RD offset, RN offset) */
-    {
-        {0x3f4ea5d2, 1, 0, 0}, // x = 0x1.64a032p43, cos(x) = 0x1.9d4ba4p-1 (RZ)
-        {0x3f08aebe, 1, 0, 1}, // x = 0x1.4555p51, cos(x) = 0x1.115d7cp-1 (RZ)
-        {0x3efa40a4, 1, 0, 0}, // x = 0x1.48a858p54, cos(x) = 0x1.f48148p-2 (RZ)
-        {0x3f7f14bb, 1, 0, 0}, // x = 0x1.3170fp63, cos(x) = 0x1.fe2976p-1 (RZ)
-        {0x3f78142e, 1, 0, 1}, // x = 0x1.2b9622p67, cos(x) = 0x1.f0285cp-1 (RZ)
-        {0x3f08a21c, 1, 0,
-         0}, // x = 0x1.ddebdep120, cos(x) = 0x1.114438p-1 (RZ)
-    }};
+static constexpr fputil::ExceptValues<float, N_EXCEPTS> COSF_EXCEPTS{{
+    // (inputs, RZ output, RU offset, RD offset, RN offset)
+    // x = 0x1.64a032p43, cos(x) = 0x1.9d4ba4p-1 (RZ)
+    {0x55325019, 0x3f4ea5d2, 1, 0, 0},
+    // x = 0x1.4555p51, cos(x) = 0x1.115d7cp-1 (RZ)
+    {0x5922aa80, 0x3f08aebe, 1, 0, 1},
+    // x = 0x1.48a858p54, cos(x) = 0x1.f48148p-2 (RZ)
+    {0x5aa4542c, 0x3efa40a4, 1, 0, 0},
+    // x = 0x1.3170fp63, cos(x) = 0x1.fe2976p-1 (RZ)
+    {0x5f18b878, 0x3f7f14bb, 1, 0, 0},
+    // x = 0x1.2b9622p67, cos(x) = 0x1.f0285cp-1 (RZ)
+    {0x6115cb11, 0x3f78142e, 1, 0, 1},
+    // x = 0x1.ddebdep120, cos(x) = 0x1.114438p-1 (RZ)
+    {0x7beef5ef, 0x3f08a21c, 1, 0, 0},
+}};
 
 LLVM_LIBC_FUNCTION(float, cosf, (float x)) {
   using FPBits = typename fputil::FPBits<float>;
+
   FPBits xbits(x);
-  xbits.set_sign(false);
+  xbits.set_sign(Sign::POS);
 
   uint32_t x_abs = xbits.uintval();
   double xd = static_cast<double>(xbits.get_val());
@@ -88,7 +86,7 @@ LLVM_LIBC_FUNCTION(float, cosf, (float x)) {
   // Sollya respectively.
 
   // |x| < 0x1.0p-12f
-  if (unlikely(x_abs < 0x3980'0000U)) {
+  if (LIBC_UNLIKELY(x_abs < 0x3980'0000U)) {
     // When |x| < 2^-12, the relative error of the approximation cos(x) ~ 1
     // is:
     //   |cos(x) - 1| < |x^2 / 2| = 2^-25 < epsilon(1)/2.
@@ -103,28 +101,23 @@ LLVM_LIBC_FUNCTION(float, cosf, (float x)) {
     // |x| < 2^-125. For targets without FMA instructions, we simply use
     // double for intermediate results as it is more efficient than using an
     // emulated version of FMA.
-#if defined(LIBC_TARGET_HAS_FMA)
+#if defined(LIBC_TARGET_CPU_HAS_FMA)
     return fputil::multiply_add(xbits.get_val(), -0x1.0p-25f, 1.0f);
 #else
     return static_cast<float>(fputil::multiply_add(xd, -0x1.0p-25, 1.0));
-#endif // LIBC_TARGET_HAS_FMA
+#endif // LIBC_TARGET_CPU_HAS_FMA
   }
 
-  using ExceptChecker = typename fputil::ExceptionChecker<float, COSF_EXCEPTS>;
-  {
-    float result;
-    if (ExceptChecker::check_odd_func(CosfExcepts, x_abs, false, result))
-      return result;
-  }
+  if (auto r = COSF_EXCEPTS.lookup(x_abs); LIBC_UNLIKELY(r.has_value()))
+    return r.value();
 
   // x is inf or nan.
-  if (unlikely(x_abs >= 0x7f80'0000U)) {
+  if (LIBC_UNLIKELY(x_abs >= 0x7f80'0000U)) {
     if (x_abs == 0x7f80'0000U) {
-      errno = EDOM;
-      fputil::set_except(FE_INVALID);
+      fputil::set_errno_if_required(EDOM);
+      fputil::raise_except_if_required(FE_INVALID);
     }
-    return x +
-           FPBits::build_nan(1 << (fputil::MantissaWidth<float>::VALUE - 1));
+    return x + FPBits::quiet_nan().get_val();
   }
 
   // Combine the results with the sine of sum formula:
@@ -136,8 +129,8 @@ LLVM_LIBC_FUNCTION(float, cosf, (float x)) {
 
   sincosf_eval(xd, x_abs, sin_k, cos_k, sin_y, cosm1_y);
 
-  return fputil::multiply_add(sin_y, -sin_k,
-                              fputil::multiply_add(cosm1_y, cos_k, cos_k));
+  return static_cast<float>(fputil::multiply_add(
+      sin_y, -sin_k, fputil::multiply_add(cosm1_y, cos_k, cos_k)));
 }
 
-} // namespace __llvm_libc
+} // namespace LIBC_NAMESPACE_DECL

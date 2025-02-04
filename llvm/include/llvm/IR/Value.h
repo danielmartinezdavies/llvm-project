@@ -72,12 +72,6 @@ using ValueName = StringMapEntry<Value *>;
 /// objects that watch it and listen to RAUW and Destroy events.  See
 /// llvm/IR/ValueHandle.h for details.
 class Value {
-  Type *VTy;
-  Use *UseList;
-
-  friend class ValueAsMetadata; // Allow access to IsUsedByMD.
-  friend class ValueHandleBase;
-
   const unsigned char SubclassID;   // Subclass identifier (for isa/dyn_cast)
   unsigned char HasValueHandle : 1; // Has a ValueHandle pointing to this?
 
@@ -121,6 +115,12 @@ protected:
   unsigned HasDescriptor : 1;
 
 private:
+  Type *VTy;
+  Use *UseList;
+
+  friend class ValueAsMetadata; // Allow access to IsUsedByMD.
+  friend class ValueHandleBase; // Allow access to HasValueHandle.
+
   template <typename UseT> // UseT == 'Use' or 'const Use'
   class use_iterator_impl {
     friend class Value;
@@ -131,7 +131,7 @@ private:
 
   public:
     using iterator_category = std::forward_iterator_tag;
-    using value_type = UseT *;
+    using value_type = UseT;
     using difference_type = std::ptrdiff_t;
     using pointer = value_type *;
     using reference = value_type &;
@@ -242,7 +242,7 @@ public:
   ///
   /// This is useful when you just want to print 'int %reg126', not the
   /// instruction that generated it. If you specify a Module for context, then
-  /// even constanst get pretty-printed; for example, the type of a null
+  /// even constants get pretty-printed; for example, the type of a null
   /// pointer is printed symbolically.
   /// @{
   void printAsOperand(raw_ostream &O, bool PrintType = true,
@@ -556,16 +556,17 @@ public:
   /// Return true if there is metadata referencing this value.
   bool isUsedByMetadata() const { return IsUsedByMD; }
 
-  // Return true if this value is only transitively referenced by metadata.
-  bool isTransitiveUsedByMetadataOnly() const;
-
 protected:
   /// Get the current metadata attachments for the given kind, if any.
   ///
   /// These functions require that the value have at most a single attachment
   /// of the given kind, and return \c nullptr if such an attachment is missing.
   /// @{
-  MDNode *getMetadata(unsigned KindID) const;
+  MDNode *getMetadata(unsigned KindID) const {
+    if (!HasMetadata)
+      return nullptr;
+    return getMetadataImpl(KindID);
+  }
   MDNode *getMetadata(StringRef Kind) const;
   /// @}
 
@@ -617,8 +618,16 @@ protected:
   /// \returns true if any metadata was removed.
   bool eraseMetadata(unsigned KindID);
 
+  /// Erase all metadata attachments matching the given predicate.
+  void eraseMetadataIf(function_ref<bool(unsigned, MDNode *)> Pred);
+
   /// Erase all metadata attached to this Value.
   void clearMetadata();
+
+  /// Get metadata for the given kind, if any.
+  /// This is an internal function that must only be called after
+  /// checking that `hasMetadata()` returns true.
+  MDNode *getMetadataImpl(unsigned KindID) const;
 
 public:
   /// Return true if this value is a swifterror value.
@@ -701,6 +710,10 @@ public:
   /// For example, for a value \p ExternalAnalysis might try to calculate a
   /// lower bound. If \p ExternalAnalysis is successful, it should return true.
   ///
+  /// If \p LookThroughIntToPtr is true then this method also looks through
+  /// IntToPtr and PtrToInt constant expressions. The returned pointer may not
+  /// have the same provenance as this value.
+  ///
   /// If this is called on a non-pointer value, it returns 'this' and the
   /// \p Offset is not modified.
   ///
@@ -713,13 +726,19 @@ public:
       const DataLayout &DL, APInt &Offset, bool AllowNonInbounds,
       bool AllowInvariantGroup = false,
       function_ref<bool(Value &Value, APInt &Offset)> ExternalAnalysis =
-          nullptr) const;
-  Value *stripAndAccumulateConstantOffsets(const DataLayout &DL, APInt &Offset,
-                                           bool AllowNonInbounds,
-                                           bool AllowInvariantGroup = false) {
+          nullptr,
+      bool LookThroughIntToPtr = false) const;
+
+  Value *stripAndAccumulateConstantOffsets(
+      const DataLayout &DL, APInt &Offset, bool AllowNonInbounds,
+      bool AllowInvariantGroup = false,
+      function_ref<bool(Value &Value, APInt &Offset)> ExternalAnalysis =
+          nullptr,
+      bool LookThroughIntToPtr = false) {
     return const_cast<Value *>(
         static_cast<const Value *>(this)->stripAndAccumulateConstantOffsets(
-            DL, Offset, AllowNonInbounds, AllowInvariantGroup));
+            DL, Offset, AllowNonInbounds, AllowInvariantGroup, ExternalAnalysis,
+            LookThroughIntToPtr));
   }
 
   /// This is a wrapper around stripAndAccumulateConstantOffsets with the
@@ -746,6 +765,11 @@ public:
     return const_cast<Value *>(
         static_cast<const Value *>(this)->stripInBoundsOffsets(Func));
   }
+
+  /// If this ptr is provably equal to \p Other plus a constant offset, return
+  /// that offset in bytes. Essentially `ptr this` subtract `ptr Other`.
+  std::optional<int64_t> getPointerOffsetFrom(const Value *Other,
+                                              const DataLayout &DL) const;
 
   /// Return true if the memory object referred to by V can by freed in the
   /// scope for which the SSA value defining the allocation is statically

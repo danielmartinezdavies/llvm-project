@@ -19,16 +19,28 @@
 #include "mlir/Analysis/Presburger/Matrix.h"
 #include "mlir/Analysis/Presburger/PresburgerSpace.h"
 #include "mlir/Analysis/Presburger/Utils.h"
-#include "mlir/Support/LogicalResult.h"
+#include "llvm/ADT/DynamicAPInt.h"
+#include "llvm/ADT/SmallVector.h"
+#include "llvm/Support/LogicalResult.h"
+#include <optional>
 
 namespace mlir {
 namespace presburger {
+using llvm::DynamicAPInt;
+using llvm::failure;
+using llvm::int64fromDynamicAPInt;
+using llvm::LogicalResult;
+using llvm::SmallVectorImpl;
+using llvm::success;
 
 class IntegerRelation;
 class IntegerPolyhedron;
 class PresburgerSet;
 class PresburgerRelation;
-struct SymbolicLexMin;
+struct SymbolicLexOpt;
+
+/// The type of bound: equal, lower bound or upper bound.
+enum class BoundType { EQ, LB, UB };
 
 /// An IntegerRelation represents the set of points from a PresburgerSpace that
 /// satisfy a list of affine constraints. Affine constraints can be inequalities
@@ -53,10 +65,12 @@ class IntegerRelation {
 public:
   /// All derived classes of IntegerRelation.
   enum class Kind {
-    FlatAffineConstraints,
-    FlatAffineValueConstraints,
     IntegerRelation,
     IntegerPolyhedron,
+    FlatLinearConstraints,
+    FlatLinearValueConstraints,
+    FlatAffineValueConstraints,
+    FlatAffineRelation
   };
 
   /// Constructs a relation reserving memory for the specified number
@@ -85,6 +99,15 @@ public:
     return IntegerRelation(space);
   }
 
+  /// Return an empty system containing an invalid equation 0 = 1.
+  static IntegerRelation getEmpty(const PresburgerSpace &space) {
+    IntegerRelation result(0, 1, space.getNumVars() + 1, space);
+    SmallVector<int64_t> invalidEq(space.getNumVars() + 1, 0);
+    invalidEq.back() = 1;
+    result.addEquality(invalidEq);
+    return result;
+  }
+
   /// Return the kind of this IntegerRelation.
   virtual Kind getKind() const { return Kind::IntegerRelation; }
 
@@ -107,6 +130,17 @@ public:
   /// current space; this will result in an assert failure.
   void setSpaceExceptLocals(const PresburgerSpace &oSpace);
 
+  /// Set the identifier for the ith variable of the specified kind of the
+  /// IntegerRelation's PresburgerSpace. The index is relative to the kind of
+  /// the variable.
+  void setId(VarKind kind, unsigned i, Identifier id);
+
+  void resetIds() { space.resetIds(); }
+
+  /// Get the identifiers for the variables of specified varKind. Calls resetIds
+  /// on the relations space if identifiers are not enabled.
+  ArrayRef<Identifier> getIds(VarKind kind);
+
   /// Returns a copy of the space without locals.
   PresburgerSpace getSpaceWithoutLocals() const {
     return PresburgerSpace::getRelationSpace(space.getNumDomainVars(),
@@ -127,20 +161,41 @@ public:
   /// (see IntegerRelation::findIntegerSample()).
   bool isEqual(const IntegerRelation &other) const;
 
+  /// Perform a quick equality check on `this` and `other`. The relations are
+  /// equal if the check return true, but may or may not be equal if the check
+  /// returns false. The equality check is performed in a plain manner, by
+  /// comparing if all the equalities and inequalities in `this` and `other`
+  /// are the same.
+  bool isObviouslyEqual(const IntegerRelation &other) const;
+
   /// Return whether this is a subset of the given IntegerRelation. This is
   /// integer-exact and somewhat expensive, since it uses the integer emptiness
   /// check (see IntegerRelation::findIntegerSample()).
   bool isSubsetOf(const IntegerRelation &other) const;
 
   /// Returns the value at the specified equality row and column.
-  inline int64_t atEq(unsigned i, unsigned j) const { return equalities(i, j); }
-  inline int64_t &atEq(unsigned i, unsigned j) { return equalities(i, j); }
+  inline DynamicAPInt atEq(unsigned i, unsigned j) const {
+    return equalities(i, j);
+  }
+  /// The same, but casts to int64_t. This is unsafe and will assert-fail if the
+  /// value does not fit in an int64_t.
+  inline int64_t atEq64(unsigned i, unsigned j) const {
+    return int64_t(equalities(i, j));
+  }
+  inline DynamicAPInt &atEq(unsigned i, unsigned j) { return equalities(i, j); }
 
   /// Returns the value at the specified inequality row and column.
-  inline int64_t atIneq(unsigned i, unsigned j) const {
+  inline DynamicAPInt atIneq(unsigned i, unsigned j) const {
     return inequalities(i, j);
   }
-  inline int64_t &atIneq(unsigned i, unsigned j) { return inequalities(i, j); }
+  /// The same, but casts to int64_t. This is unsafe and will assert-fail if the
+  /// value does not fit in an int64_t.
+  inline int64_t atIneq64(unsigned i, unsigned j) const {
+    return int64_t(inequalities(i, j));
+  }
+  inline DynamicAPInt &atIneq(unsigned i, unsigned j) {
+    return inequalities(i, j);
+  }
 
   unsigned getNumConstraints() const {
     return getNumInequalities() + getNumEqualities();
@@ -174,38 +229,47 @@ public:
     return inequalities.getNumReservedRows();
   }
 
-  inline ArrayRef<int64_t> getEquality(unsigned idx) const {
+  inline ArrayRef<DynamicAPInt> getEquality(unsigned idx) const {
     return equalities.getRow(idx);
   }
-
-  inline ArrayRef<int64_t> getInequality(unsigned idx) const {
+  inline ArrayRef<DynamicAPInt> getInequality(unsigned idx) const {
     return inequalities.getRow(idx);
   }
+  /// The same, but casts to int64_t. This is unsafe and will assert-fail if the
+  /// value does not fit in an int64_t.
+  inline SmallVector<int64_t, 8> getEquality64(unsigned idx) const {
+    return getInt64Vec(equalities.getRow(idx));
+  }
+  inline SmallVector<int64_t, 8> getInequality64(unsigned idx) const {
+    return getInt64Vec(inequalities.getRow(idx));
+  }
+
+  inline IntMatrix getInequalities() const { return inequalities; }
 
   /// Get the number of vars of the specified kind.
   unsigned getNumVarKind(VarKind kind) const {
     return space.getNumVarKind(kind);
-  };
+  }
 
   /// Return the index at which the specified kind of vars starts.
   unsigned getVarKindOffset(VarKind kind) const {
     return space.getVarKindOffset(kind);
-  };
+  }
 
   /// Return the index at Which the specified kind of vars ends.
   unsigned getVarKindEnd(VarKind kind) const {
     return space.getVarKindEnd(kind);
-  };
+  }
 
   /// Get the number of elements of the specified kind in the range
   /// [varStart, varLimit).
   unsigned getVarKindOverlap(VarKind kind, unsigned varStart,
                              unsigned varLimit) const {
     return space.getVarKindOverlap(kind, varStart, varLimit);
-  };
+  }
 
   /// Return the VarKind of the var at the specified position.
-  VarKind getVarKindAt(unsigned pos) const { return space.getVarKindAt(pos); };
+  VarKind getVarKindAt(unsigned pos) const { return space.getVarKindAt(pos); }
 
   /// The struct CountsSnapshot stores the count of each VarKind, and also of
   /// each constraint type. getCounts() returns a CountsSnapshot object
@@ -245,9 +309,15 @@ public:
   unsigned appendVar(VarKind kind, unsigned num = 1);
 
   /// Adds an inequality (>= 0) from the coefficients specified in `inEq`.
-  void addInequality(ArrayRef<int64_t> inEq);
+  void addInequality(ArrayRef<DynamicAPInt> inEq);
+  void addInequality(ArrayRef<int64_t> inEq) {
+    addInequality(getDynamicAPIntVec(inEq));
+  }
   /// Adds an equality from the coefficients specified in `eq`.
-  void addEquality(ArrayRef<int64_t> eq);
+  void addEquality(ArrayRef<DynamicAPInt> eq);
+  void addEquality(ArrayRef<int64_t> eq) {
+    addEquality(getDynamicAPIntVec(eq));
+  }
 
   /// Eliminate the `posB^th` local variable, replacing every instance of it
   /// with the `posA^th` local variable. This should be used when the two
@@ -282,7 +352,7 @@ public:
   /// For a generic integer sampling operation, findIntegerSample is more
   /// robust and should be preferred. Note that Domain is minimized first, then
   /// range.
-  MaybeOptimum<SmallVector<int64_t, 8>> findIntegerLexMin() const;
+  MaybeOptimum<SmallVector<DynamicAPInt, 8>> findIntegerLexMin() const;
 
   /// Swap the posA^th variable with the posB^th variable.
   virtual void swapVar(unsigned posA, unsigned posB);
@@ -292,7 +362,10 @@ public:
 
   /// Sets the `values.size()` variables starting at `po`s to the specified
   /// values and removes them.
-  void setAndEliminate(unsigned pos, ArrayRef<int64_t> values);
+  void setAndEliminate(unsigned pos, ArrayRef<DynamicAPInt> values);
+  void setAndEliminate(unsigned pos, ArrayRef<int64_t> values) {
+    setAndEliminate(pos, getDynamicAPIntVec(values));
+  }
 
   /// Replaces the contents of this IntegerRelation with `other`.
   virtual void clearAndCopyFrom(const IntegerRelation &other);
@@ -314,6 +387,9 @@ public:
   /// Returns false otherwise.
   bool isEmpty() const;
 
+  /// Performs GCD checks and invalid constraint checks.
+  bool isObviouslyEmpty() const;
+
   /// Runs the GCD test on all equality constraints. Returns true if this test
   /// fails on any equality. Returns false otherwise.
   /// This test can be used to disprove the existence of a solution. If it
@@ -329,7 +405,7 @@ public:
   /// bounded. The span of the returned vectors is guaranteed to contain all
   /// such vectors. The returned vectors are NOT guaranteed to be linearly
   /// independent. This function should not be called on empty sets.
-  Matrix getBoundedDirections() const;
+  IntMatrix getBoundedDirections() const;
 
   /// Find an integer sample point satisfying the constraints using a
   /// branch and bound algorithm with generalized basis reduction, with some
@@ -337,20 +413,27 @@ public:
   ///
   /// Returns an integer sample point if one exists, or an empty Optional
   /// otherwise. The returned value also includes values of local ids.
-  Optional<SmallVector<int64_t, 8>> findIntegerSample() const;
+  std::optional<SmallVector<DynamicAPInt, 8>> findIntegerSample() const;
 
   /// Compute an overapproximation of the number of integer points in the
   /// relation. Symbol vars currently not supported. If the computed
   /// overapproximation is infinite, an empty optional is returned.
-  Optional<uint64_t> computeVolume() const;
+  std::optional<DynamicAPInt> computeVolume() const;
 
   /// Returns true if the given point satisfies the constraints, or false
   /// otherwise. Takes the values of all vars including locals.
-  bool containsPoint(ArrayRef<int64_t> point) const;
+  bool containsPoint(ArrayRef<DynamicAPInt> point) const;
+  bool containsPoint(ArrayRef<int64_t> point) const {
+    return containsPoint(getDynamicAPIntVec(point));
+  }
   /// Given the values of non-local vars, return a satisfying assignment to the
   /// local if one exists, or an empty optional otherwise.
-  Optional<SmallVector<int64_t, 8>>
-  containsPointNoLocal(ArrayRef<int64_t> point) const;
+  std::optional<SmallVector<DynamicAPInt, 8>>
+  containsPointNoLocal(ArrayRef<DynamicAPInt> point) const;
+  std::optional<SmallVector<DynamicAPInt, 8>>
+  containsPointNoLocal(ArrayRef<int64_t> point) const {
+    return containsPointNoLocal(getDynamicAPIntVec(point));
+  }
 
   /// Returns a `DivisonRepr` representing the division representation of local
   /// variables in the constraint system.
@@ -363,21 +446,29 @@ public:
   /// to None.
   DivisionRepr getLocalReprs(std::vector<MaybeLocalRepr> *repr = nullptr) const;
 
-  /// The type of bound: equal, lower bound or upper bound.
-  enum BoundType { EQ, LB, UB };
-
   /// Adds a constant bound for the specified variable.
-  void addBound(BoundType type, unsigned pos, int64_t value);
+  void addBound(BoundType type, unsigned pos, const DynamicAPInt &value);
+  void addBound(BoundType type, unsigned pos, int64_t value) {
+    addBound(type, pos, DynamicAPInt(value));
+  }
 
   /// Adds a constant bound for the specified expression.
-  void addBound(BoundType type, ArrayRef<int64_t> expr, int64_t value);
+  void addBound(BoundType type, ArrayRef<DynamicAPInt> expr,
+                const DynamicAPInt &value);
+  void addBound(BoundType type, ArrayRef<int64_t> expr, int64_t value) {
+    addBound(type, getDynamicAPIntVec(expr), DynamicAPInt(value));
+  }
 
   /// Adds a new local variable as the floordiv of an affine function of other
   /// variables, the coefficients of which are provided in `dividend` and with
   /// respect to a positive constant `divisor`. Two constraints are added to the
   /// system to capture equivalence with the floordiv:
   /// q = dividend floordiv c    <=>   c*q <= dividend <= c*q + c - 1.
-  void addLocalFloorDiv(ArrayRef<int64_t> dividend, int64_t divisor);
+  void addLocalFloorDiv(ArrayRef<DynamicAPInt> dividend,
+                        const DynamicAPInt &divisor);
+  void addLocalFloorDiv(ArrayRef<int64_t> dividend, int64_t divisor) {
+    addLocalFloorDiv(getDynamicAPIntVec(dividend), DynamicAPInt(divisor));
+  }
 
   /// Projects out (aka eliminates) `num` variables starting at position
   /// `pos`. The resulting constraint system is the shadow along the dimensions
@@ -420,27 +511,55 @@ public:
   /// variable (pos^th), i.e., the smallest known constant that is greater
   /// than or equal to 'exclusive upper bound' - 'lower bound' of the
   /// variable. This constant bound is guaranteed to be non-negative. Returns
-  /// None if it's not a constant. This method employs trivial (low complexity /
-  /// cost) checks and detection. Symbolic variables are treated specially,
-  /// i.e., it looks for constant differences between affine expressions
-  /// involving only the symbolic variables. `lb` and `ub` (along with the
-  /// `boundFloorDivisor`) are set to represent the lower and upper bound
-  /// associated with the constant difference: `lb`, `ub` have the coefficients,
-  /// and `boundFloorDivisor`, their divisor. `minLbPos` and `minUbPos` if
-  /// non-null are set to the position of the constant lower bound and upper
-  /// bound respectively (to the same if they are from an equality). Ex: if the
-  /// lower bound is [(s0 + s2 - 1) floordiv 32] for a system with three
-  /// symbolic variables, *lb = [1, 0, 1], lbDivisor = 32. See comments at
-  /// function definition for examples.
-  Optional<int64_t> getConstantBoundOnDimSize(
+  /// std::nullopt if it's not a constant. This method employs trivial (low
+  /// complexity / cost) checks and detection. Symbolic variables are treated
+  /// specially, i.e., it looks for constant differences between affine
+  /// expressions involving only the symbolic variables. `lb` and `ub` (along
+  /// with the `boundFloorDivisor`) are set to represent the lower and upper
+  /// bound associated with the constant difference: `lb`, `ub` have the
+  /// coefficients, and `boundFloorDivisor`, their divisor. `minLbPos` and
+  /// `minUbPos` if non-null are set to the position of the constant lower bound
+  /// and upper bound respectively (to the same if they are from an
+  /// equality). Ex: if the lower bound is [(s0 + s2 - 1) floordiv 32] for a
+  /// system with three symbolic variables, *lb = [1, 0, 1], lbDivisor = 32. See
+  /// comments at function definition for examples.
+  std::optional<DynamicAPInt> getConstantBoundOnDimSize(
+      unsigned pos, SmallVectorImpl<DynamicAPInt> *lb = nullptr,
+      DynamicAPInt *boundFloorDivisor = nullptr,
+      SmallVectorImpl<DynamicAPInt> *ub = nullptr, unsigned *minLbPos = nullptr,
+      unsigned *minUbPos = nullptr) const;
+  /// The same, but casts to int64_t. This is unsafe and will assert-fail if the
+  /// value does not fit in an int64_t.
+  std::optional<int64_t> getConstantBoundOnDimSize64(
       unsigned pos, SmallVectorImpl<int64_t> *lb = nullptr,
       int64_t *boundFloorDivisor = nullptr,
       SmallVectorImpl<int64_t> *ub = nullptr, unsigned *minLbPos = nullptr,
-      unsigned *minUbPos = nullptr) const;
+      unsigned *minUbPos = nullptr) const {
+    SmallVector<DynamicAPInt, 8> ubDynamicAPInt, lbDynamicAPInt;
+    DynamicAPInt boundFloorDivisorDynamicAPInt;
+    std::optional<DynamicAPInt> result = getConstantBoundOnDimSize(
+        pos, &lbDynamicAPInt, &boundFloorDivisorDynamicAPInt, &ubDynamicAPInt,
+        minLbPos, minUbPos);
+    if (lb)
+      *lb = getInt64Vec(lbDynamicAPInt);
+    if (ub)
+      *ub = getInt64Vec(ubDynamicAPInt);
+    if (boundFloorDivisor)
+      *boundFloorDivisor = static_cast<int64_t>(boundFloorDivisorDynamicAPInt);
+    return llvm::transformOptional(result, int64fromDynamicAPInt);
+  }
 
   /// Returns the constant bound for the pos^th variable if there is one;
-  /// None otherwise.
-  Optional<int64_t> getConstantBound(BoundType type, unsigned pos) const;
+  /// std::nullopt otherwise.
+  std::optional<DynamicAPInt> getConstantBound(BoundType type,
+                                               unsigned pos) const;
+  /// The same, but casts to int64_t. This is unsafe and will assert-fail if the
+  /// value does not fit in an int64_t.
+  std::optional<int64_t> getConstantBound64(BoundType type,
+                                            unsigned pos) const {
+    return llvm::transformOptional(getConstantBound(type, pos),
+                                   int64fromDynamicAPInt);
+  }
 
   /// Removes constraints that are independent of (i.e., do not have a
   /// coefficient) variables in the range [pos, pos + num).
@@ -471,6 +590,10 @@ public:
 
   void removeDuplicateDivs();
 
+  /// Simplify the constraint system by removing canonicalizing constraints and
+  /// removing redundant constraints.
+  void simplify();
+
   /// Converts variables of kind srcKind in the range [varStart, varLimit) to
   /// variables of kind dstKind. If `pos` is given, the variables are placed at
   /// position `pos` of dstKind, otherwise they are placed after all the other
@@ -486,6 +609,11 @@ public:
   void convertToLocal(VarKind kind, unsigned varStart, unsigned varLimit) {
     convertVarKind(kind, varStart, varLimit, VarKind::Local);
   }
+
+  /// Merge and align symbol variables of `this` and `other` with respect to
+  /// identifiers. After this operation the symbol variables of both relations
+  /// have the same identifiers in the same order.
+  void mergeAndAlignSymbols(IntegerRelation &other);
 
   /// Adds additional local vars to the sets such that they both have the union
   /// of the local vars in each set, without changing the set of points that
@@ -519,7 +647,7 @@ public:
   /// the split become symbols, or some of the symbols immediately after the
   /// split become dimensions.
   void setDimSymbolSeparation(unsigned newSymbolCount) {
-    space.setVarSymbolSeperation(newSymbolCount);
+    space.setVarSymbolSeparation(newSymbolCount);
   }
 
   /// Return a set corresponding to all points in the domain of the relation.
@@ -572,6 +700,11 @@ public:
   /// this for uniformity with `applyDomain`.
   void applyRange(const IntegerRelation &rel);
 
+  /// Given a relation `other: (A -> B)`, this operation merges the symbol and
+  /// local variables and then takes the composition of `other` on `this: (B ->
+  /// C)`. The resulting relation represents tuples of the form: `A -> C`.
+  void mergeAndCompose(const IntegerRelation &other);
+
   /// Compute an equivalent representation of the same set, such that all local
   /// vars in all disjuncts have division representations. This representation
   /// may involve local vars that correspond to divisions, and may also be a
@@ -592,19 +725,33 @@ public:
   /// x = a if b <= a, a <= c
   /// x = b if a <  b, b <= c
   ///
-  /// This function is stored in the `lexmin` function in the result.
+  /// This function is stored in the `lexopt` function in the result.
   /// Some assignments to the symbols might make the set empty.
   /// Such points are not part of the function's domain.
   /// In the above example, this happens when max(a, b) > c.
   ///
   /// For some values of the symbols, the lexmin may be unbounded.
-  /// `SymbolicLexMin` stores these parts of the symbolic domain in a separate
+  /// `SymbolicLexOpt` stores these parts of the symbolic domain in a separate
   /// `PresburgerSet`, `unboundedDomain`.
-  SymbolicLexMin findSymbolicIntegerLexMin() const;
+  SymbolicLexOpt findSymbolicIntegerLexMin() const;
+
+  /// Same as findSymbolicIntegerLexMin but produces lexmax instead of lexmin
+  SymbolicLexOpt findSymbolicIntegerLexMax() const;
 
   /// Return the set difference of this set and the given set, i.e.,
   /// return `this \ set`.
   PresburgerRelation subtract(const PresburgerRelation &set) const;
+
+  // Remove equalities which have only zero coefficients.
+  void removeTrivialEqualities();
+
+  // Verify whether the relation is full-dimensional, i.e.,
+  // no equality holds for the relation.
+  //
+  // If there are no variables, it always returns true.
+  // If there is at least one variable and the relation is empty, it returns
+  // false.
+  bool isFullDim();
 
   void print(raw_ostream &os) const;
   void dump() const;
@@ -616,10 +763,17 @@ protected:
   /// false otherwise.
   bool hasInvalidConstraint() const;
 
-  /// Returns the constant lower bound bound if isLower is true, and the upper
+  /// Returns the constant lower bound if isLower is true, and the upper
   /// bound if isLower is false.
   template <bool isLower>
-  Optional<int64_t> computeConstantLowerOrUpperBound(unsigned pos);
+  std::optional<DynamicAPInt> computeConstantLowerOrUpperBound(unsigned pos);
+  /// The same, but casts to int64_t. This is unsafe and will assert-fail if the
+  /// value does not fit in an int64_t.
+  template <bool isLower>
+  std::optional<int64_t> computeConstantLowerOrUpperBound64(unsigned pos) {
+    return computeConstantLowerOrUpperBound<isLower>(pos).map(
+        int64fromDynamicAPInt);
+  }
 
   /// Eliminates a single variable at `position` from equality and inequality
   /// constraints. Returns `success` if the variable was eliminated, and
@@ -640,6 +794,10 @@ protected:
   /// in column range [posStart, posLimit).
   /// Returns the number of variables eliminated.
   unsigned gaussianEliminateVars(unsigned posStart, unsigned posLimit);
+
+  /// Perform a Gaussian elimination operation to reduce all equations to
+  /// standard form. Returns whether the constraint system was modified.
+  bool gaussianEliminate();
 
   /// Eliminates the variable at the specified position using Fourier-Motzkin
   /// variable elimination, but uses Gaussian elimination if there is an
@@ -671,6 +829,10 @@ protected:
   /// Returns true if the pos^th column is all zero for both inequalities and
   /// equalities.
   bool isColZero(unsigned pos) const;
+
+  /// Checks for identical inequalities and eliminates redundant inequalities.
+  /// Returns whether the constraint system was modified.
+  bool removeDuplicateConstraints();
 
   /// Returns false if the fields corresponding to various variable counts, or
   /// equality/inequality buffer sizes aren't consistent; true otherwise. This
@@ -709,10 +871,10 @@ protected:
   PresburgerSpace space;
 
   /// Coefficients of affine equalities (in == 0 form).
-  Matrix equalities;
+  IntMatrix equalities;
 
   /// Coefficients of affine inequalities (in >= 0 form).
-  Matrix inequalities;
+  IntMatrix inequalities;
 };
 
 /// An IntegerPolyhedron represents the set of points from a PresburgerSpace
@@ -752,6 +914,26 @@ public:
                           /*numReservedEqualities=*/0,
                           /*numReservedCols=*/space.getNumVars() + 1, space) {}
 
+  /// Constructs a relation with the specified number of dimensions and symbols
+  /// and adds the given inequalities.
+  explicit IntegerPolyhedron(const PresburgerSpace &space,
+                             IntMatrix inequalities)
+      : IntegerPolyhedron(space) {
+    for (unsigned i = 0, e = inequalities.getNumRows(); i < e; i++)
+      addInequality(inequalities.getRow(i));
+  }
+
+  /// Constructs a relation with the specified number of dimensions and symbols
+  /// and adds the given inequalities, after normalizing row-wise to integer
+  /// values.
+  explicit IntegerPolyhedron(const PresburgerSpace &space,
+                             FracMatrix inequalities)
+      : IntegerPolyhedron(space) {
+    IntMatrix ineqsNormalized = inequalities.normalizeRows();
+    for (unsigned i = 0, e = inequalities.getNumRows(); i < e; i++)
+      addInequality(ineqsNormalized.getRow(i));
+  }
+
   /// Construct a set from an IntegerRelation. The relation should have
   /// no domain vars.
   explicit IntegerPolyhedron(const IntegerRelation &rel)
@@ -777,7 +959,8 @@ public:
   Kind getKind() const override { return Kind::IntegerPolyhedron; }
 
   static bool classof(const IntegerRelation *cst) {
-    return cst->getKind() == Kind::IntegerPolyhedron;
+    return cst->getKind() >= Kind::IntegerPolyhedron &&
+           cst->getKind() <= Kind::FlatAffineRelation;
   }
 
   // Clones this object.

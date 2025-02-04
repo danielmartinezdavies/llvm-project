@@ -7,6 +7,9 @@
 //===----------------------------------------------------------------------===//
 
 #include "SymbolIndexManager.h"
+
+#include <cmath>
+
 #include "find-all-symbols/SymbolInfo.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
@@ -79,7 +82,7 @@ SymbolIndexManager::search(llvm::StringRef Identifier,
   Identifier.split(Names, "::");
 
   bool IsFullyQualified = false;
-  if (Identifier.startswith("::")) {
+  if (Identifier.starts_with("::")) {
     Names.erase(Names.begin()); // Drop first (empty) element.
     IsFullyQualified = true;
   }

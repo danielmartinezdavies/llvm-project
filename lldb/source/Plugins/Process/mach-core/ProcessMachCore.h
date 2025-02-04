@@ -85,7 +85,22 @@ protected:
                         lldb_private::MemoryRegionInfo &region_info) override;
 
 private:
-  bool GetDynamicLoaderAddress(lldb::addr_t addr);
+  void CreateMemoryRegions();
+
+  bool LoadBinaryViaLowmemUUID();
+
+  /// \return
+  ///   True if any metadata were found indicating the binary that should
+  ///   be loaded, regardless of whether the specified binary could be found.
+  ///   False if no metadata were present.
+  bool LoadBinariesViaMetadata();
+
+  void LoadBinariesViaExhaustiveSearch();
+  void LoadBinariesAndSetDYLD();
+  void CleanupMemoryRegionPermissions();
+
+  bool CheckAddressForDyldOrKernel(lldb::addr_t addr, lldb::addr_t &dyld,
+                                   lldb::addr_t &kernel);
 
   enum CorefilePreference { eUserProcessCorefile, eKernelCorefile };
 
@@ -115,7 +130,6 @@ private:
   VMRangeToFileOffset m_core_aranges;
   VMRangeToPermissions m_core_range_infos;
   lldb::ModuleSP m_core_module_sp;
-  lldb_private::FileSpec m_core_file;
   lldb::addr_t m_dyld_addr;
   lldb::addr_t m_mach_kernel_addr;
   llvm::StringRef m_dyld_plugin_name;

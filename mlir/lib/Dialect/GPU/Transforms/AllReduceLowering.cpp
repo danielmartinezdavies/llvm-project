@@ -11,15 +11,17 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "mlir/Dialect/Arithmetic/IR/Arithmetic.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/GPU/Transforms/Passes.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
-#include "mlir/IR/BlockAndValueMapping.h"
+#include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/IR/Builders.h"
+#include "mlir/IR/IRMapping.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Pass/Pass.h"
+#include "llvm/Support/ErrorHandling.h"
 
 using namespace mlir;
 
@@ -31,7 +33,7 @@ struct GpuAllReduceRewriter {
   GpuAllReduceRewriter(gpu::GPUFuncOp funcOp, gpu::AllReduceOp reduceOp,
                        PatternRewriter &rewriter)
       : funcOp(funcOp), reduceOp(reduceOp), rewriter(rewriter),
-        loc(reduceOp.getLoc()), valueType(reduceOp.value().getType()),
+        loc(reduceOp.getLoc()), valueType(reduceOp.getValue().getType()),
         indexType(IndexType::get(reduceOp.getContext())),
         int32Type(IntegerType::get(reduceOp.getContext(), /*width=*/32)) {}
 
@@ -100,8 +102,8 @@ struct GpuAllReduceRewriter {
     assert(accumFactory && "failed to create accumulator factory");
 
     // Reduce elements within each subgroup to produce the intermediate results.
-    Value subgroupReduce = createSubgroupReduce(activeWidth, laneId,
-                                                reduceOp.value(), accumFactory);
+    Value subgroupReduce = createSubgroupReduce(
+        activeWidth, laneId, reduceOp.getValue(), accumFactory);
 
     // Add workgroup buffer to parent function for intermediate result.
     Value buffer = createWorkgroupBuffer();
@@ -158,8 +160,8 @@ private:
   /// Adds type to funcOp's workgroup attributions.
   Value createWorkgroupBuffer() {
     // TODO: Pick a proper location for the attribution.
-    int workgroupMemoryAddressSpace =
-        gpu::GPUDialect::getWorkgroupAddressSpace();
+    auto workgroupMemoryAddressSpace = gpu::AddressSpaceAttr::get(
+        funcOp->getContext(), gpu::GPUDialect::getWorkgroupAddressSpace());
     auto bufferType = MemRefType::get({kSubgroupSize}, valueType, AffineMap{},
                                       workgroupMemoryAddressSpace);
     return funcOp.addWorkgroupAttribution(bufferType, rewriter.getUnknownLoc());
@@ -168,10 +170,10 @@ private:
   /// Returns an accumulator factory using either the op attribute or the body
   /// region.
   AccumulatorFactory getFactory() {
-    auto &body = reduceOp.body();
+    auto &body = reduceOp.getBody();
     if (!body.empty())
       return getFactory(body);
-    auto opAttr = reduceOp.op();
+    auto opAttr = reduceOp.getOp();
     if (opAttr)
       return getFactory(*opAttr);
     return AccumulatorFactory();
@@ -181,12 +183,12 @@ private:
   /// block is expected to have 2 arguments. The gpu.yield return the
   /// accumulated value of the same type.
   AccumulatorFactory getFactory(Region &body) {
-    return AccumulatorFactory([&](Value lhs, Value rhs) {
+    return [&body, this](Value lhs, Value rhs) -> Value {
       Block *block = rewriter.getInsertionBlock();
       Block *split = rewriter.splitBlock(block, rewriter.getInsertionPoint());
 
       // Insert accumulator body between split block.
-      BlockAndValueMapping mapping;
+      IRMapping mapping;
       mapping.map(body.getArgument(0), lhs);
       mapping.map(body.getArgument(1), rhs);
       rewriter.cloneRegionBefore(body, *split->getParent(),
@@ -209,56 +211,14 @@ private:
       // Return accumulator result.
       rewriter.setInsertionPointToStart(split);
       return split->addArgument(lhs.getType(), lhs.getLoc());
-    });
+    };
   }
 
   /// Returns an accumulator factory that creates an op specified by opName.
   AccumulatorFactory getFactory(gpu::AllReduceOperation opName) {
-    bool isFloatingPoint = valueType.isa<FloatType>();
-    switch (opName) {
-    case gpu::AllReduceOperation::ADD:
-      return isFloatingPoint ? getFactory<arith::AddFOp>()
-                             : getFactory<arith::AddIOp>();
-    case gpu::AllReduceOperation::MUL:
-      return isFloatingPoint ? getFactory<arith::MulFOp>()
-                             : getFactory<arith::MulIOp>();
-    case gpu::AllReduceOperation::AND:
-      return getFactory<arith::AndIOp>();
-    case gpu::AllReduceOperation::OR:
-      return getFactory<arith::OrIOp>();
-    case gpu::AllReduceOperation::XOR:
-      return getFactory<arith::XOrIOp>();
-    case gpu::AllReduceOperation::MAX:
-      return isFloatingPoint
-                 ? getCmpFactory<arith::CmpFOp, arith::CmpFPredicate,
-                                 arith::CmpFPredicate::UGT>()
-                 : getCmpFactory<arith::CmpIOp, arith::CmpIPredicate,
-                                 arith::CmpIPredicate::ugt>();
-    case gpu::AllReduceOperation::MIN:
-      return isFloatingPoint
-                 ? getCmpFactory<arith::CmpFOp, arith::CmpFPredicate,
-                                 arith::CmpFPredicate::ULT>()
-                 : getCmpFactory<arith::CmpIOp, arith::CmpIPredicate,
-                                 arith::CmpIPredicate::ult>();
-    }
-    llvm_unreachable("unknown GPU AllReduceOperation");
-  }
-
-  /// Returns an accumulator factory that creates an op of type T.
-  template <typename T>
-  AccumulatorFactory getFactory() {
-    return [&](Value lhs, Value rhs) {
-      return create<T>(lhs.getType(), lhs, rhs);
-    };
-  }
-
-  /// Returns an accumulator for comparison such as min, max. T is the type
-  /// of the compare op.
-  template <typename T, typename PredicateEnum, PredicateEnum predicate>
-  AccumulatorFactory getCmpFactory() const {
-    return [&](Value lhs, Value rhs) {
-      Value cmp = rewriter.create<T>(loc, predicate, lhs, rhs);
-      return rewriter.create<arith::SelectOp>(loc, cmp, lhs, rhs);
+    return [opName, this](Value lhs, Value rhs) {
+      return vector::makeArithReduction(rewriter, loc,
+                                        convertReductionKind(opName), lhs, rhs);
     };
   }
 
@@ -347,7 +307,7 @@ private:
                   return SmallVector<Value, 1>{
                       accumFactory(value, shuffleOp.getResult(0))};
                 },
-                [&] { return llvm::makeArrayRef(value); });
+                [&] { return llvm::ArrayRef(value); });
             value = rewriter.getInsertionBlock()->getArgument(0);
           }
           return SmallVector<Value, 1>{value};
@@ -387,26 +347,35 @@ private:
   static constexpr int kSubgroupSize = 32;
 };
 
-struct GpuAllReduceConversion : public RewritePattern {
-  explicit GpuAllReduceConversion(MLIRContext *context)
+struct GpuAllReduceRewrite : public RewritePattern {
+  explicit GpuAllReduceRewrite(MLIRContext *context)
       : RewritePattern(gpu::GPUFuncOp::getOperationName(), 1, context) {}
 
   LogicalResult matchAndRewrite(Operation *op,
                                 PatternRewriter &rewriter) const override {
     auto funcOp = cast<gpu::GPUFuncOp>(op);
-    auto callback = [&](gpu::AllReduceOp reduceOp) {
-      GpuAllReduceRewriter(funcOp, reduceOp, rewriter).rewrite();
-      // Performing a rewrite invalidates the walk iterator. Report interrupt
-      // so that we can start a new walk until all all_reduce ops are replaced.
-      return WalkResult::interrupt();
+
+    SmallVector<gpu::AllReduceOp> reduceOps;
+    auto callback = [&](gpu::AllReduceOp reduceOp) -> WalkResult {
+      if (!reduceOp.getUniform())
+        return WalkResult::interrupt();
+
+      reduceOps.emplace_back(reduceOp);
+      return WalkResult::advance();
     };
-    while (funcOp.walk(callback).wasInterrupted()) {
-    }
+
+    if (funcOp.walk(callback).wasInterrupted() || reduceOps.empty())
+      return rewriter.notifyMatchFailure(
+          op, "Non uniform reductions are not supported yet.");
+
+    for (gpu::AllReduceOp reduceOp : reduceOps)
+      GpuAllReduceRewriter(funcOp, reduceOp, rewriter).rewrite();
+
     return success();
   }
 };
 } // namespace
 
 void mlir::populateGpuAllReducePatterns(RewritePatternSet &patterns) {
-  patterns.add<GpuAllReduceConversion>(patterns.getContext());
+  patterns.add<GpuAllReduceRewrite>(patterns.getContext());
 }

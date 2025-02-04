@@ -23,30 +23,67 @@
 
 include "mlir/Dialect/SPIRV/IR/SPIRVBase.td"
 
-class SPV_Attr<string attrName, string attrMnemonic>
+class SPIRV_Attr<string attrName, string attrMnemonic>
     : AttrDef<SPIRV_Dialect, attrName> {
   let mnemonic = attrMnemonic;
 }
 
 // For entry functions, this attribute specifies information related to entry
 // points in the generated SPIR-V module:
-// 1) WorkGroup Size.
-def SPV_EntryPointABIAttr : SPV_Attr<"EntryPointABI", "entry_point_abi"> {
-  let parameters = (ins OptionalParameter<"DenseIntElementsAttr">:$local_size);
+// 1) [optional] Requested workgroup size.
+// 2) [optional] Requested subgroup size.
+// 3) [optional] Requested target width.
+def SPIRV_EntryPointABIAttr : SPIRV_Attr<"EntryPointABI", "entry_point_abi"> {
+  let parameters = (ins
+    OptionalParameter<"DenseI32ArrayAttr">:$workgroup_size,
+    OptionalParameter<"std::optional<int>">:$subgroup_size,
+    OptionalParameter<"std::optional<int>">:$target_width
+  );
   let assemblyFormat = "`<` struct(params) `>`";
 }
 
-def SPV_ExtensionArrayAttr : TypedArrayAttrBase<
-    SPV_ExtensionAttr, "SPIR-V extension array attribute">;
+def SPIRV_ExtensionArrayAttr : TypedArrayAttrBase<
+    SPIRV_ExtensionAttr, "SPIR-V extension array attribute">;
 
-def SPV_CapabilityArrayAttr : TypedArrayAttrBase<
-    SPV_CapabilityAttr, "SPIR-V capability array attribute">;
+def SPIRV_CapabilityArrayAttr : TypedArrayAttrBase<
+    SPIRV_CapabilityAttr, "SPIR-V capability array attribute">;
+
+def SPIRV_LinkageAttributesAttr : SPIRV_Attr<"LinkageAttributes", "linkage_attributes"> {
+  let parameters = (ins
+    "StringAttr":$linkage_name,
+    "mlir::spirv::LinkageTypeAttr":$linkage_type
+  );
+  let assemblyFormat = "`<` struct(params) `>`";
+}
+
+// Description of cooperative matrix operations supported on the
+// target. Represents `VkCooperativeMatrixPropertiesKHR`. See
+// https://registry.khronos.org/vulkan/specs/1.3-extensions/man/html/VkCooperativeMatrixPropertiesKHR.html
+def SPIRV_CooperativeMatrixPropertiesKHRAttr :
+    SPIRV_Attr<"CooperativeMatrixPropertiesKHR", "coop_matrix_props_khr"> {
+  let parameters = (ins
+    "uint32_t":$m_size,
+    "uint32_t":$n_size,
+    "uint32_t":$k_size,
+    "mlir::Type":$a_type,
+    "mlir::Type":$b_type,
+    "mlir::Type":$c_type,
+    "mlir::Type":$result_type,
+    "bool":$acc_sat,
+    "mlir::spirv::ScopeAttr":$scope
+  );
+  let assemblyFormat = "`<` struct(params) `>`";
+}
+
+def SPIRV_CooperativeMatrixPropertiesKHRArrayAttr :
+    TypedArrayAttrBase<SPIRV_CooperativeMatrixPropertiesKHRAttr,
+                       "CooperativeMatrixPropertiesKHR array attribute">;
 
 // Description of cooperative matrix operations supported on the
 // target. Represents `VkCooperativeMatrixPropertiesNV`. See
 // https://www.khronos.org/registry/vulkan/specs/1.2-extensions/man/html/VkCooperativeMatrixPropertiesNV.html
-def SPV_CooperativeMatrixPropertiesNVAttr :
-    SPV_Attr<"CooperativeMatrixPropertiesNV", "coop_matrix_props"> {
+def SPIRV_CooperativeMatrixPropertiesNVAttr :
+    SPIRV_Attr<"CooperativeMatrixPropertiesNV", "coop_matrix_props_nv"> {
   let parameters = (ins
     "int":$m_size,
     "int":$n_size,
@@ -60,30 +97,23 @@ def SPV_CooperativeMatrixPropertiesNVAttr :
   let assemblyFormat = "`<` struct(params) `>`";
 }
 
-def SPV_CooperativeMatrixPropertiesNVArrayAttr :
-    TypedArrayAttrBase<SPV_CooperativeMatrixPropertiesNVAttr,
+def SPIRV_CacheControlLoadINTELAttr :
+    SPIRV_Attr<"CacheControlLoadINTEL", "cache_control_load_intel"> {
+  let parameters = (ins "unsigned":$cache_level,
+                        "mlir::spirv::LoadCacheControl":$load_cache_control);
+  let assemblyFormat = "`<` struct(params) `>`";
+}
+
+def SPIRV_CacheControlStoreINTELAttr :
+    SPIRV_Attr<"CacheControlStoreINTEL", "cache_control_store_intel"> {
+  let parameters = (ins "unsigned":$cache_level,
+                        "mlir::spirv::StoreCacheControl":$store_cache_control);
+  let assemblyFormat = "`<` struct(params) `>`";
+}
+
+def SPIRV_CooperativeMatrixPropertiesNVArrayAttr :
+    TypedArrayAttrBase<SPIRV_CooperativeMatrixPropertiesNVAttr,
                        "CooperativeMatrixPropertiesNV array attribute">;
-
-// Description of the supported joint matrix operations. See
-// https://github.com/intel/llvm/blob/sycl/sycl/doc/design/spirv-extensions/SPV_INTEL_joint_matrix.asciidoc
-def SPV_JointMatrixPropertiesINTELAttr :
-    SPV_Attr<"JointMatrixPropertiesINTEL", "joint_matrix_props"> {
-  let parameters = (ins
-    "int":$m_size,
-    "int":$n_size,
-    "int":$k_size,
-    "mlir::Type":$a_type,
-    "mlir::Type":$b_type,
-    "mlir::Type":$c_type,
-    "mlir::Type":$result_type,
-    "mlir::spirv::ScopeAttr":$scope
-  );
-  let assemblyFormat = "`<` struct(params) `>`";
-}
-
-def SPV_JointMatrixPropertiesINTELArrayAttr :
-    TypedArrayAttrBase<SPV_JointMatrixPropertiesINTELAttr,
-                       "JointMatrixPropertiesINTEL array attribute">;
 
 // This attribute specifies the limits for various resources on the target
 // architecture.
@@ -93,7 +123,7 @@ def SPV_JointMatrixPropertiesINTELArrayAttr :
 // The following ones are those affecting SPIR-V CodeGen. Their default value
 // are the from Vulkan limit requirements:
 // https://www.khronos.org/registry/vulkan/specs/1.2-extensions/html/vkspec.html#limits-minmax
-def SPV_ResourceLimitsAttr : SPV_Attr<"ResourceLimits", "resource_limits"> {
+def SPIRV_ResourceLimitsAttr : SPIRV_Attr<"ResourceLimits", "resource_limits"> {
   let parameters = (ins
     // The maximum total storage size, in bytes, available for variables
     // declared with the Workgroup storage class.
@@ -111,8 +141,18 @@ def SPV_ResourceLimitsAttr : SPV_Attr<"ResourceLimits", "resource_limits"> {
     // The default number of invocations in each subgroup.
     DefaultValuedParameter<"int", "32">:$subgroup_size,
 
+    // The minimum supported size if the subgroup size is controllable.
+    OptionalParameter<"std::optional<int>">:$min_subgroup_size,
+    // The maximum supported size if the subgroup size is controllable.
+    OptionalParameter<"std::optional<int>">:$max_subgroup_size,
+
     // The configurations of cooperative matrix operations
     // supported. Default is an empty list.
+    DefaultValuedParameter<
+      "ArrayAttr",
+      "nullptr"
+    >:$cooperative_matrix_properties_khr,
+
     DefaultValuedParameter<
       "ArrayAttr",
       "nullptr"

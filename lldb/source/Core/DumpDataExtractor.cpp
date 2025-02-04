@@ -30,7 +30,6 @@
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/ArrayRef.h"
-#include "llvm/ADT/Optional.h"
 #include "llvm/ADT/SmallVector.h"
 
 #include <limits>
@@ -43,6 +42,7 @@
 #include <cmath>
 
 #include <bitset>
+#include <optional>
 #include <sstream>
 
 using namespace lldb_private;
@@ -50,11 +50,11 @@ using namespace lldb;
 
 #define NON_PRINTABLE_CHAR '.'
 
-static llvm::Optional<llvm::APInt> GetAPInt(const DataExtractor &data,
-                                            lldb::offset_t *offset_ptr,
-                                            lldb::offset_t byte_size) {
+static std::optional<llvm::APInt> GetAPInt(const DataExtractor &data,
+                                           lldb::offset_t *offset_ptr,
+                                           lldb::offset_t byte_size) {
   if (byte_size == 0)
-    return llvm::None;
+    return std::nullopt;
 
   llvm::SmallVector<uint64_t, 2> uint64_array;
   lldb::offset_t bytes_left = byte_size;
@@ -92,15 +92,15 @@ static llvm::Optional<llvm::APInt> GetAPInt(const DataExtractor &data,
     *offset_ptr += byte_size;
     return llvm::APInt(byte_size * 8, llvm::ArrayRef<uint64_t>(uint64_array));
   }
-  return llvm::None;
+  return std::nullopt;
 }
 
 static lldb::offset_t DumpAPInt(Stream *s, const DataExtractor &data,
                                 lldb::offset_t offset, lldb::offset_t byte_size,
                                 bool is_signed, unsigned radix) {
-  llvm::Optional<llvm::APInt> apint = GetAPInt(data, &offset, byte_size);
+  std::optional<llvm::APInt> apint = GetAPInt(data, &offset, byte_size);
   if (apint) {
-    std::string apint_str = toString(apint.value(), radix, is_signed);
+    std::string apint_str = toString(*apint, radix, is_signed);
     switch (radix) {
     case 2:
       s->Write("0b", 2);
@@ -128,17 +128,18 @@ static lldb::offset_t DumpInstructions(const DataExtractor &DE, Stream *s,
   if (exe_scope)
     target_sp = exe_scope->CalculateTarget();
   if (target_sp) {
-    DisassemblerSP disassembler_sp(
-        Disassembler::FindPlugin(target_sp->GetArchitecture(),
-                                 target_sp->GetDisassemblyFlavor(), nullptr));
+    DisassemblerSP disassembler_sp(Disassembler::FindPlugin(
+        target_sp->GetArchitecture(), target_sp->GetDisassemblyFlavor(),
+        target_sp->GetDisassemblyCPU(), target_sp->GetDisassemblyFeatures(),
+        nullptr));
     if (disassembler_sp) {
       lldb::addr_t addr = base_addr + start_offset;
       lldb_private::Address so_addr;
       bool data_from_file = true;
-      if (target_sp->GetSectionLoadList().ResolveLoadAddress(addr, so_addr)) {
+      if (target_sp->ResolveLoadAddress(addr, so_addr)) {
         data_from_file = false;
       } else {
-        if (target_sp->GetSectionLoadList().IsEmpty() ||
+        if (!target_sp->HasLoadedSections() ||
             !target_sp->GetImages().ResolveFileAddress(addr, so_addr))
           so_addr.SetRawAddress(addr);
       }
@@ -150,8 +151,8 @@ static lldb::offset_t DumpInstructions(const DataExtractor &DE, Stream *s,
       if (bytes_consumed) {
         offset += bytes_consumed;
         const bool show_address = base_addr != LLDB_INVALID_ADDRESS;
-        const bool show_bytes = true;
-        const bool show_control_flow_kind = true;
+        const bool show_bytes = false;
+        const bool show_control_flow_kind = false;
         ExecutionContext exe_ctx;
         exe_scope->CalculateExecutionContext(exe_ctx);
         disassembler_sp->GetInstructionList().Dump(
@@ -212,7 +213,7 @@ static void DumpCharacter(Stream &s, const char c) {
     s.PutChar(c);
     return;
   }
-  s.Printf("\\x%2.2x", c);
+  s.Printf("\\x%2.2hhx", c);
 }
 
 /// Dump a floating point type.
@@ -238,27 +239,27 @@ void DumpFloatingPoint(std::ostringstream &ss, FloatT f) {
   ss << f;
 }
 
-static llvm::Optional<MemoryTagMap>
+static std::optional<MemoryTagMap>
 GetMemoryTags(lldb::addr_t addr, size_t length,
               ExecutionContextScope *exe_scope) {
   assert(addr != LLDB_INVALID_ADDRESS);
 
   if (!exe_scope)
-    return llvm::None;
+    return std::nullopt;
 
   TargetSP target_sp = exe_scope->CalculateTarget();
   if (!target_sp)
-    return llvm::None;
+    return std::nullopt;
 
   ProcessSP process_sp = target_sp->CalculateProcess();
   if (!process_sp)
-    return llvm::None;
+    return std::nullopt;
 
   llvm::Expected<const MemoryTagManager *> tag_manager_or_err =
       process_sp->GetMemoryTagManager();
   if (!tag_manager_or_err) {
     llvm::consumeError(tag_manager_or_err.takeError());
-    return llvm::None;
+    return std::nullopt;
   }
 
   MemoryRegionInfos memory_regions;
@@ -272,10 +273,10 @@ GetMemoryTags(lldb::addr_t addr, size_t length,
   // for an error.
   if (!tagged_ranges_or_err) {
     llvm::consumeError(tagged_ranges_or_err.takeError());
-    return llvm::None;
+    return std::nullopt;
   }
   if (tagged_ranges_or_err->empty())
-    return llvm::None;
+    return std::nullopt;
 
   MemoryTagMap memory_tag_map(*tag_manager_or_err);
   for (const MemoryTagManager::TagRange &range : *tagged_ranges_or_err) {
@@ -289,16 +290,15 @@ GetMemoryTags(lldb::addr_t addr, size_t length,
   }
 
   if (memory_tag_map.Empty())
-    return llvm::None;
+    return std::nullopt;
 
   return memory_tag_map;
 }
 
-static void
-printMemoryTags(const DataExtractor &DE, Stream *s, lldb::addr_t addr,
-                size_t len,
-                const llvm::Optional<MemoryTagMap> &memory_tag_map) {
-  std::vector<llvm::Optional<lldb::addr_t>> tags =
+static void printMemoryTags(const DataExtractor &DE, Stream *s,
+                            lldb::addr_t addr, size_t len,
+                            const std::optional<MemoryTagMap> &memory_tag_map) {
+  std::vector<std::optional<lldb::addr_t>> tags =
       memory_tag_map->GetTags(addr, len);
 
   // Only print if there is at least one tag for this line
@@ -320,11 +320,12 @@ printMemoryTags(const DataExtractor &DE, Stream *s, lldb::addr_t addr,
 static const llvm::fltSemantics &GetFloatSemantics(const TargetSP &target_sp,
                                                    size_t byte_size) {
   if (target_sp) {
-    if (auto type_system_or_err =
-            target_sp->GetScratchTypeSystemForLanguage(eLanguageTypeC))
-      return type_system_or_err->GetFloatTypeSemantics(byte_size);
-    else
+    auto type_system_or_err =
+      target_sp->GetScratchTypeSystemForLanguage(eLanguageTypeC);
+    if (!type_system_or_err)
       llvm::consumeError(type_system_or_err.takeError());
+    else if (auto ts = *type_system_or_err)
+      return ts->GetFloatTypeSemantics(byte_size);
   }
   // No target, just make a reasonable guess
   switch(byte_size) {
@@ -357,7 +358,7 @@ lldb::offset_t lldb_private::DumpDataExtractor(
 
   offset_t offset = start_offset;
 
-  llvm::Optional<MemoryTagMap> memory_tag_map;
+  std::optional<MemoryTagMap> memory_tag_map;
   if (show_memory_tags && base_addr != LLDB_INVALID_ADDRESS)
     memory_tag_map =
         GetMemoryTags(base_addr, DE.GetByteSize() - offset, exe_scope);
@@ -620,10 +621,17 @@ lldb::offset_t lldb_private::DumpDataExtractor(
       case 2:
       case 4:
       case 8:
-        s->Printf(wantsuppercase ? "0x%*.*" PRIX64 : "0x%*.*" PRIx64,
-                  (int)(2 * item_byte_size), (int)(2 * item_byte_size),
-                  DE.GetMaxU64Bitfield(&offset, item_byte_size, item_bit_size,
-                                       item_bit_offset));
+        if (Target::GetGlobalProperties()
+                .ShowHexVariableValuesWithLeadingZeroes()) {
+          s->Printf(wantsuppercase ? "0x%*.*" PRIX64 : "0x%*.*" PRIx64,
+                    (int)(2 * item_byte_size), (int)(2 * item_byte_size),
+                    DE.GetMaxU64Bitfield(&offset, item_byte_size, item_bit_size,
+                                         item_bit_offset));
+        } else {
+          s->Printf(wantsuppercase ? "0x%" PRIX64 : "0x%" PRIx64,
+                    DE.GetMaxU64Bitfield(&offset, item_byte_size, item_bit_size,
+                                         item_bit_offset));
+        }
         break;
       default: {
         assert(item_bit_size == 0 && item_bit_offset == 0);
@@ -650,7 +658,7 @@ lldb::offset_t lldb_private::DumpDataExtractor(
       if (exe_scope)
         target_sp = exe_scope->CalculateTarget();
 
-      llvm::Optional<unsigned> format_max_padding;
+      std::optional<unsigned> format_max_padding;
       if (target_sp)
         format_max_padding = target_sp->GetMaxZeroPaddingInFloatFormat();
 
@@ -665,10 +673,10 @@ lldb::offset_t lldb_private::DumpDataExtractor(
       // x87DoubleExtended semantics which has a byte size of 10 (80-bit).
       const size_t semantics_byte_size =
           (llvm::APFloat::getSizeInBits(semantics) + 7) / 8;
-      llvm::Optional<llvm::APInt> apint =
+      std::optional<llvm::APInt> apint =
           GetAPInt(DE, &offset, semantics_byte_size);
       if (apint) {
-        llvm::APFloat apfloat(semantics, apint.value());
+        llvm::APFloat apfloat(semantics, *apint);
         llvm::SmallVector<char, 256> sv;
         if (format_max_padding)
           apfloat.toString(sv, format_precision, *format_max_padding);
@@ -699,8 +707,7 @@ lldb::offset_t lldb_private::DumpDataExtractor(
         TargetSP target_sp(exe_scope->CalculateTarget());
         lldb_private::Address so_addr;
         if (target_sp) {
-          if (target_sp->GetSectionLoadList().ResolveLoadAddress(addr,
-                                                                 so_addr)) {
+          if (target_sp->ResolveLoadAddress(addr, so_addr)) {
             s->PutChar(' ');
             so_addr.Dump(s, exe_scope, Address::DumpStyleResolvedDescription,
                          Address::DumpStyleModuleWithFileAddress);
@@ -711,8 +718,7 @@ lldb::offset_t lldb_private::DumpDataExtractor(
             if (ProcessSP process_sp = exe_scope->CalculateProcess()) {
               if (ABISP abi_sp = process_sp->GetABI()) {
                 addr_t addr_fixed = abi_sp->FixCodeAddress(addr);
-                if (target_sp->GetSectionLoadList().ResolveLoadAddress(
-                        addr_fixed, so_addr)) {
+                if (target_sp->ResolveLoadAddress(addr_fixed, so_addr)) {
                   s->PutChar(' ');
                   s->Printf("(0x%*.*" PRIx64 ")", (int)(2 * item_byte_size),
                             (int)(2 * item_byte_size), addr_fixed);

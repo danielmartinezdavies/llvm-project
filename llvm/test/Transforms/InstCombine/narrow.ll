@@ -37,7 +37,7 @@ define i32 @shrink_xor(i64 %a) {
 define <2 x i32> @shrink_xor_vec(<2 x i64> %a) {
 ; CHECK-LABEL: @shrink_xor_vec(
 ; CHECK-NEXT:    [[TMP1:%.*]] = trunc <2 x i64> [[A:%.*]] to <2 x i32>
-; CHECK-NEXT:    [[TRUNC:%.*]] = xor <2 x i32> [[TMP1]], <i32 2, i32 2>
+; CHECK-NEXT:    [[TRUNC:%.*]] = xor <2 x i32> [[TMP1]], splat (i32 2)
 ; CHECK-NEXT:    ret <2 x i32> [[TRUNC]]
 ;
   %xor = xor <2 x i64> %a, <i64 2, i64 2>
@@ -76,7 +76,7 @@ define <2 x i8> @shrink_or_vec(<2 x i16> %a) {
 define i31 @shrink_and(i64 %a) {
 ; CHECK-LABEL: @shrink_and(
 ; CHECK-NEXT:    [[AND:%.*]] = and i64 [[A:%.*]], 42
-; CHECK-NEXT:    [[TRUNC:%.*]] = trunc i64 [[AND]] to i31
+; CHECK-NEXT:    [[TRUNC:%.*]] = trunc nuw nsw i64 [[AND]] to i31
 ; CHECK-NEXT:    ret i31 [[TRUNC]]
 ;
   %and = and i64 %a, 42
@@ -101,7 +101,7 @@ define <2 x i32> @shrink_and_vec(<2 x i33> %a) {
 ; This is based on an 'any_of' loop construct.
 ; By narrowing the phi and logic op, we simplify away the zext and the final icmp.
 
-define i1 @searchArray1(i32 %needle, i32* %haystack) {
+define i1 @searchArray1(i32 %needle, ptr %haystack) {
 ; CHECK-LABEL: @searchArray1(
 ; CHECK-NEXT:  entry:
 ; CHECK-NEXT:    br label [[LOOP:%.*]]
@@ -109,8 +109,8 @@ define i1 @searchArray1(i32 %needle, i32* %haystack) {
 ; CHECK-NEXT:    [[INDVAR:%.*]] = phi i32 [ 0, [[ENTRY:%.*]] ], [ [[INDVAR_NEXT:%.*]], [[LOOP]] ]
 ; CHECK-NEXT:    [[FOUND:%.*]] = phi i8 [ 0, [[ENTRY]] ], [ [[OR:%.*]], [[LOOP]] ]
 ; CHECK-NEXT:    [[TMP0:%.*]] = sext i32 [[INDVAR]] to i64
-; CHECK-NEXT:    [[IDX:%.*]] = getelementptr i32, i32* [[HAYSTACK:%.*]], i64 [[TMP0]]
-; CHECK-NEXT:    [[LD:%.*]] = load i32, i32* [[IDX]], align 4
+; CHECK-NEXT:    [[IDX:%.*]] = getelementptr i32, ptr [[HAYSTACK:%.*]], i64 [[TMP0]]
+; CHECK-NEXT:    [[LD:%.*]] = load i32, ptr [[IDX]], align 4
 ; CHECK-NEXT:    [[CMP1:%.*]] = icmp eq i32 [[LD]], [[NEEDLE:%.*]]
 ; CHECK-NEXT:    [[ZEXT:%.*]] = zext i1 [[CMP1]] to i8
 ; CHECK-NEXT:    [[OR]] = or i8 [[FOUND]], [[ZEXT]]
@@ -127,8 +127,8 @@ entry:
 loop:
   %indvar = phi i32 [ 0, %entry ], [ %indvar.next, %loop ]
   %found = phi i8 [ 0, %entry ], [ %or, %loop ]
-  %idx = getelementptr i32, i32* %haystack, i32 %indvar
-  %ld = load i32, i32* %idx
+  %idx = getelementptr i32, ptr %haystack, i32 %indvar
+  %ld = load i32, ptr %idx
   %cmp1 = icmp eq i32 %ld, %needle
   %zext = zext i1 %cmp1 to i8
   %or = or i8 %found, %zext
@@ -145,18 +145,17 @@ exit:
 ; This is based on an 'all_of' loop construct.
 ; By narrowing the phi and logic op, we simplify away the zext and the final icmp.
 
-define i1 @searchArray2(i32 %hay, i32* %haystack) {
+define i1 @searchArray2(i32 %hay, ptr %haystack) {
 ; CHECK-LABEL: @searchArray2(
 ; CHECK-NEXT:  entry:
 ; CHECK-NEXT:    br label [[LOOP:%.*]]
 ; CHECK:       loop:
 ; CHECK-NEXT:    [[INDVAR:%.*]] = phi i64 [ 0, [[ENTRY:%.*]] ], [ [[INDVAR_NEXT:%.*]], [[LOOP]] ]
 ; CHECK-NEXT:    [[FOUND:%.*]] = phi i8 [ 1, [[ENTRY]] ], [ [[AND:%.*]], [[LOOP]] ]
-; CHECK-NEXT:    [[IDX:%.*]] = getelementptr i32, i32* [[HAYSTACK:%.*]], i64 [[INDVAR]]
-; CHECK-NEXT:    [[LD:%.*]] = load i32, i32* [[IDX]], align 4
+; CHECK-NEXT:    [[IDX:%.*]] = getelementptr i32, ptr [[HAYSTACK:%.*]], i64 [[INDVAR]]
+; CHECK-NEXT:    [[LD:%.*]] = load i32, ptr [[IDX]], align 4
 ; CHECK-NEXT:    [[CMP1:%.*]] = icmp eq i32 [[LD]], [[HAY:%.*]]
-; CHECK-NEXT:    [[ZEXT:%.*]] = zext i1 [[CMP1]] to i8
-; CHECK-NEXT:    [[AND]] = and i8 [[FOUND]], [[ZEXT]]
+; CHECK-NEXT:    [[AND]] = select i1 [[CMP1]], i8 [[FOUND]], i8 0
 ; CHECK-NEXT:    [[INDVAR_NEXT]] = add i64 [[INDVAR]], 1
 ; CHECK-NEXT:    [[EXITCOND:%.*]] = icmp eq i64 [[INDVAR_NEXT]], 1000
 ; CHECK-NEXT:    br i1 [[EXITCOND]], label [[EXIT:%.*]], label [[LOOP]]
@@ -170,8 +169,8 @@ entry:
 loop:
   %indvar = phi i64 [ 0, %entry ], [ %indvar.next, %loop ]
   %found = phi i8 [ 1, %entry ], [ %and, %loop ]
-  %idx = getelementptr i32, i32* %haystack, i64 %indvar
-  %ld = load i32, i32* %idx
+  %idx = getelementptr i32, ptr %haystack, i64 %indvar
+  %ld = load i32, ptr %idx
   %cmp1 = icmp eq i32 %ld, %hay
   %zext = zext i1 %cmp1 to i8
   %and = and i8 %found, %zext

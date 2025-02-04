@@ -72,7 +72,7 @@ public:
     Res.Ctx =
         std::make_unique<MCContext>(Triple(TripleName), MAI.get(), MRI.get(),
                                     /*MSTI=*/nullptr);
-    Res.MOFI.reset(TheTarget->createMCObjectFileInfo(*Res.Ctx.get(),
+    Res.MOFI.reset(TheTarget->createMCObjectFileInfo(*Res.Ctx,
                                                      /*PIC=*/false));
     Res.Ctx->setObjectFileInfo(Res.MOFI.get());
 
@@ -83,10 +83,7 @@ public:
     std::unique_ptr<MCObjectWriter> OW = MAB->createObjectWriter(OS);
     Res.Streamer.reset(TheTarget->createMCObjectStreamer(
         Triple(TripleName), *Res.Ctx, std::unique_ptr<MCAsmBackend>(MAB),
-        std::move(OW), std::unique_ptr<MCCodeEmitter>(MCE), *STI,
-        /* RelaxAll */ false,
-        /* IncrementalLinkerCompatible */ false,
-        /* DWARFMustBeAtTheEnd */ false));
+        std::move(OW), std::unique_ptr<MCCodeEmitter>(MCE), *STI));
     return Res;
   }
 
@@ -118,10 +115,10 @@ public:
     TheStreamer->switchSection(C.MOFI->getDwarfLineSection());
     MCDwarfLineTableHeader Header;
     MCDwarfLineTableParams Params = Assembler.getDWARFLinetableParams();
-    Optional<MCDwarfLineStr> LineStr(None);
+    std::optional<MCDwarfLineStr> LineStr(std::nullopt);
     if (Ctx.getDwarfVersion() >= 5) {
       LineStr.emplace(Ctx);
-      Header.setRootFile("dir", "file", None, None);
+      Header.setRootFile("dir", "file", std::nullopt, std::nullopt);
     }
     MCSymbol *LineEndSym = Header.Emit(TheStreamer, Params, LineStr).second;
 
@@ -172,8 +169,8 @@ public:
       Expected<StringRef> ContentsOrErr = Section.getContents();
       ASSERT_TRUE(static_cast<bool>(ContentsOrErr));
       StringRef Contents = *ContentsOrErr;
-      ASSERT_TRUE(Contents.find("dir") != StringRef::npos);
-      ASSERT_TRUE(Contents.find("file") != StringRef::npos);
+      ASSERT_TRUE(Contents.contains("dir"));
+      ASSERT_TRUE(Contents.contains("file"));
       ASSERT_TRUE(Contents.size() == 9);
       return;
     }
@@ -200,7 +197,7 @@ public:
 
 TEST_F(DwarfLineTableHeaders, TestDWARF4HeaderEmission) {
   if (!MRI)
-    return;
+    GTEST_SKIP();
 
   SmallString<0> EmittedBinContents;
   raw_svector_ostream VecOS(EmittedBinContents);
@@ -224,7 +221,7 @@ TEST_F(DwarfLineTableHeaders, TestDWARF4HeaderEmission) {
 
 TEST_F(DwarfLineTableHeaders, TestDWARF5HeaderEmission) {
   if (!MRI)
-    return;
+    GTEST_SKIP();
 
   SmallString<0> EmittedBinContents;
   raw_svector_ostream VecOS(EmittedBinContents);

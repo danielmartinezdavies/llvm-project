@@ -80,14 +80,13 @@ private:
   SDValue lowerStructBufferAtomicIntrin(SDValue Op, SelectionDAG &DAG,
                                         unsigned NewOpcode) const;
 
+  SDValue lowerWaveID(SelectionDAG &DAG, SDValue Op) const;
   SDValue lowerWorkitemID(SelectionDAG &DAG, SDValue Op, unsigned Dim,
                           const ArgDescriptor &ArgDesc) const;
 
   SDValue LowerINTRINSIC_WO_CHAIN(SDValue Op, SelectionDAG &DAG) const;
   SDValue LowerINTRINSIC_W_CHAIN(SDValue Op, SelectionDAG &DAG) const;
   SDValue LowerINTRINSIC_VOID(SDValue Op, SelectionDAG &DAG) const;
-
-  SDValue makeV_ILLEGAL(SDValue Op, SelectionDAG &DAG) const;
 
   // The raw.tbuffer and struct.tbuffer intrinsics have two offset args: offset
   // (the offset that is included in bounds checking and swizzling, to be split
@@ -108,8 +107,12 @@ private:
   SDValue LowerFDIV32(SDValue Op, SelectionDAG &DAG) const;
   SDValue LowerFDIV64(SDValue Op, SelectionDAG &DAG) const;
   SDValue LowerFDIV(SDValue Op, SelectionDAG &DAG) const;
+  SDValue LowerFFREXP(SDValue Op, SelectionDAG &DAG) const;
   SDValue LowerSTORE(SDValue Op, SelectionDAG &DAG) const;
   SDValue LowerTrig(SDValue Op, SelectionDAG &DAG) const;
+  SDValue lowerFSQRTF16(SDValue Op, SelectionDAG &DAG) const;
+  SDValue lowerFSQRTF32(SDValue Op, SelectionDAG &DAG) const;
+  SDValue lowerFSQRTF64(SDValue Op, SelectionDAG &DAG) const;
   SDValue LowerATOMIC_CMP_SWAP(SDValue Op, SelectionDAG &DAG) const;
   SDValue LowerBRCOND(SDValue Op, SelectionDAG &DAG) const;
   SDValue LowerRETURNADDR(SDValue Op, SelectionDAG &DAG) const;
@@ -143,6 +146,9 @@ private:
   /// Custom lowering for ISD::FP_ROUND for MVT::f16.
   SDValue lowerFP_ROUND(SDValue Op, SelectionDAG &DAG) const;
   SDValue lowerFMINNUM_FMAXNUM(SDValue Op, SelectionDAG &DAG) const;
+  SDValue lowerFLDEXP(SDValue Op, SelectionDAG &DAG) const;
+  SDValue promoteUniformOpToI32(SDValue Op, DAGCombinerInfo &DCI) const;
+  SDValue lowerMUL(SDValue Op, SelectionDAG &DAG) const;
   SDValue lowerXMULO(SDValue Op, SelectionDAG &DAG) const;
   SDValue lowerXMUL_LOHI(SDValue Op, SelectionDAG &DAG) const;
 
@@ -167,6 +173,8 @@ private:
 
   SDValue performUCharToFloatCombine(SDNode *N,
                                      DAGCombinerInfo &DCI) const;
+  SDValue performFCopySignCombine(SDNode *N, DAGCombinerInfo &DCI) const;
+
   SDValue performSHLPtrCombine(SDNode *N,
                                unsigned AS,
                                EVT MemVT,
@@ -191,29 +199,35 @@ private:
   SDValue performFPMed3ImmCombine(SelectionDAG &DAG, const SDLoc &SL,
                                   SDValue Op0, SDValue Op1) const;
   SDValue performIntMed3ImmCombine(SelectionDAG &DAG, const SDLoc &SL,
-                                   SDValue Op0, SDValue Op1, bool Signed) const;
+                                   SDValue Src, SDValue MinVal, SDValue MaxVal,
+                                   bool Signed) const;
   SDValue performMinMaxCombine(SDNode *N, DAGCombinerInfo &DCI) const;
   SDValue performFMed3Combine(SDNode *N, DAGCombinerInfo &DCI) const;
   SDValue performCvtPkRTZCombine(SDNode *N, DAGCombinerInfo &DCI) const;
   SDValue performExtractVectorEltCombine(SDNode *N, DAGCombinerInfo &DCI) const;
   SDValue performInsertVectorEltCombine(SDNode *N, DAGCombinerInfo &DCI) const;
+  SDValue performFPRoundCombine(SDNode *N, DAGCombinerInfo &DCI) const;
 
   SDValue reassociateScalarOps(SDNode *N, SelectionDAG &DAG) const;
   unsigned getFusedOpcode(const SelectionDAG &DAG,
                           const SDNode *N0, const SDNode *N1) const;
   SDValue tryFoldToMad64_32(SDNode *N, DAGCombinerInfo &DCI) const;
+  SDValue foldAddSub64WithZeroLowBitsTo32(SDNode *N,
+                                          DAGCombinerInfo &DCI) const;
+
   SDValue performAddCombine(SDNode *N, DAGCombinerInfo &DCI) const;
   SDValue performAddCarrySubCarryCombine(SDNode *N, DAGCombinerInfo &DCI) const;
   SDValue performSubCombine(SDNode *N, DAGCombinerInfo &DCI) const;
   SDValue performFAddCombine(SDNode *N, DAGCombinerInfo &DCI) const;
   SDValue performFSubCombine(SDNode *N, DAGCombinerInfo &DCI) const;
+  SDValue performFDivCombine(SDNode *N, DAGCombinerInfo &DCI) const;
+  SDValue performFMulCombine(SDNode *N, DAGCombinerInfo &DCI) const;
   SDValue performFMACombine(SDNode *N, DAGCombinerInfo &DCI) const;
   SDValue performSetCCCombine(SDNode *N, DAGCombinerInfo &DCI) const;
   SDValue performCvtF32UByteNCombine(SDNode *N, DAGCombinerInfo &DCI) const;
   SDValue performClampCombine(SDNode *N, DAGCombinerInfo &DCI) const;
   SDValue performRcpCombine(SDNode *N, DAGCombinerInfo &DCI) const;
 
-  bool isLegalFlatAddressingMode(const AddrMode &AM) const;
   bool isLegalMUBUFAddressingMode(const AddrMode &AM) const;
 
   unsigned isCFIntrinsic(const SDNode *Intr) const;
@@ -244,15 +258,28 @@ public:
   bool shouldExpandVectorDynExt(SDNode *N) const;
 
 private:
-  // Analyze a combined offset from an amdgcn_buffer_ intrinsic and store the
-  // three offsets (voffset, soffset and instoffset) into the SDValue[3] array
-  // pointed to by Offsets.
+  // Analyze a combined offset from an amdgcn_s_buffer_load intrinsic and store
+  // the three offsets (voffset, soffset and instoffset) into the SDValue[3]
+  // array pointed to by Offsets.
   void setBufferOffsets(SDValue CombinedOffset, SelectionDAG &DAG,
                         SDValue *Offsets, Align Alignment = Align(4)) const;
 
+  // Convert the i128 that an addrspace(8) pointer is natively represented as
+  // into the v4i32 that all the buffer intrinsics expect to receive. We can't
+  // add register classes for i128 on pain of the promotion logic going haywire,
+  // so this slightly ugly hack is what we've got. If passed a non-pointer
+  // argument (as would be seen in older buffer intrinsics), does nothing.
+  SDValue bufferRsrcPtrToVector(SDValue MaybePointer, SelectionDAG &DAG) const;
+
+  // Wrap a 64-bit pointer into a v4i32 (which is how all SelectionDAG code
+  // represents ptr addrspace(8)) using the flags specified in the intrinsic.
+  SDValue lowerPointerAsRsrcIntrin(SDNode *Op, SelectionDAG &DAG) const;
+
   // Handle 8 bit and 16 bit buffer loads
   SDValue handleByteShortBufferLoads(SelectionDAG &DAG, EVT LoadVT, SDLoc DL,
-                                     ArrayRef<SDValue> Ops, MemSDNode *M) const;
+                                     ArrayRef<SDValue> Ops,
+                                     MachineMemOperand *MMO,
+                                     bool IsTFE = false) const;
 
   // Handle 8 bit and 16 bit buffer stores
   SDValue handleByteShortBufferStores(SelectionDAG &DAG, EVT VDataType,
@@ -264,6 +291,8 @@ public:
 
   const GCNSubtarget *getSubtarget() const;
 
+  ArrayRef<MCPhysReg> getRoundingControlRegisters() const override;
+
   bool isFPExtFoldable(const SelectionDAG &DAG, unsigned Opcode, EVT DestVT,
                        EVT SrcVT) const override;
 
@@ -272,14 +301,25 @@ public:
 
   bool isShuffleMaskLegal(ArrayRef<int> /*Mask*/, EVT /*VT*/) const override;
 
+  // While address space 7 should never make it to codegen, it still needs to
+  // have a MVT to prevent some analyses that query this function from breaking,
+  // so, to work around the lack of i160, map it to v5i32.
+  MVT getPointerTy(const DataLayout &DL, unsigned AS) const override;
+  MVT getPointerMemTy(const DataLayout &DL, unsigned AS) const override;
+
   bool getTgtMemIntrinsic(IntrinsicInfo &, const CallInst &,
                           MachineFunction &MF,
                           unsigned IntrinsicID) const override;
 
-  bool getAddrModeArguments(IntrinsicInst * /*I*/,
-                            SmallVectorImpl<Value*> &/*Ops*/,
-                            Type *&/*AccessTy*/) const override;
+  void CollectTargetIntrinsicOperands(const CallInst &I,
+                                      SmallVectorImpl<SDValue> &Ops,
+                                      SelectionDAG &DAG) const override;
 
+  bool getAddrModeArguments(const IntrinsicInst *I,
+                            SmallVectorImpl<Value *> &Ops,
+                            Type *&AccessTy) const override;
+
+  bool isLegalFlatAddressingMode(const AddrMode &AM, unsigned AddrSpace) const;
   bool isLegalGlobalAddressingMode(const AddrMode &AM) const;
   bool isLegalAddressingMode(const DataLayout &DL, const AddrMode &AM, Type *Ty,
                              unsigned AS,
@@ -291,14 +331,14 @@ public:
   bool allowsMisalignedMemoryAccessesImpl(
       unsigned Size, unsigned AddrSpace, Align Alignment,
       MachineMemOperand::Flags Flags = MachineMemOperand::MONone,
-      bool *IsFast = nullptr) const;
+      unsigned *IsFast = nullptr) const;
 
   bool allowsMisalignedMemoryAccesses(
       LLT Ty, unsigned AddrSpace, Align Alignment,
       MachineMemOperand::Flags Flags = MachineMemOperand::MONone,
-      bool *IsFast = nullptr) const override {
+      unsigned *IsFast = nullptr) const override {
     if (IsFast)
-      *IsFast = false;
+      *IsFast = 0;
     return allowsMisalignedMemoryAccessesImpl(Ty.getSizeInBits(), AddrSpace,
                                               Alignment, Flags, IsFast);
   }
@@ -306,12 +346,11 @@ public:
   bool allowsMisalignedMemoryAccesses(
       EVT VT, unsigned AS, Align Alignment,
       MachineMemOperand::Flags Flags = MachineMemOperand::MONone,
-      bool *IsFast = nullptr) const override;
+      unsigned *IsFast = nullptr) const override;
 
   EVT getOptimalMemOpType(const MemOp &Op,
                           const AttributeList &FuncAttributes) const override;
 
-  bool isMemOpUniform(const SDNode *N) const;
   bool isMemOpHasNoClobberedMemOperand(const SDNode *N) const;
 
   static bool isNonGlobalAddrSpace(unsigned AS);
@@ -326,10 +365,17 @@ public:
 
   bool isExtractSubvectorCheap(EVT ResVT, EVT SrcVT,
                                unsigned Index) const override;
+  bool isExtractVecEltCheap(EVT VT, unsigned Index) const override;
 
   bool isTypeDesirableForOp(unsigned Op, EVT VT) const override;
 
   bool isOffsetFoldingLegal(const GlobalAddressSDNode *GA) const override;
+
+  unsigned combineRepeatedFPDivisors() const override {
+    // Combine multiple FDIVs with the same divisor into multiple FMULs by the
+    // reciprocal.
+    return 2;
+  }
 
   bool supportSplitCSR(MachineFunction *MF) const override;
   void initializeSplitCSR(MachineBasicBlock *Entry) const override;
@@ -346,7 +392,7 @@ public:
   bool CanLowerReturn(CallingConv::ID CallConv,
                       MachineFunction &MF, bool isVarArg,
                       const SmallVectorImpl<ISD::OutputArg> &Outs,
-                      LLVMContext &Context) const override;
+                      LLVMContext &Context, const Type *RetTy) const override;
 
   SDValue LowerReturn(SDValue Chain, CallingConv::ID CallConv, bool IsVarArg,
                       const SmallVectorImpl<ISD::OutputArg> &Outs,
@@ -361,7 +407,7 @@ public:
     SmallVectorImpl<SDValue> &MemOpChains,
     SDValue Chain) const;
 
-  SDValue LowerCallResult(SDValue Chain, SDValue InFlag,
+  SDValue LowerCallResult(SDValue Chain, SDValue InGlue,
                           CallingConv::ID CallConv, bool isVarArg,
                           const SmallVectorImpl<ISD::InputArg> &Ins,
                           const SDLoc &DL, SelectionDAG &DAG,
@@ -379,8 +425,15 @@ public:
   SDValue LowerCall(CallLoweringInfo &CLI,
                     SmallVectorImpl<SDValue> &InVals) const override;
 
-  SDValue lowerDYNAMIC_STACKALLOCImpl(SDValue Op, SelectionDAG &DAG) const;
   SDValue LowerDYNAMIC_STACKALLOC(SDValue Op, SelectionDAG &DAG) const;
+  SDValue LowerSTACKSAVE(SDValue Op, SelectionDAG &DAG) const;
+  SDValue lowerGET_ROUNDING(SDValue Op, SelectionDAG &DAG) const;
+  SDValue lowerSET_ROUNDING(SDValue Op, SelectionDAG &DAG) const;
+
+  SDValue lowerPREFETCH(SDValue Op, SelectionDAG &DAG) const;
+  SDValue lowerFP_EXTEND(SDValue Op, SelectionDAG &DAG) const;
+  SDValue lowerGET_FPENV(SDValue Op, SelectionDAG &DAG) const;
+  SDValue lowerSET_FPENV(SDValue Op, SelectionDAG &DAG) const;
 
   Register getRegisterByName(const char* RegName, LLT VT,
                              const MachineFunction &MF) const override;
@@ -396,8 +449,6 @@ public:
   EmitInstrWithCustomInserter(MachineInstr &MI,
                               MachineBasicBlock *BB) const override;
 
-  bool hasBitPreservingFPLogic(EVT VT) const override;
-  bool hasAtomicFaddRtnForTy(SDValue &Op) const;
   bool enableAggressiveFMAFusion(EVT VT) const override;
   bool enableAggressiveFMAFusion(LLT Ty) const override;
   EVT getSetCCResultType(const DataLayout &DL, LLVMContext &Context,
@@ -409,6 +460,7 @@ public:
                                   EVT VT) const override;
   bool isFMAFasterThanFMulAndFAdd(const MachineFunction &MF,
                                   const LLT Ty) const override;
+  bool isFMAFasterThanFMulAndFAdd(const Function &F, Type *Ty) const override;
   bool isFMADLegal(const SelectionDAG &DAG, const SDNode *N) const override;
   bool isFMADLegal(const MachineInstr &MI, const LLT Ty) const override;
 
@@ -416,13 +468,12 @@ public:
   SDValue splitBinaryVectorOp(SDValue Op, SelectionDAG &DAG) const;
   SDValue splitTernaryVectorOp(SDValue Op, SelectionDAG &DAG) const;
   SDValue LowerOperation(SDValue Op, SelectionDAG &DAG) const override;
-
   void ReplaceNodeResults(SDNode *N, SmallVectorImpl<SDValue> &Results,
                           SelectionDAG &DAG) const override;
 
   SDValue PerformDAGCombine(SDNode *N, DAGCombinerInfo &DCI) const override;
   SDNode *PostISelFolding(MachineSDNode *N, SelectionDAG &DAG) const override;
-  void AddIMGInit(MachineInstr &MI) const;
+  void AddMemOpInit(MachineInstr &MI) const;
   void AdjustInstrPostInstrSelection(MachineInstr &MI,
                                      SDNode *Node) const override;
 
@@ -436,13 +487,11 @@ public:
   getRegForInlineAsmConstraint(const TargetRegisterInfo *TRI,
                                StringRef Constraint, MVT VT) const override;
   ConstraintType getConstraintType(StringRef Constraint) const override;
-  void LowerAsmOperandForConstraint(SDValue Op,
-                                    std::string &Constraint,
+  void LowerAsmOperandForConstraint(SDValue Op, StringRef Constraint,
                                     std::vector<SDValue> &Ops,
                                     SelectionDAG &DAG) const override;
   bool getAsmOperandConstVal(SDValue Op, uint64_t &Val) const;
-  bool checkAsmConstraintVal(SDValue Op,
-                             const std::string &Constraint,
+  bool checkAsmConstraintVal(SDValue Op, StringRef Constraint,
                              uint64_t Val) const;
   bool checkAsmConstraintValA(SDValue Op,
                               uint64_t Val,
@@ -452,6 +501,10 @@ public:
 
   void finalizeLowering(MachineFunction &MF) const override;
 
+  void computeKnownBitsForTargetNode(const SDValue Op, KnownBits &Known,
+                                     const APInt &DemandedElts,
+                                     const SelectionDAG &DAG,
+                                     unsigned Depth = 0) const override;
   void computeKnownBitsForFrameIndex(int FrameIdx,
                                      KnownBits &Known,
                                      const MachineFunction &MF) const override;
@@ -464,20 +517,30 @@ public:
   Align computeKnownAlignForTargetInstr(GISelKnownBits &Analysis, Register R,
                                         const MachineRegisterInfo &MRI,
                                         unsigned Depth = 0) const override;
-  bool isSDNodeSourceOfDivergence(const SDNode *N,
-    FunctionLoweringInfo *FLI, LegacyDivergenceAnalysis *DA) const override;
+  bool isSDNodeSourceOfDivergence(const SDNode *N, FunctionLoweringInfo *FLI,
+                                  UniformityInfo *UA) const override;
 
   bool hasMemSDNodeUser(SDNode *N) const;
 
   bool isReassocProfitable(SelectionDAG &DAG, SDValue N0,
                            SDValue N1) const override;
 
+  bool isReassocProfitable(MachineRegisterInfo &MRI, Register N0,
+                           Register N1) const override;
+
   bool isCanonicalized(SelectionDAG &DAG, SDValue Op,
                        unsigned MaxDepth = 5) const;
-  bool isCanonicalized(Register Reg, MachineFunction &MF,
+  bool isCanonicalized(Register Reg, const MachineFunction &MF,
                        unsigned MaxDepth = 5) const;
   bool denormalsEnabledForType(const SelectionDAG &DAG, EVT VT) const;
-  bool denormalsEnabledForType(LLT Ty, MachineFunction &MF) const;
+  bool denormalsEnabledForType(LLT Ty, const MachineFunction &MF) const;
+
+  bool checkForPhysRegDependency(SDNode *Def, SDNode *User, unsigned Op,
+                                 const TargetRegisterInfo *TRI,
+                                 const TargetInstrInfo *TII, unsigned &PhysReg,
+                                 int &Cost) const override;
+
+  bool isProfitableToHoist(Instruction *I) const override;
 
   bool isKnownNeverNaNForTargetNode(SDValue Op,
                                     const SelectionDAG &DAG,
@@ -489,6 +552,13 @@ public:
   AtomicExpansionKind
   shouldExpandAtomicCmpXchgInIR(AtomicCmpXchgInst *AI) const override;
 
+  void emitExpandAtomicAddrSpacePredicate(Instruction *AI) const;
+  void emitExpandAtomicRMW(AtomicRMWInst *AI) const override;
+  void emitExpandAtomicCmpXchg(AtomicCmpXchgInst *CI) const override;
+
+  LoadInst *
+  lowerIdempotentRMWIntoFencedLoad(AtomicRMWInst *AI) const override;
+
   const TargetRegisterClass *getRegClassFor(MVT VT,
                                             bool isDivergent) const override;
   bool requiresUniformRegister(MachineFunction &MF,
@@ -499,6 +569,17 @@ public:
                             MachineFunction &MF,
                             const SIRegisterInfo &TRI,
                             SIMachineFunctionInfo &Info) const;
+
+  void allocatePreloadKernArgSGPRs(CCState &CCInfo,
+                                   SmallVectorImpl<CCValAssign> &ArgLocs,
+                                   const SmallVectorImpl<ISD::InputArg> &Ins,
+                                   MachineFunction &MF,
+                                   const SIRegisterInfo &TRI,
+                                   SIMachineFunctionInfo &Info) const;
+
+  void allocateLDSKernelId(CCState &CCInfo, MachineFunction &MF,
+                           const SIRegisterInfo &TRI,
+                           SIMachineFunctionInfo &Info) const;
 
   void allocateSystemSGPRs(CCState &CCInfo,
                            MachineFunction &MF,
@@ -528,6 +609,10 @@ public:
   MachineMemOperand::Flags
   getTargetMMOFlags(const Instruction &I) const override;
 };
+
+// Returns true if argument is a boolean value which is not serialized into
+// memory or argument and does not require v_cndmask_b32 to be deserialized.
+bool isBoolSGPR(SDValue V);
 
 } // End namespace llvm
 

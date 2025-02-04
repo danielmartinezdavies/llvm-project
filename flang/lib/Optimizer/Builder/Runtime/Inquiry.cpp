@@ -10,6 +10,7 @@
 #include "flang/Optimizer/Builder/FIRBuilder.h"
 #include "flang/Optimizer/Builder/Runtime/RTBuilder.h"
 #include "flang/Runtime/inquiry.h"
+#include "flang/Runtime/support.h"
 
 using namespace Fortran::runtime;
 
@@ -28,6 +29,20 @@ mlir::Value fir::runtime::genLboundDim(fir::FirOpBuilder &builder,
   return builder.create<fir::CallOp>(loc, lboundFunc, args).getResult(0);
 }
 
+void fir::runtime::genLbound(fir::FirOpBuilder &builder, mlir::Location loc,
+                             mlir::Value resultAddr, mlir::Value array,
+                             mlir::Value kind) {
+  mlir::func::FuncOp func =
+      fir::runtime::getRuntimeFunc<mkRTKey(Lbound)>(loc, builder);
+  auto fTy = func.getFunctionType();
+  auto sourceFile = fir::factory::locationToFilename(builder, loc);
+  auto sourceLine =
+      fir::factory::locationToLineNo(builder, loc, fTy.getInput(4));
+  auto args = fir::runtime::createArguments(
+      builder, loc, fTy, resultAddr, array, kind, sourceFile, sourceLine);
+  builder.create<fir::CallOp>(loc, func, args);
+}
+
 /// Generate call to `Ubound` runtime routine.  Calls to UBOUND with a DIM
 /// argument get transformed into an expression equivalent to
 /// SIZE() + LBOUND() - 1, so they don't have an intrinsic in the runtime.
@@ -42,7 +57,7 @@ void fir::runtime::genUbound(fir::FirOpBuilder &builder, mlir::Location loc,
       fir::factory::locationToLineNo(builder, loc, fTy.getInput(2));
   auto args = fir::runtime::createArguments(builder, loc, fTy, resultBox, array,
                                             kind, sourceFile, sourceLine);
-  builder.create<fir::CallOp>(loc, uboundFunc, args).getResult(0);
+  builder.create<fir::CallOp>(loc, uboundFunc, args);
 }
 
 /// Generate call to `Size` runtime routine. This routine is a version when
@@ -74,4 +89,29 @@ mlir::Value fir::runtime::genSize(fir::FirOpBuilder &builder,
   auto args = fir::runtime::createArguments(builder, loc, fTy, array,
                                             sourceFile, sourceLine);
   return builder.create<fir::CallOp>(loc, sizeFunc, args).getResult(0);
+}
+
+/// Generate call to `Is_contiguous` runtime routine.
+mlir::Value fir::runtime::genIsContiguous(fir::FirOpBuilder &builder,
+                                          mlir::Location loc,
+                                          mlir::Value array) {
+  mlir::func::FuncOp isContiguousFunc =
+      fir::runtime::getRuntimeFunc<mkRTKey(IsContiguous)>(loc, builder);
+  auto fTy = isContiguousFunc.getFunctionType();
+  auto args = fir::runtime::createArguments(builder, loc, fTy, array);
+  return builder.create<fir::CallOp>(loc, isContiguousFunc, args).getResult(0);
+}
+
+void fir::runtime::genShape(fir::FirOpBuilder &builder, mlir::Location loc,
+                            mlir::Value resultAddr, mlir::Value array,
+                            mlir::Value kind) {
+  mlir::func::FuncOp func =
+      fir::runtime::getRuntimeFunc<mkRTKey(Shape)>(loc, builder);
+  auto fTy = func.getFunctionType();
+  auto sourceFile = fir::factory::locationToFilename(builder, loc);
+  auto sourceLine =
+      fir::factory::locationToLineNo(builder, loc, fTy.getInput(4));
+  auto args = fir::runtime::createArguments(
+      builder, loc, fTy, resultAddr, array, kind, sourceFile, sourceLine);
+  builder.create<fir::CallOp>(loc, func, args);
 }

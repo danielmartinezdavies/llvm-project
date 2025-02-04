@@ -42,7 +42,7 @@ constexpr bool test() {
     auto [x, y] = *it;
     assert(&x == &(a[0]));
     assert(&y == &(b[0]));
-    static_assert(std::is_same_v<decltype(*it), std::pair<int&, double&>>);
+    static_assert(std::is_same_v<decltype(*it), std::tuple<int&, double&>>);
 
     x = 5;
     y = 0.1;
@@ -66,7 +66,7 @@ constexpr bool test() {
     auto it = v.begin();
     assert(&(std::get<0>(*it)) == &(a[0]));
     assert(&(std::get<1>(*it)) == &(a[0]));
-    static_assert(std::is_same_v<decltype(*it), std::pair<int&, int const&>>);
+    static_assert(std::is_same_v<decltype(*it), std::tuple<int&, int const&>>);
   }
   return true;
 }

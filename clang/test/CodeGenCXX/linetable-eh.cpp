@@ -1,13 +1,13 @@
-// RUN: %clang_cc1 -no-opaque-pointers -emit-llvm -debug-info-kind=limited -gno-column-info -triple x86_64-apple-macosx10.9.0 -funwind-tables=2 -std=c++11 -fcxx-exceptions -fexceptions %s -o - | FileCheck -allow-deprecated-dag-overlap %s
+// RUN: %clang_cc1 -emit-llvm -debug-info-kind=limited -gno-column-info -triple x86_64-apple-macosx10.9.0 -funwind-tables=2 -std=c++11 -fcxx-exceptions -fexceptions %s -o - | FileCheck -allow-deprecated-dag-overlap %s
 
 // Test that emitting a landing pad does not affect the line table
 // entries for the code that triggered it.
 
-// CHECK: call void @llvm.dbg.declare
-// CHECK: call void @llvm.dbg.declare(metadata {{.*}}, metadata ![[CURRENT_ADDR:.*]], metadata !{{.*}}), !dbg ![[DBG1:.*]]
+// CHECK: #dbg_declare
+// CHECK: #dbg_declare({{.*}}, ![[CURRENT_ADDR:.*]], !{{.*}},  ![[DBG1:[0-9]+]]
 // CHECK: unwind label %{{.*}}, !dbg ![[DBG1]]
-// CHECK: store i64 %{{.*}}, i64* %current_address, align 8, !dbg ![[DBG4:.*]]
-// CHECK-NEXT: call void @llvm.dbg.declare(metadata {{.*}}, metadata ![[FOUND_IT:.*]], metadata !{{.*}}), !dbg ![[DBG2:.*]]
+// CHECK: store i64 %{{.*}}, ptr %current_address, align 8, !dbg ![[DBG4:.*]]
+// CHECK-NEXT: #dbg_declare({{.*}}, ![[FOUND_IT:.*]], !{{.*}},  ![[DBG2:[0-9]+]]
 // CHECK: = landingpad
 // CHECK-NEXT: cleanup, !dbg ![[DBG3:.*]]
 // CHECK-DAG: ![[CURRENT_ADDR]] = {{.*}}name: "current_address"

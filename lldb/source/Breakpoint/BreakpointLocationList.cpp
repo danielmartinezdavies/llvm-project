@@ -69,7 +69,7 @@ BreakpointLocationList::FindByID(lldb::break_id_t break_id) const {
   std::lock_guard<std::recursive_mutex> guard(m_mutex);
   collection::const_iterator end = m_locations.end();
   collection::const_iterator pos =
-      std::lower_bound(m_locations.begin(), end, break_id, Compare);
+      llvm::lower_bound(m_locations, break_id, Compare);
   if (pos != end && (*pos)->GetID() == break_id)
     return *(pos);
   else
@@ -103,8 +103,7 @@ BreakpointLocationList::FindByAddress(const Address &addr) const {
       so_addr = addr;
     } else {
       // Try and resolve as a load address if possible.
-      m_owner.GetTarget().GetSectionLoadList().ResolveLoadAddress(
-          addr.GetOffset(), so_addr);
+      m_owner.GetTarget().ResolveLoadAddress(addr.GetOffset(), so_addr);
       if (!so_addr.IsValid()) {
         // The address didn't resolve, so just set to passed in addr.
         so_addr = addr;
@@ -174,6 +173,12 @@ uint32_t BreakpointLocationList::GetHitCount() const {
   for (pos = m_locations.begin(); pos != end; ++pos)
     hit_count += (*pos)->GetHitCount();
   return hit_count;
+}
+
+void BreakpointLocationList::ResetHitCount() {
+  std::lock_guard<std::recursive_mutex> guard(m_mutex);
+  for (auto &loc : m_locations)
+    loc->ResetHitCount();
 }
 
 size_t BreakpointLocationList::GetNumResolvedLocations() const {

@@ -7,7 +7,6 @@
 //===----------------------------------------------------------------------===//
 
 #include "clang/AST/CommentCommandTraits.h"
-#include "llvm/ADT/STLExtras.h"
 #include <cassert>
 
 namespace clang {
@@ -16,8 +15,8 @@ namespace comments {
 #include "clang/AST/CommentCommandInfo.inc"
 
 CommandTraits::CommandTraits(llvm::BumpPtrAllocator &Allocator,
-                             const CommentOptions &CommentOptions) :
-    NextID(llvm::array_lengthof(Commands)), Allocator(Allocator) {
+                             const CommentOptions &CommentOptions)
+    : NextID(std::size(Commands)), Allocator(Allocator) {
   registerCommentOptions(CommentOptions);
 }
 
@@ -115,7 +114,7 @@ const CommandInfo *CommandTraits::registerBlockCommand(StringRef CommandName) {
 
 const CommandInfo *CommandTraits::getBuiltinCommandInfo(
                                                   unsigned CommandID) {
-  if (CommandID < llvm::array_lengthof(Commands))
+  if (CommandID < std::size(Commands))
     return &Commands[CommandID];
   return nullptr;
 }
@@ -131,7 +130,7 @@ const CommandInfo *CommandTraits::getRegisteredCommandInfo(
 
 const CommandInfo *CommandTraits::getRegisteredCommandInfo(
                                                   unsigned CommandID) const {
-  return RegisteredCommands[CommandID - llvm::array_lengthof(Commands)];
+  return RegisteredCommands[CommandID - std::size(Commands)];
 }
 
 } // end namespace comments

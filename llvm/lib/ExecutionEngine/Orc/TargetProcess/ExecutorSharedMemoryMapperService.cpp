@@ -7,48 +7,46 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/ExecutionEngine/Orc/TargetProcess/ExecutorSharedMemoryMapperService.h"
-
+#include "llvm/Config/llvm-config.h" // for LLVM_ON_UNIX
 #include "llvm/ExecutionEngine/Orc/Shared/OrcRTBridge.h"
 #include "llvm/Support/Process.h"
 #include "llvm/Support/WindowsError.h"
-
 #include <sstream>
 
 #if defined(LLVM_ON_UNIX)
 #include <errno.h>
 #include <fcntl.h>
 #include <sys/mman.h>
-#include <unistd.h>
+#if defined(__MVS__)
+#include "llvm/Support/BLAKE3.h"
+#include <sys/shm.h>
 #endif
-
-#if defined(_WIN32)
-static DWORD getWindowsProtectionFlags(unsigned Flags) {
-  switch (Flags & llvm::sys::Memory::MF_RWE_MASK) {
-  case llvm::sys::Memory::MF_READ:
-    return PAGE_READONLY;
-  case llvm::sys::Memory::MF_WRITE:
-    // Note: PAGE_WRITE is not supported by VirtualProtect
-    return PAGE_READWRITE;
-  case llvm::sys::Memory::MF_READ | llvm::sys::Memory::MF_WRITE:
-    return PAGE_READWRITE;
-  case llvm::sys::Memory::MF_READ | llvm::sys::Memory::MF_EXEC:
-    return PAGE_EXECUTE_READ;
-  case llvm::sys::Memory::MF_READ | llvm::sys::Memory::MF_WRITE |
-      llvm::sys::Memory::MF_EXEC:
-    return PAGE_EXECUTE_READWRITE;
-  case llvm::sys::Memory::MF_EXEC:
-    return PAGE_EXECUTE;
-  default:
-    llvm_unreachable("Illegal memory protection flag specified!");
-  }
-  // Provide a default return value as required by some compilers.
-  return PAGE_NOACCESS;
-}
+#include <unistd.h>
 #endif
 
 namespace llvm {
 namespace orc {
 namespace rt_bootstrap {
+
+#if defined(_WIN32)
+static DWORD getWindowsProtectionFlags(MemProt MP) {
+  if (MP == MemProt::Read)
+    return PAGE_READONLY;
+  if (MP == MemProt::Write ||
+      MP == (MemProt::Write | MemProt::Read)) {
+    // Note: PAGE_WRITE is not supported by VirtualProtect
+    return PAGE_READWRITE;
+  }
+  if (MP == (MemProt::Read | MemProt::Exec))
+    return PAGE_EXECUTE_READ;
+  if (MP == (MemProt::Read | MemProt::Write | MemProt::Exec))
+    return PAGE_EXECUTE_READWRITE;
+  if (MP == MemProt::Exec)
+    return PAGE_EXECUTE;
+
+  return PAGE_NOACCESS;
+}
+#endif
 
 Expected<std::pair<ExecutorAddr, std::string>>
 ExecutorSharedMemoryMapperService::reserve(uint64_t Size) {
@@ -64,20 +62,36 @@ ExecutorSharedMemoryMapperService::reserve(uint64_t Size) {
     SharedMemoryName = SharedMemoryNameStream.str();
   }
 
+#if defined(__MVS__)
+  ArrayRef<uint8_t> Data(
+      reinterpret_cast<const uint8_t *>(SharedMemoryName.c_str()),
+      SharedMemoryName.size());
+  auto HashedName = BLAKE3::hash<sizeof(key_t)>(Data);
+  key_t Key = *reinterpret_cast<key_t *>(HashedName.data());
+  int SharedMemoryId =
+      shmget(Key, Size, IPC_CREAT | IPC_EXCL | __IPC_SHAREAS | 0700);
+  if (SharedMemoryId < 0)
+    return errorCodeToError(errnoAsErrorCode());
+
+  void *Addr = shmat(SharedMemoryId, nullptr, 0);
+  if (Addr == reinterpret_cast<void *>(-1))
+    return errorCodeToError(errnoAsErrorCode());
+#else
   int SharedMemoryFile =
       shm_open(SharedMemoryName.c_str(), O_RDWR | O_CREAT | O_EXCL, 0700);
   if (SharedMemoryFile < 0)
-    return errorCodeToError(std::error_code(errno, std::generic_category()));
+    return errorCodeToError(errnoAsErrorCode());
 
   // by default size is 0
   if (ftruncate(SharedMemoryFile, Size) < 0)
-    return errorCodeToError(std::error_code(errno, std::generic_category()));
+    return errorCodeToError(errnoAsErrorCode());
 
   void *Addr = mmap(nullptr, Size, PROT_NONE, MAP_SHARED, SharedMemoryFile, 0);
   if (Addr == MAP_FAILED)
-    return errorCodeToError(std::error_code(errno, std::generic_category()));
+    return errorCodeToError(errnoAsErrorCode());
 
   close(SharedMemoryFile);
+#endif
 
 #elif defined(_WIN32)
 
@@ -136,21 +150,24 @@ Expected<ExecutorAddr> ExecutorSharedMemoryMapperService::initialize(
 
 #if defined(LLVM_ON_UNIX)
 
+#if defined(__MVS__)
+      // TODO Is it possible to change the protection level?
+#else
     int NativeProt = 0;
-    if (Segment.Prot & tpctypes::WPF_Read)
+    if ((Segment.RAG.Prot & MemProt::Read) == MemProt::Read)
       NativeProt |= PROT_READ;
-    if (Segment.Prot & tpctypes::WPF_Write)
+    if ((Segment.RAG.Prot & MemProt::Write) == MemProt::Write)
       NativeProt |= PROT_WRITE;
-    if (Segment.Prot & tpctypes::WPF_Exec)
+    if ((Segment.RAG.Prot & MemProt::Exec) == MemProt::Exec)
       NativeProt |= PROT_EXEC;
 
     if (mprotect(Segment.Addr.toPtr<void *>(), Segment.Size, NativeProt))
-      return errorCodeToError(std::error_code(errno, std::generic_category()));
+      return errorCodeToError(errnoAsErrorCode());
+#endif
 
 #elif defined(_WIN32)
 
-    DWORD NativeProt =
-        getWindowsProtectionFlags(fromWireProtectionFlags(Segment.Prot));
+    DWORD NativeProt = getWindowsProtectionFlags(Segment.RAG.Prot);
 
     if (!VirtualProtect(Segment.Addr.toPtr<void *>(), Segment.Size, NativeProt,
                         &NativeProt))
@@ -158,7 +175,7 @@ Expected<ExecutorAddr> ExecutorSharedMemoryMapperService::initialize(
 
 #endif
 
-    if (Segment.Prot & tpctypes::WPF_Exec)
+    if ((Segment.RAG.Prot & MemProt::Exec) == MemProt::Exec)
       sys::Memory::InvalidateInstructionCache(Segment.Addr.toPtr<void *>(),
                                               Segment.Size);
   }
@@ -192,7 +209,7 @@ Error ExecutorSharedMemoryMapperService::deinitialize(
   {
     std::lock_guard<std::mutex> Lock(Mutex);
 
-    for (auto Base : Bases) {
+    for (auto Base : llvm::reverse(Bases)) {
       if (Error Err = shared::runDeallocActions(
               Allocations[Base].DeinitializationActions)) {
         AllErr = joinErrors(std::move(AllErr), std::move(Err));
@@ -200,9 +217,7 @@ Error ExecutorSharedMemoryMapperService::deinitialize(
 
       // Remove the allocation from the allocation list of its reservation
       for (auto &Reservation : Reservations) {
-        auto AllocationIt =
-            std::find(Reservation.second.Allocations.begin(),
-                      Reservation.second.Allocations.end(), Base);
+        auto AllocationIt = llvm::find(Reservation.second.Allocations, Base);
         if (AllocationIt != Reservation.second.Allocations.end()) {
           Reservation.second.Allocations.erase(AllocationIt);
           break;
@@ -247,9 +262,15 @@ Error ExecutorSharedMemoryMapperService::release(
 
 #if defined(LLVM_ON_UNIX)
 
+#if defined(__MVS__)
+    (void)Size;
+
+    if (shmdt(Base.toPtr<void *>()) < 0)
+      Err = joinErrors(std::move(Err), errorCodeToError(errnoAsErrorCode()));
+#else
     if (munmap(Base.toPtr<void *>(), Size) != 0)
-      Err = joinErrors(std::move(Err), errorCodeToError(std::error_code(
-                                           errno, std::generic_category())));
+      Err = joinErrors(std::move(Err), errorCodeToError(errnoAsErrorCode()));
+#endif
 
 #elif defined(_WIN32)
     (void)Size;

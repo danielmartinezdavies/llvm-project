@@ -15,11 +15,12 @@
 #include "bolt/Core/BinaryBasicBlock.h"
 #include "bolt/Core/BinaryFunction.h"
 #include "llvm/Support/CommandLine.h"
+#include "llvm/Transforms/Utils/CodeLayout.h"
 #include <queue>
 #include <random>
 #include <stack>
 
-#undef  DEBUG_TYPE
+#undef DEBUG_TYPE
 #define DEBUG_TYPE "bolt"
 
 using namespace llvm;
@@ -424,7 +425,7 @@ void TSPReorderAlgorithm::reorderBasicBlocks(BinaryFunction &BF,
   }
 
   std::vector<std::vector<int64_t>> DP;
-  DP.resize(1 << N);
+  DP.resize(static_cast<size_t>(1) << N);
   for (std::vector<int64_t> &Elmt : DP)
     Elmt.resize(N, -1);
 
@@ -498,6 +499,56 @@ void TSPReorderAlgorithm::reorderBasicBlocks(BinaryFunction &BF,
   for (BinaryBasicBlock *BB : BF.getLayout().blocks())
     if (Visited[BB->getLayoutIndex()] == false)
       Order.push_back(BB);
+}
+
+void ExtTSPReorderAlgorithm::reorderBasicBlocks(BinaryFunction &BF,
+                                                BasicBlockOrder &Order) const {
+  if (BF.getLayout().block_empty())
+    return;
+
+  // Do not change layout of functions w/o profile information
+  if (!BF.hasValidProfile() || BF.getLayout().block_size() <= 2) {
+    for (BinaryBasicBlock *BB : BF.getLayout().blocks())
+      Order.push_back(BB);
+    return;
+  }
+
+  // Create a separate MCCodeEmitter to allow lock-free execution
+  BinaryContext::IndependentCodeEmitter Emitter;
+  if (!opts::NoThreads)
+    Emitter = BF.getBinaryContext().createIndependentMCCodeEmitter();
+
+  // Initialize CFG nodes and their data
+  std::vector<uint64_t> BlockSizes;
+  std::vector<uint64_t> BlockCounts;
+  BasicBlockOrder OrigOrder;
+  BF.getLayout().updateLayoutIndices();
+  for (BinaryBasicBlock *BB : BF.getLayout().blocks()) {
+    uint64_t Size = std::max<uint64_t>(BB->estimateSize(Emitter.MCE.get()), 1);
+    BlockSizes.push_back(Size);
+    BlockCounts.push_back(BB->getKnownExecutionCount());
+    OrigOrder.push_back(BB);
+  }
+
+  // Initialize CFG edges
+  std::vector<codelayout::EdgeCount> JumpCounts;
+  for (BinaryBasicBlock *BB : BF.getLayout().blocks()) {
+    auto BI = BB->branch_info_begin();
+    for (BinaryBasicBlock *SuccBB : BB->successors()) {
+      assert(BI->Count != BinaryBasicBlock::COUNT_NO_PROFILE &&
+             "missing profile for a jump");
+      JumpCounts.push_back(
+          {BB->getLayoutIndex(), SuccBB->getLayoutIndex(), BI->Count});
+      ++BI;
+    }
+  }
+
+  // Run the layout algorithm
+  auto Result =
+      codelayout::computeExtTspLayout(BlockSizes, BlockCounts, JumpCounts);
+  Order.reserve(BF.getLayout().block_size());
+  for (uint64_t R : Result)
+    Order.push_back(OrigOrder[R]);
 }
 
 void OptimizeReorderAlgorithm::reorderBasicBlocks(

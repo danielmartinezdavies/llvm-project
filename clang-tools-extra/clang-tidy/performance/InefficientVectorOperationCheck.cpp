@@ -15,9 +15,7 @@
 
 using namespace clang::ast_matchers;
 
-namespace clang {
-namespace tidy {
-namespace performance {
+namespace clang::tidy::performance {
 
 namespace {
 
@@ -79,7 +77,7 @@ InefficientVectorOperationCheck::InefficientVectorOperationCheck(
     : ClangTidyCheck(Name, Context),
       VectorLikeClasses(utils::options::parseStringList(
           Options.get("VectorLikeClasses", "::std::vector"))),
-      EnableProto(Options.getLocalOrGlobal("EnableProto", false)) {}
+      EnableProto(Options.get("EnableProto", false)) {}
 
 void InefficientVectorOperationCheck::storeOptions(
     ClangTidyOptions::OptionMap &Opts) {
@@ -107,9 +105,9 @@ void InefficientVectorOperationCheck::addMatcher(
           onImplicitObjectArgument(declRefExpr(to(TargetVarDecl))))
           .bind(AppendCallName);
   const auto AppendCall = expr(ignoringImplicit(AppendCallExpr));
-  const auto LoopVarInit =
-      declStmt(hasSingleDecl(varDecl(hasInitializer(integerLiteral(equals(0))))
-                                 .bind(LoopInitVarName)));
+  const auto LoopVarInit = declStmt(hasSingleDecl(
+      varDecl(hasInitializer(ignoringParenImpCasts(integerLiteral(equals(0)))))
+          .bind(LoopInitVarName)));
   const auto RefersToLoopVar = ignoringParenImpCasts(
       declRefExpr(to(varDecl(equalsBoundNode(LoopInitVarName)))));
 
@@ -273,6 +271,4 @@ void InefficientVectorOperationCheck::check(
   }
 }
 
-} // namespace performance
-} // namespace tidy
-} // namespace clang
+} // namespace clang::tidy::performance

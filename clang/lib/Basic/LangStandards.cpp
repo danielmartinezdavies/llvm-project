@@ -9,9 +9,42 @@
 #include "clang/Basic/LangStandard.h"
 #include "clang/Config/config.h"
 #include "llvm/ADT/StringSwitch.h"
-#include "llvm/ADT/Triple.h"
 #include "llvm/Support/ErrorHandling.h"
+#include "llvm/TargetParser/Triple.h"
 using namespace clang;
+
+StringRef clang::languageToString(Language L) {
+  switch (L) {
+  case Language::Unknown:
+    return "Unknown";
+  case Language::Asm:
+    return "Asm";
+  case Language::LLVM_IR:
+    return "LLVM IR";
+  case Language::CIR:
+    return "ClangIR";
+  case Language::C:
+    return "C";
+  case Language::CXX:
+    return "C++";
+  case Language::ObjC:
+    return "Objective-C";
+  case Language::ObjCXX:
+    return "Objective-C++";
+  case Language::OpenCL:
+    return "OpenCL";
+  case Language::OpenCLCXX:
+    return "OpenCLC++";
+  case Language::CUDA:
+    return "CUDA";
+  case Language::HIP:
+    return "HIP";
+  case Language::HLSL:
+    return "HLSL";
+  }
+
+  llvm_unreachable("unhandled language kind");
+}
 
 #define LANGSTANDARD(id, name, lang, desc, features)                           \
   static const LangStandard Lang_##id = {name, desc, features, Language::lang};
@@ -36,6 +69,17 @@ LangStandard::Kind LangStandard::getLangKind(StringRef Name) {
       .Default(lang_unspecified);
 }
 
+LangStandard::Kind LangStandard::getHLSLLangKind(StringRef Name) {
+  return llvm::StringSwitch<LangStandard::Kind>(Name)
+      .Case("2016", LangStandard::lang_hlsl2016)
+      .Case("2017", LangStandard::lang_hlsl2017)
+      .Case("2018", LangStandard::lang_hlsl2018)
+      .Case("2021", LangStandard::lang_hlsl2021)
+      .Case("202x", LangStandard::lang_hlsl202x)
+      .Case("202y", LangStandard::lang_hlsl202y)
+      .Default(LangStandard::lang_unspecified);
+}
+
 const LangStandard *LangStandard::getLangStandardForName(StringRef Name) {
   Kind K = getLangKind(Name);
   if (K == lang_unspecified)
@@ -49,42 +93,27 @@ LangStandard::Kind clang::getDefaultLanguageStandard(clang::Language Lang,
   switch (Lang) {
   case Language::Unknown:
   case Language::LLVM_IR:
+  case Language::CIR:
     llvm_unreachable("Invalid input kind!");
   case Language::OpenCL:
     return LangStandard::lang_opencl12;
   case Language::OpenCLCXX:
     return LangStandard::lang_openclcpp10;
-  case Language::CUDA:
-    return LangStandard::lang_cuda;
   case Language::Asm:
   case Language::C:
-    if (CLANG_DEFAULT_STD_C != LangStandard::lang_unspecified)
-      return CLANG_DEFAULT_STD_C;
-
     // The PS4 uses C99 as the default C standard.
     if (T.isPS4())
       return LangStandard::lang_gnu99;
     return LangStandard::lang_gnu17;
   case Language::ObjC:
-    if (CLANG_DEFAULT_STD_C != LangStandard::lang_unspecified)
-      return CLANG_DEFAULT_STD_C;
-
     return LangStandard::lang_gnu11;
   case Language::CXX:
   case Language::ObjCXX:
-    if (CLANG_DEFAULT_STD_CXX != LangStandard::lang_unspecified)
-      return CLANG_DEFAULT_STD_CXX;
-
-    if (T.isDriverKit())
-      return LangStandard::lang_gnucxx17;
-    else
-      return LangStandard::lang_gnucxx14;
-  case Language::RenderScript:
-    return LangStandard::lang_c99;
+  case Language::CUDA:
   case Language::HIP:
-    return LangStandard::lang_hip;
+    return LangStandard::lang_gnucxx17;
   case Language::HLSL:
-    return LangStandard::lang_hlsl2021;
+    return LangStandard::lang_hlsl202x;
   }
   llvm_unreachable("unhandled Language kind!");
 }

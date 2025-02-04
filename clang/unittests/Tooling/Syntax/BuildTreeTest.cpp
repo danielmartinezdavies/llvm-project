@@ -88,8 +88,12 @@ private:
   }
 };
 
-INSTANTIATE_TEST_SUITE_P(SyntaxTreeTests, BuildSyntaxTreeTest,
-                        testing::ValuesIn(allTestClangConfigs()) );
+INSTANTIATE_TEST_SUITE_P(
+    SyntaxTreeTests, BuildSyntaxTreeTest,
+    testing::ValuesIn(allTestClangConfigs()),
+    [](const testing::TestParamInfo<TestClangConfig> &Info) {
+      return Info.param.toShortString();
+    });
 
 TEST_P(BuildSyntaxTreeTest, Simple) {
   EXPECT_TRUE(treeDumpEqual(
@@ -2262,8 +2266,6 @@ struct S {
   template<typename T>
   static constexpr T x = 42;
 };
-// FIXME: `<int>` should be a child of `MemberExpression` and `;` of
-// `ExpressionStatement`. This is a bug in clang, in `getSourceRange` methods.
 void test(S s) [[{
   s.x<int>;
 }]]
@@ -2272,18 +2274,18 @@ void test(S s) [[{
 CompoundStatement
 |-'{' OpenParen
 |-ExpressionStatement Statement
-| `-MemberExpression Expression
-|   |-IdExpression Object
-|   | `-UnqualifiedId UnqualifiedId
-|   |   `-'s'
-|   |-'.' AccessToken
-|   `-IdExpression Member
-|     `-UnqualifiedId UnqualifiedId
-|       `-'x'
-|-'<'
-|-'int'
-|-'>'
-|-';'
+| |-MemberExpression Expression
+| | |-IdExpression Object
+| | | `-UnqualifiedId UnqualifiedId
+| | |   `-'s'
+| | |-'.' AccessToken
+| | `-IdExpression Member
+| |   `-UnqualifiedId UnqualifiedId
+| |     |-'x'
+| |     |-'<'
+| |     |-'int'
+| |     `-'>'
+| `-';'
 `-'}' CloseParen
 )txt"}));
 }
@@ -4602,7 +4604,7 @@ TEST_P(BuildSyntaxTreeTest, ConstructorCall_DefaultArguments) {
 struct X {
   X(int i = 1, char c = '2');
 };
-X test() {
+void test() {
   auto x0 = [[X()]];
   auto x1 = [[X(1)]];
   auto x2 = [[X(1, '2')]];
@@ -5657,8 +5659,6 @@ struct X {
 };
 [[void (X::*xp)();]]
 [[void (X::**xpp)(const int*);]]
-// FIXME: Generate the right syntax tree for this type,
-// i.e. create a syntax node for the outer member pointer
 [[void (X::Y::*xyp)(const int*, char);]]
 )cpp",
       {R"txt(
@@ -5712,9 +5712,9 @@ SimpleDeclaration
 | `-SimpleDeclarator ListElement
 |   |-ParenDeclarator
 |   | |-'(' OpenParen
-|   | |-'X'
-|   | |-'::'
 |   | |-MemberPointer
+|   | | |-'X'
+|   | | |-'::'
 |   | | |-'Y'
 |   | | |-'::'
 |   | | `-'*'

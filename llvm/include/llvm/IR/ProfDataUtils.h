@@ -34,6 +34,40 @@ bool isBranchWeightMD(const MDNode *ProfileData);
 /// otherwise.
 bool hasBranchWeightMD(const Instruction &I);
 
+/// Checks if an instructions has valid Branch Weight Metadata
+///
+/// \param I The instruction to check
+/// \returns True if I has an MD_prof node containing valid Branch Weights,
+/// i.e., one weight for each successor. False otherwise.
+bool hasValidBranchWeightMD(const Instruction &I);
+
+/// Get the branch weights metadata node
+///
+/// \param I The Instruction to get the weights from.
+/// \returns A pointer to I's branch weights metadata node, if it exists.
+/// Nullptr otherwise.
+MDNode *getBranchWeightMDNode(const Instruction &I);
+
+/// Get the valid branch weights metadata node
+///
+/// \param I The Instruction to get the weights from.
+/// \returns A pointer to I's valid branch weights metadata node, if it exists.
+/// Nullptr otherwise.
+MDNode *getValidBranchWeightMDNode(const Instruction &I);
+
+/// Check if Branch Weight Metadata has an "expected" field from an llvm.expect*
+/// intrinsic
+bool hasBranchWeightOrigin(const Instruction &I);
+
+/// Check if Branch Weight Metadata has an "expected" field from an llvm.expect*
+/// intrinsic
+bool hasBranchWeightOrigin(const MDNode *ProfileData);
+
+/// Return the offset to the first branch weight data
+unsigned getBranchWeightOffset(const MDNode *ProfileData);
+
+unsigned getNumBranchWeights(const MDNode &ProfileData);
+
 /// Extract branch weights from MD_prof metadata
 ///
 /// \param ProfileData A pointer to an MDNode.
@@ -42,6 +76,16 @@ bool hasBranchWeightMD(const Instruction &I);
 /// will be cleared.
 bool extractBranchWeights(const MDNode *ProfileData,
                           SmallVectorImpl<uint32_t> &Weights);
+
+/// Faster version of extractBranchWeights() that skips checks and must only
+/// be called with "branch_weights" metadata nodes. Supports uint32_t.
+void extractFromBranchWeightMD32(const MDNode *ProfileData,
+                                 SmallVectorImpl<uint32_t> &Weights);
+
+/// Faster version of extractBranchWeights() that skips checks and must only
+/// be called with "branch_weights" metadata nodes. Supports uint64_t.
+void extractFromBranchWeightMD64(const MDNode *ProfileData,
+                                 SmallVectorImpl<uint64_t> &Weights);
 
 /// Extract branch weights attatched to an Instruction
 ///
@@ -69,6 +113,25 @@ bool extractBranchWeights(const Instruction &I, uint64_t &TrueVal,
 /// \returns True on success with profile total weights filled in. False if no
 /// metadata was found.
 bool extractProfTotalWeight(const MDNode *ProfileData, uint64_t &TotalWeights);
+
+/// Retrieve the total of all weights from an instruction.
+///
+/// \param I The instruction to extract the total weight from
+/// \param [out] TotalWeights input variable to fill with total weights
+/// \returns True on success with profile total weights filled in. False if no
+/// metadata was found.
+bool extractProfTotalWeight(const Instruction &I, uint64_t &TotalWeights);
+
+/// Create a new `branch_weights` metadata node and add or overwrite
+/// a `prof` metadata reference to instruction `I`.
+/// \param I the Instruction to set branch weights on.
+/// \param Weights an array of weights to set on instruction I.
+/// \param IsExpected were these weights added from an llvm.expect* intrinsic.
+void setBranchWeights(Instruction &I, ArrayRef<uint32_t> Weights,
+                      bool IsExpected);
+
+/// Scaling the profile data attached to 'I' using the ratio of S/T.
+void scaleProfData(Instruction &I, uint64_t S, uint64_t T);
 
 } // namespace llvm
 #endif

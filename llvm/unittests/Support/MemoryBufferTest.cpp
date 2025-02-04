@@ -11,11 +11,12 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/Support/MemoryBuffer.h"
-#include "llvm/Support/SmallVectorMemoryBuffer.h"
 #include "llvm/ADT/ScopeExit.h"
+#include "llvm/Config/llvm-config.h" // for LLVM_ENABLE_THREADS, LLVM_ON_UNIX
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/FileUtilities.h"
 #include "llvm/Support/Process.h"
+#include "llvm/Support/SmallVectorMemoryBuffer.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Testing/Support/Error.h"
 #include "gtest/gtest.h"
@@ -161,6 +162,10 @@ TEST_F(MemoryBufferTest, copy) {
 
   // verify the two copies do not point to the same place
   EXPECT_NE(MBC1->getBufferStart(), MBC2->getBufferStart());
+
+  // check that copies from defaulted stringrefs don't trigger UB.
+  OwningBuffer MBC3(MemoryBuffer::getMemBufferCopy(StringRef{}));
+  EXPECT_NE(nullptr, MBC3.get());
 }
 
 #if LLVM_ENABLE_THREADS
@@ -224,6 +229,22 @@ TEST_F(MemoryBufferTest, make_new) {
   OwningBuffer Five(
       WritableMemoryBuffer::getNewUninitMemBuffer(SIZE_MAX, "huge"));
   EXPECT_EQ(nullptr, Five.get());
+}
+
+TEST_F(MemoryBufferTest, getNewAligned) {
+  auto CheckAlignment = [](size_t AlignmentValue) {
+    Align Alignment(AlignmentValue);
+    OwningBuffer AlignedBuffer =
+        WritableMemoryBuffer::getNewUninitMemBuffer(0, "", Alignment);
+    EXPECT_TRUE(isAddrAligned(Alignment, AlignedBuffer->getBufferStart()));
+  };
+
+  // Test allocation with different alignments.
+  CheckAlignment(16);
+  CheckAlignment(32);
+  CheckAlignment(64);
+  CheckAlignment(128);
+  CheckAlignment(256);
 }
 
 void MemoryBufferTest::testGetOpenFileSlice(bool Reopen) {
@@ -297,13 +318,13 @@ TEST_F(MemoryBufferTest, slice) {
   EXPECT_EQ(0x4000UL, MB.get()->getBufferSize());
  
   StringRef BufData = MB.get()->getBuffer();
-  EXPECT_TRUE(BufData.substr(0x0000,8).equals("12345678"));
-  EXPECT_TRUE(BufData.substr(0x0FF8,8).equals("12345678"));
-  EXPECT_TRUE(BufData.substr(0x1000,8).equals("abcdefgh"));
-  EXPECT_TRUE(BufData.substr(0x2FF8,8).equals("abcdefgh"));
-  EXPECT_TRUE(BufData.substr(0x3000,8).equals("ABCDEFGH"));
-  EXPECT_TRUE(BufData.substr(0x3FF8,8).equals("ABCDEFGH"));
-   
+  EXPECT_TRUE(BufData.substr(0x0000, 8) == "12345678");
+  EXPECT_TRUE(BufData.substr(0x0FF8, 8) == "12345678");
+  EXPECT_TRUE(BufData.substr(0x1000, 8) == "abcdefgh");
+  EXPECT_TRUE(BufData.substr(0x2FF8, 8) == "abcdefgh");
+  EXPECT_TRUE(BufData.substr(0x3000, 8) == "ABCDEFGH");
+  EXPECT_TRUE(BufData.substr(0x3FF8, 8) == "ABCDEFGH");
+
   // Try non-page aligned.
   ErrorOr<OwningBuffer> MB2 = MemoryBuffer::getFileSlice(TestPath.str(),
                                                          0x3000, 0x0800);
@@ -312,10 +333,10 @@ TEST_F(MemoryBufferTest, slice) {
   EXPECT_EQ(0x3000UL, MB2.get()->getBufferSize());
   
   StringRef BufData2 = MB2.get()->getBuffer();
-  EXPECT_TRUE(BufData2.substr(0x0000,8).equals("12345678"));
-  EXPECT_TRUE(BufData2.substr(0x17F8,8).equals("12345678"));
-  EXPECT_TRUE(BufData2.substr(0x1800,8).equals("abcdefgh"));
-  EXPECT_TRUE(BufData2.substr(0x2FF8,8).equals("abcdefgh"));
+  EXPECT_TRUE(BufData2.substr(0x0000, 8) == "12345678");
+  EXPECT_TRUE(BufData2.substr(0x17F8, 8) == "12345678");
+  EXPECT_TRUE(BufData2.substr(0x1800, 8) == "abcdefgh");
+  EXPECT_TRUE(BufData2.substr(0x2FF8, 8) == "abcdefgh");
 }
 
 TEST_F(MemoryBufferTest, writableSlice) {
@@ -412,7 +433,7 @@ TEST_F(MemoryBufferTest, mmapVolatileNoNull) {
   OwningBuffer MB = std::move(*MBOrError);
   EXPECT_EQ(MB->getBufferKind(), MemoryBuffer::MemoryBuffer_MMap);
   EXPECT_EQ(MB->getBufferSize(), std::size_t(FileWrites * 8));
-  EXPECT_TRUE(MB->getBuffer().startswith("01234567"));
+  EXPECT_TRUE(MB->getBuffer().starts_with("01234567"));
 }
 
 // Test that SmallVector without a null terminator gets one.

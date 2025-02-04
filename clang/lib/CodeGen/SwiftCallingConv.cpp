@@ -77,7 +77,7 @@ void SwiftAggLowering::addTypedData(QualType type, CharUnits begin) {
 
     QualType eltType = arrayType->getElementType();
     auto eltSize = CGM.getContext().getTypeSizeInChars(eltType);
-    for (uint64_t i = 0, e = arrayType->getSize().getZExtValue(); i != e; ++i) {
+    for (uint64_t i = 0, e = arrayType->getZExtSize(); i != e; ++i) {
       addTypedData(eltType, begin + i * eltSize);
     }
 
@@ -124,7 +124,7 @@ void SwiftAggLowering::addTypedData(const RecordDecl *record, CharUnits begin,
                                     const ASTRecordLayout &layout) {
   // Unions are a special case.
   if (record->isUnion()) {
-    for (auto field : record->fields()) {
+    for (auto *field : record->fields()) {
       if (field->isBitField()) {
         addBitFieldData(field, begin, 0);
       } else {
@@ -161,7 +161,7 @@ void SwiftAggLowering::addTypedData(const RecordDecl *record, CharUnits begin,
   }
 
   // Add fields.
-  for (auto field : record->fields()) {
+  for (auto *field : record->fields()) {
     auto fieldOffsetInBits = layout.getFieldOffset(field->getFieldIndex());
     if (field->isBitField()) {
       addBitFieldData(field, begin, fieldOffsetInBits);
@@ -186,7 +186,7 @@ void SwiftAggLowering::addBitFieldData(const FieldDecl *bitfield,
                                        uint64_t bitfieldBitBegin) {
   assert(bitfield->isBitField());
   auto &ctx = CGM.getContext();
-  auto width = bitfield->getBitWidthValue(ctx);
+  auto width = bitfield->getBitWidthValue();
 
   // We can ignore zero-width bit-fields.
   if (width == 0) return;
@@ -408,9 +408,10 @@ void SwiftAggLowering::splitVectorEntry(unsigned index) {
 
   CharUnits begin = Entries[index].Begin;
   for (unsigned i = 0; i != numElts; ++i) {
-    Entries[index].Type = eltTy;
-    Entries[index].Begin = begin;
-    Entries[index].End = begin + eltSize;
+    unsigned idx = index + i;
+    Entries[idx].Type = eltTy;
+    Entries[idx].Begin = begin;
+    Entries[idx].End = begin + eltSize;
     begin += eltSize;
   }
 }
@@ -439,7 +440,7 @@ static bool isMergeableEntryType(llvm::Type *type) {
   // merge pointers, but (1) it doesn't currently matter in practice because
   // the chunk size is never greater than the size of a pointer and (2)
   // Swift IRGen uses integer types for a lot of things that are "really"
-  // just storing pointers (like Optional<SomePointer>).  If we ever have a
+  // just storing pointers (like std::optional<SomePointer>).  If we ever have a
   // target that would otherwise combine pointers, we should put some effort
   // into fixing those cases in Swift IRGen and then call out pointer types
   // here.
@@ -590,9 +591,8 @@ SwiftAggLowering::getCoerceAndExpandTypes() const {
       hasPadding = true;
     }
 
-    if (!packed && !entry.Begin.isMultipleOf(
-          CharUnits::fromQuantity(
-            CGM.getDataLayout().getABITypeAlignment(entry.Type))))
+    if (!packed && !entry.Begin.isMultipleOf(CharUnits::fromQuantity(
+                       CGM.getDataLayout().getABITypeAlign(entry.Type))))
       packed = true;
 
     elts.push_back(entry.Type);
@@ -652,17 +652,15 @@ bool swiftcall::shouldPassIndirectly(CodeGenModule &CGM,
 CharUnits swiftcall::getMaximumVoluntaryIntegerSize(CodeGenModule &CGM) {
   // Currently always the size of an ordinary pointer.
   return CGM.getContext().toCharUnitsFromBits(
-           CGM.getContext().getTargetInfo().getPointerWidth(0));
+      CGM.getContext().getTargetInfo().getPointerWidth(LangAS::Default));
 }
 
 CharUnits swiftcall::getNaturalAlignment(CodeGenModule &CGM, llvm::Type *type) {
   // For Swift's purposes, this is always just the store size of the type
   // rounded up to a power of 2.
   auto size = (unsigned long long) getTypeStoreSize(CGM, type).getQuantity();
-  if (!isPowerOf2(size)) {
-    size = 1ULL << (llvm::findLastSet(size, llvm::ZB_Undefined) + 1);
-  }
-  assert(size >= CGM.getDataLayout().getABITypeAlignment(type));
+  size = llvm::bit_ceil(size);
+  assert(CGM.getDataLayout().getABITypeAlign(type) <= size);
   return CharUnits::fromQuantity(size);
 }
 
@@ -730,7 +728,7 @@ void swiftcall::legalizeVectorType(CodeGenModule &CGM, CharUnits origVectorSize,
 
   // The largest size that we're still considering making subvectors of.
   // Always a power of 2.
-  unsigned logCandidateNumElts = llvm::findLastSet(numElts, llvm::ZB_Undefined);
+  unsigned logCandidateNumElts = llvm::Log2_32(numElts);
   unsigned candidateNumElts = 1U << logCandidateNumElts;
   assert(candidateNumElts <= numElts && candidateNumElts * 2 > numElts);
 

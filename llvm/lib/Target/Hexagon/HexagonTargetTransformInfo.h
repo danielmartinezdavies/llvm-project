@@ -43,6 +43,7 @@ class HexagonTTIImpl : public BasicTTIImplBase<HexagonTTIImpl> {
   const HexagonTargetLowering *getTLI() const { return &TLI; }
 
   bool useHVX() const;
+  bool isHVXVectorType(Type *Ty) const;
 
   // Returns the number of vector elements of Ty, if Ty is a vector type,
   // or 1 if Ty is a scalar type. It is incorrect to call this function
@@ -51,7 +52,7 @@ class HexagonTTIImpl : public BasicTTIImplBase<HexagonTTIImpl> {
 
 public:
   explicit HexagonTTIImpl(const HexagonTargetMachine *TM, const Function &F)
-      : BaseT(TM, F.getParent()->getDataLayout()),
+      : BaseT(TM, F.getDataLayout()),
         ST(*TM->getSubtargetImpl(F)), TLI(*ST.getTargetLowering()) {}
 
   /// \name Scalar TTI Implementations
@@ -81,7 +82,7 @@ public:
   /// @{
 
   unsigned getNumberOfRegisters(bool vector) const;
-  unsigned getMaxInterleaveFactor(unsigned VF);
+  unsigned getMaxInterleaveFactor(ElementCount VF);
   TypeSize getRegisterBitWidth(TargetTransformInfo::RegisterKind K) const;
   unsigned getMinVectorRegisterBitWidth() const;
   ElementCount getMinimumVF(unsigned ElemWidth, bool IsScalable) const;
@@ -91,9 +92,7 @@ public:
     return true;
   }
   bool supportsEfficientVectorElementLoadStore() { return false; }
-  bool hasBranchDivergence() {
-    return false;
-  }
+  bool hasBranchDivergence(const Function *F = nullptr) { return false; }
   bool enableAggressiveInterleaving(bool LoopHasReductions) {
     return false;
   }
@@ -104,11 +103,6 @@ public:
     return true;
   }
 
-  InstructionCost getScalarizationOverhead(VectorType *Ty,
-                                           const APInt &DemandedElts,
-                                           bool Insert, bool Extract);
-  InstructionCost getOperandsScalarizationOverhead(ArrayRef<const Value *> Args,
-                                                   ArrayRef<Type *> Tys);
   InstructionCost getCallInstrCost(Function *F, Type *RetTy,
                                    ArrayRef<Type *> Tys,
                                    TTI::TargetCostKind CostKind);
@@ -127,8 +121,8 @@ public:
   InstructionCost getShuffleCost(TTI::ShuffleKind Kind, Type *Tp,
                                  ArrayRef<int> Mask,
                                  TTI::TargetCostKind CostKind, int Index,
-                                 Type *SubTp,
-                                 ArrayRef<const Value *> Args = None);
+                                 Type *SubTp, ArrayRef<const Value *> Args = {},
+                                 const Instruction *CxtI = nullptr);
   InstructionCost getGatherScatterOpCost(unsigned Opcode, Type *DataTy,
                                          const Value *Ptr, bool VariableMask,
                                          Align Alignment,
@@ -138,23 +132,25 @@ public:
       unsigned Opcode, Type *VecTy, unsigned Factor, ArrayRef<unsigned> Indices,
       Align Alignment, unsigned AddressSpace, TTI::TargetCostKind CostKind,
       bool UseMaskForCond = false, bool UseMaskForGaps = false);
-  InstructionCost getCmpSelInstrCost(unsigned Opcode, Type *ValTy, Type *CondTy,
-                                     CmpInst::Predicate VecPred,
-                                     TTI::TargetCostKind CostKind,
-                                     const Instruction *I = nullptr);
+  InstructionCost getCmpSelInstrCost(
+      unsigned Opcode, Type *ValTy, Type *CondTy, CmpInst::Predicate VecPred,
+      TTI::TargetCostKind CostKind,
+      TTI::OperandValueInfo Op1Info = {TTI::OK_AnyValue, TTI::OP_None},
+      TTI::OperandValueInfo Op2Info = {TTI::OK_AnyValue, TTI::OP_None},
+      const Instruction *I = nullptr);
   InstructionCost getArithmeticInstrCost(
       unsigned Opcode, Type *Ty, TTI::TargetCostKind CostKind,
       TTI::OperandValueInfo Op1Info = {TTI::OK_AnyValue, TTI::OP_None},
       TTI::OperandValueInfo Op2Info = {TTI::OK_AnyValue, TTI::OP_None},
-      ArrayRef<const Value *> Args = ArrayRef<const Value *>(),
-      const Instruction *CxtI = nullptr);
+      ArrayRef<const Value *> Args = {}, const Instruction *CxtI = nullptr);
   InstructionCost getCastInstrCost(unsigned Opcode, Type *Dst, Type *Src,
                                    TTI::CastContextHint CCH,
                                    TTI::TargetCostKind CostKind,
                                    const Instruction *I = nullptr);
   using BaseT::getVectorInstrCost;
   InstructionCost getVectorInstrCost(unsigned Opcode, Type *Val,
-                                     unsigned Index);
+                                     TTI::TargetCostKind CostKind,
+                                     unsigned Index, Value *Op0, Value *Op1);
 
   InstructionCost getCFInstrCost(unsigned Opcode, TTI::TargetCostKind CostKind,
                                  const Instruction *I = nullptr) {

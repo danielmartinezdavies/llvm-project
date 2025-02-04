@@ -79,7 +79,7 @@ if (LLVM_ENABLE_DOXYGEN)
     COMMAND ${DOXYGEN_EXECUTABLE} ${CMAKE_CURRENT_BINARY_DIR}/doxygen.cfg
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
     COMMENT "Generating flang doxygen documentation." VERBATIM)
-
+  set_target_properties(doxygen-flang PROPERTIES FOLDER "Flang/Docs")
   if (LLVM_BUILD_DOCS)
    add_dependencies(doxygen doxygen-flang)
   endif()
@@ -126,7 +126,7 @@ if (LLVM_ENABLE_SPHINX)
         ARGS ${CMAKE_CURRENT_BINARY_DIR}/Source/FIR/CreateFIRLangRef.py)
 
       # CLANG_TABLEGEN_EXE variable needs to be set for clang_tablegen to run without error
-      set(CLANG_TABLEGEN_EXE clang-tblgen)
+      find_program(CLANG_TABLEGEN_EXE "clang-tblgen" ${LLVM_TOOLS_BINARY_DIR} NO_DEFAULT_PATH)
       gen_rst_file_from_td(FlangCommandLineReference.rst -gen-opt-docs FlangOptionsDocs.td docs-flang-html)
     endif()
     if (${SPHINX_OUTPUT_MAN})

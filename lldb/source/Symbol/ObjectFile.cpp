@@ -184,6 +184,15 @@ ObjectFileSP ObjectFile::FindPlugin(const lldb::ModuleSP &module_sp,
   return object_file_sp;
 }
 
+bool ObjectFile::IsObjectFile(lldb_private::FileSpec file_spec) {
+  DataBufferSP data_sp;
+  offset_t data_offset = 0;
+  ModuleSP module_sp = std::make_shared<Module>(file_spec);
+  return static_cast<bool>(ObjectFile::FindPlugin(
+      module_sp, &file_spec, 0, FileSystem::Instance().GetByteSize(file_spec),
+      data_sp, data_offset));
+}
+
 size_t ObjectFile::GetModuleSpecifications(const FileSpec &file,
                                            lldb::offset_t file_offset,
                                            lldb::offset_t file_size,
@@ -356,6 +365,10 @@ AddressClass ObjectFile::GetAddressClass(addr_t file_addr) {
           case eSectionTypeDWARFAppleNamespaces:
           case eSectionTypeDWARFAppleObjC:
           case eSectionTypeDWARFGNUDebugAltLink:
+          case eSectionTypeCTF:
+          case eSectionTypeLLDBFormatters:
+          case eSectionTypeLLDBTypeSummaries:
+          case eSectionTypeSwiftModules:
             return AddressClass::eDebug;
           case eSectionTypeEHFrame:
           case eSectionTypeARMexidx:
@@ -443,9 +456,10 @@ AddressClass ObjectFile::GetAddressClass(addr_t file_addr) {
   return AddressClass::eUnknown;
 }
 
-DataBufferSP ObjectFile::ReadMemory(const ProcessSP &process_sp,
-                                    lldb::addr_t addr, size_t byte_size) {
-  DataBufferSP data_sp;
+WritableDataBufferSP ObjectFile::ReadMemory(const ProcessSP &process_sp,
+                                            lldb::addr_t addr,
+                                            size_t byte_size) {
+  WritableDataBufferSP data_sp;
   if (process_sp) {
     std::unique_ptr<DataBufferHeap> data_up(new DataBufferHeap(byte_size, 0));
     Status error;
@@ -549,8 +563,8 @@ size_t ObjectFile::ReadSectionData(Section *section,
 
   // The object file now contains a full mmap'ed copy of the object file
   // data, so just use this
-  return GetData(section->GetFileOffset(), section->GetFileSize(),
-                  section_data);
+  return GetData(section->GetFileOffset(), GetSectionDataSize(section),
+                 section_data);
 }
 
 bool ObjectFile::SplitArchivePathWithObject(llvm::StringRef path_with_object,
@@ -605,15 +619,15 @@ lldb::SymbolType
 ObjectFile::GetSymbolTypeFromName(llvm::StringRef name,
                                   lldb::SymbolType symbol_type_hint) {
   if (!name.empty()) {
-    if (name.startswith("_OBJC_")) {
+    if (name.starts_with("_OBJC_")) {
       // ObjC
-      if (name.startswith("_OBJC_CLASS_$_"))
+      if (name.starts_with("_OBJC_CLASS_$_"))
         return lldb::eSymbolTypeObjCClass;
-      if (name.startswith("_OBJC_METACLASS_$_"))
+      if (name.starts_with("_OBJC_METACLASS_$_"))
         return lldb::eSymbolTypeObjCMetaClass;
-      if (name.startswith("_OBJC_IVAR_$_"))
+      if (name.starts_with("_OBJC_IVAR_$_"))
         return lldb::eSymbolTypeObjCIVar;
-    } else if (name.startswith(".objc_class_name_")) {
+    } else if (name.starts_with(".objc_class_name_")) {
       // ObjC v1
       return lldb::eSymbolTypeObjCClass;
     }
@@ -632,8 +646,7 @@ ObjectFile::GetLoadableData(Target &target) {
   for (size_t i = 0; i < section_count; ++i) {
     LoadableData loadable;
     SectionSP section_sp = section_list->GetSectionAtIndex(i);
-    loadable.Dest =
-        target.GetSectionLoadList().GetSectionLoadAddress(section_sp);
+    loadable.Dest = target.GetSectionLoadAddress(section_sp);
     if (loadable.Dest == LLDB_INVALID_ADDRESS)
       continue;
     // We can skip sections like bss
@@ -761,3 +774,34 @@ uint32_t ObjectFile::GetCacheHash() {
   m_cache_hash = llvm::djbHash(strm.GetString());
   return *m_cache_hash;
 }
+
+namespace llvm {
+namespace json {
+
+bool fromJSON(const llvm::json::Value &value,
+              lldb_private::ObjectFile::Type &type, llvm::json::Path path) {
+  if (auto str = value.getAsString()) {
+    type = llvm::StringSwitch<ObjectFile::Type>(*str)
+               .Case("corefile", ObjectFile::eTypeCoreFile)
+               .Case("executable", ObjectFile::eTypeExecutable)
+               .Case("debuginfo", ObjectFile::eTypeDebugInfo)
+               .Case("dynamiclinker", ObjectFile::eTypeDynamicLinker)
+               .Case("objectfile", ObjectFile::eTypeObjectFile)
+               .Case("sharedlibrary", ObjectFile::eTypeSharedLibrary)
+               .Case("stublibrary", ObjectFile::eTypeStubLibrary)
+               .Case("jit", ObjectFile::eTypeJIT)
+               .Case("unknown", ObjectFile::eTypeUnknown)
+               .Default(ObjectFile::eTypeInvalid);
+
+    if (type == ObjectFile::eTypeInvalid) {
+      path.report("invalid object type");
+      return false;
+    }
+
+    return true;
+  }
+  path.report("expected string");
+  return false;
+}
+} // namespace json
+} // namespace llvm

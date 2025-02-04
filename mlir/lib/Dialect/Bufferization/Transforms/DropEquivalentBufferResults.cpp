@@ -27,12 +27,19 @@
 // function argument, it is also considered equivalent. A cast is inserted at
 // the call site in that case.
 
-#include "PassDetail.h"
 #include "mlir/Dialect/Bufferization/Transforms/Passes.h"
+
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/Pass/Pass.h"
+
+namespace mlir {
+namespace bufferization {
+#define GEN_PASS_DEF_DROPEQUIVALENTBUFFERRESULTS
+#include "mlir/Dialect/Bufferization/Transforms/Passes.h.inc"
+} // namespace bufferization
+} // namespace mlir
 
 using namespace mlir;
 
@@ -52,7 +59,8 @@ static func::ReturnOp getAssumedUniqueReturnOp(func::FuncOp funcOp) {
 
 /// Return the func::FuncOp called by `callOp`.
 static func::FuncOp getCalledFunction(CallOpInterface callOp) {
-  SymbolRefAttr sym = callOp.getCallableForCallee().dyn_cast<SymbolRefAttr>();
+  SymbolRefAttr sym =
+      llvm::dyn_cast_if_present<SymbolRefAttr>(callOp.getCallableForCallee());
   if (!sym)
     return nullptr;
   return dyn_cast_or_null<func::FuncOp>(
@@ -62,6 +70,14 @@ static func::FuncOp getCalledFunction(CallOpInterface callOp) {
 LogicalResult
 mlir::bufferization::dropEquivalentBufferResults(ModuleOp module) {
   IRRewriter rewriter(module.getContext());
+
+  DenseMap<func::FuncOp, DenseSet<func::CallOp>> callerMap;
+  // Collect the mapping of functions to their call sites.
+  module.walk([&](func::CallOp callOp) {
+    if (func::FuncOp calledFunc = getCalledFunction(callOp)) {
+      callerMap[calledFunc].insert(callOp);
+    }
+  });
 
   for (auto funcOp : module.getOps<func::FuncOp>()) {
     if (funcOp.isExternal())
@@ -75,7 +91,7 @@ mlir::bufferization::dropEquivalentBufferResults(ModuleOp module) {
     SmallVector<Value> newReturnValues;
     BitVector erasedResultIndices(funcOp.getFunctionType().getNumResults());
     DenseMap<int64_t, int64_t> resultToArgs;
-    for (const auto &it : llvm::enumerate(returnOp.operands())) {
+    for (const auto &it : llvm::enumerate(returnOp.getOperands())) {
       bool erased = false;
       for (BlockArgument bbArg : funcOp.getArguments()) {
         Value val = it.value();
@@ -98,16 +114,13 @@ mlir::bufferization::dropEquivalentBufferResults(ModuleOp module) {
 
     // Update function.
     funcOp.eraseResults(erasedResultIndices);
-    returnOp.operandsMutable().assign(newReturnValues);
+    returnOp.getOperandsMutable().assign(newReturnValues);
 
     // Update function calls.
-    module.walk([&](func::CallOp callOp) {
-      if (getCalledFunction(callOp) != funcOp)
-        return WalkResult::skip();
-
+    for (func::CallOp callOp : callerMap[funcOp]) {
       rewriter.setInsertionPoint(callOp);
       auto newCallOp = rewriter.create<func::CallOp>(callOp.getLoc(), funcOp,
-                                                     callOp.operands());
+                                                     callOp.getOperands());
       SmallVector<Value> newResults;
       int64_t nextResult = 0;
       for (int64_t i = 0; i < callOp.getNumResults(); ++i) {
@@ -128,8 +141,7 @@ mlir::bufferization::dropEquivalentBufferResults(ModuleOp module) {
         newResults.push_back(replacement);
       }
       rewriter.replaceOp(callOp, newResults);
-      return WalkResult::advance();
-    });
+    }
   }
 
   return success();
@@ -137,7 +149,8 @@ mlir::bufferization::dropEquivalentBufferResults(ModuleOp module) {
 
 namespace {
 struct DropEquivalentBufferResultsPass
-    : DropEquivalentBufferResultsBase<DropEquivalentBufferResultsPass> {
+    : bufferization::impl::DropEquivalentBufferResultsBase<
+          DropEquivalentBufferResultsPass> {
   void runOnOperation() override {
     if (failed(bufferization::dropEquivalentBufferResults(getOperation())))
       return signalPassFailure();

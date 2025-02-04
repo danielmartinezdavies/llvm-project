@@ -7,7 +7,7 @@
 //===----------------------------------------------------------------------===//
 ///
 /// \file
-/// Implements a combinartorial exploration of all the different
+/// Implements a combinatorial exploration of all the different
 /// linebreaks unwrapped lines can be formatted in.
 ///
 //===----------------------------------------------------------------------===//
@@ -16,8 +16,6 @@
 #define LLVM_CLANG_LIB_FORMAT_UNWRAPPEDLINEFORMATTER_H
 
 #include "ContinuationIndenter.h"
-#include "clang/Format/Format.h"
-#include <map>
 
 namespace clang {
 namespace format {

@@ -19,9 +19,9 @@
 #include "flang/Semantics/semantics.h"
 
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/OwningOpRef.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/IR/Module.h"
-#include "llvm/Target/TargetMachine.h"
 #include <memory>
 
 namespace Fortran::frontend {
@@ -29,8 +29,12 @@ namespace Fortran::frontend {
 // TODO: This is a copy from f18.cpp. It doesn't really belong here and should
 // be moved to a more suitable place in future.
 struct MeasurementVisitor {
-  template <typename A> bool Pre(const A &) { return true; }
-  template <typename A> void Post(const A &) {
+  template <typename A>
+  bool Pre(const A &) {
+    return true;
+  }
+  template <typename A>
+  void Post(const A &) {
     ++objects;
     bytes += sizeof(A);
   }
@@ -105,6 +109,10 @@ class DebugUnparseWithSymbolsAction : public PrescanAndSemaAction {
   void executeAction() override;
 };
 
+class DebugUnparseWithModulesAction : public PrescanAndSemaAction {
+  void executeAction() override;
+};
+
 class DebugUnparseAction : public PrescanAndSemaAction {
   void executeAction() override;
 };
@@ -148,8 +156,8 @@ public:
   /// \param extension  The extension to use for the output file (ignored when
   ///                   the user decides to print to stdout via `-o -`)
   /// \return           Null on error, ostream for the output file otherwise
-  std::unique_ptr<llvm::raw_pwrite_stream> createOutputFile(
-      llvm::StringRef extension);
+  std::unique_ptr<llvm::raw_pwrite_stream>
+  createOutputFile(llvm::StringRef extension);
 };
 
 //===----------------------------------------------------------------------===//
@@ -184,10 +192,11 @@ class DebugDumpAllAction : public PrescanAndSemaDebugAction {
 /// maintain some level of consistency/similarity between the drivers.
 enum class BackendActionTy {
   Backend_EmitAssembly, ///< Emit native assembly files
-  Backend_EmitObj, ///< Emit native object files
-  Backend_EmitBC, ///< Emit LLVM bitcode files
-  Backend_EmitLL, ///< Emit human-readable LLVM assembly
-  Backend_EmitMLIR ///< Emit MLIR files
+  Backend_EmitObj,      ///< Emit native object files
+  Backend_EmitBC,       ///< Emit LLVM bitcode files
+  Backend_EmitLL,       ///< Emit human-readable LLVM assembly
+  Backend_EmitFIR,      ///< Emit FIR files, possibly lowering via HLFIR
+  Backend_EmitHLFIR,    ///< Emit HLFIR files before any passes run
 };
 
 /// Abstract base class for actions that generate code (MLIR, LLVM IR, assembly
@@ -199,8 +208,6 @@ class CodeGenAction : public FrontendAction {
   void executeAction() override;
   /// Runs prescan, parsing, sema and lowers to MLIR.
   bool beginSourceFileAction() override;
-  /// Sets up LLVM's TargetMachine, configures llvmModule accordingly.
-  void setUpTargetMachine();
   /// Runs the optimization (aka middle-end) pipeline on the LLVM module
   /// associated with this action.
   void runOptimizationPipeline(llvm::raw_pwrite_stream &os);
@@ -209,13 +216,22 @@ protected:
   CodeGenAction(BackendActionTy act) : action{act} {};
   /// @name MLIR
   /// {
-  std::unique_ptr<mlir::ModuleOp> mlirModule;
   std::unique_ptr<mlir::MLIRContext> mlirCtx;
+  mlir::OwningOpRef<mlir::ModuleOp> mlirModule;
   /// }
 
   /// @name LLVM IR
   std::unique_ptr<llvm::LLVMContext> llvmCtx;
   std::unique_ptr<llvm::Module> llvmModule;
+
+  /// Embeds offload objects specified with -fembed-offload-object
+  void embedOffloadObjects();
+
+  /// Links in BC libraries spefified with -mlink-builtin-bitcode
+  void linkBuiltinBCLibs();
+
+  /// Runs pass pipeline to lower HLFIR into FIR
+  void lowerHLFIRToFIR();
 
   /// Generates an LLVM IR module from CodeGenAction::mlirModule and saves it
   /// in CodeGenAction::llvmModule.
@@ -223,15 +239,19 @@ protected:
 
   BackendActionTy action;
 
-  std::unique_ptr<llvm::TargetMachine> tm;
   /// }
 public:
   ~CodeGenAction() override;
 };
 
-class EmitMLIRAction : public CodeGenAction {
+class EmitFIRAction : public CodeGenAction {
 public:
-  EmitMLIRAction() : CodeGenAction(BackendActionTy::Backend_EmitMLIR) {}
+  EmitFIRAction() : CodeGenAction(BackendActionTy::Backend_EmitFIR) {}
+};
+
+class EmitHLFIRAction : public CodeGenAction {
+public:
+  EmitHLFIRAction() : CodeGenAction(BackendActionTy::Backend_EmitHLFIR) {}
 };
 
 class EmitLLVMAction : public CodeGenAction {

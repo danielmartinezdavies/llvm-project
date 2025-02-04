@@ -1,28 +1,24 @@
 import os
-from clang.cindex import Config
-if 'CLANG_LIBRARY_PATH' in os.environ:
-    Config.set_library_path(os.environ['CLANG_LIBRARY_PATH'])
 
-from clang.cindex import CursorKind
-from clang.cindex import Index
-from clang.cindex import SourceLocation
-from clang.cindex import SourceRange
-from clang.cindex import TokenKind
+from clang.cindex import Config, CursorKind, SourceLocation, SourceRange, TokenKind
 
-from .util import get_tu
+if "CLANG_LIBRARY_PATH" in os.environ:
+    Config.set_library_path(os.environ["CLANG_LIBRARY_PATH"])
 
 import unittest
+
+from .util import get_tu
 
 
 class TestTokens(unittest.TestCase):
     def test_token_to_cursor(self):
         """Ensure we can obtain a Cursor from a Token instance."""
-        tu = get_tu('int i = 5;')
-        r = tu.get_extent('t.c', (0, 9))
+        tu = get_tu("int i = 5;")
+        r = tu.get_extent("t.c", (0, 9))
         tokens = list(tu.get_tokens(extent=r))
 
         self.assertEqual(len(tokens), 4)
-        self.assertEqual(tokens[1].spelling, 'i')
+        self.assertEqual(tokens[1].spelling, "i")
         self.assertEqual(tokens[1].kind, TokenKind.IDENTIFIER)
 
         cursor = tokens[1].cursor
@@ -32,8 +28,8 @@ class TestTokens(unittest.TestCase):
     def test_token_location(self):
         """Ensure Token.location works."""
 
-        tu = get_tu('int foo = 10;')
-        r = tu.get_extent('t.c', (0, 11))
+        tu = get_tu("int foo = 10;")
+        r = tu.get_extent("t.c", (0, 11))
 
         tokens = list(tu.get_tokens(extent=r))
         self.assertEqual(len(tokens), 4)
@@ -46,8 +42,8 @@ class TestTokens(unittest.TestCase):
 
     def test_token_extent(self):
         """Ensure Token.extent works."""
-        tu = get_tu('int foo = 10;')
-        r = tu.get_extent('t.c', (0, 11))
+        tu = get_tu("int foo = 10;")
+        r = tu.get_extent("t.c", (0, 11))
 
         tokens = list(tu.get_tokens(extent=r))
         self.assertEqual(len(tokens), 4)

@@ -16,11 +16,11 @@
 
 #include "llvm/ADT/StringMap.h"
 #include "llvm/CodeGen/DebugHandlerBase.h"
+#include "llvm/DebugInfo/BTF/BTF.h"
 #include <cstdint>
 #include <map>
 #include <set>
 #include <unordered_map>
-#include "BTF.h"
 
 namespace llvm {
 
@@ -338,16 +338,23 @@ class BTFDebug : public DebugHandlerBase {
   void visitMapDefType(const DIType *Ty, uint32_t &TypeId);
   /// @}
 
+  /// Check whether the type is a forward declaration candidate or not.
+  bool IsForwardDeclCandidate(const DIType *Base);
+
   /// Get the file content for the subprogram. Certain lines of the file
   /// later may be put into string table and referenced by line info.
-  std::string populateFileContent(const DISubprogram *SP);
+  std::string populateFileContent(const DIFile *File);
 
   /// Construct a line info.
-  void constructLineInfo(const DISubprogram *SP, MCSymbol *Label, uint32_t Line,
+  void constructLineInfo(MCSymbol *Label, const DIFile *File, uint32_t Line,
                          uint32_t Column);
 
   /// Generate types and variables for globals.
   void processGlobals(bool ProcessingMapDef);
+
+  /// Process global variable initializer in pursuit for function
+  /// pointers.
+  void processGlobalInitializer(const Constant *C);
 
   /// Generate types for function prototypes.
   void processFuncPrototypes(const Function *);
@@ -355,6 +362,10 @@ class BTFDebug : public DebugHandlerBase {
   /// Generate types for decl annotations.
   void processDeclAnnotations(DINodeArray Annotations, uint32_t BaseTypeId,
                               int ComponentId);
+
+  /// Generate types for DISubprogram and it's arguments.
+  uint32_t processDISubprogram(const DISubprogram *SP, uint32_t ProtoTypeId,
+                               uint8_t Scope);
 
   /// Generate BTF type_tag's. If BaseTypeId is nonnegative, the last
   /// BTF type_tag in the chain points to BaseTypeId. Otherwise, it points to
@@ -412,8 +423,6 @@ public:
            "DIType not added in the BDIToIdMap");
     return DIToIdMap[Ty];
   }
-
-  void setSymbolSize(const MCSymbol *Symbol, uint64_t Size) override {}
 
   /// Process beginning of an instruction.
   void beginInstruction(const MachineInstr *MI) override;

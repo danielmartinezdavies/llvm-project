@@ -469,7 +469,7 @@ public:
     assert(Last.isValid());
     assert(First == Last ||
            TBTM.sourceManager().isBeforeInTranslationUnit(First, Last));
-    return llvm::makeArrayRef(findToken(First), std::next(findToken(Last)));
+    return llvm::ArrayRef(findToken(First), std::next(findToken(Last)));
   }
 
   ArrayRef<syntax::Token>
@@ -552,7 +552,7 @@ private:
     assert(Tokens.back().kind() != tok::eof);
     // We never consume 'eof', so looking at the next token is ok.
     if (Tokens.back().kind() != tok::semi && Tokens.end()->kind() == tok::semi)
-      return llvm::makeArrayRef(Tokens.begin(), Tokens.end() + 1);
+      return llvm::ArrayRef(Tokens.begin(), Tokens.end() + 1);
     return Tokens;
   }
 
@@ -735,7 +735,8 @@ public:
     auto *Declaration =
         cast<syntax::SimpleDeclaration>(handleFreeStandingTagDecl(C));
     foldExplicitTemplateInstantiation(
-        Builder.getTemplateRange(C), Builder.findToken(C->getExternLoc()),
+        Builder.getTemplateRange(C),
+        Builder.findToken(C->getExternKeywordLoc()),
         Builder.findToken(C->getTemplateKeywordLoc()), Declaration, C);
     return true;
   }
@@ -768,7 +769,7 @@ public:
     // Build TemplateDeclaration nodes if we had template parameters.
     auto ConsumeTemplateParameters = [&](const TemplateParameterList &L) {
       const auto *TemplateKW = Builder.findToken(L.getTemplateLoc());
-      auto R = llvm::makeArrayRef(TemplateKW, DeclarationRange.end());
+      auto R = llvm::ArrayRef(TemplateKW, DeclarationRange.end());
       Result =
           foldTemplateDeclaration(R, TemplateKW, DeclarationRange, nullptr);
       DeclarationRange = R;
@@ -1639,7 +1640,7 @@ private:
     auto Return = Builder.getRange(ReturnedType.getSourceRange());
     const auto *Arrow = Return.begin() - 1;
     assert(Arrow->kind() == tok::arrow);
-    auto Tokens = llvm::makeArrayRef(Arrow, Return.end());
+    auto Tokens = llvm::ArrayRef(Arrow, Return.end());
     Builder.markChildToken(Arrow, syntax::NodeRole::ArrowToken);
     if (ReturnDeclarator)
       Builder.markChild(ReturnDeclarator, syntax::NodeRole::Declarator);

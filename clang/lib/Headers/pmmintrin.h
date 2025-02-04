@@ -17,8 +17,21 @@
 #include <emmintrin.h>
 
 /* Define the default attributes for the functions in this file. */
-#define __DEFAULT_FN_ATTRS \
-  __attribute__((__always_inline__, __nodebug__, __target__("sse3"), __min_vector_width__(128)))
+#if defined(__EVEX512__) && !defined(__AVX10_1_512__)
+#define __DEFAULT_FN_ATTRS                                                     \
+  __attribute__((__always_inline__, __nodebug__,                               \
+                 __target__("sse3,no-evex512"), __min_vector_width__(128)))
+#else
+#define __DEFAULT_FN_ATTRS                                                     \
+  __attribute__((__always_inline__, __nodebug__, __target__("sse3"),           \
+                 __min_vector_width__(128)))
+#endif
+
+#if defined(__cplusplus) && (__cplusplus >= 201103L)
+#define __DEFAULT_FN_ATTRS_CONSTEXPR __DEFAULT_FN_ATTRS constexpr
+#else
+#define __DEFAULT_FN_ATTRS_CONSTEXPR __DEFAULT_FN_ATTRS
+#endif
 
 /// Loads data from an unaligned memory location to elements in a 128-bit
 ///    vector.
@@ -121,7 +134,7 @@ _mm_hsub_ps(__m128 __a, __m128 __b)
 ///    destination.
 /// \returns A 128-bit vector of [4 x float] containing the moved and duplicated
 ///    values.
-static __inline__ __m128 __DEFAULT_FN_ATTRS
+static __inline__ __m128 __DEFAULT_FN_ATTRS_CONSTEXPR
 _mm_movehdup_ps(__m128 __a)
 {
   return __builtin_shufflevector((__v4sf)__a, (__v4sf)__a, 1, 1, 3, 3);
@@ -142,7 +155,7 @@ _mm_movehdup_ps(__m128 __a)
 ///    destination.
 /// \returns A 128-bit vector of [4 x float] containing the moved and duplicated
 ///    values.
-static __inline__ __m128 __DEFAULT_FN_ATTRS
+static __inline__ __m128 __DEFAULT_FN_ATTRS_CONSTEXPR
 _mm_moveldup_ps(__m128 __a)
 {
   return __builtin_shufflevector((__v4sf)__a, (__v4sf)__a, 0, 0, 2, 2);
@@ -243,7 +256,7 @@ _mm_hsub_pd(__m128d __a, __m128d __b)
 ///    [127:64] and [63:0] of the destination.
 /// \returns A 128-bit vector of [2 x double] containing the moved and
 ///    duplicated values.
-static __inline__ __m128d __DEFAULT_FN_ATTRS
+static __inline__ __m128d __DEFAULT_FN_ATTRS_CONSTEXPR
 _mm_movedup_pd(__m128d __a)
 {
   return __builtin_shufflevector((__v2df)__a, (__v2df)__a, 0, 0);
@@ -253,9 +266,12 @@ _mm_movedup_pd(__m128d __a)
 ///    the processor in the monitor event pending state. Data stored in the
 ///    monitored address range causes the processor to exit the pending state.
 ///
+/// The \c MONITOR instruction can be used in kernel mode, and in other modes
+/// if MSR <c> C001_0015h[MonMwaitUserEn] </c> is set.
+///
 /// \headerfile <x86intrin.h>
 ///
-/// This intrinsic corresponds to the <c> MONITOR </c> instruction.
+/// This intrinsic corresponds to the \c MONITOR instruction.
 ///
 /// \param __p
 ///    The memory range to be monitored. The size of the range is determined by
@@ -270,19 +286,22 @@ _mm_monitor(void const *__p, unsigned __extensions, unsigned __hints)
   __builtin_ia32_monitor(__p, __extensions, __hints);
 }
 
-/// Used with the MONITOR instruction to wait while the processor is in
+/// Used with the \c MONITOR instruction to wait while the processor is in
 ///    the monitor event pending state. Data stored in the monitored address
-///    range causes the processor to exit the pending state.
+///    range, or an interrupt, causes the processor to exit the pending state.
+///
+/// The \c MWAIT instruction can be used in kernel mode, and in other modes if
+/// MSR <c> C001_0015h[MonMwaitUserEn] </c> is set.
 ///
 /// \headerfile <x86intrin.h>
 ///
-/// This intrinsic corresponds to the <c> MWAIT </c> instruction.
+/// This intrinsic corresponds to the \c MWAIT instruction.
 ///
 /// \param __extensions
-///    Optional extensions for the monitoring state, which may vary by
+///    Optional extensions for the monitoring state, which can vary by
 ///    processor.
 /// \param __hints
-///    Optional hints for the monitoring state, which may vary by processor.
+///    Optional hints for the monitoring state, which can vary by processor.
 static __inline__ void __DEFAULT_FN_ATTRS
 _mm_mwait(unsigned __extensions, unsigned __hints)
 {
@@ -290,5 +309,6 @@ _mm_mwait(unsigned __extensions, unsigned __hints)
 }
 
 #undef __DEFAULT_FN_ATTRS
+#undef __DEFAULT_FN_ATTRS_CONSTEXPR
 
 #endif /* __PMMINTRIN_H */

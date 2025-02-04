@@ -17,9 +17,7 @@
 
 using namespace clang::ast_matchers;
 
-namespace clang {
-namespace tidy {
-namespace cppcoreguidelines {
+namespace clang::tidy::cppcoreguidelines {
 
 SpecialMemberFunctionsCheck::SpecialMemberFunctionsCheck(
     StringRef Name, ClangTidyContext *Context)
@@ -27,7 +25,9 @@ SpecialMemberFunctionsCheck::SpecialMemberFunctionsCheck(
                                          "AllowMissingMoveFunctions", false)),
       AllowSoleDefaultDtor(Options.get("AllowSoleDefaultDtor", false)),
       AllowMissingMoveFunctionsWhenCopyIsDeleted(
-          Options.get("AllowMissingMoveFunctionsWhenCopyIsDeleted", false)) {}
+          Options.get("AllowMissingMoveFunctionsWhenCopyIsDeleted", false)),
+      AllowImplicitlyDeletedCopyOrMove(
+          Options.get("AllowImplicitlyDeletedCopyOrMove", false)) {}
 
 void SpecialMemberFunctionsCheck::storeOptions(
     ClangTidyOptions::OptionMap &Opts) {
@@ -35,17 +35,34 @@ void SpecialMemberFunctionsCheck::storeOptions(
   Options.store(Opts, "AllowSoleDefaultDtor", AllowSoleDefaultDtor);
   Options.store(Opts, "AllowMissingMoveFunctionsWhenCopyIsDeleted",
                 AllowMissingMoveFunctionsWhenCopyIsDeleted);
+  Options.store(Opts, "AllowImplicitlyDeletedCopyOrMove",
+                AllowImplicitlyDeletedCopyOrMove);
+}
+
+std::optional<TraversalKind>
+SpecialMemberFunctionsCheck::getCheckTraversalKind() const {
+  return AllowImplicitlyDeletedCopyOrMove ? TK_AsIs
+                                          : TK_IgnoreUnlessSpelledInSource;
 }
 
 void SpecialMemberFunctionsCheck::registerMatchers(MatchFinder *Finder) {
+  auto IsNotImplicitOrDeleted = anyOf(unless(isImplicit()), isDeleted());
+
   Finder->addMatcher(
       cxxRecordDecl(
-          eachOf(has(cxxDestructorDecl().bind("dtor")),
-                 has(cxxConstructorDecl(isCopyConstructor()).bind("copy-ctor")),
-                 has(cxxMethodDecl(isCopyAssignmentOperator())
+          unless(isImplicit()),
+          eachOf(has(cxxDestructorDecl(unless(isImplicit())).bind("dtor")),
+                 has(cxxConstructorDecl(isCopyConstructor(),
+                                        IsNotImplicitOrDeleted)
+                         .bind("copy-ctor")),
+                 has(cxxMethodDecl(isCopyAssignmentOperator(),
+                                   IsNotImplicitOrDeleted)
                          .bind("copy-assign")),
-                 has(cxxConstructorDecl(isMoveConstructor()).bind("move-ctor")),
-                 has(cxxMethodDecl(isMoveAssignmentOperator())
+                 has(cxxConstructorDecl(isMoveConstructor(),
+                                        IsNotImplicitOrDeleted)
+                         .bind("move-ctor")),
+                 has(cxxMethodDecl(isMoveAssignmentOperator(),
+                                   IsNotImplicitOrDeleted)
                          .bind("move-assign"))))
           .bind("class-def"),
       this);
@@ -110,10 +127,14 @@ void SpecialMemberFunctionsCheck::check(
   };
 
   if (const auto *Dtor = Result.Nodes.getNodeAs<CXXMethodDecl>("dtor")) {
-    StoreMember({Dtor->isDefaulted()
-                     ? SpecialMemberFunctionKind::DefaultDestructor
-                     : SpecialMemberFunctionKind::NonDefaultDestructor,
-                 Dtor->isDeleted()});
+    SpecialMemberFunctionKind DestructorType =
+        SpecialMemberFunctionKind::Destructor;
+    if (Dtor->isDefined()) {
+      DestructorType = Dtor->getDefinition()->isDefaulted()
+                           ? SpecialMemberFunctionKind::DefaultDestructor
+                           : SpecialMemberFunctionKind::NonDefaultDestructor;
+    }
+    StoreMember({DestructorType, Dtor->isDeleted()});
   }
 
   std::initializer_list<std::pair<std::string, SpecialMemberFunctionKind>>
@@ -125,7 +146,8 @@ void SpecialMemberFunctionsCheck::check(
   for (const auto &KV : Matchers)
     if (const auto *MethodDecl =
             Result.Nodes.getNodeAs<CXXMethodDecl>(KV.first)) {
-      StoreMember({KV.second, MethodDecl->isDeleted()});
+      StoreMember(
+          {KV.second, MethodDecl->isDeleted(), MethodDecl->isImplicit()});
     }
 }
 
@@ -142,7 +164,13 @@ void SpecialMemberFunctionsCheck::checkForMissingMembers(
 
   auto HasMember = [&](SpecialMemberFunctionKind Kind) {
     return llvm::any_of(DefinedMembers, [Kind](const auto &Data) {
-      return Data.FunctionKind == Kind;
+      return Data.FunctionKind == Kind && !Data.IsImplicit;
+    });
+  };
+
+  auto HasImplicitDeletedMember = [&](SpecialMemberFunctionKind Kind) {
+    return llvm::any_of(DefinedMembers, [Kind](const auto &Data) {
+      return Data.FunctionKind == Kind && Data.IsImplicit && Data.IsDeleted;
     });
   };
 
@@ -152,15 +180,24 @@ void SpecialMemberFunctionsCheck::checkForMissingMembers(
     });
   };
 
-  auto RequireMember = [&](SpecialMemberFunctionKind Kind) {
-    if (!HasMember(Kind))
-      MissingMembers.push_back(Kind);
+  auto RequireMembers = [&](SpecialMemberFunctionKind Kind1,
+                            SpecialMemberFunctionKind Kind2) {
+    if (AllowImplicitlyDeletedCopyOrMove && HasImplicitDeletedMember(Kind1) &&
+        HasImplicitDeletedMember(Kind2))
+      return;
+
+    if (!HasMember(Kind1))
+      MissingMembers.push_back(Kind1);
+
+    if (!HasMember(Kind2))
+      MissingMembers.push_back(Kind2);
   };
 
   bool RequireThree =
       HasMember(SpecialMemberFunctionKind::NonDefaultDestructor) ||
       (!AllowSoleDefaultDtor &&
-       HasMember(SpecialMemberFunctionKind::DefaultDestructor)) ||
+       (HasMember(SpecialMemberFunctionKind::Destructor) ||
+        HasMember(SpecialMemberFunctionKind::DefaultDestructor))) ||
       HasMember(SpecialMemberFunctionKind::CopyConstructor) ||
       HasMember(SpecialMemberFunctionKind::CopyAssignment) ||
       HasMember(SpecialMemberFunctionKind::MoveConstructor) ||
@@ -172,12 +209,13 @@ void SpecialMemberFunctionsCheck::checkForMissingMembers(
                      HasMember(SpecialMemberFunctionKind::MoveAssignment);
 
   if (RequireThree) {
-    if (!HasMember(SpecialMemberFunctionKind::DefaultDestructor) &&
+    if (!HasMember(SpecialMemberFunctionKind::Destructor) &&
+        !HasMember(SpecialMemberFunctionKind::DefaultDestructor) &&
         !HasMember(SpecialMemberFunctionKind::NonDefaultDestructor))
       MissingMembers.push_back(SpecialMemberFunctionKind::Destructor);
 
-    RequireMember(SpecialMemberFunctionKind::CopyConstructor);
-    RequireMember(SpecialMemberFunctionKind::CopyAssignment);
+    RequireMembers(SpecialMemberFunctionKind::CopyConstructor,
+                   SpecialMemberFunctionKind::CopyAssignment);
   }
 
   if (RequireFive &&
@@ -185,20 +223,20 @@ void SpecialMemberFunctionsCheck::checkForMissingMembers(
         (IsDeleted(SpecialMemberFunctionKind::CopyConstructor) &&
          IsDeleted(SpecialMemberFunctionKind::CopyAssignment)))) {
     assert(RequireThree);
-    RequireMember(SpecialMemberFunctionKind::MoveConstructor);
-    RequireMember(SpecialMemberFunctionKind::MoveAssignment);
+    RequireMembers(SpecialMemberFunctionKind::MoveConstructor,
+                   SpecialMemberFunctionKind::MoveAssignment);
   }
 
   if (!MissingMembers.empty()) {
     llvm::SmallVector<SpecialMemberFunctionKind, 5> DefinedMemberKinds;
-    llvm::transform(DefinedMembers, std::back_inserter(DefinedMemberKinds),
-                    [](const auto &Data) { return Data.FunctionKind; });
+    for (const auto &Data : DefinedMembers) {
+      if (!Data.IsImplicit)
+        DefinedMemberKinds.push_back(Data.FunctionKind);
+    }
     diag(ID.first, "class '%0' defines %1 but does not define %2")
         << ID.second << cppcoreguidelines::join(DefinedMemberKinds, " and ")
         << cppcoreguidelines::join(MissingMembers, " or ");
   }
 }
 
-} // namespace cppcoreguidelines
-} // namespace tidy
-} // namespace clang
+} // namespace clang::tidy::cppcoreguidelines

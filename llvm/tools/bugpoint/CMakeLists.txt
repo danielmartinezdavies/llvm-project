@@ -18,6 +18,7 @@ set(LLVM_LINK_COMPONENTS
   ScalarOpts
   Support
   Target
+  TargetParser
   TransformUtils
   Vectorize
   )
@@ -36,5 +37,6 @@ add_llvm_tool(bugpoint
   DEPENDS
   intrinsics_gen
   SUPPORT_PLUGINS
+
+  EXPORT_SYMBOLS
   )
-export_executable_symbols_for_plugins(bugpoint)

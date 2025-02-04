@@ -1,4 +1,4 @@
-! RUN: bbc -emit-fir %s -o - | FileCheck %s
+! RUN: bbc -emit-fir -hlfir=false %s -o - | FileCheck %s
 
 ! Test character scalar concatenation lowering
 
@@ -21,7 +21,7 @@ subroutine concat_1(a, b)
   ! CHECK-DAG: constant false
   ! CHECK-DAG: %[[to:.*]] = fir.convert %[[temp]] : (!fir.ref<!fir.char<1,?>>) -> !fir.ref<i8>
   ! CHECK-DAG: %[[from:.*]] = fir.convert %[[a]]#0 : (!fir.ref<!fir.char<1,?>>) -> !fir.ref<i8>
-  ! CHECK: fir.call @llvm.memmove.p0.p0.i64(%[[to]], %[[from]], %[[count]], %false) : (!fir.ref<i8>, !fir.ref<i8>, i64, i1) -> ()
+  ! CHECK: fir.call @llvm.memmove.p0.p0.i64(%[[to]], %[[from]], %[[count]], %false) {{.*}}: (!fir.ref<i8>, !fir.ref<i8>, i64, i1) -> ()
 
   ! CHECK: %[[c1_0:.*]] = arith.constant 1
   ! CHECK: %[[count2:.*]] = arith.subi %[[len]], %[[c1_0]]

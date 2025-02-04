@@ -9,8 +9,11 @@
 #include "UnusedParametersCheck.h"
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/ASTLambda.h"
+#include "clang/AST/Attr.h"
+#include "clang/AST/Decl.h"
 #include "clang/AST/RecursiveASTVisitor.h"
 #include "clang/ASTMatchers/ASTMatchFinder.h"
+#include "clang/Basic/SourceManager.h"
 #include "clang/Lex/Lexer.h"
 #include "llvm/ADT/STLExtras.h"
 #include <unordered_map>
@@ -18,14 +21,23 @@
 
 using namespace clang::ast_matchers;
 
-namespace clang {
-namespace tidy {
-namespace misc {
+namespace clang::tidy::misc {
 
 namespace {
 bool isOverrideMethod(const FunctionDecl *Function) {
   if (const auto *MD = dyn_cast<CXXMethodDecl>(Function))
     return MD->size_overridden_methods() > 0 || MD->hasAttr<OverrideAttr>();
+  return false;
+}
+
+bool hasAttrAfterParam(const SourceManager *SourceManager,
+                       const ParmVarDecl *Param) {
+  for (const auto *Attr : Param->attrs()) {
+    if (SourceManager->isBeforeInTranslationUnit(Param->getLocation(),
+                                                 Attr->getLocation())) {
+      return true;
+    }
+  }
   return false;
 }
 } // namespace
@@ -125,10 +137,12 @@ UnusedParametersCheck::~UnusedParametersCheck() = default;
 UnusedParametersCheck::UnusedParametersCheck(StringRef Name,
                                              ClangTidyContext *Context)
     : ClangTidyCheck(Name, Context),
-      StrictMode(Options.getLocalOrGlobal("StrictMode", false)) {}
+      StrictMode(Options.getLocalOrGlobal("StrictMode", false)),
+      IgnoreVirtual(Options.get("IgnoreVirtual", false)) {}
 
 void UnusedParametersCheck::storeOptions(ClangTidyOptions::OptionMap &Opts) {
   Options.store(Opts, "StrictMode", StrictMode);
+  Options.store(Opts, "IgnoreVirtual", IgnoreVirtual);
 }
 
 void UnusedParametersCheck::warnOnUnusedParameter(
@@ -178,26 +192,30 @@ void UnusedParametersCheck::check(const MatchFinder::MatchResult &Result) {
   const auto *Function = Result.Nodes.getNodeAs<FunctionDecl>("function");
   if (!Function->hasWrittenPrototype() || Function->isTemplateInstantiation())
     return;
-  if (const auto *Method = dyn_cast<CXXMethodDecl>(Function))
+  if (const auto *Method = dyn_cast<CXXMethodDecl>(Function)) {
+    if (IgnoreVirtual && Method->isVirtual())
+      return;
     if (Method->isLambdaStaticInvoker())
       return;
+  }
   for (unsigned I = 0, E = Function->getNumParams(); I != E; ++I) {
     const auto *Param = Function->getParamDecl(I);
     if (Param->isUsed() || Param->isReferenced() || !Param->getDeclName() ||
         Param->hasAttr<UnusedAttr>())
       continue;
+    if (hasAttrAfterParam(Result.SourceManager, Param)) {
+      // Due to how grammar works, attributes would be wrongly applied to the
+      // type if we remove the preceding parameter name.
+      continue;
+    }
 
     // In non-strict mode ignore function definitions with empty bodies
     // (constructor initializer counts for non-empty body).
-    if (StrictMode ||
-        (Function->getBody()->child_begin() !=
-         Function->getBody()->child_end()) ||
+    if (StrictMode || !Function->getBody()->children().empty() ||
         (isa<CXXConstructorDecl>(Function) &&
          cast<CXXConstructorDecl>(Function)->getNumCtorInitializers() > 0))
       warnOnUnusedParameter(Result, Function, I);
   }
 }
 
-} // namespace misc
-} // namespace tidy
-} // namespace clang
+} // namespace clang::tidy::misc

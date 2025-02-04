@@ -17,15 +17,16 @@
 
 using namespace clang::ast_matchers;
 
-namespace clang {
-namespace tidy {
-namespace abseil {
+namespace clang::tidy::abseil {
+
+const auto DefaultStringLikeClasses =
+    "::std::basic_string;::std::basic_string_view";
 
 StringFindStartswithCheck::StringFindStartswithCheck(StringRef Name,
                                                      ClangTidyContext *Context)
     : ClangTidyCheck(Name, Context),
       StringLikeClasses(utils::options::parseStringList(
-          Options.get("StringLikeClasses", "::std::basic_string"))),
+          Options.get("StringLikeClasses", DefaultStringLikeClasses))),
       IncludeInserter(Options.getLocalOrGlobal("IncludeStyle",
                                                utils::IncludeSorter::IS_LLVM),
                       areDiagsSelfContained()),
@@ -88,8 +89,7 @@ void StringFindStartswithCheck::check(const MatchFinder::MatchResult &Result) {
   const Expr *Haystack = Result.Nodes.getNodeAs<CXXMemberCallExpr>("findexpr")
                              ->getImplicitObjectArgument();
   assert(Haystack != nullptr);
-  const CXXMethodDecl *FindFun =
-      Result.Nodes.getNodeAs<CXXMethodDecl>("findfun");
+  const auto *FindFun = Result.Nodes.getNodeAs<CXXMethodDecl>("findfun");
   assert(FindFun != nullptr);
 
   bool Rev = FindFun->getName().contains("rfind");
@@ -142,6 +142,4 @@ void StringFindStartswithCheck::storeOptions(
   Options.store(Opts, "AbseilStringsMatchHeader", AbseilStringsMatchHeader);
 }
 
-} // namespace abseil
-} // namespace tidy
-} // namespace clang
+} // namespace clang::tidy::abseil

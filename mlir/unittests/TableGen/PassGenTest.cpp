@@ -13,18 +13,16 @@
 
 std::unique_ptr<mlir::Pass> createTestPassWithCustomConstructor(int v = 0);
 
-#define GEN_PASS_DECL_TESTPASS
-#define GEN_PASS_DECL_TESTPASSWITHOPTIONS
-#define GEN_PASS_DECL_TESTPASSWITHCUSTOMCONSTRUCTOR
+#define GEN_PASS_DECL
 #define GEN_PASS_REGISTRATION
 #include "PassGenTest.h.inc"
 
 #define GEN_PASS_DEF_TESTPASS
 #define GEN_PASS_DEF_TESTPASSWITHOPTIONS
 #define GEN_PASS_DEF_TESTPASSWITHCUSTOMCONSTRUCTOR
-#include "PassGenTest.cpp.inc"
+#include "PassGenTest.h.inc"
 
-struct TestPass : public TestPassBase<TestPass> {
+struct TestPass : public impl::TestPassBase<TestPass> {
   using TestPassBase::TestPassBase;
 
   void runOnOperation() override {}
@@ -54,7 +52,7 @@ TEST(PassGenTest, PassClone) {
 }
 
 struct TestPassWithOptions
-    : public TestPassWithOptionsBase<TestPassWithOptions> {
+    : public impl::TestPassWithOptionsBase<TestPassWithOptions> {
   using TestPassWithOptionsBase::TestPassWithOptionsBase;
 
   void runOnOperation() override {}
@@ -74,8 +72,7 @@ TEST(PassGenTest, PassOptions) {
   TestPassWithOptionsOptions options;
   options.testOption = 57;
 
-  llvm::SmallVector<int64_t, 2> testListOption = {1, 2};
-  options.testListOption = testListOption;
+  options.testListOption = {1, 2};
 
   const auto unwrap = [](const std::unique_ptr<mlir::Pass> &pass) {
     return static_cast<const TestPassWithOptions *>(pass.get());
@@ -89,7 +86,8 @@ TEST(PassGenTest, PassOptions) {
 }
 
 struct TestPassWithCustomConstructor
-    : public TestPassWithCustomConstructorBase<TestPassWithCustomConstructor> {
+    : public impl::TestPassWithCustomConstructorBase<
+          TestPassWithCustomConstructor> {
   explicit TestPassWithCustomConstructor(int v) : extraVal(v) {}
 
   void runOnOperation() override {}

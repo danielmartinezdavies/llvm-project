@@ -42,8 +42,6 @@
 #include "llvm/InitializePasses.h"
 #include "llvm/Pass.h"
 #include "llvm/PassRegistry.h"
-#include "llvm/Support/CodeGen.h"
-#include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
 #include <cassert>
 
@@ -64,7 +62,7 @@ public:
   }
 
   void getAnalysisUsage(AnalysisUsage &AU) const override {
-    AU.addRequired<MachineLoopInfo>();
+    AU.addRequired<MachineLoopInfoWrapperPass>();
     MachineFunctionPass::getAnalysisUsage(AU);
   }
 
@@ -86,7 +84,7 @@ char PPCCTRLoops::ID = 0;
 
 INITIALIZE_PASS_BEGIN(PPCCTRLoops, DEBUG_TYPE, "PowerPC CTR loops generation",
                       false, false)
-INITIALIZE_PASS_DEPENDENCY(MachineLoopInfo)
+INITIALIZE_PASS_DEPENDENCY(MachineLoopInfoWrapperPass)
 INITIALIZE_PASS_END(PPCCTRLoops, DEBUG_TYPE, "PowerPC CTR loops generation",
                     false, false)
 
@@ -95,14 +93,23 @@ FunctionPass *llvm::createPPCCTRLoopsPass() { return new PPCCTRLoops(); }
 bool PPCCTRLoops::runOnMachineFunction(MachineFunction &MF) {
   bool Changed = false;
 
-  auto &MLI = getAnalysis<MachineLoopInfo>();
+  auto &MLI = getAnalysis<MachineLoopInfoWrapperPass>().getLI();
   TII = static_cast<const PPCInstrInfo *>(MF.getSubtarget().getInstrInfo());
   MRI = &MF.getRegInfo();
 
-  for (auto ML : MLI) {
+  for (auto *ML : MLI) {
     if (ML->isOutermost())
       Changed |= processLoop(ML);
   }
+
+#ifndef NDEBUG
+  for (const MachineBasicBlock &BB : MF) {
+    for (const MachineInstr &I : BB)
+      assert((I.getOpcode() != PPC::DecreaseCTRloop &&
+              I.getOpcode() != PPC::DecreaseCTR8loop) &&
+             "CTR loop pseudo is not expanded!");
+  }
+#endif
 
   return Changed;
 }
@@ -114,14 +121,12 @@ bool PPCCTRLoops::isCTRClobber(MachineInstr *MI, bool CheckReads) const {
     // CTR defination inside the callee of a call instruction will not impact
     // the defination of MTCTRloop, so we can use definesRegister() for the
     // check, no need to check the regmask.
-    return (MI->definesRegister(PPC::CTR) &&
-            !MI->registerDefIsDead(PPC::CTR)) ||
-           (MI->definesRegister(PPC::CTR8) &&
-            !MI->registerDefIsDead(PPC::CTR8));
+    return MI->definesRegister(PPC::CTR, /*TRI=*/nullptr) ||
+           MI->definesRegister(PPC::CTR8, /*TRI=*/nullptr);
   }
 
-  if ((MI->modifiesRegister(PPC::CTR) && !MI->registerDefIsDead(PPC::CTR)) ||
-      (MI->modifiesRegister(PPC::CTR8) && !MI->registerDefIsDead(PPC::CTR8)))
+  if (MI->modifiesRegister(PPC::CTR, /*TRI=*/nullptr) ||
+      MI->modifiesRegister(PPC::CTR8, /*TRI=*/nullptr))
     return true;
 
   if (MI->getDesc().isCall())
@@ -129,7 +134,8 @@ bool PPCCTRLoops::isCTRClobber(MachineInstr *MI, bool CheckReads) const {
 
   // We define the CTR in the loop preheader, so if there is any CTR reader in
   // the loop, we also can not use CTR loop form.
-  if (MI->readsRegister(PPC::CTR) || MI->readsRegister(PPC::CTR8))
+  if (MI->readsRegister(PPC::CTR, /*TRI=*/nullptr) ||
+      MI->readsRegister(PPC::CTR8, /*TRI=*/nullptr))
     return true;
 
   return false;
@@ -139,8 +145,8 @@ bool PPCCTRLoops::processLoop(MachineLoop *ML) {
   bool Changed = false;
 
   // Align with HardwareLoop pass, process inner loops first.
-  for (auto I = ML->begin(), E = ML->end(); I != E; ++I)
-    Changed |= processLoop(*I);
+  for (MachineLoop *I : *ML)
+    Changed |= processLoop(I);
 
   // If any inner loop is changed, outter loop must be without hardware loop
   // intrinsics.

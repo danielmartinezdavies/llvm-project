@@ -9,65 +9,178 @@
 #include "TestingSupport.h"
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/Decl.h"
-#include "clang/ASTMatchers/ASTMatchFinder.h"
 #include "clang/ASTMatchers/ASTMatchers.h"
+#include "clang/Analysis/FlowSensitive/DataflowAnalysisContext.h"
 #include "clang/Analysis/FlowSensitive/DataflowEnvironment.h"
 #include "clang/Analysis/FlowSensitive/NoopAnalysis.h"
+#include "clang/Analysis/FlowSensitive/RecordOps.h"
 #include "clang/Analysis/FlowSensitive/StorageLocation.h"
 #include "clang/Analysis/FlowSensitive/Value.h"
 #include "clang/Basic/LangStandard.h"
-#include "llvm/ADT/ArrayRef.h"
+#include "clang/Testing/TestAST.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
-#include "llvm/Support/Casting.h"
 #include "llvm/Testing/Support/Error.h"
 #include "gmock/gmock.h"
 #include "gtest/gtest.h"
+#include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
+
+namespace clang {
+namespace dataflow {
+namespace {
+AST_MATCHER(FunctionDecl, isTemplated) { return Node.isTemplated(); }
+} // namespace
+} // namespace dataflow
+} // namespace clang
 
 namespace {
 
 using namespace clang;
 using namespace dataflow;
 using namespace test;
-using ::testing::_;
-using ::testing::ElementsAre;
+using ::testing::Eq;
 using ::testing::IsNull;
+using ::testing::Ne;
 using ::testing::NotNull;
-using ::testing::Pair;
-using ::testing::SizeIs;
+using ::testing::UnorderedElementsAre;
 
-template <typename Matcher>
-void runDataflow(llvm::StringRef Code, Matcher Match,
-                 DataflowAnalysisOptions Options,
-                 LangStandard::Kind Std = LangStandard::lang_cxx17,
-                 llvm::StringRef TargetFun = "target") {
+// Declares a minimal coroutine library.
+constexpr llvm::StringRef CoroutineLibrary = R"cc(
+struct promise;
+struct task;
+
+namespace std {
+template <class, class...>
+struct coroutine_traits {};
+template <>
+struct coroutine_traits<task> {
+    using promise_type = promise;
+};
+
+template <class Promise = void>
+struct coroutine_handle {
+    static constexpr coroutine_handle from_address(void *addr) { return {}; }
+};
+}  // namespace std
+
+struct awaitable {
+    bool await_ready() const noexcept;
+    void await_suspend(std::coroutine_handle<promise>) const noexcept;
+    void await_resume() const noexcept;
+};
+struct task {};
+struct promise {
+    task get_return_object();
+    awaitable initial_suspend();
+    awaitable final_suspend() noexcept;
+    void unhandled_exception();
+    void return_void();
+};
+)cc";
+
+void runDataflow(
+    llvm::StringRef Code,
+    std::function<
+        void(const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &,
+             ASTContext &)>
+        VerifyResults,
+    DataflowAnalysisOptions Options,
+    LangStandard::Kind Std = LangStandard::lang_cxx17,
+    llvm::StringRef TargetFun = "target") {
+  ASSERT_THAT_ERROR(checkDataflowWithNoopAnalysis(Code, VerifyResults, Options,
+                                                  Std, TargetFun),
+                    llvm::Succeeded());
+}
+
+void runDataflow(
+    llvm::StringRef Code,
+    std::function<
+        void(const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &,
+             ASTContext &)>
+        VerifyResults,
+    LangStandard::Kind Std = LangStandard::lang_cxx17,
+    bool ApplyBuiltinTransfer = true, llvm::StringRef TargetFun = "target") {
+  runDataflow(Code, std::move(VerifyResults),
+              {ApplyBuiltinTransfer ? BuiltinOptions{}
+                                    : std::optional<BuiltinOptions>()},
+              Std, TargetFun);
+}
+
+void runDataflowOnLambda(
+    llvm::StringRef Code,
+    std::function<
+        void(const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &,
+             ASTContext &)>
+        VerifyResults,
+    DataflowAnalysisOptions Options,
+    LangStandard::Kind Std = LangStandard::lang_cxx17) {
   ASSERT_THAT_ERROR(
-      test::checkDataflow<NoopAnalysis>(
-          Code, TargetFun,
-          [Options](ASTContext &C, Environment &) {
-            return NoopAnalysis(C, Options);
-          },
-          [&Match](
-              llvm::ArrayRef<
-                  std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                  Results,
-              ASTContext &ASTCtx) { Match(Results, ASTCtx); },
-          {"-fsyntax-only", "-fno-delayed-template-parsing",
-           "-std=" + std::string(
-                         LangStandard::getLangStandardForKind(Std).getName())}),
+      checkDataflowWithNoopAnalysis(
+          Code,
+          ast_matchers::hasDeclContext(
+              ast_matchers::cxxRecordDecl(ast_matchers::isLambda())),
+          VerifyResults, Options, Std),
       llvm::Succeeded());
 }
 
-template <typename Matcher>
-void runDataflow(llvm::StringRef Code, Matcher Match,
-                 LangStandard::Kind Std = LangStandard::lang_cxx17,
-                 bool ApplyBuiltinTransfer = true,
-                 llvm::StringRef TargetFun = "target") {
-  runDataflow(Code, Match,
-              {ApplyBuiltinTransfer ? TransferOptions{}
-                                    : llvm::Optional<TransferOptions>()},
-              Std, TargetFun);
+void runDataflowOnLambda(
+    llvm::StringRef Code,
+    std::function<
+        void(const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &,
+             ASTContext &)>
+        VerifyResults,
+    LangStandard::Kind Std = LangStandard::lang_cxx17,
+    bool ApplyBuiltinTransfer = true) {
+  runDataflowOnLambda(Code, std::move(VerifyResults),
+                      {ApplyBuiltinTransfer ? BuiltinOptions{}
+                                            : std::optional<BuiltinOptions>()},
+                      Std);
+}
+
+const Formula &getFormula(const ValueDecl &D, const Environment &Env) {
+  return cast<BoolValue>(Env.getValue(D))->formula();
+}
+
+const BindingDecl *findBindingDecl(ASTContext &ASTCtx, std::string_view Name) {
+  using ast_matchers::bindingDecl;
+  using ast_matchers::hasName;
+  auto TargetNodes =
+      ast_matchers::match(bindingDecl(hasName(Name)).bind("v"), ASTCtx);
+  assert(TargetNodes.size() == 1 && "Name must be unique");
+  return ast_matchers::selectFirst<BindingDecl>("v", TargetNodes);
+}
+
+TEST(TransferTest, CNotSupported) {
+  TestInputs Inputs("void target() {}");
+  Inputs.Language = TestLanguage::Lang_C89;
+  clang::TestAST AST(Inputs);
+  const auto *Target =
+      cast<FunctionDecl>(test::findValueDecl(AST.context(), "target"));
+  ASSERT_THAT_ERROR(AdornedCFG::build(*Target).takeError(),
+                    llvm::FailedWithMessage("Can only analyze C++"));
+}
+
+TEST(TransferTest, ObjectiveCNotSupported) {
+  TestInputs Inputs("void target() {}");
+  Inputs.Language = TestLanguage::Lang_OBJC;
+  clang::TestAST AST(Inputs);
+  const auto *Target =
+      cast<FunctionDecl>(test::findValueDecl(AST.context(), "target"));
+  ASSERT_THAT_ERROR(AdornedCFG::build(*Target).takeError(),
+                    llvm::FailedWithMessage("Can only analyze C++"));
+}
+
+TEST(TransferTest, ObjectiveCXXNotSupported) {
+  TestInputs Inputs("void target() {}");
+  Inputs.Language = TestLanguage::Lang_OBJCXX;
+  clang::TestAST AST(Inputs);
+  const auto *Target =
+      cast<FunctionDecl>(test::findValueDecl(AST.context(), "target"));
+  ASSERT_THAT_ERROR(AdornedCFG::build(*Target).takeError(),
+                    llvm::FailedWithMessage("Can only analyze C++"));
 }
 
 TEST(TransferTest, IntVarDeclNotTrackedWhenTransferDisabled) {
@@ -79,17 +192,15 @@ TEST(TransferTest, IntVarDeclNotTrackedWhenTransferDisabled) {
   )";
   runDataflow(
       Code,
-      [](llvm::ArrayRef<
-             std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-             Results,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
          ASTContext &ASTCtx) {
-        ASSERT_THAT(Results, ElementsAre(Pair("p", _)));
-        const Environment &Env = Results[0].second.Env;
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
 
         const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
         ASSERT_THAT(FooDecl, NotNull());
 
-        EXPECT_EQ(Env.getStorageLocation(*FooDecl, SkipPast::None), nullptr);
+        EXPECT_EQ(Env.getStorageLocation(*FooDecl), nullptr);
       },
       LangStandard::lang_cxx17,
       /*ApplyBuiltinTransfer=*/false);
@@ -102,24 +213,22 @@ TEST(TransferTest, BoolVarDecl) {
       // [[p]]
     }
   )";
-  runDataflow(Code,
-              [](llvm::ArrayRef<
-                     std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                     Results,
-                 ASTContext &ASTCtx) {
-                ASSERT_THAT(Results, ElementsAre(Pair("p", _)));
-                const Environment &Env = Results[0].second.Env;
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
 
-                const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
-                ASSERT_THAT(FooDecl, NotNull());
+        const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
+        ASSERT_THAT(FooDecl, NotNull());
 
-                const StorageLocation *FooLoc =
-                    Env.getStorageLocation(*FooDecl, SkipPast::None);
-                ASSERT_TRUE(isa_and_nonnull<ScalarStorageLocation>(FooLoc));
+        const StorageLocation *FooLoc = Env.getStorageLocation(*FooDecl);
+        ASSERT_TRUE(isa_and_nonnull<ScalarStorageLocation>(FooLoc));
 
-                const Value *FooVal = Env.getValue(*FooLoc);
-                EXPECT_TRUE(isa_and_nonnull<BoolValue>(FooVal));
-              });
+        const Value *FooVal = Env.getValue(*FooLoc);
+        EXPECT_TRUE(isa_and_nonnull<BoolValue>(FooVal));
+      });
 }
 
 TEST(TransferTest, IntVarDecl) {
@@ -129,24 +238,103 @@ TEST(TransferTest, IntVarDecl) {
       // [[p]]
     }
   )";
-  runDataflow(Code,
-              [](llvm::ArrayRef<
-                     std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                     Results,
-                 ASTContext &ASTCtx) {
-                ASSERT_THAT(Results, ElementsAre(Pair("p", _)));
-                const Environment &Env = Results[0].second.Env;
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
 
-                const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
-                ASSERT_THAT(FooDecl, NotNull());
+        const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
+        ASSERT_THAT(FooDecl, NotNull());
 
-                const StorageLocation *FooLoc =
-                    Env.getStorageLocation(*FooDecl, SkipPast::None);
-                ASSERT_TRUE(isa_and_nonnull<ScalarStorageLocation>(FooLoc));
+        const StorageLocation *FooLoc = Env.getStorageLocation(*FooDecl);
+        ASSERT_TRUE(isa_and_nonnull<ScalarStorageLocation>(FooLoc));
 
-                const Value *FooVal = Env.getValue(*FooLoc);
-                EXPECT_TRUE(isa_and_nonnull<IntegerValue>(FooVal));
-              });
+        const Value *FooVal = Env.getValue(*FooLoc);
+        EXPECT_TRUE(isa_and_nonnull<IntegerValue>(FooVal));
+      });
+}
+
+TEST(TransferTest, StructIncomplete) {
+  std::string Code = R"(
+    struct A;
+
+    void target() {
+      A* Foo;
+      // [[p]]
+    }
+  )";
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
+
+        const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
+        ASSERT_THAT(FooDecl, NotNull());
+        auto *FooValue = dyn_cast_or_null<PointerValue>(Env.getValue(*FooDecl));
+        ASSERT_THAT(FooValue, NotNull());
+
+        EXPECT_TRUE(isa<RecordStorageLocation>(FooValue->getPointeeLoc()));
+      });
+}
+
+// As a memory optimization, we prevent modeling fields nested below a certain
+// level (currently, depth 3). This test verifies this lack of modeling. We also
+// include a regression test for the case that the unmodeled field is a
+// reference to a struct; previously, we crashed when accessing such a field.
+TEST(TransferTest, StructFieldUnmodeled) {
+  std::string Code = R"(
+    struct S { int X; };
+    S GlobalS;
+    struct A { S &Unmodeled = GlobalS; };
+    struct B { A F3; };
+    struct C { B F2; };
+    struct D { C F1; };
+
+    void target() {
+      D Bar;
+      A &Foo = Bar.F1.F2.F3;
+      int Zab = Foo.Unmodeled.X;
+      // [[p]]
+    }
+  )";
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
+
+        const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
+        ASSERT_THAT(FooDecl, NotNull());
+        QualType FooReferentType = FooDecl->getType()->getPointeeType();
+        ASSERT_TRUE(FooReferentType->isStructureType());
+        auto FooFields = FooReferentType->getAsRecordDecl()->fields();
+
+        FieldDecl *UnmodeledDecl = nullptr;
+        for (FieldDecl *Field : FooFields) {
+          if (Field->getNameAsString() == "Unmodeled") {
+            UnmodeledDecl = Field;
+          } else {
+            FAIL() << "Unexpected field: " << Field->getNameAsString();
+          }
+        }
+        ASSERT_THAT(UnmodeledDecl, NotNull());
+
+        const auto *FooLoc =
+            cast<RecordStorageLocation>(Env.getStorageLocation(*FooDecl));
+        const auto &UnmodeledLoc =
+            *cast<RecordStorageLocation>(FooLoc->getChild(*UnmodeledDecl));
+        StorageLocation &UnmodeledXLoc = getFieldLoc(UnmodeledLoc, "X", ASTCtx);
+        EXPECT_EQ(Env.getValue(UnmodeledXLoc), nullptr);
+
+        const ValueDecl *ZabDecl = findValueDecl(ASTCtx, "Zab");
+        ASSERT_THAT(ZabDecl, NotNull());
+        EXPECT_THAT(Env.getValue(*ZabDecl), NotNull());
+      });
 }
 
 TEST(TransferTest, StructVarDecl) {
@@ -157,16 +345,16 @@ TEST(TransferTest, StructVarDecl) {
 
     void target() {
       A Foo;
+      (void)Foo.Bar;
       // [[p]]
     }
   )";
   runDataflow(
-      Code, [](llvm::ArrayRef<
-                   std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                   Results,
-               ASTContext &ASTCtx) {
-        ASSERT_THAT(Results, ElementsAre(Pair("p", _)));
-        const Environment &Env = Results[0].second.Env;
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
 
         const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
         ASSERT_THAT(FooDecl, NotNull());
@@ -184,14 +372,9 @@ TEST(TransferTest, StructVarDecl) {
         }
         ASSERT_THAT(BarDecl, NotNull());
 
-        const auto *FooLoc = cast<AggregateStorageLocation>(
-            Env.getStorageLocation(*FooDecl, SkipPast::None));
-        const auto *BarLoc =
-            cast<ScalarStorageLocation>(&FooLoc->getChild(*BarDecl));
-
-        const auto *FooVal = cast<StructValue>(Env.getValue(*FooLoc));
-        const auto *BarVal = cast<IntegerValue>(FooVal->getChild(*BarDecl));
-        EXPECT_EQ(Env.getValue(*BarLoc), BarVal);
+        const auto *FooLoc =
+            cast<RecordStorageLocation>(Env.getStorageLocation(*FooDecl));
+        EXPECT_TRUE(isa<IntegerValue>(getFieldValue(FooLoc, *BarDecl, Env)));
       });
 }
 
@@ -205,16 +388,16 @@ TEST(TransferTest, StructVarDeclWithInit) {
 
     void target() {
       A Foo = Gen();
+      (void)Foo.Bar;
       // [[p]]
     }
   )";
   runDataflow(
-      Code, [](llvm::ArrayRef<
-                   std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                   Results,
-               ASTContext &ASTCtx) {
-        ASSERT_THAT(Results, ElementsAre(Pair("p", _)));
-        const Environment &Env = Results[0].second.Env;
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
 
         const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
         ASSERT_THAT(FooDecl, NotNull());
@@ -232,35 +415,53 @@ TEST(TransferTest, StructVarDeclWithInit) {
         }
         ASSERT_THAT(BarDecl, NotNull());
 
-        const auto *FooLoc = cast<AggregateStorageLocation>(
-            Env.getStorageLocation(*FooDecl, SkipPast::None));
-        const auto *BarLoc =
-            cast<ScalarStorageLocation>(&FooLoc->getChild(*BarDecl));
+        const auto *FooLoc =
+            cast<RecordStorageLocation>(Env.getStorageLocation(*FooDecl));
+        EXPECT_TRUE(isa<IntegerValue>(getFieldValue(FooLoc, *BarDecl, Env)));
+      });
+}
 
-        const auto *FooVal = cast<StructValue>(Env.getValue(*FooLoc));
-        const auto *BarVal = cast<IntegerValue>(FooVal->getChild(*BarDecl));
-        EXPECT_EQ(Env.getValue(*BarLoc), BarVal);
+TEST(TransferTest, StructArrayVarDecl) {
+  std::string Code = R"(
+    struct A {};
+
+    void target() {
+      A Array[2];
+      // [[p]]
+    }
+  )";
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
+
+        const ValueDecl *ArrayDecl = findValueDecl(ASTCtx, "Array");
+
+        // We currently don't create values for arrays.
+        ASSERT_THAT(Env.getValue(*ArrayDecl), IsNull());
       });
 }
 
 TEST(TransferTest, ClassVarDecl) {
   std::string Code = R"(
     class A {
+     public:
       int Bar;
     };
 
     void target() {
       A Foo;
+      (void)Foo.Bar;
       // [[p]]
     }
   )";
   runDataflow(
-      Code, [](llvm::ArrayRef<
-                   std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                   Results,
-               ASTContext &ASTCtx) {
-        ASSERT_THAT(Results, ElementsAre(Pair("p", _)));
-        const Environment &Env = Results[0].second.Env;
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
 
         const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
         ASSERT_THAT(FooDecl, NotNull());
@@ -278,14 +479,9 @@ TEST(TransferTest, ClassVarDecl) {
         }
         ASSERT_THAT(BarDecl, NotNull());
 
-        const auto *FooLoc = cast<AggregateStorageLocation>(
-            Env.getStorageLocation(*FooDecl, SkipPast::None));
-        const auto *BarLoc =
-            cast<ScalarStorageLocation>(&FooLoc->getChild(*BarDecl));
-
-        const auto *FooVal = cast<StructValue>(Env.getValue(*FooLoc));
-        const auto *BarVal = cast<IntegerValue>(FooVal->getChild(*BarDecl));
-        EXPECT_EQ(Env.getValue(*BarLoc), BarVal);
+        const auto *FooLoc =
+            cast<RecordStorageLocation>(Env.getStorageLocation(*FooDecl));
+        EXPECT_TRUE(isa<IntegerValue>(getFieldValue(FooLoc, *BarDecl, Env)));
       });
 }
 
@@ -301,27 +497,17 @@ TEST(TransferTest, ReferenceVarDecl) {
     }
   )";
   runDataflow(
-      Code, [](llvm::ArrayRef<
-                   std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                   Results,
-               ASTContext &ASTCtx) {
-        ASSERT_THAT(Results, ElementsAre(Pair("p", _)));
-        const Environment &Env = Results[0].second.Env;
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
 
         const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
         ASSERT_THAT(FooDecl, NotNull());
 
-        const StorageLocation *FooLoc =
-            Env.getStorageLocation(*FooDecl, SkipPast::None);
-        ASSERT_TRUE(isa_and_nonnull<ScalarStorageLocation>(FooLoc));
-
-        const ReferenceValue *FooVal =
-            cast<ReferenceValue>(Env.getValue(*FooLoc));
-        const StorageLocation &FooReferentLoc = FooVal->getReferentLoc();
-        EXPECT_TRUE(isa<AggregateStorageLocation>(&FooReferentLoc));
-
-        const Value *FooReferentVal = Env.getValue(FooReferentLoc);
-        EXPECT_TRUE(isa_and_nonnull<StructValue>(FooReferentVal));
+        const StorageLocation *FooLoc = Env.getStorageLocation(*FooDecl);
+        ASSERT_TRUE(isa_and_nonnull<RecordStorageLocation>(FooLoc));
       });
 }
 
@@ -346,15 +532,18 @@ TEST(TransferTest, SelfReferentialReferenceVarDecl) {
 
     void target() {
       A &Foo = getA();
+      (void)Foo.Bar.FooRef;
+      (void)Foo.Bar.FooPtr;
+      (void)Foo.Bar.BazRef;
+      (void)Foo.Bar.BazPtr;
       // [[p]]
     }
   )";
-  runDataflow(Code, [](llvm::ArrayRef<std::pair<
-                           std::string, DataflowAnalysisState<NoopLattice>>>
-                           Results,
+  runDataflow(Code, [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>>
+                           &Results,
                        ASTContext &ASTCtx) {
-    ASSERT_THAT(Results, ElementsAre(Pair("p", _)));
-    const Environment &Env = Results[0].second.Env;
+    ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+    const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
 
     const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
     ASSERT_THAT(FooDecl, NotNull());
@@ -401,36 +590,29 @@ TEST(TransferTest, SelfReferentialReferenceVarDecl) {
     ASSERT_THAT(BazRefDecl, NotNull());
     ASSERT_THAT(BazPtrDecl, NotNull());
 
-    const auto *FooLoc = cast<ScalarStorageLocation>(
-        Env.getStorageLocation(*FooDecl, SkipPast::None));
-    const auto *FooVal = cast<ReferenceValue>(Env.getValue(*FooLoc));
-    const auto *FooReferentVal =
-        cast<StructValue>(Env.getValue(FooVal->getReferentLoc()));
+    const auto &FooLoc =
+        *cast<RecordStorageLocation>(Env.getStorageLocation(*FooDecl));
 
-    const auto *BarVal =
-        cast<ReferenceValue>(FooReferentVal->getChild(*BarDecl));
-    const auto *BarReferentVal =
-        cast<StructValue>(Env.getValue(BarVal->getReferentLoc()));
+    const auto &BarLoc =
+        *cast<RecordStorageLocation>(FooLoc.getChild(*BarDecl));
 
-    const auto *FooRefVal =
-        cast<ReferenceValue>(BarReferentVal->getChild(*FooRefDecl));
-    const StorageLocation &FooReferentLoc = FooRefVal->getReferentLoc();
-    EXPECT_THAT(Env.getValue(FooReferentLoc), IsNull());
+    const auto &FooReferentLoc =
+        *cast<RecordStorageLocation>(BarLoc.getChild(*FooRefDecl));
+    EXPECT_EQ(Env.getValue(*cast<RecordStorageLocation>(
+                                FooReferentLoc.getChild(*BarDecl))
+                                ->getChild(*FooPtrDecl)),
+              nullptr);
 
-    const auto *FooPtrVal =
-        cast<PointerValue>(BarReferentVal->getChild(*FooPtrDecl));
-    const StorageLocation &FooPtrPointeeLoc = FooPtrVal->getPointeeLoc();
-    EXPECT_THAT(Env.getValue(FooPtrPointeeLoc), IsNull());
+    const auto &FooPtrVal =
+        *cast<PointerValue>(getFieldValue(&BarLoc, *FooPtrDecl, Env));
+    const auto &FooPtrPointeeLoc =
+        cast<RecordStorageLocation>(FooPtrVal.getPointeeLoc());
+    EXPECT_EQ(Env.getValue(*cast<RecordStorageLocation>(
+                                FooPtrPointeeLoc.getChild(*BarDecl))
+                                ->getChild(*FooPtrDecl)),
+              nullptr);
 
-    const auto *BazRefVal =
-        cast<ReferenceValue>(BarReferentVal->getChild(*BazRefDecl));
-    const StorageLocation &BazReferentLoc = BazRefVal->getReferentLoc();
-    EXPECT_THAT(Env.getValue(BazReferentLoc), NotNull());
-
-    const auto *BazPtrVal =
-        cast<PointerValue>(BarReferentVal->getChild(*BazPtrDecl));
-    const StorageLocation &BazPtrPointeeLoc = BazPtrVal->getPointeeLoc();
-    EXPECT_THAT(Env.getValue(BazPtrPointeeLoc), NotNull());
+    EXPECT_TRUE(isa<PointerValue>(getFieldValue(&BarLoc, *BazPtrDecl, Env)));
   });
 }
 
@@ -446,26 +628,21 @@ TEST(TransferTest, PointerVarDecl) {
     }
   )";
   runDataflow(
-      Code, [](llvm::ArrayRef<
-                   std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                   Results,
-               ASTContext &ASTCtx) {
-        ASSERT_THAT(Results, ElementsAre(Pair("p", _)));
-        const Environment &Env = Results[0].second.Env;
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
 
         const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
         ASSERT_THAT(FooDecl, NotNull());
 
-        const StorageLocation *FooLoc =
-            Env.getStorageLocation(*FooDecl, SkipPast::None);
+        const StorageLocation *FooLoc = Env.getStorageLocation(*FooDecl);
         ASSERT_TRUE(isa_and_nonnull<ScalarStorageLocation>(FooLoc));
 
         const PointerValue *FooVal = cast<PointerValue>(Env.getValue(*FooLoc));
         const StorageLocation &FooPointeeLoc = FooVal->getPointeeLoc();
-        EXPECT_TRUE(isa<AggregateStorageLocation>(&FooPointeeLoc));
-
-        const Value *FooPointeeVal = Env.getValue(FooPointeeLoc);
-        EXPECT_TRUE(isa_and_nonnull<StructValue>(FooPointeeVal));
+        EXPECT_TRUE(isa<RecordStorageLocation>(&FooPointeeLoc));
       });
 }
 
@@ -490,16 +667,19 @@ TEST(TransferTest, SelfReferentialPointerVarDecl) {
 
     void target() {
       A *Foo = getA();
+      (void)Foo->Bar->FooRef;
+      (void)Foo->Bar->FooPtr;
+      (void)Foo->Bar->BazRef;
+      (void)Foo->Bar->BazPtr;
       // [[p]]
     }
   )";
   runDataflow(
-      Code, [](llvm::ArrayRef<
-                   std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                   Results,
-               ASTContext &ASTCtx) {
-        ASSERT_THAT(Results, ElementsAre(Pair("p", _)));
-        const Environment &Env = Results[0].second.Env;
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
 
         const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
         ASSERT_THAT(FooDecl, NotNull());
@@ -558,36 +738,47 @@ TEST(TransferTest, SelfReferentialPointerVarDecl) {
         ASSERT_THAT(BazRefDecl, NotNull());
         ASSERT_THAT(BazPtrDecl, NotNull());
 
-        const auto *FooLoc = cast<ScalarStorageLocation>(
-            Env.getStorageLocation(*FooDecl, SkipPast::None));
-        const auto *FooVal = cast<PointerValue>(Env.getValue(*FooLoc));
-        const auto *FooPointeeVal =
-            cast<StructValue>(Env.getValue(FooVal->getPointeeLoc()));
+        const auto &FooLoc =
+            *cast<ScalarStorageLocation>(Env.getStorageLocation(*FooDecl));
+        const auto &FooVal = *cast<PointerValue>(Env.getValue(FooLoc));
+        const auto &FooPointeeLoc =
+            cast<RecordStorageLocation>(FooVal.getPointeeLoc());
 
-        const auto *BarVal =
-            cast<PointerValue>(FooPointeeVal->getChild(*BarDecl));
-        const auto *BarPointeeVal =
-            cast<StructValue>(Env.getValue(BarVal->getPointeeLoc()));
+        const auto &BarVal =
+            *cast<PointerValue>(getFieldValue(&FooPointeeLoc, *BarDecl, Env));
+        const auto &BarPointeeLoc =
+            cast<RecordStorageLocation>(BarVal.getPointeeLoc());
 
-        const auto *FooRefVal =
-            cast<ReferenceValue>(BarPointeeVal->getChild(*FooRefDecl));
-        const StorageLocation &FooReferentLoc = FooRefVal->getReferentLoc();
-        EXPECT_THAT(Env.getValue(FooReferentLoc), IsNull());
+        const auto &FooPtrVal = *cast<PointerValue>(
+            getFieldValue(&BarPointeeLoc, *FooPtrDecl, Env));
+        const auto &FooPtrPointeeLoc =
+            cast<RecordStorageLocation>(FooPtrVal.getPointeeLoc());
+        EXPECT_EQ(Env.getValue(*FooPtrPointeeLoc.getChild(*BarDecl)), nullptr);
 
-        const auto *FooPtrVal =
-            cast<PointerValue>(BarPointeeVal->getChild(*FooPtrDecl));
-        const StorageLocation &FooPtrPointeeLoc = FooPtrVal->getPointeeLoc();
-        EXPECT_THAT(Env.getValue(FooPtrPointeeLoc), IsNull());
+        EXPECT_TRUE(
+            isa<PointerValue>(getFieldValue(&BarPointeeLoc, *BazPtrDecl, Env)));
+      });
+}
 
-        const auto *BazRefVal =
-            cast<ReferenceValue>(BarPointeeVal->getChild(*BazRefDecl));
-        const StorageLocation &BazReferentLoc = BazRefVal->getReferentLoc();
-        EXPECT_THAT(Env.getValue(BazReferentLoc), NotNull());
+TEST(TransferTest, DirectlySelfReferentialReference) {
+  std::string Code = R"(
+    struct target {
+      target() {
+        (void)0;
+        // [[p]]
+      }
+      target &self = *this;
+    };
+  )";
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
+        const ValueDecl *SelfDecl = findValueDecl(ASTCtx, "self");
 
-        const auto *BazPtrVal =
-            cast<PointerValue>(BarPointeeVal->getChild(*BazPtrDecl));
-        const StorageLocation &BazPtrPointeeLoc = BazPtrVal->getPointeeLoc();
-        EXPECT_THAT(Env.getValue(BazPtrPointeeLoc), NotNull());
+        auto *ThisLoc = Env.getThisPointeeStorageLocation();
+        ASSERT_EQ(ThisLoc->getChild(*SelfDecl), ThisLoc);
       });
 }
 
@@ -599,34 +790,31 @@ TEST(TransferTest, MultipleVarsDecl) {
       // [[p]]
     }
   )";
-  runDataflow(Code,
-              [](llvm::ArrayRef<
-                     std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                     Results,
-                 ASTContext &ASTCtx) {
-                ASSERT_THAT(Results, ElementsAre(Pair("p", _)));
-                const Environment &Env = Results[0].second.Env;
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
 
-                const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
-                ASSERT_THAT(FooDecl, NotNull());
+        const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
+        ASSERT_THAT(FooDecl, NotNull());
 
-                const ValueDecl *BarDecl = findValueDecl(ASTCtx, "Bar");
-                ASSERT_THAT(BarDecl, NotNull());
+        const ValueDecl *BarDecl = findValueDecl(ASTCtx, "Bar");
+        ASSERT_THAT(BarDecl, NotNull());
 
-                const StorageLocation *FooLoc =
-                    Env.getStorageLocation(*FooDecl, SkipPast::None);
-                ASSERT_TRUE(isa_and_nonnull<ScalarStorageLocation>(FooLoc));
+        const StorageLocation *FooLoc = Env.getStorageLocation(*FooDecl);
+        ASSERT_TRUE(isa_and_nonnull<ScalarStorageLocation>(FooLoc));
 
-                const StorageLocation *BarLoc =
-                    Env.getStorageLocation(*BarDecl, SkipPast::None);
-                ASSERT_TRUE(isa_and_nonnull<ScalarStorageLocation>(BarLoc));
+        const StorageLocation *BarLoc = Env.getStorageLocation(*BarDecl);
+        ASSERT_TRUE(isa_and_nonnull<ScalarStorageLocation>(BarLoc));
 
-                const Value *FooVal = Env.getValue(*FooLoc);
-                EXPECT_TRUE(isa_and_nonnull<IntegerValue>(FooVal));
+        const Value *FooVal = Env.getValue(*FooLoc);
+        EXPECT_TRUE(isa_and_nonnull<IntegerValue>(FooVal));
 
-                const Value *BarVal = Env.getValue(*BarLoc);
-                EXPECT_TRUE(isa_and_nonnull<IntegerValue>(BarVal));
-              });
+        const Value *BarVal = Env.getValue(*BarLoc);
+        EXPECT_TRUE(isa_and_nonnull<IntegerValue>(BarVal));
+      });
 }
 
 TEST(TransferTest, JoinVarDecl) {
@@ -645,12 +833,11 @@ TEST(TransferTest, JoinVarDecl) {
       // [[p4]]
     }
   )";
-  runDataflow(Code, [](llvm::ArrayRef<std::pair<
-                           std::string, DataflowAnalysisState<NoopLattice>>>
-                           Results,
+  runDataflow(Code, [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>>
+                           &Results,
                        ASTContext &ASTCtx) {
-    ASSERT_THAT(Results, ElementsAre(Pair("p4", _), Pair("p3", _),
-                                     Pair("p2", _), Pair("p1", _)));
+    ASSERT_THAT(Results.keys(), UnorderedElementsAre("p1", "p2", "p3", "p4"));
+
     const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
     ASSERT_THAT(FooDecl, NotNull());
 
@@ -660,27 +847,27 @@ TEST(TransferTest, JoinVarDecl) {
     const ValueDecl *BazDecl = findValueDecl(ASTCtx, "Baz");
     ASSERT_THAT(BazDecl, NotNull());
 
-    const Environment &Env1 = Results[3].second.Env;
-    const StorageLocation *FooLoc =
-        Env1.getStorageLocation(*FooDecl, SkipPast::None);
+    const Environment &Env1 = getEnvironmentAtAnnotation(Results, "p1");
+
+    const StorageLocation *FooLoc = Env1.getStorageLocation(*FooDecl);
     EXPECT_THAT(FooLoc, NotNull());
-    EXPECT_THAT(Env1.getStorageLocation(*BarDecl, SkipPast::None), IsNull());
-    EXPECT_THAT(Env1.getStorageLocation(*BazDecl, SkipPast::None), IsNull());
+    EXPECT_THAT(Env1.getStorageLocation(*BarDecl), IsNull());
+    EXPECT_THAT(Env1.getStorageLocation(*BazDecl), IsNull());
 
-    const Environment &Env2 = Results[2].second.Env;
-    EXPECT_EQ(Env2.getStorageLocation(*FooDecl, SkipPast::None), FooLoc);
-    EXPECT_THAT(Env2.getStorageLocation(*BarDecl, SkipPast::None), NotNull());
-    EXPECT_THAT(Env2.getStorageLocation(*BazDecl, SkipPast::None), IsNull());
+    const Environment &Env2 = getEnvironmentAtAnnotation(Results, "p2");
+    EXPECT_EQ(Env2.getStorageLocation(*FooDecl), FooLoc);
+    EXPECT_THAT(Env2.getStorageLocation(*BarDecl), NotNull());
+    EXPECT_THAT(Env2.getStorageLocation(*BazDecl), IsNull());
 
-    const Environment &Env3 = Results[1].second.Env;
-    EXPECT_EQ(Env3.getStorageLocation(*FooDecl, SkipPast::None), FooLoc);
-    EXPECT_THAT(Env3.getStorageLocation(*BarDecl, SkipPast::None), IsNull());
-    EXPECT_THAT(Env3.getStorageLocation(*BazDecl, SkipPast::None), NotNull());
+    const Environment &Env3 = getEnvironmentAtAnnotation(Results, "p3");
+    EXPECT_EQ(Env3.getStorageLocation(*FooDecl), FooLoc);
+    EXPECT_THAT(Env3.getStorageLocation(*BarDecl), IsNull());
+    EXPECT_THAT(Env3.getStorageLocation(*BazDecl), NotNull());
 
-    const Environment &Env4 = Results[0].second.Env;
-    EXPECT_EQ(Env4.getStorageLocation(*FooDecl, SkipPast::None), FooLoc);
-    EXPECT_THAT(Env4.getStorageLocation(*BarDecl, SkipPast::None), IsNull());
-    EXPECT_THAT(Env4.getStorageLocation(*BazDecl, SkipPast::None), IsNull());
+    const Environment &Env4 = getEnvironmentAtAnnotation(Results, "p4");
+    EXPECT_EQ(Env4.getStorageLocation(*FooDecl), FooLoc);
+    EXPECT_THAT(Env4.getStorageLocation(*BarDecl), IsNull());
+    EXPECT_THAT(Env4.getStorageLocation(*BazDecl), IsNull());
   });
 }
 
@@ -693,25 +880,49 @@ TEST(TransferTest, BinaryOperatorAssign) {
       // [[p]]
     }
   )";
-  runDataflow(Code,
-              [](llvm::ArrayRef<
-                     std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                     Results,
-                 ASTContext &ASTCtx) {
-                ASSERT_THAT(Results, ElementsAre(Pair("p", _)));
-                const Environment &Env = Results[0].second.Env;
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
 
-                const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
-                ASSERT_THAT(FooDecl, NotNull());
+        const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
+        ASSERT_THAT(FooDecl, NotNull());
 
-                const Value *FooVal = Env.getValue(*FooDecl, SkipPast::None);
-                ASSERT_TRUE(isa_and_nonnull<IntegerValue>(FooVal));
+        const Value *FooVal = Env.getValue(*FooDecl);
+        ASSERT_TRUE(isa_and_nonnull<IntegerValue>(FooVal));
 
-                const ValueDecl *BarDecl = findValueDecl(ASTCtx, "Bar");
-                ASSERT_THAT(BarDecl, NotNull());
+        const ValueDecl *BarDecl = findValueDecl(ASTCtx, "Bar");
+        ASSERT_THAT(BarDecl, NotNull());
 
-                EXPECT_EQ(Env.getValue(*BarDecl, SkipPast::None), FooVal);
-              });
+        EXPECT_EQ(Env.getValue(*BarDecl), FooVal);
+      });
+}
+
+TEST(TransferTest, BinaryOperatorAssignIntegerLiteral) {
+  std::string Code = R"(
+    void target() {
+      int Foo = 1;
+      // [[before]]
+      Foo = 2;
+      // [[after]]
+    }
+  )";
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        const Environment &Before =
+            getEnvironmentAtAnnotation(Results, "before");
+        const Environment &After = getEnvironmentAtAnnotation(Results, "after");
+
+        const auto &ValBefore =
+            getValueForDecl<IntegerValue>(ASTCtx, Before, "Foo");
+        const auto &ValAfter =
+            getValueForDecl<IntegerValue>(ASTCtx, After, "Foo");
+        EXPECT_NE(&ValBefore, &ValAfter);
+      });
 }
 
 TEST(TransferTest, VarDeclInitAssign) {
@@ -722,25 +933,24 @@ TEST(TransferTest, VarDeclInitAssign) {
       // [[p]]
     }
   )";
-  runDataflow(Code,
-              [](llvm::ArrayRef<
-                     std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                     Results,
-                 ASTContext &ASTCtx) {
-                ASSERT_THAT(Results, ElementsAre(Pair("p", _)));
-                const Environment &Env = Results[0].second.Env;
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
 
-                const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
-                ASSERT_THAT(FooDecl, NotNull());
+        const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
+        ASSERT_THAT(FooDecl, NotNull());
 
-                const Value *FooVal = Env.getValue(*FooDecl, SkipPast::None);
-                ASSERT_TRUE(isa_and_nonnull<IntegerValue>(FooVal));
+        const Value *FooVal = Env.getValue(*FooDecl);
+        ASSERT_TRUE(isa_and_nonnull<IntegerValue>(FooVal));
 
-                const ValueDecl *BarDecl = findValueDecl(ASTCtx, "Bar");
-                ASSERT_THAT(BarDecl, NotNull());
+        const ValueDecl *BarDecl = findValueDecl(ASTCtx, "Bar");
+        ASSERT_THAT(BarDecl, NotNull());
 
-                EXPECT_EQ(Env.getValue(*BarDecl, SkipPast::None), FooVal);
-              });
+        EXPECT_EQ(Env.getValue(*BarDecl), FooVal);
+      });
 }
 
 TEST(TransferTest, VarDeclInitAssignChained) {
@@ -752,29 +962,28 @@ TEST(TransferTest, VarDeclInitAssignChained) {
       // [[p]]
     }
   )";
-  runDataflow(Code,
-              [](llvm::ArrayRef<
-                     std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                     Results,
-                 ASTContext &ASTCtx) {
-                ASSERT_THAT(Results, ElementsAre(Pair("p", _)));
-                const Environment &Env = Results[0].second.Env;
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
 
-                const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
-                ASSERT_THAT(FooDecl, NotNull());
+        const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
+        ASSERT_THAT(FooDecl, NotNull());
 
-                const Value *FooVal = Env.getValue(*FooDecl, SkipPast::None);
-                ASSERT_TRUE(isa_and_nonnull<IntegerValue>(FooVal));
+        const Value *FooVal = Env.getValue(*FooDecl);
+        ASSERT_TRUE(isa_and_nonnull<IntegerValue>(FooVal));
 
-                const ValueDecl *BarDecl = findValueDecl(ASTCtx, "Bar");
-                ASSERT_THAT(BarDecl, NotNull());
+        const ValueDecl *BarDecl = findValueDecl(ASTCtx, "Bar");
+        ASSERT_THAT(BarDecl, NotNull());
 
-                const ValueDecl *BazDecl = findValueDecl(ASTCtx, "Baz");
-                ASSERT_THAT(BazDecl, NotNull());
+        const ValueDecl *BazDecl = findValueDecl(ASTCtx, "Baz");
+        ASSERT_THAT(BazDecl, NotNull());
 
-                EXPECT_EQ(Env.getValue(*BarDecl, SkipPast::None), FooVal);
-                EXPECT_EQ(Env.getValue(*BazDecl, SkipPast::None), FooVal);
-              });
+        EXPECT_EQ(Env.getValue(*BarDecl), FooVal);
+        EXPECT_EQ(Env.getValue(*BazDecl), FooVal);
+      });
 }
 
 TEST(TransferTest, VarDeclInitAssignPtrDeref) {
@@ -787,32 +996,30 @@ TEST(TransferTest, VarDeclInitAssignPtrDeref) {
       // [[p]]
     }
   )";
-  runDataflow(Code,
-              [](llvm::ArrayRef<
-                     std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                     Results,
-                 ASTContext &ASTCtx) {
-                ASSERT_THAT(Results, ElementsAre(Pair("p", _)));
-                const Environment &Env = Results[0].second.Env;
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
 
-                const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
-                ASSERT_THAT(FooDecl, NotNull());
+        const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
+        ASSERT_THAT(FooDecl, NotNull());
 
-                const Value *FooVal = Env.getValue(*FooDecl, SkipPast::None);
-                ASSERT_TRUE(isa_and_nonnull<IntegerValue>(FooVal));
+        const Value *FooVal = Env.getValue(*FooDecl);
+        ASSERT_TRUE(isa_and_nonnull<IntegerValue>(FooVal));
 
-                const ValueDecl *BarDecl = findValueDecl(ASTCtx, "Bar");
-                ASSERT_THAT(BarDecl, NotNull());
+        const ValueDecl *BarDecl = findValueDecl(ASTCtx, "Bar");
+        ASSERT_THAT(BarDecl, NotNull());
 
-                const auto *BarVal =
-                    cast<PointerValue>(Env.getValue(*BarDecl, SkipPast::None));
-                EXPECT_EQ(Env.getValue(BarVal->getPointeeLoc()), FooVal);
+        const auto *BarVal = cast<PointerValue>(Env.getValue(*BarDecl));
+        EXPECT_EQ(Env.getValue(BarVal->getPointeeLoc()), FooVal);
 
-                const ValueDecl *BazDecl = findValueDecl(ASTCtx, "Baz");
-                ASSERT_THAT(BazDecl, NotNull());
+        const ValueDecl *BazDecl = findValueDecl(ASTCtx, "Baz");
+        ASSERT_THAT(BazDecl, NotNull());
 
-                EXPECT_EQ(Env.getValue(*BazDecl, SkipPast::None), FooVal);
-              });
+        EXPECT_EQ(Env.getValue(*BazDecl), FooVal);
+      });
 }
 
 TEST(TransferTest, AssignToAndFromReference) {
@@ -829,41 +1036,40 @@ TEST(TransferTest, AssignToAndFromReference) {
     }
   )";
   runDataflow(
-      Code, [](llvm::ArrayRef<
-                   std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                   Results,
-               ASTContext &ASTCtx) {
-        ASSERT_THAT(Results, ElementsAre(Pair("p1", _), Pair("p2", _)));
-        const Environment &Env1 = Results[0].second.Env;
-        const Environment &Env2 = Results[1].second.Env;
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p1", "p2"));
+        const Environment &Env1 = getEnvironmentAtAnnotation(Results, "p1");
+        const Environment &Env2 = getEnvironmentAtAnnotation(Results, "p2");
 
         const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
         ASSERT_THAT(FooDecl, NotNull());
 
-        const Value *FooVal = Env1.getValue(*FooDecl, SkipPast::None);
+        const Value *FooVal = Env1.getValue(*FooDecl);
         ASSERT_TRUE(isa_and_nonnull<IntegerValue>(FooVal));
 
         const ValueDecl *BarDecl = findValueDecl(ASTCtx, "Bar");
         ASSERT_THAT(BarDecl, NotNull());
 
-        const Value *BarVal = Env1.getValue(*BarDecl, SkipPast::None);
+        const Value *BarVal = Env1.getValue(*BarDecl);
         ASSERT_TRUE(isa_and_nonnull<IntegerValue>(BarVal));
 
         const ValueDecl *BazDecl = findValueDecl(ASTCtx, "Baz");
         ASSERT_THAT(BazDecl, NotNull());
 
-        EXPECT_EQ(Env1.getValue(*BazDecl, SkipPast::Reference), FooVal);
+        EXPECT_EQ(Env1.getValue(*BazDecl), FooVal);
 
-        EXPECT_EQ(Env2.getValue(*BazDecl, SkipPast::Reference), BarVal);
-        EXPECT_EQ(Env2.getValue(*FooDecl, SkipPast::None), BarVal);
+        EXPECT_EQ(Env2.getValue(*BazDecl), BarVal);
+        EXPECT_EQ(Env2.getValue(*FooDecl), BarVal);
 
         const ValueDecl *QuxDecl = findValueDecl(ASTCtx, "Qux");
         ASSERT_THAT(QuxDecl, NotNull());
-        EXPECT_EQ(Env2.getValue(*QuxDecl, SkipPast::None), BarVal);
+        EXPECT_EQ(Env2.getValue(*QuxDecl), BarVal);
 
         const ValueDecl *QuuxDecl = findValueDecl(ASTCtx, "Quux");
         ASSERT_THAT(QuuxDecl, NotNull());
-        EXPECT_EQ(Env2.getValue(*QuuxDecl, SkipPast::Reference), BarVal);
+        EXPECT_EQ(Env2.getValue(*QuuxDecl), BarVal);
       });
 }
 
@@ -874,34 +1080,31 @@ TEST(TransferTest, MultipleParamDecls) {
       // [[p]]
     }
   )";
-  runDataflow(Code,
-              [](llvm::ArrayRef<
-                     std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                     Results,
-                 ASTContext &ASTCtx) {
-                ASSERT_THAT(Results, ElementsAre(Pair("p", _)));
-                const Environment &Env = Results[0].second.Env;
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
 
-                const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
-                ASSERT_THAT(FooDecl, NotNull());
+        const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
+        ASSERT_THAT(FooDecl, NotNull());
 
-                const StorageLocation *FooLoc =
-                    Env.getStorageLocation(*FooDecl, SkipPast::None);
-                ASSERT_TRUE(isa_and_nonnull<ScalarStorageLocation>(FooLoc));
+        const StorageLocation *FooLoc = Env.getStorageLocation(*FooDecl);
+        ASSERT_TRUE(isa_and_nonnull<ScalarStorageLocation>(FooLoc));
 
-                const Value *FooVal = Env.getValue(*FooLoc);
-                ASSERT_TRUE(isa_and_nonnull<IntegerValue>(FooVal));
+        const Value *FooVal = Env.getValue(*FooLoc);
+        ASSERT_TRUE(isa_and_nonnull<IntegerValue>(FooVal));
 
-                const ValueDecl *BarDecl = findValueDecl(ASTCtx, "Bar");
-                ASSERT_THAT(BarDecl, NotNull());
+        const ValueDecl *BarDecl = findValueDecl(ASTCtx, "Bar");
+        ASSERT_THAT(BarDecl, NotNull());
 
-                const StorageLocation *BarLoc =
-                    Env.getStorageLocation(*BarDecl, SkipPast::None);
-                ASSERT_TRUE(isa_and_nonnull<ScalarStorageLocation>(BarLoc));
+        const StorageLocation *BarLoc = Env.getStorageLocation(*BarDecl);
+        ASSERT_TRUE(isa_and_nonnull<ScalarStorageLocation>(BarLoc));
 
-                const Value *BarVal = Env.getValue(*BarLoc);
-                EXPECT_TRUE(isa_and_nonnull<IntegerValue>(BarVal));
-              });
+        const Value *BarVal = Env.getValue(*BarLoc);
+        EXPECT_TRUE(isa_and_nonnull<IntegerValue>(BarVal));
+      });
 }
 
 TEST(TransferTest, StructParamDecl) {
@@ -911,17 +1114,16 @@ TEST(TransferTest, StructParamDecl) {
     };
 
     void target(A Foo) {
-      (void)0;
+      (void)Foo.Bar;
       // [[p]]
     }
   )";
   runDataflow(
-      Code, [](llvm::ArrayRef<
-                   std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                   Results,
-               ASTContext &ASTCtx) {
-        ASSERT_THAT(Results, ElementsAre(Pair("p", _)));
-        const Environment &Env = Results[0].second.Env;
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
 
         const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
         ASSERT_THAT(FooDecl, NotNull());
@@ -939,14 +1141,9 @@ TEST(TransferTest, StructParamDecl) {
         }
         ASSERT_THAT(BarDecl, NotNull());
 
-        const auto *FooLoc = cast<AggregateStorageLocation>(
-            Env.getStorageLocation(*FooDecl, SkipPast::None));
-        const auto *BarLoc =
-            cast<ScalarStorageLocation>(&FooLoc->getChild(*BarDecl));
-
-        const auto *FooVal = cast<StructValue>(Env.getValue(*FooLoc));
-        const auto *BarVal = cast<IntegerValue>(FooVal->getChild(*BarDecl));
-        EXPECT_EQ(Env.getValue(*BarLoc), BarVal);
+        const auto *FooLoc =
+            cast<RecordStorageLocation>(Env.getStorageLocation(*FooDecl));
+        EXPECT_TRUE(isa<IntegerValue>(getFieldValue(FooLoc, *BarDecl, Env)));
       });
 }
 
@@ -960,29 +1157,17 @@ TEST(TransferTest, ReferenceParamDecl) {
     }
   )";
   runDataflow(
-      Code, [](llvm::ArrayRef<
-                   std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                   Results,
-               ASTContext &ASTCtx) {
-        ASSERT_THAT(Results, ElementsAre(Pair("p", _)));
-        const Environment &Env = Results[0].second.Env;
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
 
         const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
         ASSERT_THAT(FooDecl, NotNull());
 
-        const StorageLocation *FooLoc =
-            Env.getStorageLocation(*FooDecl, SkipPast::None);
-        ASSERT_TRUE(isa_and_nonnull<ScalarStorageLocation>(FooLoc));
-
-        const ReferenceValue *FooVal =
-            dyn_cast<ReferenceValue>(Env.getValue(*FooLoc));
-        ASSERT_THAT(FooVal, NotNull());
-
-        const StorageLocation &FooReferentLoc = FooVal->getReferentLoc();
-        EXPECT_TRUE(isa<AggregateStorageLocation>(&FooReferentLoc));
-
-        const Value *FooReferentVal = Env.getValue(FooReferentLoc);
-        EXPECT_TRUE(isa_and_nonnull<StructValue>(FooReferentVal));
+        const StorageLocation *FooLoc = Env.getStorageLocation(*FooDecl);
+        ASSERT_TRUE(isa_and_nonnull<RecordStorageLocation>(FooLoc));
       });
 }
 
@@ -996,26 +1181,21 @@ TEST(TransferTest, PointerParamDecl) {
     }
   )";
   runDataflow(
-      Code, [](llvm::ArrayRef<
-                   std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                   Results,
-               ASTContext &ASTCtx) {
-        ASSERT_THAT(Results, ElementsAre(Pair("p", _)));
-        const Environment &Env = Results[0].second.Env;
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
 
         const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
         ASSERT_THAT(FooDecl, NotNull());
 
-        const StorageLocation *FooLoc =
-            Env.getStorageLocation(*FooDecl, SkipPast::None);
+        const StorageLocation *FooLoc = Env.getStorageLocation(*FooDecl);
         ASSERT_TRUE(isa_and_nonnull<ScalarStorageLocation>(FooLoc));
 
         const PointerValue *FooVal = cast<PointerValue>(Env.getValue(*FooLoc));
         const StorageLocation &FooPointeeLoc = FooVal->getPointeeLoc();
-        EXPECT_TRUE(isa<AggregateStorageLocation>(&FooPointeeLoc));
-
-        const Value *FooPointeeVal = Env.getValue(FooPointeeLoc);
-        EXPECT_TRUE(isa_and_nonnull<StructValue>(FooPointeeVal));
+        EXPECT_TRUE(isa<RecordStorageLocation>(&FooPointeeLoc));
       });
 }
 
@@ -1031,12 +1211,11 @@ TEST(TransferTest, StructMember) {
     }
   )";
   runDataflow(
-      Code, [](llvm::ArrayRef<
-                   std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                   Results,
-               ASTContext &ASTCtx) {
-        ASSERT_THAT(Results, ElementsAre(Pair("p", _)));
-        const Environment &Env = Results[0].second.Env;
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
 
         const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
         ASSERT_THAT(FooDecl, NotNull());
@@ -1054,15 +1233,37 @@ TEST(TransferTest, StructMember) {
         }
         ASSERT_THAT(BarDecl, NotNull());
 
-        const auto *FooLoc = cast<AggregateStorageLocation>(
-            Env.getStorageLocation(*FooDecl, SkipPast::None));
-        const auto *FooVal = cast<StructValue>(Env.getValue(*FooLoc));
-        const auto *BarVal = cast<IntegerValue>(FooVal->getChild(*BarDecl));
+        const auto *FooLoc =
+            cast<RecordStorageLocation>(Env.getStorageLocation(*FooDecl));
+        const auto *BarVal =
+            cast<IntegerValue>(getFieldValue(FooLoc, *BarDecl, Env));
 
         const ValueDecl *BazDecl = findValueDecl(ASTCtx, "Baz");
         ASSERT_THAT(BazDecl, NotNull());
 
-        EXPECT_EQ(Env.getValue(*BazDecl, SkipPast::None), BarVal);
+        EXPECT_EQ(Env.getValue(*BazDecl), BarVal);
+      });
+}
+
+TEST(TransferTest, StructMemberEnum) {
+  std::string Code = R"(
+    struct A {
+      int Bar;
+      enum E { ONE, TWO };
+    };
+
+    void target(A Foo) {
+      A::E Baz = Foo.ONE;
+      // [[p]]
+    }
+  )";
+  // Minimal expectations -- we're just testing that it doesn't crash, since
+  // enums aren't interpreted.
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        EXPECT_THAT(Results.keys(), UnorderedElementsAre("p"));
       });
 }
 
@@ -1076,6 +1277,9 @@ TEST(TransferTest, DerivedBaseMemberClass) {
       int APrivate;
     public:
       int APublic;
+
+    private:
+      friend void target();
     };
 
     class B : public A {
@@ -1084,20 +1288,29 @@ TEST(TransferTest, DerivedBaseMemberClass) {
       int BProtected;
     private:
       int BPrivate;
+
+    private:
+      friend void target();
     };
 
     void target() {
       B Foo;
+      (void)Foo.ADefault;
+      (void)Foo.AProtected;
+      (void)Foo.APrivate;
+      (void)Foo.APublic;
+      (void)Foo.BDefault;
+      (void)Foo.BProtected;
+      (void)Foo.BPrivate;
       // [[p]]
     }
   )";
   runDataflow(
-      Code, [](llvm::ArrayRef<
-                   std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                   Results,
-               ASTContext &ASTCtx) {
-        ASSERT_THAT(Results, ElementsAre(Pair("p", _)));
-        const Environment &Env = Results[0].second.Env;
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
 
         const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
         ASSERT_THAT(FooDecl, NotNull());
@@ -1151,45 +1364,16 @@ TEST(TransferTest, DerivedBaseMemberClass) {
         ASSERT_THAT(APrivateDecl, NotNull());
         ASSERT_THAT(APublicDecl, NotNull());
 
-        const auto &FooLoc = *cast<AggregateStorageLocation>(
-            Env.getStorageLocation(*FooDecl, SkipPast::None));
-        const auto &FooVal = *cast<StructValue>(Env.getValue(FooLoc));
-
-        // Note: we can't test presence of children in `FooLoc`, because
-        // `getChild` requires its argument be present (or fails an assert). So,
-        // we limit to testing presence in `FooVal` and coherence between the
-        // two.
-
-        // Base-class fields.
-        EXPECT_THAT(FooVal.getChild(*ADefaultDecl), NotNull());
-        EXPECT_THAT(FooVal.getChild(*APrivateDecl), NotNull());
-
-        EXPECT_THAT(FooVal.getChild(*AProtectedDecl), NotNull());
-        EXPECT_EQ(Env.getValue(FooLoc.getChild(*APublicDecl)),
-                  FooVal.getChild(*APublicDecl));
-        EXPECT_THAT(FooVal.getChild(*APublicDecl), NotNull());
-        EXPECT_EQ(Env.getValue(FooLoc.getChild(*AProtectedDecl)),
-                  FooVal.getChild(*AProtectedDecl));
-
-        // Derived-class fields.
-        EXPECT_THAT(FooVal.getChild(*BDefaultDecl), NotNull());
-        EXPECT_EQ(Env.getValue(FooLoc.getChild(*BDefaultDecl)),
-                  FooVal.getChild(*BDefaultDecl));
-        EXPECT_THAT(FooVal.getChild(*BProtectedDecl), NotNull());
-        EXPECT_EQ(Env.getValue(FooLoc.getChild(*BProtectedDecl)),
-                  FooVal.getChild(*BProtectedDecl));
-        EXPECT_THAT(FooVal.getChild(*BPrivateDecl), NotNull());
-        EXPECT_EQ(Env.getValue(FooLoc.getChild(*BPrivateDecl)),
-                  FooVal.getChild(*BPrivateDecl));
+        ASSERT_TRUE(
+            isa<RecordStorageLocation>(Env.getStorageLocation(*FooDecl)));
       });
 }
 
 static void derivedBaseMemberExpectations(
-    llvm::ArrayRef<std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-        Results,
+    const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
     ASTContext &ASTCtx) {
-  ASSERT_THAT(Results, ElementsAre(Pair("p", _)));
-  const Environment &Env = Results[0].second.Env;
+  ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+  const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
 
   const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
   ASSERT_THAT(FooDecl, NotNull());
@@ -1211,11 +1395,9 @@ static void derivedBaseMemberExpectations(
   }
   ASSERT_THAT(BarDecl, NotNull());
 
-  const auto &FooLoc = *cast<AggregateStorageLocation>(
-      Env.getStorageLocation(*FooDecl, SkipPast::None));
-  const auto &FooVal = *cast<StructValue>(Env.getValue(FooLoc));
-  EXPECT_THAT(FooVal.getChild(*BarDecl), NotNull());
-  EXPECT_EQ(Env.getValue(FooLoc.getChild(*BarDecl)), FooVal.getChild(*BarDecl));
+  const auto &FooLoc =
+      *cast<RecordStorageLocation>(Env.getStorageLocation(*FooDecl));
+  EXPECT_NE(Env.getValue(*FooLoc.getChild(*BarDecl)), nullptr);
 }
 
 TEST(TransferTest, DerivedBaseMemberStructDefault) {
@@ -1228,6 +1410,7 @@ TEST(TransferTest, DerivedBaseMemberStructDefault) {
 
     void target() {
       B Foo;
+      (void)Foo.Bar;
       // [[p]]
     }
   )";
@@ -1268,12 +1451,11 @@ TEST(TransferTest, ClassMember) {
     }
   )";
   runDataflow(
-      Code, [](llvm::ArrayRef<
-                   std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                   Results,
-               ASTContext &ASTCtx) {
-        ASSERT_THAT(Results, ElementsAre(Pair("p", _)));
-        const Environment &Env = Results[0].second.Env;
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
 
         const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
         ASSERT_THAT(FooDecl, NotNull());
@@ -1291,15 +1473,15 @@ TEST(TransferTest, ClassMember) {
         }
         ASSERT_THAT(BarDecl, NotNull());
 
-        const auto *FooLoc = cast<AggregateStorageLocation>(
-            Env.getStorageLocation(*FooDecl, SkipPast::None));
-        const auto *FooVal = cast<StructValue>(Env.getValue(*FooLoc));
-        const auto *BarVal = cast<IntegerValue>(FooVal->getChild(*BarDecl));
+        const auto *FooLoc =
+            cast<RecordStorageLocation>(Env.getStorageLocation(*FooDecl));
+        const auto *BarVal =
+            cast<IntegerValue>(getFieldValue(FooLoc, *BarDecl, Env));
 
         const ValueDecl *BazDecl = findValueDecl(ASTCtx, "Baz");
         ASSERT_THAT(BazDecl, NotNull());
 
-        EXPECT_EQ(Env.getValue(*BazDecl, SkipPast::None), BarVal);
+        EXPECT_EQ(Env.getValue(*BazDecl), BarVal);
       });
 }
 
@@ -1324,26 +1506,281 @@ TEST(TransferTest, BaseClassInitializer) {
     };
   )";
   ASSERT_THAT_ERROR(
-      test::checkDataflow<NoopAnalysis>(
-          Code, cxxConstructorDecl(ofClass(hasName("B"))),
-          [](ASTContext &C, Environment &) {
-            return NoopAnalysis(C, /*ApplyBuiltinTransfer=*/true);
-          },
-          [](llvm::ArrayRef<
-                 std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                 Results,
-             ASTContext &ASTCtx) {
+      checkDataflow<NoopAnalysis>(
+          AnalysisInputs<NoopAnalysis>(
+              Code, cxxConstructorDecl(ofClass(hasName("B"))),
+              [](ASTContext &C, Environment &) { return NoopAnalysis(C); })
+              .withASTBuildArgs(
+                  {"-fsyntax-only", "-fno-delayed-template-parsing",
+                   "-std=" + std::string(LangStandard::getLangStandardForKind(
+                                             LangStandard::lang_cxx17)
+                                             .getName())}),
+          /*VerifyResults=*/
+          [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+             const AnalysisOutputs &) {
             // Regression test to verify that base-class initializers do not
             // trigger an assertion. If we add support for such initializers in
             // the future, we can expand this test to check more specific
             // properties.
-            EXPECT_THAT(Results, ElementsAre(Pair("p", _)));
-          },
-          {"-fsyntax-only", "-fno-delayed-template-parsing",
-           "-std=" + std::string(LangStandard::getLangStandardForKind(
-                                     LangStandard::lang_cxx17)
-                                     .getName())}),
+            EXPECT_THAT(Results.keys(), UnorderedElementsAre("p"));
+          }),
       llvm::Succeeded());
+}
+
+TEST(TransferTest, FieldsDontHaveValuesInConstructor) {
+  // In a constructor, unlike in regular member functions, we don't want fields
+  // to be pre-initialized with values, because doing so is the job of the
+  // constructor.
+  std::string Code = R"(
+    struct target {
+      target() {
+        0;
+        // [[p]]
+        // Mention the field so it is modeled;
+        Val;
+      }
+
+      int Val;
+    };
+ )";
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
+        EXPECT_EQ(getFieldValue(Env.getThisPointeeStorageLocation(), "Val",
+                                ASTCtx, Env),
+                  nullptr);
+      });
+}
+
+TEST(TransferTest, FieldsDontHaveValuesInConstructorWithBaseClass) {
+  // See above, but for a class with a base class.
+  std::string Code = R"(
+    struct Base {
+        int BaseVal;
+    };
+
+    struct target  : public Base {
+      target() {
+        0;
+        // [[p]]
+        // Mention the fields so they are modeled.
+        BaseVal;
+        Val;
+      }
+
+      int Val;
+    };
+ )";
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
+        // The field of the base class should already have been initialized with
+        // a value by the base constructor.
+        EXPECT_NE(getFieldValue(Env.getThisPointeeStorageLocation(), "BaseVal",
+                                ASTCtx, Env),
+                  nullptr);
+        EXPECT_EQ(getFieldValue(Env.getThisPointeeStorageLocation(), "Val",
+                                ASTCtx, Env),
+                  nullptr);
+      });
+}
+
+TEST(TransferTest, StructModeledFieldsWithAccessor) {
+  std::string Code = R"(
+    class S {
+      int *Ptr;
+      int *PtrNonConst;
+      int Int;
+      int IntWithInc;
+      int IntNotAccessed;
+      int IntRef;
+    public:
+      int *getPtr() const { return Ptr; }
+      int *getPtrNonConst() { return PtrNonConst; }
+      int getInt(int i) const { return Int; }
+      int getWithInc(int i) { IntWithInc += i; return IntWithInc; }
+      int getIntNotAccessed() const { return IntNotAccessed; }
+      int getIntNoDefinition() const;
+      int &getIntRef() { return IntRef; }
+      void returnVoid() const { return; }
+    };
+
+    void target() {
+      S s;
+      int *p1 = s.getPtr();
+      int *p2 = s.getPtrNonConst();
+      int i1 = s.getInt(1);
+      int i2 = s.getWithInc(1);
+      int i3 = s.getIntNoDefinition();
+      int &iref = s.getIntRef();
+
+      // Regression test: Don't crash on an indirect call (which doesn't have
+      // an associated `CXXMethodDecl`).
+      auto ptr_to_member_fn = &S::getPtr;
+      p1 = (s.*ptr_to_member_fn)();
+
+      // Regression test: Don't crash on a return statement without a value.
+      s.returnVoid();
+      // [[p]]
+    }
+  )";
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        const Environment &Env =
+              getEnvironmentAtAnnotation(Results, "p");
+        auto &SLoc = getLocForDecl<RecordStorageLocation>(ASTCtx, Env, "s");
+        std::vector<const ValueDecl*> Fields;
+        for (auto [Field, _] : SLoc.children())
+          Fields.push_back(Field);
+        // Only the fields that have simple accessor methods (that have a
+        // single statement body that returns the member variable) should be
+        // modeled.
+        ASSERT_THAT(Fields, UnorderedElementsAre(
+            findValueDecl(ASTCtx, "Ptr"), findValueDecl(ASTCtx, "PtrNonConst"),
+            findValueDecl(ASTCtx, "Int"), findValueDecl(ASTCtx, "IntRef")));
+      });
+}
+
+TEST(TransferTest, StructModeledFieldsInTypeid) {
+  // Test that we model fields mentioned inside a `typeid()` expression only if
+  // that expression is potentially evaluated -- i.e. if the expression inside
+  // `typeid()` is a glvalue of polymorphic type (see
+  // `CXXTypeidExpr::isPotentiallyEvaluated()` and [expr.typeid]p3).
+  std::string Code = R"(
+    // Definitions needed for `typeid`.
+    namespace std {
+      class type_info {};
+      class bad_typeid {};
+    }  // namespace std
+
+    struct NonPolymorphic {};
+
+    struct Polymorphic {
+      virtual ~Polymorphic() = default;
+    };
+
+    struct S {
+      NonPolymorphic *NonPoly;
+      Polymorphic *Poly;
+    };
+
+    void target(S &s) {
+      typeid(*s.NonPoly);
+      typeid(*s.Poly);
+      // [[p]]
+    }
+  )";
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
+        auto &SLoc = getLocForDecl<RecordStorageLocation>(ASTCtx, Env, "s");
+        std::vector<const ValueDecl *> Fields;
+        for (auto [Field, _] : SLoc.children())
+          Fields.push_back(Field);
+        EXPECT_THAT(Fields,
+                    UnorderedElementsAre(findValueDecl(ASTCtx, "Poly")));
+      });
+}
+
+TEST(TransferTest, StructModeledFieldsWithComplicatedInheritance) {
+  std::string Code = R"(
+    struct Base1 {
+      int base1_1;
+      int base1_2;
+    };
+    struct Intermediate : Base1 {
+      int intermediate_1;
+      int intermediate_2;
+    };
+    struct Base2 {
+      int base2_1;
+      int base2_2;
+    };
+    struct MostDerived : public Intermediate, Base2 {
+      int most_derived_1;
+      int most_derived_2;
+    };
+
+    void target() {
+      MostDerived MD;
+      MD.base1_2 = 1;
+      MD.intermediate_2 = 1;
+      MD.base2_2 = 1;
+      MD.most_derived_2 = 1;
+      // [[p]]
+    }
+  )";
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        const Environment &Env =
+              getEnvironmentAtAnnotation(Results, "p");
+
+        // Only the accessed fields should exist in the model.
+        auto &MDLoc = getLocForDecl<RecordStorageLocation>(ASTCtx, Env, "MD");
+        std::vector<const ValueDecl*> Fields;
+        for (auto [Field, _] : MDLoc.children())
+          Fields.push_back(Field);
+        ASSERT_THAT(Fields, UnorderedElementsAre(
+            findValueDecl(ASTCtx, "base1_2"),
+            findValueDecl(ASTCtx, "intermediate_2"),
+            findValueDecl(ASTCtx, "base2_2"),
+            findValueDecl(ASTCtx, "most_derived_2")));
+      });
+}
+
+TEST(TransferTest, StructInitializerListWithComplicatedInheritance) {
+  std::string Code = R"(
+    struct Base1 {
+      int base1;
+    };
+    struct Intermediate : Base1 {
+      int intermediate;
+    };
+    struct Base2 {
+      int base2;
+    };
+    struct MostDerived : public Intermediate, Base2 {
+      int most_derived;
+    };
+
+    void target() {
+      MostDerived MD = {};
+      // [[p]]
+    }
+  )";
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        const Environment &Env =
+              getEnvironmentAtAnnotation(Results, "p");
+
+        // When a struct is initialized with a initializer list, all the
+        // fields are considered "accessed", and therefore do exist.
+        auto &MD = getLocForDecl<RecordStorageLocation>(ASTCtx, Env, "MD");
+        ASSERT_THAT(cast<IntegerValue>(
+            getFieldValue(&MD, *findValueDecl(ASTCtx, "base1"), Env)),
+            NotNull());
+        ASSERT_THAT(cast<IntegerValue>(
+            getFieldValue(&MD, *findValueDecl(ASTCtx, "intermediate"), Env)),
+            NotNull());
+        ASSERT_THAT(cast<IntegerValue>(
+            getFieldValue(&MD, *findValueDecl(ASTCtx, "base2"), Env)),
+            NotNull());
+        ASSERT_THAT(cast<IntegerValue>(
+            getFieldValue(&MD, *findValueDecl(ASTCtx, "most_derived"), Env)),
+            NotNull());
+      });
 }
 
 TEST(TransferTest, ReferenceMember) {
@@ -1358,12 +1795,11 @@ TEST(TransferTest, ReferenceMember) {
     }
   )";
   runDataflow(
-      Code, [](llvm::ArrayRef<
-                   std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                   Results,
-               ASTContext &ASTCtx) {
-        ASSERT_THAT(Results, ElementsAre(Pair("p", _)));
-        const Environment &Env = Results[0].second.Env;
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
 
         const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
         ASSERT_THAT(FooDecl, NotNull());
@@ -1381,17 +1817,15 @@ TEST(TransferTest, ReferenceMember) {
         }
         ASSERT_THAT(BarDecl, NotNull());
 
-        const auto *FooLoc = cast<AggregateStorageLocation>(
-            Env.getStorageLocation(*FooDecl, SkipPast::None));
-        const auto *FooVal = cast<StructValue>(Env.getValue(*FooLoc));
-        const auto *BarVal = cast<ReferenceValue>(FooVal->getChild(*BarDecl));
+        const auto *FooLoc =
+            cast<RecordStorageLocation>(Env.getStorageLocation(*FooDecl));
         const auto *BarReferentVal =
-            cast<IntegerValue>(Env.getValue(BarVal->getReferentLoc()));
+            cast<IntegerValue>(getFieldValue(FooLoc, *BarDecl, Env));
 
         const ValueDecl *BazDecl = findValueDecl(ASTCtx, "Baz");
         ASSERT_THAT(BazDecl, NotNull());
 
-        EXPECT_EQ(Env.getValue(*BazDecl, SkipPast::None), BarReferentVal);
+        EXPECT_EQ(Env.getValue(*BazDecl), BarReferentVal);
       });
 }
 
@@ -1414,22 +1848,20 @@ TEST(TransferTest, StructThisMember) {
     };
   )";
   runDataflow(
-      Code, [](llvm::ArrayRef<
-                   std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                   Results,
-               ASTContext &ASTCtx) {
-        ASSERT_THAT(Results, ElementsAre(Pair("p", _)));
-        const Environment &Env = Results[0].second.Env;
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
 
-        const auto *ThisLoc = dyn_cast<AggregateStorageLocation>(
-            Env.getThisPointeeStorageLocation());
+        const auto *ThisLoc = Env.getThisPointeeStorageLocation();
         ASSERT_THAT(ThisLoc, NotNull());
 
         const ValueDecl *BarDecl = findValueDecl(ASTCtx, "Bar");
         ASSERT_THAT(BarDecl, NotNull());
 
         const auto *BarLoc =
-            cast<ScalarStorageLocation>(&ThisLoc->getChild(*BarDecl));
+            cast<ScalarStorageLocation>(ThisLoc->getChild(*BarDecl));
         ASSERT_TRUE(isa_and_nonnull<ScalarStorageLocation>(BarLoc));
 
         const Value *BarVal = Env.getValue(*BarLoc);
@@ -1437,7 +1869,7 @@ TEST(TransferTest, StructThisMember) {
 
         const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
         ASSERT_THAT(FooDecl, NotNull());
-        EXPECT_EQ(Env.getValue(*FooDecl, SkipPast::None), BarVal);
+        EXPECT_EQ(Env.getValue(*FooDecl), BarVal);
 
         const ValueDecl *QuxDecl = findValueDecl(ASTCtx, "Qux");
         ASSERT_THAT(QuxDecl, NotNull());
@@ -1456,18 +1888,14 @@ TEST(TransferTest, StructThisMember) {
         ASSERT_THAT(BazDecl, NotNull());
 
         const auto *QuxLoc =
-            cast<AggregateStorageLocation>(&ThisLoc->getChild(*QuxDecl));
-        const auto *QuxVal = dyn_cast<StructValue>(Env.getValue(*QuxLoc));
-        ASSERT_THAT(QuxVal, NotNull());
+            cast<RecordStorageLocation>(ThisLoc->getChild(*QuxDecl));
 
-        const auto *BazLoc =
-            cast<ScalarStorageLocation>(&QuxLoc->getChild(*BazDecl));
-        const auto *BazVal = cast<IntegerValue>(QuxVal->getChild(*BazDecl));
-        EXPECT_EQ(Env.getValue(*BazLoc), BazVal);
+        const auto *BazVal =
+            cast<IntegerValue>(getFieldValue(QuxLoc, *BazDecl, Env));
 
         const ValueDecl *QuuxDecl = findValueDecl(ASTCtx, "Quux");
         ASSERT_THAT(QuuxDecl, NotNull());
-        EXPECT_EQ(Env.getValue(*QuuxDecl, SkipPast::None), BazVal);
+        EXPECT_EQ(Env.getValue(*QuuxDecl), BazVal);
       });
 }
 
@@ -1491,21 +1919,19 @@ TEST(TransferTest, ClassThisMember) {
     };
   )";
   runDataflow(
-      Code, [](llvm::ArrayRef<
-                   std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                   Results,
-               ASTContext &ASTCtx) {
-        ASSERT_THAT(Results, ElementsAre(Pair("p", _)));
-        const Environment &Env = Results[0].second.Env;
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
 
-        const auto *ThisLoc =
-            cast<AggregateStorageLocation>(Env.getThisPointeeStorageLocation());
+        const auto *ThisLoc = Env.getThisPointeeStorageLocation();
 
         const ValueDecl *BarDecl = findValueDecl(ASTCtx, "Bar");
         ASSERT_THAT(BarDecl, NotNull());
 
         const auto *BarLoc =
-            cast<ScalarStorageLocation>(&ThisLoc->getChild(*BarDecl));
+            cast<ScalarStorageLocation>(ThisLoc->getChild(*BarDecl));
         ASSERT_TRUE(isa_and_nonnull<ScalarStorageLocation>(BarLoc));
 
         const Value *BarVal = Env.getValue(*BarLoc);
@@ -1513,7 +1939,7 @@ TEST(TransferTest, ClassThisMember) {
 
         const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
         ASSERT_THAT(FooDecl, NotNull());
-        EXPECT_EQ(Env.getValue(*FooDecl, SkipPast::None), BarVal);
+        EXPECT_EQ(Env.getValue(*FooDecl), BarVal);
 
         const ValueDecl *QuxDecl = findValueDecl(ASTCtx, "Qux");
         ASSERT_THAT(QuxDecl, NotNull());
@@ -1532,18 +1958,61 @@ TEST(TransferTest, ClassThisMember) {
         ASSERT_THAT(BazDecl, NotNull());
 
         const auto *QuxLoc =
-            cast<AggregateStorageLocation>(&ThisLoc->getChild(*QuxDecl));
-        const auto *QuxVal = dyn_cast<StructValue>(Env.getValue(*QuxLoc));
-        ASSERT_THAT(QuxVal, NotNull());
+            cast<RecordStorageLocation>(ThisLoc->getChild(*QuxDecl));
 
-        const auto *BazLoc =
-            cast<ScalarStorageLocation>(&QuxLoc->getChild(*BazDecl));
-        const auto *BazVal = cast<IntegerValue>(QuxVal->getChild(*BazDecl));
-        EXPECT_EQ(Env.getValue(*BazLoc), BazVal);
+        const auto *BazVal =
+            cast<IntegerValue>(getFieldValue(QuxLoc, *BazDecl, Env));
 
         const ValueDecl *QuuxDecl = findValueDecl(ASTCtx, "Quux");
         ASSERT_THAT(QuuxDecl, NotNull());
-        EXPECT_EQ(Env.getValue(*QuuxDecl, SkipPast::None), BazVal);
+        EXPECT_EQ(Env.getValue(*QuuxDecl), BazVal);
+      });
+}
+
+TEST(TransferTest, UnionThisMember) {
+  std::string Code = R"(
+    union A {
+      int Foo;
+      int Bar;
+
+      void target() {
+        A a;
+        // Mention the fields to ensure they're included in the analysis.
+        (void)a.Foo;
+        (void)a.Bar;
+        // [[p]]
+      }
+    };
+  )";
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
+
+        const auto *ThisLoc = Env.getThisPointeeStorageLocation();
+        ASSERT_THAT(ThisLoc, NotNull());
+
+        const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
+        ASSERT_THAT(FooDecl, NotNull());
+
+        const auto *FooLoc =
+            cast<ScalarStorageLocation>(ThisLoc->getChild(*FooDecl));
+        ASSERT_TRUE(isa_and_nonnull<ScalarStorageLocation>(FooLoc));
+
+        const Value *FooVal = Env.getValue(*FooLoc);
+        ASSERT_TRUE(isa_and_nonnull<IntegerValue>(FooVal));
+
+        const ValueDecl *BarDecl = findValueDecl(ASTCtx, "Bar");
+        ASSERT_THAT(BarDecl, NotNull());
+
+        const auto *BarLoc =
+            cast<ScalarStorageLocation>(ThisLoc->getChild(*BarDecl));
+        ASSERT_TRUE(isa_and_nonnull<ScalarStorageLocation>(BarLoc));
+
+        const Value *BarVal = Env.getValue(*BarLoc);
+        ASSERT_TRUE(isa_and_nonnull<IntegerValue>(BarVal));
       });
 }
 
@@ -1562,22 +2031,19 @@ TEST(TransferTest, StructThisInLambda) {
   )";
   runDataflow(
       ThisCaptureCode,
-      [](llvm::ArrayRef<
-             std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-             Results,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
          ASTContext &ASTCtx) {
-        ASSERT_THAT(Results, ElementsAre(Pair("p1", _)));
-        const Environment &Env = Results[0].second.Env;
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p1"));
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p1");
 
-        const auto *ThisLoc = dyn_cast<AggregateStorageLocation>(
-            Env.getThisPointeeStorageLocation());
+        const auto *ThisLoc = Env.getThisPointeeStorageLocation();
         ASSERT_THAT(ThisLoc, NotNull());
 
         const ValueDecl *BarDecl = findValueDecl(ASTCtx, "Bar");
         ASSERT_THAT(BarDecl, NotNull());
 
         const auto *BarLoc =
-            cast<ScalarStorageLocation>(&ThisLoc->getChild(*BarDecl));
+            cast<ScalarStorageLocation>(ThisLoc->getChild(*BarDecl));
         ASSERT_TRUE(isa_and_nonnull<ScalarStorageLocation>(BarLoc));
 
         const Value *BarVal = Env.getValue(*BarLoc);
@@ -1585,7 +2051,7 @@ TEST(TransferTest, StructThisInLambda) {
 
         const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
         ASSERT_THAT(FooDecl, NotNull());
-        EXPECT_EQ(Env.getValue(*FooDecl, SkipPast::None), BarVal);
+        EXPECT_EQ(Env.getValue(*FooDecl), BarVal);
       },
       LangStandard::lang_cxx17, /*ApplyBuiltinTransfer=*/true, "operator()");
 
@@ -1603,22 +2069,19 @@ TEST(TransferTest, StructThisInLambda) {
   )";
   runDataflow(
       RefCaptureDefaultCode,
-      [](llvm::ArrayRef<
-             std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-             Results,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
          ASTContext &ASTCtx) {
-        ASSERT_THAT(Results, ElementsAre(Pair("p2", _)));
-        const Environment &Env = Results[0].second.Env;
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p2"));
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p2");
 
-        const auto *ThisLoc = dyn_cast<AggregateStorageLocation>(
-            Env.getThisPointeeStorageLocation());
+        const auto *ThisLoc = Env.getThisPointeeStorageLocation();
         ASSERT_THAT(ThisLoc, NotNull());
 
         const ValueDecl *BarDecl = findValueDecl(ASTCtx, "Bar");
         ASSERT_THAT(BarDecl, NotNull());
 
         const auto *BarLoc =
-            cast<ScalarStorageLocation>(&ThisLoc->getChild(*BarDecl));
+            cast<ScalarStorageLocation>(ThisLoc->getChild(*BarDecl));
         ASSERT_TRUE(isa_and_nonnull<ScalarStorageLocation>(BarLoc));
 
         const Value *BarVal = Env.getValue(*BarLoc);
@@ -1626,7 +2089,7 @@ TEST(TransferTest, StructThisInLambda) {
 
         const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
         ASSERT_THAT(FooDecl, NotNull());
-        EXPECT_EQ(Env.getValue(*FooDecl, SkipPast::None), BarVal);
+        EXPECT_EQ(Env.getValue(*FooDecl), BarVal);
       },
       LangStandard::lang_cxx17, /*ApplyBuiltinTransfer=*/true, "operator()");
 
@@ -1641,12 +2104,10 @@ TEST(TransferTest, StructThisInLambda) {
   )";
   runDataflow(
       FreeFunctionLambdaCode,
-      [](llvm::ArrayRef<
-             std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-             Results,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
          ASTContext &ASTCtx) {
-        ASSERT_THAT(Results, ElementsAre(Pair("p3", _)));
-        const Environment &Env = Results[0].second.Env;
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p3"));
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p3");
 
         EXPECT_THAT(Env.getThisPointeeStorageLocation(), IsNull());
       },
@@ -1664,28 +2125,25 @@ TEST(TransferTest, ConstructorInitializer) {
       }
     };
   )";
-  runDataflow(Code,
-              [](llvm::ArrayRef<
-                     std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                     Results,
-                 ASTContext &ASTCtx) {
-                ASSERT_THAT(Results, ElementsAre(Pair("p", _)));
-                const Environment &Env = Results[0].second.Env;
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
 
-                const auto *ThisLoc = dyn_cast<AggregateStorageLocation>(
-                    Env.getThisPointeeStorageLocation());
-                ASSERT_THAT(ThisLoc, NotNull());
+        const auto *ThisLoc = Env.getThisPointeeStorageLocation();
+        ASSERT_THAT(ThisLoc, NotNull());
 
-                const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
-                ASSERT_THAT(FooDecl, NotNull());
+        const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
+        ASSERT_THAT(FooDecl, NotNull());
 
-                const auto *FooVal =
-                    cast<IntegerValue>(Env.getValue(*FooDecl, SkipPast::None));
+        const auto *FooVal = cast<IntegerValue>(Env.getValue(*FooDecl));
 
-                const ValueDecl *QuxDecl = findValueDecl(ASTCtx, "Qux");
-                ASSERT_THAT(QuxDecl, NotNull());
-                EXPECT_EQ(Env.getValue(*QuxDecl, SkipPast::None), FooVal);
-              });
+        const ValueDecl *QuxDecl = findValueDecl(ASTCtx, "Qux");
+        ASSERT_THAT(QuxDecl, NotNull());
+        EXPECT_EQ(Env.getValue(*QuxDecl), FooVal);
+      });
 }
 
 TEST(TransferTest, DefaultInitializer) {
@@ -1700,28 +2158,25 @@ TEST(TransferTest, DefaultInitializer) {
       }
     };
   )";
-  runDataflow(Code,
-              [](llvm::ArrayRef<
-                     std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                     Results,
-                 ASTContext &ASTCtx) {
-                ASSERT_THAT(Results, ElementsAre(Pair("p", _)));
-                const Environment &Env = Results[0].second.Env;
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
 
-                const auto *ThisLoc = dyn_cast<AggregateStorageLocation>(
-                    Env.getThisPointeeStorageLocation());
-                ASSERT_THAT(ThisLoc, NotNull());
+        const auto *ThisLoc = Env.getThisPointeeStorageLocation();
+        ASSERT_THAT(ThisLoc, NotNull());
 
-                const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
-                ASSERT_THAT(FooDecl, NotNull());
+        const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
+        ASSERT_THAT(FooDecl, NotNull());
 
-                const auto *FooVal =
-                    cast<IntegerValue>(Env.getValue(*FooDecl, SkipPast::None));
+        const auto *FooVal = cast<IntegerValue>(Env.getValue(*FooDecl));
 
-                const ValueDecl *QuxDecl = findValueDecl(ASTCtx, "Qux");
-                ASSERT_THAT(QuxDecl, NotNull());
-                EXPECT_EQ(Env.getValue(*QuxDecl, SkipPast::None), FooVal);
-              });
+        const ValueDecl *QuxDecl = findValueDecl(ASTCtx, "Qux");
+        ASSERT_THAT(QuxDecl, NotNull());
+        EXPECT_EQ(Env.getValue(*QuxDecl), FooVal);
+      });
 }
 
 TEST(TransferTest, DefaultInitializerReference) {
@@ -1737,29 +2192,25 @@ TEST(TransferTest, DefaultInitializerReference) {
     };
   )";
   runDataflow(
-      Code, [](llvm::ArrayRef<
-                   std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                   Results,
-               ASTContext &ASTCtx) {
-        ASSERT_THAT(Results, ElementsAre(Pair("p", _)));
-        const Environment &Env = Results[0].second.Env;
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
 
-        const auto *ThisLoc = dyn_cast<AggregateStorageLocation>(
-            Env.getThisPointeeStorageLocation());
+        const auto *ThisLoc = Env.getThisPointeeStorageLocation();
         ASSERT_THAT(ThisLoc, NotNull());
 
         const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
         ASSERT_THAT(FooDecl, NotNull());
 
-        const auto *FooVal =
-            cast<ReferenceValue>(Env.getValue(*FooDecl, SkipPast::None));
+        const auto *FooLoc = Env.getStorageLocation(*FooDecl);
 
         const ValueDecl *QuxDecl = findValueDecl(ASTCtx, "Qux");
         ASSERT_THAT(QuxDecl, NotNull());
 
-        const auto *QuxVal =
-            cast<ReferenceValue>(Env.getValue(*QuxDecl, SkipPast::None));
-        EXPECT_EQ(&QuxVal->getReferentLoc(), &FooVal->getReferentLoc());
+        const auto *QuxLoc = Env.getStorageLocation(*QuxDecl);
+        EXPECT_EQ(QuxLoc, FooLoc);
       });
 }
 
@@ -1771,16 +2222,16 @@ TEST(TransferTest, TemporaryObject) {
 
     void target() {
       A Foo = A();
+      (void)Foo.Bar;
       // [[p]]
     }
   )";
   runDataflow(
-      Code, [](llvm::ArrayRef<
-                   std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                   Results,
-               ASTContext &ASTCtx) {
-        ASSERT_THAT(Results, ElementsAre(Pair("p", _)));
-        const Environment &Env = Results[0].second.Env;
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
 
         const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
         ASSERT_THAT(FooDecl, NotNull());
@@ -1788,20 +2239,15 @@ TEST(TransferTest, TemporaryObject) {
         const ValueDecl *BarDecl = findValueDecl(ASTCtx, "Bar");
         ASSERT_THAT(BarDecl, NotNull());
 
-        const auto *FooLoc = cast<AggregateStorageLocation>(
-            Env.getStorageLocation(*FooDecl, SkipPast::None));
-        const auto *BarLoc =
-            cast<ScalarStorageLocation>(&FooLoc->getChild(*BarDecl));
-
-        const auto *FooVal = cast<StructValue>(Env.getValue(*FooLoc));
-        const auto *BarVal = cast<IntegerValue>(FooVal->getChild(*BarDecl));
-        EXPECT_EQ(Env.getValue(*BarLoc), BarVal);
+        const auto *FooLoc =
+            cast<RecordStorageLocation>(Env.getStorageLocation(*FooDecl));
+        EXPECT_TRUE(isa<IntegerValue>(getFieldValue(FooLoc, *BarDecl, Env)));
       });
 }
 
 TEST(TransferTest, ElidableConstructor) {
   // This test is effectively the same as TransferTest.TemporaryObject, but
-  // the code is compiled as C++ 14.
+  // the code is compiled as C++14.
   std::string Code = R"(
     struct A {
       int Bar;
@@ -1809,17 +2255,16 @@ TEST(TransferTest, ElidableConstructor) {
 
     void target() {
       A Foo = A();
+      (void)Foo.Bar;
       // [[p]]
     }
   )";
   runDataflow(
       Code,
-      [](llvm::ArrayRef<
-             std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-             Results,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
          ASTContext &ASTCtx) {
-        ASSERT_THAT(Results, ElementsAre(Pair("p", _)));
-        const Environment &Env = Results[0].second.Env;
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
 
         const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
         ASSERT_THAT(FooDecl, NotNull());
@@ -1827,14 +2272,9 @@ TEST(TransferTest, ElidableConstructor) {
         const ValueDecl *BarDecl = findValueDecl(ASTCtx, "Bar");
         ASSERT_THAT(BarDecl, NotNull());
 
-        const auto *FooLoc = cast<AggregateStorageLocation>(
-            Env.getStorageLocation(*FooDecl, SkipPast::None));
-        const auto *BarLoc =
-            cast<ScalarStorageLocation>(&FooLoc->getChild(*BarDecl));
-
-        const auto *FooVal = cast<StructValue>(Env.getValue(*FooLoc));
-        const auto *BarVal = cast<IntegerValue>(FooVal->getChild(*BarDecl));
-        EXPECT_EQ(Env.getValue(*BarLoc), BarVal);
+        const auto *FooLoc =
+            cast<RecordStorageLocation>(Env.getStorageLocation(*FooDecl));
+        EXPECT_TRUE(isa<IntegerValue>(getFieldValue(FooLoc, *BarDecl, Env)));
       },
       LangStandard::lang_cxx14);
 }
@@ -1846,22 +2286,19 @@ TEST(TransferTest, AssignmentOperator) {
     };
 
     void target() {
-      A Foo;
-      A Bar;
+      A Foo = { 1 };
+      A Bar = { 2 };
       // [[p1]]
-      Foo = Bar;
+      A &Rval = (Foo = Bar);
       // [[p2]]
+      Foo.Baz = 3;
+      // [[p3]]
     }
   )";
   runDataflow(
-      Code, [](llvm::ArrayRef<
-                   std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                   Results,
-               ASTContext &ASTCtx) {
-        ASSERT_THAT(Results, ElementsAre(Pair("p1", _), Pair("p2", _)));
-        const Environment &Env1 = Results[0].second.Env;
-        const Environment &Env2 = Results[1].second.Env;
-
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
         const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
         ASSERT_THAT(FooDecl, NotNull());
 
@@ -1871,35 +2308,412 @@ TEST(TransferTest, AssignmentOperator) {
         const ValueDecl *BazDecl = findValueDecl(ASTCtx, "Baz");
         ASSERT_THAT(BazDecl, NotNull());
 
-        const auto *FooLoc1 = cast<AggregateStorageLocation>(
-            Env1.getStorageLocation(*FooDecl, SkipPast::None));
-        const auto *BarLoc1 = cast<AggregateStorageLocation>(
-            Env1.getStorageLocation(*BarDecl, SkipPast::None));
+        // Before copy assignment.
+        {
+          const Environment &Env1 = getEnvironmentAtAnnotation(Results, "p1");
 
-        const auto *FooVal1 = cast<StructValue>(Env1.getValue(*FooLoc1));
-        const auto *BarVal1 = cast<StructValue>(Env1.getValue(*BarLoc1));
-        EXPECT_NE(FooVal1, BarVal1);
+          const auto *FooLoc1 =
+              cast<RecordStorageLocation>(Env1.getStorageLocation(*FooDecl));
+          const auto *BarLoc1 =
+              cast<RecordStorageLocation>(Env1.getStorageLocation(*BarDecl));
+          EXPECT_FALSE(recordsEqual(*FooLoc1, *BarLoc1, Env1));
 
-        const auto *FooBazVal1 =
-            cast<IntegerValue>(Env1.getValue(FooLoc1->getChild(*BazDecl)));
-        const auto *BarBazVal1 =
-            cast<IntegerValue>(Env1.getValue(BarLoc1->getChild(*BazDecl)));
-        EXPECT_NE(FooBazVal1, BarBazVal1);
+          const auto *FooBazVal1 =
+              cast<IntegerValue>(getFieldValue(FooLoc1, *BazDecl, Env1));
+          const auto *BarBazVal1 =
+              cast<IntegerValue>(getFieldValue(BarLoc1, *BazDecl, Env1));
+          EXPECT_NE(FooBazVal1, BarBazVal1);
+        }
 
-        const auto *FooLoc2 = cast<AggregateStorageLocation>(
-            Env2.getStorageLocation(*FooDecl, SkipPast::None));
-        const auto *BarLoc2 = cast<AggregateStorageLocation>(
-            Env2.getStorageLocation(*BarDecl, SkipPast::None));
+        // After copy assignment.
+        {
+          const Environment &Env2 = getEnvironmentAtAnnotation(Results, "p2");
 
-        const auto *FooVal2 = cast<StructValue>(Env2.getValue(*FooLoc2));
-        const auto *BarVal2 = cast<StructValue>(Env2.getValue(*BarLoc2));
-        EXPECT_EQ(FooVal2, BarVal2);
+          const auto *FooLoc2 =
+              cast<RecordStorageLocation>(Env2.getStorageLocation(*FooDecl));
+          const auto *BarLoc2 =
+              cast<RecordStorageLocation>(Env2.getStorageLocation(*BarDecl));
 
-        const auto *FooBazVal2 =
-            cast<IntegerValue>(Env2.getValue(FooLoc1->getChild(*BazDecl)));
-        const auto *BarBazVal2 =
-            cast<IntegerValue>(Env2.getValue(BarLoc1->getChild(*BazDecl)));
-        EXPECT_EQ(FooBazVal2, BarBazVal2);
+          EXPECT_TRUE(recordsEqual(*FooLoc2, *BarLoc2, Env2));
+          EXPECT_EQ(&getLocForDecl(ASTCtx, Env2, "Rval"), FooLoc2);
+
+          const auto *FooBazVal2 =
+              cast<IntegerValue>(getFieldValue(FooLoc2, *BazDecl, Env2));
+          const auto *BarBazVal2 =
+              cast<IntegerValue>(getFieldValue(BarLoc2, *BazDecl, Env2));
+          EXPECT_EQ(FooBazVal2, BarBazVal2);
+        }
+
+        // After value update.
+        {
+          const Environment &Env3 = getEnvironmentAtAnnotation(Results, "p3");
+
+          const auto *FooLoc3 =
+              cast<RecordStorageLocation>(Env3.getStorageLocation(*FooDecl));
+          const auto *BarLoc3 =
+              cast<RecordStorageLocation>(Env3.getStorageLocation(*BarDecl));
+          EXPECT_FALSE(recordsEqual(*FooLoc3, *BarLoc3, Env3));
+
+          const auto *FooBazVal3 =
+              cast<IntegerValue>(getFieldValue(FooLoc3, *BazDecl, Env3));
+          const auto *BarBazVal3 =
+              cast<IntegerValue>(getFieldValue(BarLoc3, *BazDecl, Env3));
+          EXPECT_NE(FooBazVal3, BarBazVal3);
+        }
+      });
+}
+
+// It's legal for the assignment operator to take its source parameter by value.
+// Check that we handle this correctly. (This is a repro -- we used to
+// assert-fail on this.)
+TEST(TransferTest, AssignmentOperator_ArgByValue) {
+  std::string Code = R"(
+    struct A {
+      int Baz;
+      A &operator=(A);
+    };
+
+    void target() {
+      A Foo = { 1 };
+      A Bar = { 2 };
+      Foo = Bar;
+      // [[p]]
+    }
+  )";
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
+        const ValueDecl *BazDecl = findValueDecl(ASTCtx, "Baz");
+
+        const auto &FooLoc =
+            getLocForDecl<RecordStorageLocation>(ASTCtx, Env, "Foo");
+        const auto &BarLoc =
+            getLocForDecl<RecordStorageLocation>(ASTCtx, Env, "Bar");
+
+        const auto *FooBazVal =
+            cast<IntegerValue>(getFieldValue(&FooLoc, *BazDecl, Env));
+        const auto *BarBazVal =
+            cast<IntegerValue>(getFieldValue(&BarLoc, *BazDecl, Env));
+        EXPECT_EQ(FooBazVal, BarBazVal);
+      });
+}
+
+TEST(TransferTest, AssignmentOperatorFromBase) {
+  std::string Code = R"(
+    struct Base {
+      int base;
+    };
+    struct Derived : public Base {
+      using Base::operator=;
+      int derived;
+    };
+    void target(Base B, Derived D) {
+      D.base = 1;
+      D.derived = 1;
+      // [[before]]
+      D = B;
+      // [[after]]
+    }
+  )";
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        const Environment &EnvBefore =
+            getEnvironmentAtAnnotation(Results, "before");
+        const Environment &EnvAfter =
+            getEnvironmentAtAnnotation(Results, "after");
+
+        auto &BLoc =
+            getLocForDecl<RecordStorageLocation>(ASTCtx, EnvBefore, "B");
+        auto &DLoc =
+            getLocForDecl<RecordStorageLocation>(ASTCtx, EnvBefore, "D");
+
+        EXPECT_NE(getFieldValue(&BLoc, "base", ASTCtx, EnvBefore),
+                  getFieldValue(&DLoc, "base", ASTCtx, EnvBefore));
+        EXPECT_EQ(getFieldValue(&BLoc, "base", ASTCtx, EnvAfter),
+                  getFieldValue(&DLoc, "base", ASTCtx, EnvAfter));
+
+        EXPECT_EQ(getFieldValue(&DLoc, "derived", ASTCtx, EnvBefore),
+                  getFieldValue(&DLoc, "derived", ASTCtx, EnvAfter));
+      });
+}
+
+TEST(TransferTest, AssignmentOperatorFromCallResult) {
+  std::string Code = R"(
+    struct A {};
+    A ReturnA();
+
+    void target() {
+      A MyA;
+      MyA = ReturnA();
+    }
+  )";
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        // As of this writing, we don't produce a `Value` for the call
+        // `ReturnA()`. The only condition we're testing for is that the
+        // analysis should not crash in this case.
+      });
+}
+
+TEST(TransferTest, AssignmentOperatorWithInitAndInheritance) {
+  // This is a crash repro.
+  std::string Code = R"(
+    struct B { int Foo; };
+    struct S : public B {};
+    void target() {
+      S S1 = { 1 };
+      S S2;
+      S S3;
+      S1 = S2;  // Only Dst has InitListExpr.
+      S3 = S1;  // Only Src has InitListExpr.
+      // [[p]]
+    }
+  )";
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {});
+}
+
+TEST(TransferTest, AssignmentOperatorReturnsVoid) {
+  // This is a crash repro.
+  std::string Code = R"(
+    struct S {
+      void operator=(S&& other);
+    };
+    void target() {
+      S s;
+      s = S();
+      // [[p]]
+    }
+  )";
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {});
+}
+
+TEST(TransferTest, AssignmentOperatorReturnsByValue) {
+  // This is a crash repro.
+  std::string Code = R"(
+    struct S {
+      S operator=(const S&);
+      int i;
+    };
+    void target() {
+      S S1 = { 1 };
+      S S2 = { 2 };
+      S S3 = { 3 };
+      // [[before]]
+      // Test that the returned value is modeled by assigning to another value.
+      S1 = (S2 = S3);
+      (void)0;
+      // [[after]]
+    }
+  )";
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        const ValueDecl *S1Decl = findValueDecl(ASTCtx, "S1");
+        const ValueDecl *S2Decl = findValueDecl(ASTCtx, "S2");
+        const ValueDecl *S3Decl = findValueDecl(ASTCtx, "S3");
+
+        const Environment &EnvBefore =
+            getEnvironmentAtAnnotation(Results, "before");
+
+        EXPECT_FALSE(recordsEqual(
+            *EnvBefore.get<RecordStorageLocation>(*S1Decl),
+            *EnvBefore.get<RecordStorageLocation>(*S2Decl), EnvBefore));
+        EXPECT_FALSE(recordsEqual(
+            *EnvBefore.get<RecordStorageLocation>(*S2Decl),
+            *EnvBefore.get<RecordStorageLocation>(*S3Decl), EnvBefore));
+
+        const Environment &EnvAfter =
+            getEnvironmentAtAnnotation(Results, "after");
+
+        EXPECT_TRUE(recordsEqual(*EnvAfter.get<RecordStorageLocation>(*S1Decl),
+                                 *EnvAfter.get<RecordStorageLocation>(*S2Decl),
+                                 EnvAfter));
+        EXPECT_TRUE(recordsEqual(*EnvAfter.get<RecordStorageLocation>(*S2Decl),
+                                 *EnvAfter.get<RecordStorageLocation>(*S3Decl),
+                                 EnvAfter));
+      });
+}
+
+TEST(TransferTest, AssignmentOperatorReturnsDifferentTypeByRef) {
+  // This is a crash repro.
+  std::string Code = R"(
+    struct DifferentType {};
+    struct S {
+      DifferentType& operator=(const S&);
+    };
+    void target() {
+      S s;
+      s = S();
+      // [[p]]
+    }
+  )";
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {});
+}
+
+TEST(TransferTest, AssignmentOperatorReturnsDifferentTypeByValue) {
+  // This is a crash repro.
+  std::string Code = R"(
+    struct DifferentType {};
+    struct S {
+      DifferentType operator=(const S&);
+    };
+    void target() {
+      S s;
+      s = S();
+      // [[p]]
+    }
+  )";
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {});
+}
+
+TEST(TransferTest, InitListExprAsXValue) {
+  // This is a crash repro.
+  std::string Code = R"(
+    void target() {
+      bool&& Foo{false};
+      // [[p]]
+    }
+  )";
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
+        const auto &FooVal = getValueForDecl<BoolValue>(ASTCtx, Env, "Foo");
+        ASSERT_TRUE(FooVal.formula().isLiteral(false));
+      });
+}
+
+TEST(TransferTest, ArrayInitListExprOneRecordElement) {
+  // This is a crash repro.
+  std::string Code = R"cc(
+    struct S {};
+
+    void target() { S foo[] = {S()}; }
+  )cc";
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        // Just verify that it doesn't crash.
+      });
+}
+
+TEST(TransferTest, InitListExprAsUnion) {
+  // This is a crash repro.
+  std::string Code = R"cc(
+    class target {
+      union {
+        int *a;
+        bool *b;
+      } F;
+
+     public:
+      constexpr target() : F{nullptr} {
+        int *null = nullptr;
+        F.b;  // Make sure we reference 'b' so it is modeled.
+        // [[p]]
+      }
+    };
+  )cc";
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
+
+        auto &FLoc = getFieldLoc<RecordStorageLocation>(
+            *Env.getThisPointeeStorageLocation(), "F", ASTCtx);
+        auto *AVal = cast<PointerValue>(getFieldValue(&FLoc, "a", ASTCtx, Env));
+        EXPECT_EQ(AVal, &getValueForDecl<PointerValue>(ASTCtx, Env, "null"));
+        EXPECT_EQ(getFieldValue(&FLoc, "b", ASTCtx, Env), nullptr);
+      });
+}
+
+TEST(TransferTest, EmptyInitListExprForUnion) {
+  // This is a crash repro.
+  std::string Code = R"cc(
+    class target {
+      union {
+        int *a;
+        bool *b;
+      } F;
+
+     public:
+      // Empty initializer list means that `F` is aggregate-initialized.
+      // For a union, this has the effect that the first member of the union
+      // is copy-initialized from an empty initializer list; in this specific
+      // case, this has the effect of initializing `a` with null.
+      constexpr target() : F{} {
+        int *null = nullptr;
+        F.b;  // Make sure we reference 'b' so it is modeled.
+        // [[p]]
+      }
+    };
+  )cc";
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
+
+        auto &FLoc = getFieldLoc<RecordStorageLocation>(
+            *Env.getThisPointeeStorageLocation(), "F", ASTCtx);
+        auto *AVal = cast<PointerValue>(getFieldValue(&FLoc, "a", ASTCtx, Env));
+        EXPECT_EQ(AVal, &getValueForDecl<PointerValue>(ASTCtx, Env, "null"));
+        EXPECT_EQ(getFieldValue(&FLoc, "b", ASTCtx, Env), nullptr);
+      });
+}
+
+TEST(TransferTest, EmptyInitListExprForStruct) {
+  std::string Code = R"cc(
+    class target {
+      struct {
+        int *a;
+        bool *b;
+      } F;
+
+     public:
+      constexpr target() : F{} {
+        int *NullIntPtr = nullptr;
+        bool *NullBoolPtr = nullptr;
+        // [[p]]
+      }
+    };
+  )cc";
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
+
+        auto &FLoc = getFieldLoc<RecordStorageLocation>(
+            *Env.getThisPointeeStorageLocation(), "F", ASTCtx);
+        auto *AVal = cast<PointerValue>(getFieldValue(&FLoc, "a", ASTCtx, Env));
+        EXPECT_EQ(AVal,
+                  &getValueForDecl<PointerValue>(ASTCtx, Env, "NullIntPtr"));
+        auto *BVal = cast<PointerValue>(getFieldValue(&FLoc, "b", ASTCtx, Env));
+        EXPECT_EQ(BVal,
+                  &getValueForDecl<PointerValue>(ASTCtx, Env, "NullBoolPtr"));
       });
 }
 
@@ -1910,18 +2724,89 @@ TEST(TransferTest, CopyConstructor) {
     };
 
     void target() {
+      A Foo = { 1 };
+      A Bar = Foo;
+      // [[after_copy]]
+      Foo.Baz = 2;
+      // [[after_update]]
+    }
+  )";
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
+        ASSERT_THAT(FooDecl, NotNull());
+
+        const ValueDecl *BarDecl = findValueDecl(ASTCtx, "Bar");
+        ASSERT_THAT(BarDecl, NotNull());
+
+        const ValueDecl *BazDecl = findValueDecl(ASTCtx, "Baz");
+        ASSERT_THAT(BazDecl, NotNull());
+
+        // after_copy
+        {
+          const Environment &Env =
+              getEnvironmentAtAnnotation(Results, "after_copy");
+
+          const auto *FooLoc =
+              cast<RecordStorageLocation>(Env.getStorageLocation(*FooDecl));
+          const auto *BarLoc =
+              cast<RecordStorageLocation>(Env.getStorageLocation(*BarDecl));
+
+          // The records compare equal.
+          EXPECT_TRUE(recordsEqual(*FooLoc, *BarLoc, Env));
+
+          // In particular, the value of `Baz` in both records is the same.
+          const auto *FooBazVal =
+              cast<IntegerValue>(getFieldValue(FooLoc, *BazDecl, Env));
+          const auto *BarBazVal =
+              cast<IntegerValue>(getFieldValue(BarLoc, *BazDecl, Env));
+          EXPECT_EQ(FooBazVal, BarBazVal);
+        }
+
+        // after_update
+        {
+          const Environment &Env =
+              getEnvironmentAtAnnotation(Results, "after_update");
+
+          const auto *FooLoc =
+              cast<RecordStorageLocation>(Env.getStorageLocation(*FooDecl));
+          const auto *BarLoc =
+              cast<RecordStorageLocation>(Env.getStorageLocation(*BarDecl));
+
+          EXPECT_FALSE(recordsEqual(*FooLoc, *BarLoc, Env));
+
+          const auto *FooBazVal =
+              cast<IntegerValue>(getFieldValue(FooLoc, *BazDecl, Env));
+          const auto *BarBazVal =
+              cast<IntegerValue>(getFieldValue(BarLoc, *BazDecl, Env));
+          EXPECT_NE(FooBazVal, BarBazVal);
+        }
+      });
+}
+
+TEST(TransferTest, CopyConstructorWithDefaultArgument) {
+  std::string Code = R"(
+    struct A {
+      int Baz;
+      A() = default;
+      A(const A& a, bool def = true) { Baz = a.Baz; }
+    };
+
+    void target() {
       A Foo;
+      (void)Foo.Baz;
       A Bar = Foo;
       // [[p]]
     }
   )";
   runDataflow(
-      Code, [](llvm::ArrayRef<
-                   std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                   Results,
-               ASTContext &ASTCtx) {
-        ASSERT_THAT(Results, ElementsAre(Pair("p", _)));
-        const Environment &Env = Results[0].second.Env;
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
 
         const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
         ASSERT_THAT(FooDecl, NotNull());
@@ -1932,19 +2817,16 @@ TEST(TransferTest, CopyConstructor) {
         const ValueDecl *BazDecl = findValueDecl(ASTCtx, "Baz");
         ASSERT_THAT(BazDecl, NotNull());
 
-        const auto *FooLoc = cast<AggregateStorageLocation>(
-            Env.getStorageLocation(*FooDecl, SkipPast::None));
-        const auto *BarLoc = cast<AggregateStorageLocation>(
-            Env.getStorageLocation(*BarDecl, SkipPast::None));
-
-        const auto *FooVal = cast<StructValue>(Env.getValue(*FooLoc));
-        const auto *BarVal = cast<StructValue>(Env.getValue(*BarLoc));
-        EXPECT_EQ(FooVal, BarVal);
+        const auto *FooLoc =
+            cast<RecordStorageLocation>(Env.getStorageLocation(*FooDecl));
+        const auto *BarLoc =
+            cast<RecordStorageLocation>(Env.getStorageLocation(*BarDecl));
+        EXPECT_TRUE(recordsEqual(*FooLoc, *BarLoc, Env));
 
         const auto *FooBazVal =
-            cast<IntegerValue>(Env.getValue(FooLoc->getChild(*BazDecl)));
+            cast<IntegerValue>(getFieldValue(FooLoc, *BazDecl, Env));
         const auto *BarBazVal =
-            cast<IntegerValue>(Env.getValue(BarLoc->getChild(*BazDecl)));
+            cast<IntegerValue>(getFieldValue(BarLoc, *BazDecl, Env));
         EXPECT_EQ(FooBazVal, BarBazVal);
       });
 }
@@ -1957,17 +2839,17 @@ TEST(TransferTest, CopyConstructorWithParens) {
 
     void target() {
       A Foo;
+      (void)Foo.Baz;
       A Bar((A(Foo)));
       // [[p]]
     }
   )";
   runDataflow(
-      Code, [](llvm::ArrayRef<
-                   std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                   Results,
-               ASTContext &ASTCtx) {
-        ASSERT_THAT(Results, ElementsAre(Pair("p", _)));
-        const Environment &Env = Results[0].second.Env;
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
 
         const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
         ASSERT_THAT(FooDecl, NotNull());
@@ -1978,21 +2860,66 @@ TEST(TransferTest, CopyConstructorWithParens) {
         const ValueDecl *BazDecl = findValueDecl(ASTCtx, "Baz");
         ASSERT_THAT(BazDecl, NotNull());
 
-        const auto *FooLoc = cast<AggregateStorageLocation>(
-            Env.getStorageLocation(*FooDecl, SkipPast::None));
-        const auto *BarLoc = cast<AggregateStorageLocation>(
-            Env.getStorageLocation(*BarDecl, SkipPast::None));
-
-        const auto *FooVal = cast<StructValue>(Env.getValue(*FooLoc));
-        const auto *BarVal = cast<StructValue>(Env.getValue(*BarLoc));
-        EXPECT_EQ(FooVal, BarVal);
+        const auto *FooLoc =
+            cast<RecordStorageLocation>(Env.getStorageLocation(*FooDecl));
+        const auto *BarLoc =
+            cast<RecordStorageLocation>(Env.getStorageLocation(*BarDecl));
+        EXPECT_TRUE(recordsEqual(*FooLoc, *BarLoc, Env));
 
         const auto *FooBazVal =
-            cast<IntegerValue>(Env.getValue(FooLoc->getChild(*BazDecl)));
+            cast<IntegerValue>(getFieldValue(FooLoc, *BazDecl, Env));
         const auto *BarBazVal =
-            cast<IntegerValue>(Env.getValue(BarLoc->getChild(*BazDecl)));
+            cast<IntegerValue>(getFieldValue(BarLoc, *BazDecl, Env));
         EXPECT_EQ(FooBazVal, BarBazVal);
       });
+}
+
+TEST(TransferTest, CopyConstructorWithInitializerListAsSyntacticSugar) {
+  std::string Code = R"(
+  struct A {
+    int Baz;
+  };
+  void target() {
+    A Foo = {3};
+    (void)Foo.Baz;
+    A Bar = {A(Foo)};
+    // [[p]]
+  }
+  )";
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
+
+        const ValueDecl *BazDecl = findValueDecl(ASTCtx, "Baz");
+
+        const auto &FooLoc =
+            getLocForDecl<RecordStorageLocation>(ASTCtx, Env, "Foo");
+        const auto &BarLoc =
+            getLocForDecl<RecordStorageLocation>(ASTCtx, Env, "Bar");
+
+        const auto *FooBazVal =
+            cast<IntegerValue>(getFieldValue(&FooLoc, *BazDecl, Env));
+        const auto *BarBazVal =
+            cast<IntegerValue>(getFieldValue(&BarLoc, *BazDecl, Env));
+        EXPECT_EQ(FooBazVal, BarBazVal);
+      });
+}
+
+TEST(TransferTest, CopyConstructorArgIsRefReturnedByFunction) {
+  // This is a crash repro.
+  std::string Code = R"(
+    struct S {};
+    const S &returnsSRef();
+    void target() {
+      S s(returnsSRef());
+    }
+  )";
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {});
 }
 
 TEST(TransferTest, MoveConstructor) {
@@ -2018,19 +2945,19 @@ TEST(TransferTest, MoveConstructor) {
     void target() {
       A Foo;
       A Bar;
+      (void)Foo.Baz;
       // [[p1]]
       Foo = std::move(Bar);
       // [[p2]]
     }
   )";
   runDataflow(
-      Code, [](llvm::ArrayRef<
-                   std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                   Results,
-               ASTContext &ASTCtx) {
-        ASSERT_THAT(Results, ElementsAre(Pair("p1", _), Pair("p2", _)));
-        const Environment &Env1 = Results[0].second.Env;
-        const Environment &Env2 = Results[1].second.Env;
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p1", "p2"));
+        const Environment &Env1 = getEnvironmentAtAnnotation(Results, "p1");
+        const Environment &Env2 = getEnvironmentAtAnnotation(Results, "p2");
 
         const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
         ASSERT_THAT(FooDecl, NotNull());
@@ -2041,28 +2968,25 @@ TEST(TransferTest, MoveConstructor) {
         const ValueDecl *BazDecl = findValueDecl(ASTCtx, "Baz");
         ASSERT_THAT(BazDecl, NotNull());
 
-        const auto *FooLoc1 = cast<AggregateStorageLocation>(
-            Env1.getStorageLocation(*FooDecl, SkipPast::None));
-        const auto *BarLoc1 = cast<AggregateStorageLocation>(
-            Env1.getStorageLocation(*BarDecl, SkipPast::None));
+        const auto *FooLoc1 =
+            cast<RecordStorageLocation>(Env1.getStorageLocation(*FooDecl));
+        const auto *BarLoc1 =
+            cast<RecordStorageLocation>(Env1.getStorageLocation(*BarDecl));
 
-        const auto *FooVal1 = cast<StructValue>(Env1.getValue(*FooLoc1));
-        const auto *BarVal1 = cast<StructValue>(Env1.getValue(*BarLoc1));
-        EXPECT_NE(FooVal1, BarVal1);
+        EXPECT_FALSE(recordsEqual(*FooLoc1, *BarLoc1, Env1));
 
         const auto *FooBazVal1 =
-            cast<IntegerValue>(Env1.getValue(FooLoc1->getChild(*BazDecl)));
+            cast<IntegerValue>(getFieldValue(FooLoc1, *BazDecl, Env1));
         const auto *BarBazVal1 =
-            cast<IntegerValue>(Env1.getValue(BarLoc1->getChild(*BazDecl)));
+            cast<IntegerValue>(getFieldValue(BarLoc1, *BazDecl, Env1));
         EXPECT_NE(FooBazVal1, BarBazVal1);
 
-        const auto *FooLoc2 = cast<AggregateStorageLocation>(
-            Env2.getStorageLocation(*FooDecl, SkipPast::None));
-        const auto *FooVal2 = cast<StructValue>(Env2.getValue(*FooLoc2));
-        EXPECT_EQ(FooVal2, BarVal1);
+        const auto *FooLoc2 =
+            cast<RecordStorageLocation>(Env2.getStorageLocation(*FooDecl));
+        EXPECT_TRUE(recordsEqual(*FooLoc2, Env2, *BarLoc1, Env1));
 
         const auto *FooBazVal2 =
-            cast<IntegerValue>(Env2.getValue(FooLoc1->getChild(*BazDecl)));
+            cast<IntegerValue>(getFieldValue(FooLoc1, *BazDecl, Env2));
         EXPECT_EQ(FooBazVal2, BarBazVal1);
       });
 }
@@ -2080,29 +3004,541 @@ TEST(TransferTest, BindTemporary) {
       // [[p]]
     }
   )";
-  runDataflow(Code,
-              [](llvm::ArrayRef<
-                     std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                     Results,
-                 ASTContext &ASTCtx) {
-                ASSERT_THAT(Results, ElementsAre(Pair("p", _)));
-                const Environment &Env = Results[0].second.Env;
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
 
-                const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
-                ASSERT_THAT(FooDecl, NotNull());
+        const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
+        ASSERT_THAT(FooDecl, NotNull());
 
-                const ValueDecl *BarDecl = findValueDecl(ASTCtx, "Bar");
-                ASSERT_THAT(BarDecl, NotNull());
+        const ValueDecl *BarDecl = findValueDecl(ASTCtx, "Bar");
+        ASSERT_THAT(BarDecl, NotNull());
 
-                const ValueDecl *BazDecl = findValueDecl(ASTCtx, "Baz");
-                ASSERT_THAT(BazDecl, NotNull());
+        const ValueDecl *BazDecl = findValueDecl(ASTCtx, "Baz");
+        ASSERT_THAT(BazDecl, NotNull());
 
-                const auto &FooVal =
-                    *cast<StructValue>(Env.getValue(*FooDecl, SkipPast::None));
-                const auto *BarVal =
-                    cast<IntegerValue>(Env.getValue(*BarDecl, SkipPast::None));
-                EXPECT_EQ(BarVal, FooVal.getChild(*BazDecl));
-              });
+        const auto &FooLoc =
+            *cast<RecordStorageLocation>(Env.getStorageLocation(*FooDecl));
+        const auto *BarVal = cast<IntegerValue>(Env.getValue(*BarDecl));
+        EXPECT_EQ(BarVal, getFieldValue(&FooLoc, *BazDecl, Env));
+      });
+}
+
+TEST(TransferTest, ResultObjectLocation) {
+  std::string Code = R"(
+    struct A {
+      virtual ~A() = default;
+    };
+
+    void target() {
+      0, A();
+      (void)0; // [[p]]
+    }
+  )";
+  using ast_matchers::binaryOperator;
+  using ast_matchers::cxxBindTemporaryExpr;
+  using ast_matchers::cxxTemporaryObjectExpr;
+  using ast_matchers::exprWithCleanups;
+  using ast_matchers::has;
+  using ast_matchers::hasOperatorName;
+  using ast_matchers::hasRHS;
+  using ast_matchers::match;
+  using ast_matchers::selectFirst;
+  using ast_matchers::traverse;
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
+
+        // The expression `0, A()` in the code above produces the following
+        // structure, consisting of four prvalues of record type.
+        // `Env.getResultObjectLocation()` should return the same location for
+        // all of these.
+        auto MatchResult = match(
+            traverse(TK_AsIs,
+                     exprWithCleanups(
+                         has(binaryOperator(
+                                 hasOperatorName(","),
+                                 hasRHS(cxxBindTemporaryExpr(
+                                            has(cxxTemporaryObjectExpr().bind(
+                                                "toe")))
+                                            .bind("bte")))
+                                 .bind("comma")))
+                         .bind("ewc")),
+            ASTCtx);
+        auto *TOE = selectFirst<CXXTemporaryObjectExpr>("toe", MatchResult);
+        ASSERT_NE(TOE, nullptr);
+        auto *Comma = selectFirst<BinaryOperator>("comma", MatchResult);
+        ASSERT_NE(Comma, nullptr);
+        auto *EWC = selectFirst<ExprWithCleanups>("ewc", MatchResult);
+        ASSERT_NE(EWC, nullptr);
+        auto *BTE = selectFirst<CXXBindTemporaryExpr>("bte", MatchResult);
+        ASSERT_NE(BTE, nullptr);
+
+        RecordStorageLocation &Loc = Env.getResultObjectLocation(*TOE);
+        EXPECT_EQ(&Loc, &Env.getResultObjectLocation(*Comma));
+        EXPECT_EQ(&Loc, &Env.getResultObjectLocation(*EWC));
+        EXPECT_EQ(&Loc, &Env.getResultObjectLocation(*BTE));
+      });
+}
+
+TEST(TransferTest, ResultObjectLocationForDefaultArgExpr) {
+  std::string Code = R"(
+    struct Inner {};
+    struct Outer {
+        Inner I = {};
+    };
+
+    void funcWithDefaultArg(Outer O = {});
+    void target() {
+      funcWithDefaultArg();
+      // [[p]]
+    }
+  )";
+
+  using ast_matchers::cxxDefaultArgExpr;
+  using ast_matchers::match;
+  using ast_matchers::selectFirst;
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
+
+        auto *DefaultArg = selectFirst<CXXDefaultArgExpr>(
+            "default_arg",
+            match(cxxDefaultArgExpr().bind("default_arg"), ASTCtx));
+        ASSERT_NE(DefaultArg, nullptr);
+
+        // The values for default arguments aren't modeled; we merely verify
+        // that we can get a result object location for a default arg.
+        Env.getResultObjectLocation(*DefaultArg);
+      });
+}
+
+TEST(TransferTest, ResultObjectLocationForDefaultInitExpr) {
+  std::string Code = R"(
+    struct S {};
+    struct target {
+      target () {
+        (void)0;
+        // [[p]]
+      }
+      S s = {};
+    };
+  )";
+
+  using ast_matchers::cxxCtorInitializer;
+  using ast_matchers::match;
+  using ast_matchers::selectFirst;
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
+
+        const ValueDecl *SField = findValueDecl(ASTCtx, "s");
+
+        auto *CtorInit = selectFirst<CXXCtorInitializer>(
+            "ctor_initializer",
+            match(cxxCtorInitializer().bind("ctor_initializer"), ASTCtx));
+        ASSERT_NE(CtorInit, nullptr);
+
+        auto *DefaultInit = cast<CXXDefaultInitExpr>(CtorInit->getInit());
+
+        RecordStorageLocation &Loc = Env.getResultObjectLocation(*DefaultInit);
+
+        EXPECT_EQ(&Loc, Env.getThisPointeeStorageLocation()->getChild(*SField));
+      });
+}
+
+// This test ensures that CXXOperatorCallExpr returning prvalues are correctly
+// handled by the transfer functions, especially that `getResultObjectLocation`
+// correctly returns a storage location for those.
+TEST(TransferTest, ResultObjectLocationForCXXOperatorCallExpr) {
+  std::string Code = R"(
+    struct A {
+      A operator+(int);
+    };
+
+    void target() {
+      A a;
+      a + 3;
+      (void)0; // [[p]]
+    }
+  )";
+  using ast_matchers::cxxOperatorCallExpr;
+  using ast_matchers::match;
+  using ast_matchers::selectFirst;
+  using ast_matchers::traverse;
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
+
+        auto *CallExpr = selectFirst<CXXOperatorCallExpr>(
+            "call_expr",
+            match(cxxOperatorCallExpr().bind("call_expr"), ASTCtx));
+
+        EXPECT_NE(&Env.getResultObjectLocation(*CallExpr), nullptr);
+      });
+}
+
+TEST(TransferTest, ResultObjectLocationForInitListExpr) {
+  std::string Code = R"cc(
+    struct Inner {};
+
+    struct Outer { Inner I; };
+
+    void target() {
+      Outer O = { Inner() };
+      // [[p]]
+    }
+  )cc";
+  using ast_matchers::asString;
+  using ast_matchers::cxxConstructExpr;
+  using ast_matchers::hasType;
+  using ast_matchers::match;
+  using ast_matchers::selectFirst;
+  using ast_matchers::traverse;
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
+
+        auto *Construct = selectFirst<CXXConstructExpr>(
+            "construct",
+            match(
+                cxxConstructExpr(hasType(asString("Inner"))).bind("construct"),
+                ASTCtx));
+
+        EXPECT_EQ(
+            &Env.getResultObjectLocation(*Construct),
+            &getFieldLoc(getLocForDecl<RecordStorageLocation>(ASTCtx, Env, "O"),
+                         "I", ASTCtx));
+      });
+}
+
+TEST(TransferTest, ResultObjectLocationForParenInitListExpr) {
+  std::string Code = R"cc(
+    struct Inner {};
+
+    struct Outer { Inner I; };
+
+    void target() {
+      Outer O((Inner()));
+      // [[p]]
+    }
+  )cc";
+  using ast_matchers::asString;
+  using ast_matchers::cxxConstructExpr;
+  using ast_matchers::hasType;
+  using ast_matchers::match;
+  using ast_matchers::selectFirst;
+  using ast_matchers::traverse;
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
+
+        auto *Construct = selectFirst<CXXConstructExpr>(
+            "construct",
+            match(
+                cxxConstructExpr(hasType(asString("Inner"))).bind("construct"),
+                ASTCtx));
+
+        EXPECT_EQ(
+            &Env.getResultObjectLocation(*Construct),
+            &getFieldLoc(getLocForDecl<RecordStorageLocation>(ASTCtx, Env, "O"),
+                         "I", ASTCtx));
+      },
+      LangStandard::lang_cxx20);
+}
+
+// Check that the `std::strong_ordering` object returned by builtin `<=>` has a
+// correctly modeled result object location.
+TEST(TransferTest, ResultObjectLocationForBuiltinSpaceshipOperator) {
+  std::string Code = R"(
+    namespace std {
+      // This is the minimal definition required to get
+      // `Sema::CheckComparisonCategoryType()` to accept this fake.
+      struct strong_ordering {
+        enum class ordering { less, equal, greater };
+        ordering o;
+        static const strong_ordering less;
+        static const strong_ordering equivalent;
+        static const strong_ordering equal;
+        static const strong_ordering greater;
+      };
+
+      inline constexpr strong_ordering strong_ordering::less =
+        { strong_ordering::ordering::less };
+      inline constexpr strong_ordering strong_ordering::equal =
+        { strong_ordering::ordering::equal };
+      inline constexpr strong_ordering strong_ordering::equivalent =
+        { strong_ordering::ordering::equal };
+      inline constexpr strong_ordering strong_ordering::greater =
+        { strong_ordering::ordering::greater };
+    }
+    void target(int i, int j) {
+      auto ordering = i <=> j;
+      // [[p]]
+    }
+  )";
+  using ast_matchers::binaryOperator;
+  using ast_matchers::hasOperatorName;
+  using ast_matchers::match;
+  using ast_matchers::selectFirst;
+  using ast_matchers::traverse;
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
+
+        auto *Spaceship = selectFirst<BinaryOperator>(
+            "op",
+            match(binaryOperator(hasOperatorName("<=>")).bind("op"), ASTCtx));
+
+        EXPECT_EQ(
+            &Env.getResultObjectLocation(*Spaceship),
+            &getLocForDecl<RecordStorageLocation>(ASTCtx, Env, "ordering"));
+      },
+      LangStandard::lang_cxx20);
+}
+
+TEST(TransferTest, ResultObjectLocationForStdInitializerListExpr) {
+  std::string Code = R"(
+    namespace std {
+    template <typename T>
+    struct initializer_list { const T *a, *b; };
+    } // namespace std
+
+    void target() {
+      std::initializer_list<int> list = {1};
+      // [[p]]
+    }
+  )";
+
+  using ast_matchers::cxxStdInitializerListExpr;
+  using ast_matchers::match;
+  using ast_matchers::selectFirst;
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
+
+        auto *StdInitList = selectFirst<CXXStdInitializerListExpr>(
+            "std_init_list",
+            match(cxxStdInitializerListExpr().bind("std_init_list"), ASTCtx));
+        ASSERT_NE(StdInitList, nullptr);
+
+        EXPECT_EQ(&Env.getResultObjectLocation(*StdInitList),
+                  &getLocForDecl<RecordStorageLocation>(ASTCtx, Env, "list"));
+      });
+}
+
+TEST(TransferTest, ResultObjectLocationForStmtExpr) {
+  std::string Code = R"(
+    struct S {};
+    void target() {
+      S s = ({ S(); });
+      // [[p]]
+    }
+  )";
+  using ast_matchers::cxxConstructExpr;
+  using ast_matchers::match;
+  using ast_matchers::selectFirst;
+  using ast_matchers::traverse;
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
+
+        auto *Construct = selectFirst<CXXConstructExpr>(
+            "construct", match(cxxConstructExpr().bind("construct"), ASTCtx));
+
+        EXPECT_EQ(&Env.getResultObjectLocation(*Construct),
+                  &getLocForDecl<RecordStorageLocation>(ASTCtx, Env, "s"));
+      });
+}
+
+TEST(TransferTest, ResultObjectLocationForBuiltinBitCastExpr) {
+  std::string Code = R"(
+    struct S { int i; };
+    void target(int i) {
+      S s = __builtin_bit_cast(S, i);
+      // [[p]]
+    }
+  )";
+  using ast_matchers::explicitCastExpr;
+  using ast_matchers::match;
+  using ast_matchers::selectFirst;
+  using ast_matchers::traverse;
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
+
+        auto *BuiltinBitCast = selectFirst<BuiltinBitCastExpr>(
+            "cast", match(explicitCastExpr().bind("cast"), ASTCtx));
+
+        EXPECT_EQ(&Env.getResultObjectLocation(*BuiltinBitCast),
+                  &getLocForDecl<RecordStorageLocation>(ASTCtx, Env, "s"));
+      });
+}
+
+TEST(TransferTest, ResultObjectLocationForAtomicExpr) {
+  std::string Code = R"(
+    struct S {};
+    void target(_Atomic(S) *ptr) {
+      S s = __c11_atomic_load(ptr, __ATOMIC_SEQ_CST);
+      // [[p]]
+    }
+  )";
+  using ast_matchers::atomicExpr;
+  using ast_matchers::match;
+  using ast_matchers::selectFirst;
+  using ast_matchers::traverse;
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
+
+        auto *Atomic = selectFirst<AtomicExpr>(
+            "atomic", match(atomicExpr().bind("atomic"), ASTCtx));
+
+        EXPECT_EQ(&Env.getResultObjectLocation(*Atomic),
+                  &getLocForDecl<RecordStorageLocation>(ASTCtx, Env, "s"));
+      });
+}
+
+TEST(TransferTest, ResultObjectLocationPropagatesThroughConditionalOperator) {
+  std::string Code = R"(
+    struct A {
+      A(int);
+    };
+
+    void target(bool b) {
+      A a = b ? A(0) : A(1);
+      (void)0; // [[p]]
+    }
+  )";
+  using ast_matchers::cxxConstructExpr;
+  using ast_matchers::equals;
+  using ast_matchers::hasArgument;
+  using ast_matchers::integerLiteral;
+  using ast_matchers::match;
+  using ast_matchers::selectFirst;
+  using ast_matchers::traverse;
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
+
+        auto *ConstructExpr0 = selectFirst<CXXConstructExpr>(
+            "construct",
+            match(cxxConstructExpr(hasArgument(0, integerLiteral(equals(0))))
+                      .bind("construct"),
+                  ASTCtx));
+        auto *ConstructExpr1 = selectFirst<CXXConstructExpr>(
+            "construct",
+            match(cxxConstructExpr(hasArgument(0, integerLiteral(equals(1))))
+                      .bind("construct"),
+                  ASTCtx));
+
+        auto &ALoc = getLocForDecl<StorageLocation>(ASTCtx, Env, "a");
+        EXPECT_EQ(&Env.getResultObjectLocation(*ConstructExpr0), &ALoc);
+        EXPECT_EQ(&Env.getResultObjectLocation(*ConstructExpr1), &ALoc);
+      });
+}
+
+TEST(TransferTest, ResultObjectLocationDontVisitNestedRecordDecl) {
+  // This is a crash repro.
+  // We used to crash because when propagating result objects, we would visit
+  // nested record and function declarations, but we don't model fields used
+  // only in these.
+  std::string Code = R"(
+    struct S1 {};
+    struct S2 { S1 s1; };
+    void target() {
+      struct Nested {
+        void f() {
+          S2 s2 = { S1() };
+        }
+      };
+    }
+  )";
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {});
+}
+
+TEST(TransferTest, ResultObjectLocationDontVisitUnevaluatedContexts) {
+  // This is a crash repro.
+  // We used to crash because when propagating result objects, we would visit
+  // unevaluated contexts, but we don't model fields used only in these.
+
+  auto testFunction = [](llvm::StringRef Code, llvm::StringRef TargetFun) {
+    runDataflow(
+        Code,
+        [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+           ASTContext &ASTCtx) {},
+        LangStandard::lang_gnucxx17,
+        /* ApplyBuiltinTransfer= */ true, TargetFun);
+  };
+
+  std::string Code = R"cc(
+    // Definitions needed for `typeid`.
+    namespace std {
+      class type_info {};
+      class bad_typeid {};
+    }  // namespace std
+
+    struct S1 {};
+    struct S2 { S1 s1; };
+
+    // We test each type of unevaluated context from a different target
+    // function. Some types of unevaluated contexts may actually cause the
+    // field `s1` to be modeled, and we don't want this to "pollute" the tests
+    // for the other unevaluated contexts.
+    void decltypeTarget() {
+        decltype(S2{}) Dummy;
+    }
+    void typeofTarget() {
+        typeof(S2{}) Dummy;
+    }
+    void typeidTarget() {
+#if __has_feature(cxx_rtti)
+        typeid(S2{});
+#endif
+    }
+    void sizeofTarget() {
+        sizeof(S2{});
+    }
+    void noexceptTarget() {
+        noexcept(S2{});
+    }
+  )cc";
+
+  testFunction(Code, "decltypeTarget");
+  testFunction(Code, "typeofTarget");
+  testFunction(Code, "typeidTarget");
+  testFunction(Code, "sizeofTarget");
+  testFunction(Code, "noexceptTarget");
 }
 
 TEST(TransferTest, StaticCast) {
@@ -2112,26 +3548,25 @@ TEST(TransferTest, StaticCast) {
       // [[p]]
     }
   )";
-  runDataflow(Code,
-              [](llvm::ArrayRef<
-                     std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                     Results,
-                 ASTContext &ASTCtx) {
-                ASSERT_THAT(Results, ElementsAre(Pair("p", _)));
-                const Environment &Env = Results[0].second.Env;
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
 
-                const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
-                ASSERT_THAT(FooDecl, NotNull());
+        const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
+        ASSERT_THAT(FooDecl, NotNull());
 
-                const ValueDecl *BarDecl = findValueDecl(ASTCtx, "Bar");
-                ASSERT_THAT(BarDecl, NotNull());
+        const ValueDecl *BarDecl = findValueDecl(ASTCtx, "Bar");
+        ASSERT_THAT(BarDecl, NotNull());
 
-                const auto *FooVal = Env.getValue(*FooDecl, SkipPast::None);
-                const auto *BarVal = Env.getValue(*BarDecl, SkipPast::None);
-                EXPECT_TRUE(isa<IntegerValue>(FooVal));
-                EXPECT_TRUE(isa<IntegerValue>(BarVal));
-                EXPECT_EQ(FooVal, BarVal);
-              });
+        const auto *FooVal = Env.getValue(*FooDecl);
+        const auto *BarVal = Env.getValue(*BarDecl);
+        EXPECT_TRUE(isa<IntegerValue>(FooVal));
+        EXPECT_TRUE(isa<IntegerValue>(BarVal));
+        EXPECT_EQ(FooVal, BarVal);
+      });
 }
 
 TEST(TransferTest, IntegralCast) {
@@ -2141,26 +3576,16 @@ TEST(TransferTest, IntegralCast) {
       // [[p]]
     }
   )";
-  runDataflow(Code,
-              [](llvm::ArrayRef<
-                     std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                     Results,
-                 ASTContext &ASTCtx) {
-                ASSERT_THAT(Results, ElementsAre(Pair("p", _)));
-                const Environment &Env = Results[0].second.Env;
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
 
-                const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
-                ASSERT_THAT(FooDecl, NotNull());
-
-                const ValueDecl *BarDecl = findValueDecl(ASTCtx, "Bar");
-                ASSERT_THAT(BarDecl, NotNull());
-
-                const auto *FooVal = Env.getValue(*FooDecl, SkipPast::None);
-                const auto *BarVal = Env.getValue(*BarDecl, SkipPast::None);
-                EXPECT_TRUE(isa<IntegerValue>(FooVal));
-                EXPECT_TRUE(isa<IntegerValue>(BarVal));
-                EXPECT_EQ(FooVal, BarVal);
-              });
+        const auto &FooVal = getValueForDecl<IntegerValue>(ASTCtx, Env, "Foo");
+        const auto &BarVal = getValueForDecl<IntegerValue>(ASTCtx, Env, "Bar");
+        EXPECT_EQ(&FooVal, &BarVal);
+      });
 }
 
 TEST(TransferTest, IntegraltoBooleanCast) {
@@ -2170,25 +3595,17 @@ TEST(TransferTest, IntegraltoBooleanCast) {
       // [[p]]
     }
   )";
-  runDataflow(Code,
-              [](llvm::ArrayRef<
-                     std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                     Results,
-                 ASTContext &ASTCtx) {
-                ASSERT_THAT(Results, ElementsAre(Pair("p", _)));
-                const Environment &Env = Results[0].second.Env;
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
 
-                const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
-                ASSERT_THAT(FooDecl, NotNull());
-
-                const ValueDecl *BarDecl = findValueDecl(ASTCtx, "Bar");
-                ASSERT_THAT(BarDecl, NotNull());
-
-                const auto *FooVal = Env.getValue(*FooDecl, SkipPast::None);
-                const auto *BarVal = Env.getValue(*BarDecl, SkipPast::None);
-                EXPECT_TRUE(isa<IntegerValue>(FooVal));
-                EXPECT_TRUE(isa<BoolValue>(BarVal));
-              });
+        const auto &FooVal = getValueForDecl(ASTCtx, Env, "Foo");
+        const auto &BarVal = getValueForDecl(ASTCtx, Env, "Bar");
+        EXPECT_TRUE(isa<IntegerValue>(FooVal));
+        EXPECT_TRUE(isa<BoolValue>(BarVal));
+      });
 }
 
 TEST(TransferTest, IntegralToBooleanCastFromBool) {
@@ -2199,26 +3616,40 @@ TEST(TransferTest, IntegralToBooleanCastFromBool) {
       // [[p]]
     }
   )";
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
+
+        const auto &FooVal = getValueForDecl<BoolValue>(ASTCtx, Env, "Foo");
+        const auto &BarVal = getValueForDecl<BoolValue>(ASTCtx, Env, "Bar");
+        EXPECT_EQ(&FooVal, &BarVal);
+      });
+}
+
+TEST(TransferTest, WidenBoolValueInIntegerVariable) {
+  // This is a crash repro.
+  // This test sets up a case where we perform widening on an integer variable
+  // that contains a `BoolValue` for the previous iteration and an
+  // `IntegerValue` for the current iteration. We used to crash on this because
+  // `widenDistinctValues()` assumed that if the previous iteration had a
+  // `BoolValue`, the current iteration would too.
+  // FIXME: The real fix here is to make sure we never store `BoolValue`s in
+  // integer variables; see also the comment in `widenDistinctValues()`.
+  std::string Code = R"cc(
+    struct S {
+      int i;
+      S *next;
+    };
+    void target(S *s) {
+      for (; s; s = s->next)
+        s->i = false;
+    }
+  )cc";
   runDataflow(Code,
-              [](llvm::ArrayRef<
-                     std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                     Results,
-                 ASTContext &ASTCtx) {
-                ASSERT_THAT(Results, ElementsAre(Pair("p", _)));
-                const Environment &Env = Results[0].second.Env;
-
-                const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
-                ASSERT_THAT(FooDecl, NotNull());
-
-                const ValueDecl *BarDecl = findValueDecl(ASTCtx, "Bar");
-                ASSERT_THAT(BarDecl, NotNull());
-
-                const auto *FooVal = Env.getValue(*FooDecl, SkipPast::None);
-                const auto *BarVal = Env.getValue(*BarDecl, SkipPast::None);
-                EXPECT_TRUE(isa<BoolValue>(FooVal));
-                EXPECT_TRUE(isa<BoolValue>(BarVal));
-                EXPECT_EQ(FooVal, BarVal);
-              });
+              [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &,
+                 ASTContext &) {});
 }
 
 TEST(TransferTest, NullToPointerCast) {
@@ -2234,89 +3665,123 @@ TEST(TransferTest, NullToPointerCast) {
       // [[p]]
     }
   )";
-  runDataflow(Code,
-              [](llvm::ArrayRef<
-                     std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                     Results,
-                 ASTContext &ASTCtx) {
-                ASSERT_THAT(Results, ElementsAre(Pair("p", _)));
-                const Environment &Env = Results[0].second.Env;
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
 
-                const ValueDecl *FooXDecl = findValueDecl(ASTCtx, "FooX");
-                ASSERT_THAT(FooXDecl, NotNull());
+        const ValueDecl *FooXDecl = findValueDecl(ASTCtx, "FooX");
+        ASSERT_THAT(FooXDecl, NotNull());
 
-                const ValueDecl *FooYDecl = findValueDecl(ASTCtx, "FooY");
-                ASSERT_THAT(FooYDecl, NotNull());
+        const ValueDecl *FooYDecl = findValueDecl(ASTCtx, "FooY");
+        ASSERT_THAT(FooYDecl, NotNull());
 
-                const ValueDecl *BarDecl = findValueDecl(ASTCtx, "Bar");
-                ASSERT_THAT(BarDecl, NotNull());
+        const ValueDecl *BarDecl = findValueDecl(ASTCtx, "Bar");
+        ASSERT_THAT(BarDecl, NotNull());
 
-                const ValueDecl *BazDecl = findValueDecl(ASTCtx, "Baz");
-                ASSERT_THAT(BazDecl, NotNull());
+        const ValueDecl *BazDecl = findValueDecl(ASTCtx, "Baz");
+        ASSERT_THAT(BazDecl, NotNull());
 
-                const ValueDecl *NullDecl = findValueDecl(ASTCtx, "Null");
-                ASSERT_THAT(NullDecl, NotNull());
+        const ValueDecl *NullDecl = findValueDecl(ASTCtx, "Null");
+        ASSERT_THAT(NullDecl, NotNull());
 
-                const auto *FooXVal =
-                    cast<PointerValue>(Env.getValue(*FooXDecl, SkipPast::None));
-                const auto *FooYVal =
-                    cast<PointerValue>(Env.getValue(*FooYDecl, SkipPast::None));
-                const auto *BarVal =
-                    cast<PointerValue>(Env.getValue(*BarDecl, SkipPast::None));
-                const auto *BazVal =
-                    cast<PointerValue>(Env.getValue(*BazDecl, SkipPast::None));
-                const auto *NullVal =
-                    cast<PointerValue>(Env.getValue(*NullDecl, SkipPast::None));
+        const auto *FooXVal = cast<PointerValue>(Env.getValue(*FooXDecl));
+        const auto *FooYVal = cast<PointerValue>(Env.getValue(*FooYDecl));
+        const auto *BarVal = cast<PointerValue>(Env.getValue(*BarDecl));
+        const auto *BazVal = cast<PointerValue>(Env.getValue(*BazDecl));
+        const auto *NullVal = cast<PointerValue>(Env.getValue(*NullDecl));
 
-                EXPECT_EQ(FooXVal, FooYVal);
-                EXPECT_NE(FooXVal, BarVal);
-                EXPECT_NE(FooXVal, BazVal);
-                EXPECT_NE(BarVal, BazVal);
+        EXPECT_EQ(FooXVal, FooYVal);
+        EXPECT_NE(FooXVal, BarVal);
+        EXPECT_NE(FooXVal, BazVal);
+        EXPECT_NE(BarVal, BazVal);
 
-                const StorageLocation &FooPointeeLoc = FooXVal->getPointeeLoc();
-                EXPECT_TRUE(isa<ScalarStorageLocation>(FooPointeeLoc));
-                EXPECT_THAT(Env.getValue(FooPointeeLoc), IsNull());
+        const StorageLocation &FooPointeeLoc = FooXVal->getPointeeLoc();
+        EXPECT_TRUE(isa<ScalarStorageLocation>(FooPointeeLoc));
+        EXPECT_THAT(Env.getValue(FooPointeeLoc), IsNull());
 
-                const StorageLocation &BarPointeeLoc = BarVal->getPointeeLoc();
-                EXPECT_TRUE(isa<ScalarStorageLocation>(BarPointeeLoc));
-                EXPECT_THAT(Env.getValue(BarPointeeLoc), IsNull());
+        const StorageLocation &BarPointeeLoc = BarVal->getPointeeLoc();
+        EXPECT_TRUE(isa<ScalarStorageLocation>(BarPointeeLoc));
+        EXPECT_THAT(Env.getValue(BarPointeeLoc), IsNull());
 
-                const StorageLocation &BazPointeeLoc = BazVal->getPointeeLoc();
-                EXPECT_TRUE(isa<AggregateStorageLocation>(BazPointeeLoc));
-                EXPECT_THAT(Env.getValue(BazPointeeLoc), IsNull());
+        const StorageLocation &BazPointeeLoc = BazVal->getPointeeLoc();
+        EXPECT_TRUE(isa<RecordStorageLocation>(BazPointeeLoc));
+        EXPECT_EQ(BazVal, &Env.fork().getOrCreateNullPointerValue(
+                              BazPointeeLoc.getType()));
 
-                const StorageLocation &NullPointeeLoc =
-                    NullVal->getPointeeLoc();
-                EXPECT_TRUE(isa<ScalarStorageLocation>(NullPointeeLoc));
-                EXPECT_THAT(Env.getValue(NullPointeeLoc), IsNull());
-              });
+        const StorageLocation &NullPointeeLoc = NullVal->getPointeeLoc();
+        EXPECT_TRUE(isa<ScalarStorageLocation>(NullPointeeLoc));
+        EXPECT_THAT(Env.getValue(NullPointeeLoc), IsNull());
+      });
+}
+
+TEST(TransferTest, PointerToMemberVariable) {
+  std::string Code = R"(
+    struct S {
+      int i;
+    };
+    void target() {
+      int S::*MemberPointer = &S::i;
+      // [[p]]
+    }
+  )";
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
+
+        const ValueDecl *MemberPointerDecl =
+            findValueDecl(ASTCtx, "MemberPointer");
+        ASSERT_THAT(MemberPointerDecl, NotNull());
+        ASSERT_THAT(Env.getValue(*MemberPointerDecl), IsNull());
+      });
+}
+
+TEST(TransferTest, PointerToMemberFunction) {
+  std::string Code = R"(
+    struct S {
+      void Method();
+    };
+    void target() {
+      void (S::*MemberPointer)() = &S::Method;
+      // [[p]]
+    }
+  )";
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
+
+        const ValueDecl *MemberPointerDecl =
+            findValueDecl(ASTCtx, "MemberPointer");
+        ASSERT_THAT(MemberPointerDecl, NotNull());
+        ASSERT_THAT(Env.getValue(*MemberPointerDecl), IsNull());
+      });
 }
 
 TEST(TransferTest, NullToMemberPointerCast) {
   std::string Code = R"(
     struct Foo {};
-    void target(Foo *Foo) {
+    void target() {
       int Foo::*MemberPointer = nullptr;
       // [[p]]
     }
   )";
   runDataflow(
-      Code, [](llvm::ArrayRef<
-                   std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                   Results,
-               ASTContext &ASTCtx) {
-        ASSERT_THAT(Results, ElementsAre(Pair("p", _)));
-        const Environment &Env = Results[0].second.Env;
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
 
         const ValueDecl *MemberPointerDecl =
             findValueDecl(ASTCtx, "MemberPointer");
         ASSERT_THAT(MemberPointerDecl, NotNull());
-
-        const auto *MemberPointerVal = cast<PointerValue>(
-            Env.getValue(*MemberPointerDecl, SkipPast::None));
-
-        const StorageLocation &MemberLoc = MemberPointerVal->getPointeeLoc();
-        EXPECT_THAT(Env.getValue(MemberLoc), IsNull());
+        ASSERT_THAT(Env.getValue(*MemberPointerDecl), IsNull());
       });
 }
 
@@ -2328,26 +3793,24 @@ TEST(TransferTest, AddrOfValue) {
       // [[p]]
     }
   )";
-  runDataflow(Code,
-              [](llvm::ArrayRef<
-                     std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                     Results,
-                 ASTContext &ASTCtx) {
-                ASSERT_THAT(Results, ElementsAre(Pair("p", _)));
-                const Environment &Env = Results[0].second.Env;
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
 
-                const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
-                ASSERT_THAT(FooDecl, NotNull());
+        const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
+        ASSERT_THAT(FooDecl, NotNull());
 
-                const ValueDecl *BarDecl = findValueDecl(ASTCtx, "Bar");
-                ASSERT_THAT(BarDecl, NotNull());
+        const ValueDecl *BarDecl = findValueDecl(ASTCtx, "Bar");
+        ASSERT_THAT(BarDecl, NotNull());
 
-                const auto *FooLoc = cast<ScalarStorageLocation>(
-                    Env.getStorageLocation(*FooDecl, SkipPast::None));
-                const auto *BarVal =
-                    cast<PointerValue>(Env.getValue(*BarDecl, SkipPast::None));
-                EXPECT_EQ(&BarVal->getPointeeLoc(), FooLoc);
-              });
+        const auto *FooLoc =
+            cast<ScalarStorageLocation>(Env.getStorageLocation(*FooDecl));
+        const auto *BarVal = cast<PointerValue>(Env.getValue(*BarDecl));
+        EXPECT_EQ(&BarVal->getPointeeLoc(), FooLoc);
+      });
 }
 
 TEST(TransferTest, AddrOfReference) {
@@ -2357,43 +3820,12 @@ TEST(TransferTest, AddrOfReference) {
       // [[p]]
     }
   )";
-  runDataflow(Code,
-              [](llvm::ArrayRef<
-                     std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                     Results,
-                 ASTContext &ASTCtx) {
-                ASSERT_THAT(Results, ElementsAre(Pair("p", _)));
-                const Environment &Env = Results[0].second.Env;
-
-                const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
-                ASSERT_THAT(FooDecl, NotNull());
-
-                const ValueDecl *BarDecl = findValueDecl(ASTCtx, "Bar");
-                ASSERT_THAT(BarDecl, NotNull());
-
-                const auto *FooVal =
-                    cast<PointerValue>(Env.getValue(*FooDecl, SkipPast::None));
-                const auto *BarVal =
-                    cast<PointerValue>(Env.getValue(*BarDecl, SkipPast::None));
-                EXPECT_EQ(&BarVal->getPointeeLoc(), &FooVal->getPointeeLoc());
-              });
-}
-
-TEST(TransferTest, DerefDependentPtr) {
-  std::string Code = R"(
-    template <typename T>
-    void target(T *Foo) {
-      T &Bar = *Foo;
-      /*[[p]]*/
-    }
-  )";
   runDataflow(
-      Code, [](llvm::ArrayRef<
-                   std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                   Results,
-               ASTContext &ASTCtx) {
-        ASSERT_THAT(Results, ElementsAre(Pair("p", _)));
-        const Environment &Env = Results[0].second.Env;
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
 
         const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
         ASSERT_THAT(FooDecl, NotNull());
@@ -2401,51 +3833,136 @@ TEST(TransferTest, DerefDependentPtr) {
         const ValueDecl *BarDecl = findValueDecl(ASTCtx, "Bar");
         ASSERT_THAT(BarDecl, NotNull());
 
-        const auto *FooVal =
-            cast<PointerValue>(Env.getValue(*FooDecl, SkipPast::None));
-        const auto *BarVal =
-            cast<ReferenceValue>(Env.getValue(*BarDecl, SkipPast::None));
-        EXPECT_EQ(&BarVal->getReferentLoc(), &FooVal->getPointeeLoc());
+        const auto *FooVal = cast<PointerValue>(Env.getValue(*FooDecl));
+        const auto *BarVal = cast<PointerValue>(Env.getValue(*BarDecl));
+        EXPECT_EQ(&BarVal->getPointeeLoc(), &FooVal->getPointeeLoc());
       });
+}
+
+TEST(TransferTest, Preincrement) {
+  std::string Code = R"(
+    void target(int I) {
+      (void)0; // [[before]]
+      int &IRef = ++I;
+      // [[after]]
+    }
+  )";
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        const Environment &EnvBefore =
+            getEnvironmentAtAnnotation(Results, "before");
+        const Environment &EnvAfter =
+            getEnvironmentAtAnnotation(Results, "after");
+
+        EXPECT_EQ(&getLocForDecl(ASTCtx, EnvAfter, "IRef"),
+                  &getLocForDecl(ASTCtx, EnvBefore, "I"));
+
+        const ValueDecl *IDecl = findValueDecl(ASTCtx, "I");
+        EXPECT_NE(EnvBefore.getValue(*IDecl), nullptr);
+        EXPECT_EQ(EnvAfter.getValue(*IDecl), nullptr);
+      });
+}
+
+TEST(TransferTest, Postincrement) {
+  std::string Code = R"(
+    void target(int I) {
+      (void)0; // [[before]]
+      int OldVal = I++;
+      // [[after]]
+    }
+  )";
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        const Environment &EnvBefore =
+            getEnvironmentAtAnnotation(Results, "before");
+        const Environment &EnvAfter =
+            getEnvironmentAtAnnotation(Results, "after");
+
+        EXPECT_EQ(&getValueForDecl(ASTCtx, EnvBefore, "I"),
+                  &getValueForDecl(ASTCtx, EnvAfter, "OldVal"));
+
+        const ValueDecl *IDecl = findValueDecl(ASTCtx, "I");
+        EXPECT_EQ(EnvAfter.getValue(*IDecl), nullptr);
+      });
+}
+
+// We test just one of the compound assignment operators because we know the
+// code for propagating the storage location is shared among all of them.
+TEST(TransferTest, AddAssign) {
+  std::string Code = R"(
+    void target(int I) {
+      int &IRef = (I += 1);
+      // [[p]]
+    }
+  )";
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
+
+        EXPECT_EQ(&getLocForDecl(ASTCtx, Env, "IRef"),
+                  &getLocForDecl(ASTCtx, Env, "I"));
+      });
+}
+
+TEST(TransferTest, CannotAnalyzeFunctionTemplate) {
+  std::string Code = R"(
+    template <typename T>
+    void target() {}
+  )";
+  ASSERT_THAT_ERROR(
+      checkDataflowWithNoopAnalysis(Code),
+      llvm::FailedWithMessage("Cannot analyze templated declarations"));
+}
+
+TEST(TransferTest, CannotAnalyzeMethodOfClassTemplate) {
+  std::string Code = R"(
+    template <typename T>
+    struct A {
+      void target() {}
+    };
+  )";
+  ASSERT_THAT_ERROR(
+      checkDataflowWithNoopAnalysis(Code),
+      llvm::FailedWithMessage("Cannot analyze templated declarations"));
 }
 
 TEST(TransferTest, VarDeclInitAssignConditionalOperator) {
   std::string Code = R"(
-    struct A {};
+    struct A {
+      int i;
+    };
 
     void target(A Foo, A Bar, bool Cond) {
-      A Baz = Cond ?  Foo : Bar;
+      A Baz = Cond ?  A(Foo) : A(Bar);
+      // Make sure A::i is modeled.
+      Baz.i;
       /*[[p]]*/
     }
   )";
   runDataflow(
-      Code, [](llvm::ArrayRef<
-                   std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                   Results,
-               ASTContext &ASTCtx) {
-        ASSERT_THAT(Results, ElementsAre(Pair("p", _)));
-        const Environment &Env = Results[0].second.Env;
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
 
-        const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
-        ASSERT_THAT(FooDecl, NotNull());
+        auto *FooIVal = cast<IntegerValue>(getFieldValue(
+            &getLocForDecl<RecordStorageLocation>(ASTCtx, Env, "Foo"), "i",
+            ASTCtx, Env));
+        auto *BarIVal = cast<IntegerValue>(getFieldValue(
+            &getLocForDecl<RecordStorageLocation>(ASTCtx, Env, "Bar"), "i",
+            ASTCtx, Env));
+        auto *BazIVal = cast<IntegerValue>(getFieldValue(
+            &getLocForDecl<RecordStorageLocation>(ASTCtx, Env, "Baz"), "i",
+            ASTCtx, Env));
 
-        const ValueDecl *BarDecl = findValueDecl(ASTCtx, "Bar");
-        ASSERT_THAT(BarDecl, NotNull());
-
-        const ValueDecl *BazDecl = findValueDecl(ASTCtx, "Baz");
-        ASSERT_THAT(BazDecl, NotNull());
-
-        const auto *FooVal =
-            cast<StructValue>(Env.getValue(*FooDecl, SkipPast::None));
-        const auto *BarVal =
-            cast<StructValue>(Env.getValue(*BarDecl, SkipPast::None));
-
-        const auto *BazVal =
-            dyn_cast<StructValue>(Env.getValue(*BazDecl, SkipPast::None));
-        ASSERT_THAT(BazVal, NotNull());
-
-        EXPECT_NE(BazVal, FooVal);
-        EXPECT_NE(BazVal, BarVal);
+        EXPECT_NE(BazIVal, FooIVal);
+        EXPECT_NE(BazIVal, BarIVal);
       });
 }
 
@@ -2454,36 +3971,55 @@ TEST(TransferTest, VarDeclInDoWhile) {
     void target(int *Foo) {
       do {
         int Bar = *Foo;
-      } while (true);
+        // [[in_loop]]
+      } while (false);
+      (void)0;
+      // [[after_loop]]
+    }
+  )";
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        const Environment &EnvInLoop =
+            getEnvironmentAtAnnotation(Results, "in_loop");
+        const Environment &EnvAfterLoop =
+            getEnvironmentAtAnnotation(Results, "after_loop");
+
+        const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
+        ASSERT_THAT(FooDecl, NotNull());
+
+        const ValueDecl *BarDecl = findValueDecl(ASTCtx, "Bar");
+        ASSERT_THAT(BarDecl, NotNull());
+
+        const auto *FooVal =
+            cast<PointerValue>(EnvAfterLoop.getValue(*FooDecl));
+        const auto *FooPointeeVal =
+            cast<IntegerValue>(EnvAfterLoop.getValue(FooVal->getPointeeLoc()));
+
+        const auto *BarVal = cast<IntegerValue>(EnvInLoop.getValue(*BarDecl));
+        EXPECT_EQ(BarVal, FooPointeeVal);
+
+        ASSERT_THAT(EnvAfterLoop.getValue(*BarDecl), IsNull());
+      });
+}
+
+TEST(TransferTest, UnreachableAfterWhileTrue) {
+  std::string Code = R"(
+    void target() {
+      while (true) {}
       (void)0;
       /*[[p]]*/
     }
   )";
-  runDataflow(Code,
-              [](llvm::ArrayRef<
-                     std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                     Results,
-                 ASTContext &ASTCtx) {
-                ASSERT_THAT(Results, ElementsAre(Pair("p", _)));
-                const Environment &Env = Results[0].second.Env;
-
-                const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
-                ASSERT_THAT(FooDecl, NotNull());
-
-                const ValueDecl *BarDecl = findValueDecl(ASTCtx, "Bar");
-                ASSERT_THAT(BarDecl, NotNull());
-
-                const auto *FooVal =
-                    cast<PointerValue>(Env.getValue(*FooDecl, SkipPast::None));
-                const auto *FooPointeeVal =
-                    cast<IntegerValue>(Env.getValue(FooVal->getPointeeLoc()));
-
-                const auto *BarVal = dyn_cast_or_null<IntegerValue>(
-                    Env.getValue(*BarDecl, SkipPast::None));
-                ASSERT_THAT(BarVal, NotNull());
-
-                EXPECT_EQ(BarVal, FooPointeeVal);
-              });
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        // The node after the while-true is pruned because it is trivially
+        // known to be unreachable.
+        ASSERT_TRUE(Results.empty());
+      });
 }
 
 TEST(TransferTest, AggregateInitialization) {
@@ -2500,10 +4036,11 @@ TEST(TransferTest, AggregateInitialization) {
 
     void target(int BarArg, int FooArg, int QuxArg) {
       B Quux{BarArg, {FooArg}, QuxArg};
+      B OtherB;
       /*[[p]]*/
     }
   )";
-  std::string BraceEllisionCode = R"(
+  std::string BraceElisionCode = R"(
     struct A {
       int Foo;
     };
@@ -2516,17 +4053,17 @@ TEST(TransferTest, AggregateInitialization) {
 
     void target(int BarArg, int FooArg, int QuxArg) {
       B Quux = {BarArg, FooArg, QuxArg};
+      B OtherB;
       /*[[p]]*/
     }
   )";
-  for (const std::string &Code : {BracesCode, BraceEllisionCode}) {
+  for (const std::string &Code : {BracesCode, BraceElisionCode}) {
     runDataflow(
-        Code, [](llvm::ArrayRef<
-                     std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                     Results,
-                 ASTContext &ASTCtx) {
-          ASSERT_THAT(Results, ElementsAre(Pair("p", _)));
-          const Environment &Env = Results[0].second.Env;
+        Code,
+        [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+           ASTContext &ASTCtx) {
+          ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+          const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
 
           const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
           ASSERT_THAT(FooDecl, NotNull());
@@ -2552,25 +4089,107 @@ TEST(TransferTest, AggregateInitialization) {
           const ValueDecl *QuuxDecl = findValueDecl(ASTCtx, "Quux");
           ASSERT_THAT(QuuxDecl, NotNull());
 
-          const auto *FooArgVal =
-              cast<IntegerValue>(Env.getValue(*FooArgDecl, SkipPast::None));
-          const auto *BarArgVal =
-              cast<IntegerValue>(Env.getValue(*BarArgDecl, SkipPast::None));
-          const auto *QuxArgVal =
-              cast<IntegerValue>(Env.getValue(*QuxArgDecl, SkipPast::None));
+          const auto *FooArgVal = cast<IntegerValue>(Env.getValue(*FooArgDecl));
+          const auto *BarArgVal = cast<IntegerValue>(Env.getValue(*BarArgDecl));
+          const auto *QuxArgVal = cast<IntegerValue>(Env.getValue(*QuxArgDecl));
 
-          const auto *QuuxVal =
-              cast<StructValue>(Env.getValue(*QuuxDecl, SkipPast::None));
-          ASSERT_THAT(QuuxVal, NotNull());
+          const auto &QuuxLoc =
+              *cast<RecordStorageLocation>(Env.getStorageLocation(*QuuxDecl));
+          const auto &BazLoc =
+              *cast<RecordStorageLocation>(QuuxLoc.getChild(*BazDecl));
 
-          const auto *BazVal = cast<StructValue>(QuuxVal->getChild(*BazDecl));
-          ASSERT_THAT(BazVal, NotNull());
+          EXPECT_EQ(getFieldValue(&QuuxLoc, *BarDecl, Env), BarArgVal);
+          EXPECT_EQ(getFieldValue(&BazLoc, *FooDecl, Env), FooArgVal);
+          EXPECT_EQ(getFieldValue(&QuuxLoc, *QuxDecl, Env), QuxArgVal);
 
-          EXPECT_EQ(QuuxVal->getChild(*BarDecl), BarArgVal);
-          EXPECT_EQ(BazVal->getChild(*FooDecl), FooArgVal);
-          EXPECT_EQ(QuuxVal->getChild(*QuxDecl), QuxArgVal);
+          // Check that fields initialized in an initializer list are always
+          // modeled in other instances of the same type.
+          const auto &OtherBLoc =
+              getLocForDecl<RecordStorageLocation>(ASTCtx, Env, "OtherB");
+          EXPECT_THAT(OtherBLoc.getChild(*BarDecl), NotNull());
+          EXPECT_THAT(OtherBLoc.getChild(*BazDecl), NotNull());
+          EXPECT_THAT(OtherBLoc.getChild(*QuxDecl), NotNull());
         });
   }
+}
+
+TEST(TransferTest, AggregateInitializationReferenceField) {
+  std::string Code = R"(
+    struct S {
+      int &RefField;
+    };
+
+    void target(int i) {
+      S s = { i };
+      /*[[p]]*/
+    }
+  )";
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
+
+        const ValueDecl *RefFieldDecl = findValueDecl(ASTCtx, "RefField");
+
+        auto &ILoc = getLocForDecl<StorageLocation>(ASTCtx, Env, "i");
+        auto &SLoc = getLocForDecl<RecordStorageLocation>(ASTCtx, Env, "s");
+
+        EXPECT_EQ(SLoc.getChild(*RefFieldDecl), &ILoc);
+      });
+}
+
+TEST(TransferTest, AggregateInitialization_NotExplicitlyInitializedField) {
+  std::string Code = R"(
+    struct S {
+      int i1;
+      int i2;
+    };
+
+    void target(int i) {
+      S s = { i };
+      /*[[p]]*/
+    }
+  )";
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
+
+        const ValueDecl *I1FieldDecl = findValueDecl(ASTCtx, "i1");
+        const ValueDecl *I2FieldDecl = findValueDecl(ASTCtx, "i2");
+
+        auto &SLoc = getLocForDecl<RecordStorageLocation>(ASTCtx, Env, "s");
+
+        auto &IValue = getValueForDecl<IntegerValue>(ASTCtx, Env, "i");
+        auto &I1Value =
+            *cast<IntegerValue>(getFieldValue(&SLoc, *I1FieldDecl, Env));
+        EXPECT_EQ(&I1Value, &IValue);
+        auto &I2Value =
+            *cast<IntegerValue>(getFieldValue(&SLoc, *I2FieldDecl, Env));
+        EXPECT_NE(&I2Value, &IValue);
+      });
+}
+
+TEST(TransferTest, AggregateInitializationFunctionPointer) {
+  // This is a repro for an assertion failure.
+  // nullptr takes on the type of a const function pointer, but its type was
+  // asserted to be equal to the *unqualified* type of Field, which no longer
+  // included the const.
+  std::string Code = R"(
+    struct S {
+      void (*const Field)();
+    };
+
+    void target() {
+      S s{nullptr};
+    }
+  )";
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {});
 }
 
 TEST(TransferTest, AssignToUnionMember) {
@@ -2585,25 +4204,42 @@ TEST(TransferTest, AssignToUnionMember) {
       // [[p]]
     }
   )";
-  runDataflow(Code,
-              [](llvm::ArrayRef<
-                     std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                     Results,
-                 ASTContext &ASTCtx) {
-                ASSERT_THAT(Results, ElementsAre(Pair("p", _)));
-                const Environment &Env = Results[0].second.Env;
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
 
-                const ValueDecl *BazDecl = findValueDecl(ASTCtx, "Baz");
-                ASSERT_THAT(BazDecl, NotNull());
-                ASSERT_TRUE(BazDecl->getType()->isUnionType());
+        const ValueDecl *BazDecl = findValueDecl(ASTCtx, "Baz");
+        ASSERT_THAT(BazDecl, NotNull());
+        ASSERT_TRUE(BazDecl->getType()->isUnionType());
 
-                const auto *BazLoc = dyn_cast_or_null<AggregateStorageLocation>(
-                    Env.getStorageLocation(*BazDecl, SkipPast::None));
-                ASSERT_THAT(BazLoc, NotNull());
+        auto BazFields = BazDecl->getType()->getAsRecordDecl()->fields();
+        FieldDecl *FooDecl = nullptr;
+        for (FieldDecl *Field : BazFields) {
+          if (Field->getNameAsString() == "Foo") {
+            FooDecl = Field;
+          } else {
+            FAIL() << "Unexpected field: " << Field->getNameAsString();
+          }
+        }
+        ASSERT_THAT(FooDecl, NotNull());
 
-                // FIXME: Add support for union types.
-                EXPECT_THAT(Env.getValue(*BazLoc), IsNull());
-              });
+        const auto *BazLoc = dyn_cast_or_null<RecordStorageLocation>(
+            Env.getStorageLocation(*BazDecl));
+        ASSERT_THAT(BazLoc, NotNull());
+
+        const auto *FooVal =
+            cast<IntegerValue>(getFieldValue(BazLoc, *FooDecl, Env));
+
+        const ValueDecl *BarDecl = findValueDecl(ASTCtx, "Bar");
+        ASSERT_THAT(BarDecl, NotNull());
+        const auto *BarLoc = Env.getStorageLocation(*BarDecl);
+        ASSERT_TRUE(isa_and_nonnull<ScalarStorageLocation>(BarLoc));
+
+        EXPECT_EQ(Env.getValue(*BarLoc), FooVal);
+      });
 }
 
 TEST(TransferTest, AssignFromBoolLiteral) {
@@ -2614,31 +4250,30 @@ TEST(TransferTest, AssignFromBoolLiteral) {
       // [[p]]
     }
   )";
-  runDataflow(Code,
-              [](llvm::ArrayRef<
-                     std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                     Results,
-                 ASTContext &ASTCtx) {
-                ASSERT_THAT(Results, ElementsAre(Pair("p", _)));
-                const Environment &Env = Results[0].second.Env;
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
 
-                const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
-                ASSERT_THAT(FooDecl, NotNull());
+        const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
+        ASSERT_THAT(FooDecl, NotNull());
 
-                const auto *FooVal = dyn_cast_or_null<AtomicBoolValue>(
-                    Env.getValue(*FooDecl, SkipPast::None));
-                ASSERT_THAT(FooVal, NotNull());
+        const auto *FooVal =
+            dyn_cast_or_null<BoolValue>(Env.getValue(*FooDecl));
+        ASSERT_THAT(FooVal, NotNull());
 
-                const ValueDecl *BarDecl = findValueDecl(ASTCtx, "Bar");
-                ASSERT_THAT(BarDecl, NotNull());
+        const ValueDecl *BarDecl = findValueDecl(ASTCtx, "Bar");
+        ASSERT_THAT(BarDecl, NotNull());
 
-                const auto *BarVal = dyn_cast_or_null<AtomicBoolValue>(
-                    Env.getValue(*BarDecl, SkipPast::None));
-                ASSERT_THAT(BarVal, NotNull());
+        const auto *BarVal =
+            dyn_cast_or_null<BoolValue>(Env.getValue(*BarDecl));
+        ASSERT_THAT(BarVal, NotNull());
 
-                EXPECT_EQ(FooVal, &Env.getBoolLiteralValue(true));
-                EXPECT_EQ(BarVal, &Env.getBoolLiteralValue(false));
-              });
+        EXPECT_EQ(FooVal, &Env.getBoolLiteralValue(true));
+        EXPECT_EQ(BarVal, &Env.getBoolLiteralValue(false));
+      });
 }
 
 TEST(TransferTest, AssignFromCompositeBoolExpression) {
@@ -2650,46 +4285,43 @@ TEST(TransferTest, AssignFromCompositeBoolExpression) {
     }
   )";
     runDataflow(
-        Code, [](llvm::ArrayRef<
-                     std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                     Results,
-                 ASTContext &ASTCtx) {
-          ASSERT_THAT(Results, ElementsAre(Pair("p", _)));
-          const Environment &Env = Results[0].second.Env;
+        Code,
+        [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+           ASTContext &ASTCtx) {
+          ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+          const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
 
           const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
           ASSERT_THAT(FooDecl, NotNull());
 
-          const auto *FooVal = dyn_cast_or_null<BoolValue>(
-              Env.getValue(*FooDecl, SkipPast::None));
+          const auto *FooVal =
+              dyn_cast_or_null<BoolValue>(Env.getValue(*FooDecl));
           ASSERT_THAT(FooVal, NotNull());
 
           const ValueDecl *BarDecl = findValueDecl(ASTCtx, "Bar");
           ASSERT_THAT(BarDecl, NotNull());
 
-          const auto *BarVal = dyn_cast_or_null<BoolValue>(
-              Env.getValue(*BarDecl, SkipPast::None));
+          const auto *BarVal =
+              dyn_cast_or_null<BoolValue>(Env.getValue(*BarDecl));
           ASSERT_THAT(BarVal, NotNull());
 
           const ValueDecl *QuxDecl = findValueDecl(ASTCtx, "Qux");
           ASSERT_THAT(QuxDecl, NotNull());
 
-          const auto *QuxVal = dyn_cast_or_null<BoolValue>(
-              Env.getValue(*QuxDecl, SkipPast::None));
+          const auto *QuxVal =
+              dyn_cast_or_null<BoolValue>(Env.getValue(*QuxDecl));
           ASSERT_THAT(QuxVal, NotNull());
 
           const ValueDecl *BazDecl = findValueDecl(ASTCtx, "Baz");
           ASSERT_THAT(BazDecl, NotNull());
 
-          const auto *BazVal = dyn_cast_or_null<ConjunctionValue>(
-              Env.getValue(*BazDecl, SkipPast::None));
+          const auto *BazVal =
+              dyn_cast_or_null<BoolValue>(Env.getValue(*BazDecl));
           ASSERT_THAT(BazVal, NotNull());
-          EXPECT_EQ(&BazVal->getLeftSubValue(), FooVal);
-
-          const auto *BazRightSubValVal =
-              cast<DisjunctionValue>(&BazVal->getRightSubValue());
-          EXPECT_EQ(&BazRightSubValVal->getLeftSubValue(), BarVal);
-          EXPECT_EQ(&BazRightSubValVal->getRightSubValue(), QuxVal);
+          auto &A = Env.arena();
+          EXPECT_EQ(&BazVal->formula(),
+                    &A.makeAnd(FooVal->formula(),
+                               A.makeOr(BarVal->formula(), QuxVal->formula())));
         });
   }
 
@@ -2701,47 +4333,43 @@ TEST(TransferTest, AssignFromCompositeBoolExpression) {
     }
   )";
     runDataflow(
-        Code, [](llvm::ArrayRef<
-                     std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                     Results,
-                 ASTContext &ASTCtx) {
-          ASSERT_THAT(Results, ElementsAre(Pair("p", _)));
-          const Environment &Env = Results[0].second.Env;
+        Code,
+        [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+           ASTContext &ASTCtx) {
+          ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+          const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
 
           const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
           ASSERT_THAT(FooDecl, NotNull());
 
-          const auto *FooVal = dyn_cast_or_null<BoolValue>(
-              Env.getValue(*FooDecl, SkipPast::None));
+          const auto *FooVal =
+              dyn_cast_or_null<BoolValue>(Env.getValue(*FooDecl));
           ASSERT_THAT(FooVal, NotNull());
 
           const ValueDecl *BarDecl = findValueDecl(ASTCtx, "Bar");
           ASSERT_THAT(BarDecl, NotNull());
 
-          const auto *BarVal = dyn_cast_or_null<BoolValue>(
-              Env.getValue(*BarDecl, SkipPast::None));
+          const auto *BarVal =
+              dyn_cast_or_null<BoolValue>(Env.getValue(*BarDecl));
           ASSERT_THAT(BarVal, NotNull());
 
           const ValueDecl *QuxDecl = findValueDecl(ASTCtx, "Qux");
           ASSERT_THAT(QuxDecl, NotNull());
 
-          const auto *QuxVal = dyn_cast_or_null<BoolValue>(
-              Env.getValue(*QuxDecl, SkipPast::None));
+          const auto *QuxVal =
+              dyn_cast_or_null<BoolValue>(Env.getValue(*QuxDecl));
           ASSERT_THAT(QuxVal, NotNull());
 
           const ValueDecl *BazDecl = findValueDecl(ASTCtx, "Baz");
           ASSERT_THAT(BazDecl, NotNull());
 
-          const auto *BazVal = dyn_cast_or_null<DisjunctionValue>(
-              Env.getValue(*BazDecl, SkipPast::None));
+          const auto *BazVal =
+              dyn_cast_or_null<BoolValue>(Env.getValue(*BazDecl));
           ASSERT_THAT(BazVal, NotNull());
-
-          const auto *BazLeftSubValVal =
-              cast<ConjunctionValue>(&BazVal->getLeftSubValue());
-          EXPECT_EQ(&BazLeftSubValVal->getLeftSubValue(), FooVal);
-          EXPECT_EQ(&BazLeftSubValVal->getRightSubValue(), QuxVal);
-
-          EXPECT_EQ(&BazVal->getRightSubValue(), BarVal);
+          auto &A = Env.arena();
+          EXPECT_EQ(&BazVal->formula(),
+                    &A.makeOr(A.makeAnd(FooVal->formula(), QuxVal->formula()),
+                              BarVal->formula()));
         });
   }
 
@@ -2753,56 +4381,48 @@ TEST(TransferTest, AssignFromCompositeBoolExpression) {
       }
     )";
     runDataflow(
-        Code, [](llvm::ArrayRef<
-                     std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                     Results,
-                 ASTContext &ASTCtx) {
-          ASSERT_THAT(Results, ElementsAre(Pair("p", _)));
-          const Environment &Env = Results[0].second.Env;
+        Code,
+        [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+           ASTContext &ASTCtx) {
+          ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+          const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
 
           const ValueDecl *ADecl = findValueDecl(ASTCtx, "A");
           ASSERT_THAT(ADecl, NotNull());
 
-          const auto *AVal =
-              dyn_cast_or_null<BoolValue>(Env.getValue(*ADecl, SkipPast::None));
+          const auto *AVal = dyn_cast_or_null<BoolValue>(Env.getValue(*ADecl));
           ASSERT_THAT(AVal, NotNull());
 
           const ValueDecl *BDecl = findValueDecl(ASTCtx, "B");
           ASSERT_THAT(BDecl, NotNull());
 
-          const auto *BVal =
-              dyn_cast_or_null<BoolValue>(Env.getValue(*BDecl, SkipPast::None));
+          const auto *BVal = dyn_cast_or_null<BoolValue>(Env.getValue(*BDecl));
           ASSERT_THAT(BVal, NotNull());
 
           const ValueDecl *CDecl = findValueDecl(ASTCtx, "C");
           ASSERT_THAT(CDecl, NotNull());
 
-          const auto *CVal =
-              dyn_cast_or_null<BoolValue>(Env.getValue(*CDecl, SkipPast::None));
+          const auto *CVal = dyn_cast_or_null<BoolValue>(Env.getValue(*CDecl));
           ASSERT_THAT(CVal, NotNull());
 
           const ValueDecl *DDecl = findValueDecl(ASTCtx, "D");
           ASSERT_THAT(DDecl, NotNull());
 
-          const auto *DVal =
-              dyn_cast_or_null<BoolValue>(Env.getValue(*DDecl, SkipPast::None));
+          const auto *DVal = dyn_cast_or_null<BoolValue>(Env.getValue(*DDecl));
           ASSERT_THAT(DVal, NotNull());
 
           const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
           ASSERT_THAT(FooDecl, NotNull());
 
-          const auto *FooVal = dyn_cast_or_null<ConjunctionValue>(
-              Env.getValue(*FooDecl, SkipPast::None));
+          const auto *FooVal =
+              dyn_cast_or_null<BoolValue>(Env.getValue(*FooDecl));
           ASSERT_THAT(FooVal, NotNull());
-
-          const auto &FooLeftSubVal =
-              cast<ConjunctionValue>(FooVal->getLeftSubValue());
-          const auto &FooLeftLeftSubVal =
-              cast<ConjunctionValue>(FooLeftSubVal.getLeftSubValue());
-          EXPECT_EQ(&FooLeftLeftSubVal.getLeftSubValue(), AVal);
-          EXPECT_EQ(&FooLeftLeftSubVal.getRightSubValue(), BVal);
-          EXPECT_EQ(&FooLeftSubVal.getRightSubValue(), CVal);
-          EXPECT_EQ(&FooVal->getRightSubValue(), DVal);
+          auto &A = Env.arena();
+          EXPECT_EQ(
+              &FooVal->formula(),
+              &A.makeAnd(A.makeAnd(A.makeAnd(AVal->formula(), BVal->formula()),
+                                   CVal->formula()),
+                         DVal->formula()));
         });
   }
 }
@@ -2815,30 +4435,29 @@ TEST(TransferTest, AssignFromBoolNegation) {
       // [[p]]
     }
   )";
-  runDataflow(Code,
-              [](llvm::ArrayRef<
-                     std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                     Results,
-                 ASTContext &ASTCtx) {
-                ASSERT_THAT(Results, ElementsAre(Pair("p", _)));
-                const Environment &Env = Results[0].second.Env;
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
 
-                const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
-                ASSERT_THAT(FooDecl, NotNull());
+        const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
+        ASSERT_THAT(FooDecl, NotNull());
 
-                const auto *FooVal = dyn_cast_or_null<AtomicBoolValue>(
-                    Env.getValue(*FooDecl, SkipPast::None));
-                ASSERT_THAT(FooVal, NotNull());
+        const auto *FooVal =
+            dyn_cast_or_null<BoolValue>(Env.getValue(*FooDecl));
+        ASSERT_THAT(FooVal, NotNull());
 
-                const ValueDecl *BarDecl = findValueDecl(ASTCtx, "Bar");
-                ASSERT_THAT(BarDecl, NotNull());
+        const ValueDecl *BarDecl = findValueDecl(ASTCtx, "Bar");
+        ASSERT_THAT(BarDecl, NotNull());
 
-                const auto *BarVal = dyn_cast_or_null<NegationValue>(
-                    Env.getValue(*BarDecl, SkipPast::None));
-                ASSERT_THAT(BarVal, NotNull());
-
-                EXPECT_EQ(&BarVal->getSubVal(), FooVal);
-              });
+        const auto *BarVal =
+            dyn_cast_or_null<BoolValue>(Env.getValue(*BarDecl));
+        ASSERT_THAT(BarVal, NotNull());
+        auto &A = Env.arena();
+        EXPECT_EQ(&BarVal->formula(), &A.makeNot(FooVal->formula()));
+      });
 }
 
 TEST(TransferTest, BuiltinExpect) {
@@ -2848,23 +4467,21 @@ TEST(TransferTest, BuiltinExpect) {
       /*[[p]]*/
     }
   )";
-  runDataflow(Code,
-              [](llvm::ArrayRef<
-                     std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                     Results,
-                 ASTContext &ASTCtx) {
-                ASSERT_THAT(Results, ElementsAre(Pair("p", _)));
-                const auto &Env = Results[0].second.Env;
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
 
-                const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
-                ASSERT_THAT(FooDecl, NotNull());
+        const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
+        ASSERT_THAT(FooDecl, NotNull());
 
-                const ValueDecl *BarDecl = findValueDecl(ASTCtx, "Bar");
-                ASSERT_THAT(BarDecl, NotNull());
+        const ValueDecl *BarDecl = findValueDecl(ASTCtx, "Bar");
+        ASSERT_THAT(BarDecl, NotNull());
 
-                EXPECT_EQ(Env.getValue(*FooDecl, SkipPast::None),
-                          Env.getValue(*BarDecl, SkipPast::None));
-              });
+        EXPECT_EQ(Env.getValue(*FooDecl), Env.getValue(*BarDecl));
+      });
 }
 
 // `__builtin_expect` takes and returns a `long` argument, so other types
@@ -2877,23 +4494,21 @@ TEST(TransferTest, BuiltinExpectBoolArg) {
       /*[[p]]*/
     }
   )";
-  runDataflow(Code,
-              [](llvm::ArrayRef<
-                     std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                     Results,
-                 ASTContext &ASTCtx) {
-                ASSERT_THAT(Results, ElementsAre(Pair("p", _)));
-                const auto &Env = Results[0].second.Env;
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
 
-                const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
-                ASSERT_THAT(FooDecl, NotNull());
+        const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
+        ASSERT_THAT(FooDecl, NotNull());
 
-                const ValueDecl *BarDecl = findValueDecl(ASTCtx, "Bar");
-                ASSERT_THAT(BarDecl, NotNull());
+        const ValueDecl *BarDecl = findValueDecl(ASTCtx, "Bar");
+        ASSERT_THAT(BarDecl, NotNull());
 
-                EXPECT_EQ(Env.getValue(*FooDecl, SkipPast::None),
-                          Env.getValue(*BarDecl, SkipPast::None));
-              });
+        EXPECT_EQ(Env.getValue(*FooDecl), Env.getValue(*BarDecl));
+      });
 }
 
 TEST(TransferTest, BuiltinUnreachable) {
@@ -2908,26 +4523,24 @@ TEST(TransferTest, BuiltinUnreachable) {
       /*[[p]]*/
     }
   )";
-  runDataflow(Code,
-              [](llvm::ArrayRef<
-                     std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                     Results,
-                 ASTContext &ASTCtx) {
-                ASSERT_THAT(Results, ElementsAre(Pair("p", _)));
-                const auto &Env = Results[0].second.Env;
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
 
-                const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
-                ASSERT_THAT(FooDecl, NotNull());
+        const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
+        ASSERT_THAT(FooDecl, NotNull());
 
-                const ValueDecl *BarDecl = findValueDecl(ASTCtx, "Bar");
-                ASSERT_THAT(BarDecl, NotNull());
+        const ValueDecl *BarDecl = findValueDecl(ASTCtx, "Bar");
+        ASSERT_THAT(BarDecl, NotNull());
 
-                // `__builtin_unreachable` promises that the code is
-                // unreachable, so the compiler treats the "then" branch as the
-                // only possible predecessor of this statement.
-                EXPECT_EQ(Env.getValue(*FooDecl, SkipPast::None),
-                          Env.getValue(*BarDecl, SkipPast::None));
-              });
+        // `__builtin_unreachable` promises that the code is
+        // unreachable, so the compiler treats the "then" branch as the
+        // only possible predecessor of this statement.
+        EXPECT_EQ(Env.getValue(*FooDecl), Env.getValue(*BarDecl));
+      });
 }
 
 TEST(TransferTest, BuiltinTrap) {
@@ -2942,25 +4555,23 @@ TEST(TransferTest, BuiltinTrap) {
       /*[[p]]*/
     }
   )";
-  runDataflow(Code,
-              [](llvm::ArrayRef<
-                     std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                     Results,
-                 ASTContext &ASTCtx) {
-                ASSERT_THAT(Results, ElementsAre(Pair("p", _)));
-                const auto &Env = Results[0].second.Env;
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
 
-                const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
-                ASSERT_THAT(FooDecl, NotNull());
+        const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
+        ASSERT_THAT(FooDecl, NotNull());
 
-                const ValueDecl *BarDecl = findValueDecl(ASTCtx, "Bar");
-                ASSERT_THAT(BarDecl, NotNull());
+        const ValueDecl *BarDecl = findValueDecl(ASTCtx, "Bar");
+        ASSERT_THAT(BarDecl, NotNull());
 
-                // `__builtin_trap` ensures program termination, so only the
-                // "then" branch is a predecessor of this statement.
-                EXPECT_EQ(Env.getValue(*FooDecl, SkipPast::None),
-                          Env.getValue(*BarDecl, SkipPast::None));
-              });
+        // `__builtin_trap` ensures program termination, so only the
+        // "then" branch is a predecessor of this statement.
+        EXPECT_EQ(Env.getValue(*FooDecl), Env.getValue(*BarDecl));
+      });
 }
 
 TEST(TransferTest, BuiltinDebugTrap) {
@@ -2975,24 +4586,22 @@ TEST(TransferTest, BuiltinDebugTrap) {
       /*[[p]]*/
     }
   )";
-  runDataflow(Code,
-              [](llvm::ArrayRef<
-                     std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                     Results,
-                 ASTContext &ASTCtx) {
-                ASSERT_THAT(Results, ElementsAre(Pair("p", _)));
-                const auto &Env = Results[0].second.Env;
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
 
-                const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
-                ASSERT_THAT(FooDecl, NotNull());
+        const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
+        ASSERT_THAT(FooDecl, NotNull());
 
-                const ValueDecl *BarDecl = findValueDecl(ASTCtx, "Bar");
-                ASSERT_THAT(BarDecl, NotNull());
+        const ValueDecl *BarDecl = findValueDecl(ASTCtx, "Bar");
+        ASSERT_THAT(BarDecl, NotNull());
 
-                // `__builtin_debugtrap` doesn't ensure program termination.
-                EXPECT_NE(Env.getValue(*FooDecl, SkipPast::None),
-                          Env.getValue(*BarDecl, SkipPast::None));
-              });
+        // `__builtin_debugtrap` doesn't ensure program termination.
+        EXPECT_NE(Env.getValue(*FooDecl), Env.getValue(*BarDecl));
+      });
 }
 
 TEST(TransferTest, StaticIntSingleVarDecl) {
@@ -3002,24 +4611,22 @@ TEST(TransferTest, StaticIntSingleVarDecl) {
       // [[p]]
     }
   )";
-  runDataflow(Code,
-              [](llvm::ArrayRef<
-                     std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                     Results,
-                 ASTContext &ASTCtx) {
-                ASSERT_THAT(Results, ElementsAre(Pair("p", _)));
-                const Environment &Env = Results[0].second.Env;
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
 
-                const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
-                ASSERT_THAT(FooDecl, NotNull());
+        const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
+        ASSERT_THAT(FooDecl, NotNull());
 
-                const StorageLocation *FooLoc =
-                    Env.getStorageLocation(*FooDecl, SkipPast::None);
-                ASSERT_TRUE(isa_and_nonnull<ScalarStorageLocation>(FooLoc));
+        const StorageLocation *FooLoc = Env.getStorageLocation(*FooDecl);
+        ASSERT_TRUE(isa_and_nonnull<ScalarStorageLocation>(FooLoc));
 
-                const Value *FooVal = Env.getValue(*FooLoc);
-                EXPECT_TRUE(isa_and_nonnull<IntegerValue>(FooVal));
-              });
+        const Value *FooVal = Env.getValue(*FooLoc);
+        EXPECT_TRUE(isa_and_nonnull<IntegerValue>(FooVal));
+      });
 }
 
 TEST(TransferTest, StaticIntGroupVarDecl) {
@@ -3030,36 +4637,33 @@ TEST(TransferTest, StaticIntGroupVarDecl) {
       // [[p]]
     }
   )";
-  runDataflow(Code,
-              [](llvm::ArrayRef<
-                     std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                     Results,
-                 ASTContext &ASTCtx) {
-                ASSERT_THAT(Results, ElementsAre(Pair("p", _)));
-                const Environment &Env = Results[0].second.Env;
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
 
-                const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
-                ASSERT_THAT(FooDecl, NotNull());
+        const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
+        ASSERT_THAT(FooDecl, NotNull());
 
-                const ValueDecl *BarDecl = findValueDecl(ASTCtx, "Bar");
-                ASSERT_THAT(BarDecl, NotNull());
+        const ValueDecl *BarDecl = findValueDecl(ASTCtx, "Bar");
+        ASSERT_THAT(BarDecl, NotNull());
 
-                const StorageLocation *FooLoc =
-                    Env.getStorageLocation(*FooDecl, SkipPast::None);
-                ASSERT_TRUE(isa_and_nonnull<ScalarStorageLocation>(FooLoc));
+        const StorageLocation *FooLoc = Env.getStorageLocation(*FooDecl);
+        ASSERT_TRUE(isa_and_nonnull<ScalarStorageLocation>(FooLoc));
 
-                const StorageLocation *BarLoc =
-                    Env.getStorageLocation(*BarDecl, SkipPast::None);
-                ASSERT_TRUE(isa_and_nonnull<ScalarStorageLocation>(BarLoc));
+        const StorageLocation *BarLoc = Env.getStorageLocation(*BarDecl);
+        ASSERT_TRUE(isa_and_nonnull<ScalarStorageLocation>(BarLoc));
 
-                const Value *FooVal = Env.getValue(*FooLoc);
-                EXPECT_TRUE(isa_and_nonnull<IntegerValue>(FooVal));
+        const Value *FooVal = Env.getValue(*FooLoc);
+        EXPECT_TRUE(isa_and_nonnull<IntegerValue>(FooVal));
 
-                const Value *BarVal = Env.getValue(*BarLoc);
-                EXPECT_TRUE(isa_and_nonnull<IntegerValue>(BarVal));
+        const Value *BarVal = Env.getValue(*BarLoc);
+        EXPECT_TRUE(isa_and_nonnull<IntegerValue>(BarVal));
 
-                EXPECT_NE(FooVal, BarVal);
-              });
+        EXPECT_NE(FooVal, BarVal);
+      });
 }
 
 TEST(TransferTest, GlobalIntVarDecl) {
@@ -3072,26 +4676,23 @@ TEST(TransferTest, GlobalIntVarDecl) {
       // [[p]]
     }
   )";
-  runDataflow(Code,
-              [](llvm::ArrayRef<
-                     std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                     Results,
-                 ASTContext &ASTCtx) {
-                ASSERT_THAT(Results, ElementsAre(Pair("p", _)));
-                const Environment &Env = Results[0].second.Env;
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
 
-                const ValueDecl *BarDecl = findValueDecl(ASTCtx, "Bar");
-                ASSERT_THAT(BarDecl, NotNull());
+        const ValueDecl *BarDecl = findValueDecl(ASTCtx, "Bar");
+        ASSERT_THAT(BarDecl, NotNull());
 
-                const ValueDecl *BazDecl = findValueDecl(ASTCtx, "Baz");
-                ASSERT_THAT(BazDecl, NotNull());
+        const ValueDecl *BazDecl = findValueDecl(ASTCtx, "Baz");
+        ASSERT_THAT(BazDecl, NotNull());
 
-                const Value *BarVal =
-                    cast<IntegerValue>(Env.getValue(*BarDecl, SkipPast::None));
-                const Value *BazVal =
-                    cast<IntegerValue>(Env.getValue(*BazDecl, SkipPast::None));
-                EXPECT_EQ(BarVal, BazVal);
-              });
+        const Value *BarVal = cast<IntegerValue>(Env.getValue(*BarDecl));
+        const Value *BazVal = cast<IntegerValue>(Env.getValue(*BazDecl));
+        EXPECT_EQ(BarVal, BazVal);
+      });
 }
 
 TEST(TransferTest, StaticMemberIntVarDecl) {
@@ -3106,26 +4707,23 @@ TEST(TransferTest, StaticMemberIntVarDecl) {
       // [[p]]
     }
   )";
-  runDataflow(Code,
-              [](llvm::ArrayRef<
-                     std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                     Results,
-                 ASTContext &ASTCtx) {
-                ASSERT_THAT(Results, ElementsAre(Pair("p", _)));
-                const Environment &Env = Results[0].second.Env;
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
 
-                const ValueDecl *BarDecl = findValueDecl(ASTCtx, "Bar");
-                ASSERT_THAT(BarDecl, NotNull());
+        const ValueDecl *BarDecl = findValueDecl(ASTCtx, "Bar");
+        ASSERT_THAT(BarDecl, NotNull());
 
-                const ValueDecl *BazDecl = findValueDecl(ASTCtx, "Baz");
-                ASSERT_THAT(BazDecl, NotNull());
+        const ValueDecl *BazDecl = findValueDecl(ASTCtx, "Baz");
+        ASSERT_THAT(BazDecl, NotNull());
 
-                const Value *BarVal =
-                    cast<IntegerValue>(Env.getValue(*BarDecl, SkipPast::None));
-                const Value *BazVal =
-                    cast<IntegerValue>(Env.getValue(*BazDecl, SkipPast::None));
-                EXPECT_EQ(BarVal, BazVal);
-              });
+        const Value *BarVal = cast<IntegerValue>(Env.getValue(*BarDecl));
+        const Value *BazVal = cast<IntegerValue>(Env.getValue(*BazDecl));
+        EXPECT_EQ(BarVal, BazVal);
+      });
 }
 
 TEST(TransferTest, StaticMemberRefVarDecl) {
@@ -3140,26 +4738,23 @@ TEST(TransferTest, StaticMemberRefVarDecl) {
       // [[p]]
     }
   )";
-  runDataflow(Code,
-              [](llvm::ArrayRef<
-                     std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                     Results,
-                 ASTContext &ASTCtx) {
-                ASSERT_THAT(Results, ElementsAre(Pair("p", _)));
-                const Environment &Env = Results[0].second.Env;
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
 
-                const ValueDecl *BarDecl = findValueDecl(ASTCtx, "Bar");
-                ASSERT_THAT(BarDecl, NotNull());
+        const ValueDecl *BarDecl = findValueDecl(ASTCtx, "Bar");
+        ASSERT_THAT(BarDecl, NotNull());
 
-                const ValueDecl *BazDecl = findValueDecl(ASTCtx, "Baz");
-                ASSERT_THAT(BazDecl, NotNull());
+        const ValueDecl *BazDecl = findValueDecl(ASTCtx, "Baz");
+        ASSERT_THAT(BazDecl, NotNull());
 
-                const Value *BarVal =
-                    cast<IntegerValue>(Env.getValue(*BarDecl, SkipPast::None));
-                const Value *BazVal =
-                    cast<IntegerValue>(Env.getValue(*BazDecl, SkipPast::None));
-                EXPECT_EQ(BarVal, BazVal);
-              });
+        const Value *BarVal = cast<IntegerValue>(Env.getValue(*BarDecl));
+        const Value *BazVal = cast<IntegerValue>(Env.getValue(*BazDecl));
+        EXPECT_EQ(BarVal, BazVal);
+      });
 }
 
 TEST(TransferTest, AssignMemberBeforeCopy) {
@@ -3177,33 +4772,31 @@ TEST(TransferTest, AssignMemberBeforeCopy) {
       // [[p]]
     }
   )";
-  runDataflow(Code,
-              [](llvm::ArrayRef<
-                     std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                     Results,
-                 ASTContext &ASTCtx) {
-                ASSERT_THAT(Results, ElementsAre(Pair("p", _)));
-                const Environment &Env = Results[0].second.Env;
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
 
-                const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
-                ASSERT_THAT(FooDecl, NotNull());
+        const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
+        ASSERT_THAT(FooDecl, NotNull());
 
-                const ValueDecl *BarDecl = findValueDecl(ASTCtx, "Bar");
-                ASSERT_THAT(BarDecl, NotNull());
+        const ValueDecl *BarDecl = findValueDecl(ASTCtx, "Bar");
+        ASSERT_THAT(BarDecl, NotNull());
 
-                const ValueDecl *A1Decl = findValueDecl(ASTCtx, "A1");
-                ASSERT_THAT(A1Decl, NotNull());
+        const ValueDecl *A1Decl = findValueDecl(ASTCtx, "A1");
+        ASSERT_THAT(A1Decl, NotNull());
 
-                const ValueDecl *A2Decl = findValueDecl(ASTCtx, "A2");
-                ASSERT_THAT(A2Decl, NotNull());
+        const ValueDecl *A2Decl = findValueDecl(ASTCtx, "A2");
+        ASSERT_THAT(A2Decl, NotNull());
 
-                const auto *BarVal =
-                    cast<IntegerValue>(Env.getValue(*BarDecl, SkipPast::None));
+        const auto *BarVal = cast<IntegerValue>(Env.getValue(*BarDecl));
 
-                const auto *A2Val =
-                    cast<StructValue>(Env.getValue(*A2Decl, SkipPast::None));
-                EXPECT_EQ(A2Val->getChild(*FooDecl), BarVal);
-              });
+        const auto &A2Loc =
+            *cast<RecordStorageLocation>(Env.getStorageLocation(*A2Decl));
+        EXPECT_EQ(getFieldValue(&A2Loc, *FooDecl, Env), BarVal);
+      });
 }
 
 TEST(TransferTest, BooleanEquality) {
@@ -3220,24 +4813,23 @@ TEST(TransferTest, BooleanEquality) {
     }
   )";
   runDataflow(
-      Code, [](llvm::ArrayRef<
-                   std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                   Results,
-               ASTContext &ASTCtx) {
-        ASSERT_THAT(Results, ElementsAre(Pair("p-else", _), Pair("p-then", _)));
-        const Environment &EnvElse = Results[0].second.Env;
-        const Environment &EnvThen = Results[1].second.Env;
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p-then", "p-else"));
+        const Environment &EnvThen =
+            getEnvironmentAtAnnotation(Results, "p-then");
+        const Environment &EnvElse =
+            getEnvironmentAtAnnotation(Results, "p-else");
 
         const ValueDecl *BarDecl = findValueDecl(ASTCtx, "Bar");
         ASSERT_THAT(BarDecl, NotNull());
 
-        auto &BarValThen =
-            *cast<BoolValue>(EnvThen.getValue(*BarDecl, SkipPast::None));
-        EXPECT_TRUE(EnvThen.flowConditionImplies(BarValThen));
+        auto &BarValThen = getFormula(*BarDecl, EnvThen);
+        EXPECT_TRUE(EnvThen.proves(BarValThen));
 
-        auto &BarValElse =
-            *cast<BoolValue>(EnvElse.getValue(*BarDecl, SkipPast::None));
-        EXPECT_FALSE(EnvElse.flowConditionImplies(BarValElse));
+        auto &BarValElse = getFormula(*BarDecl, EnvElse);
+        EXPECT_TRUE(EnvElse.proves(EnvElse.arena().makeNot(BarValElse)));
       });
 }
 
@@ -3255,24 +4847,130 @@ TEST(TransferTest, BooleanInequality) {
     }
   )";
   runDataflow(
-      Code, [](llvm::ArrayRef<
-                   std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                   Results,
-               ASTContext &ASTCtx) {
-        ASSERT_THAT(Results, ElementsAre(Pair("p-else", _), Pair("p-then", _)));
-        const Environment &EnvElse = Results[0].second.Env;
-        const Environment &EnvThen = Results[1].second.Env;
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p-then", "p-else"));
+        const Environment &EnvThen =
+            getEnvironmentAtAnnotation(Results, "p-then");
+        const Environment &EnvElse =
+            getEnvironmentAtAnnotation(Results, "p-else");
 
         const ValueDecl *BarDecl = findValueDecl(ASTCtx, "Bar");
         ASSERT_THAT(BarDecl, NotNull());
 
-        auto &BarValThen =
-            *cast<BoolValue>(EnvThen.getValue(*BarDecl, SkipPast::None));
-        EXPECT_FALSE(EnvThen.flowConditionImplies(BarValThen));
+        auto &BarValThen = getFormula(*BarDecl, EnvThen);
+        EXPECT_TRUE(EnvThen.proves(EnvThen.arena().makeNot(BarValThen)));
 
-        auto &BarValElse =
-            *cast<BoolValue>(EnvElse.getValue(*BarDecl, SkipPast::None));
-        EXPECT_TRUE(EnvElse.flowConditionImplies(BarValElse));
+        auto &BarValElse = getFormula(*BarDecl, EnvElse);
+        EXPECT_TRUE(EnvElse.proves(BarValElse));
+      });
+}
+
+TEST(TransferTest, PointerEquality) {
+  std::string Code = R"cc(
+    void target() {
+      int i = 0;
+      int i_other = 0;
+      int *p1 = &i;
+      int *p2 = &i;
+      int *p_other = &i_other;
+      int *null = nullptr;
+
+      bool p1_eq_p1 = (p1 == p1);
+      bool p1_eq_p2 = (p1 == p2);
+      bool p1_eq_p_other = (p1 == p_other);
+
+      bool p1_eq_null = (p1 == null);
+      bool p1_eq_nullptr = (p1 == nullptr);
+      bool null_eq_nullptr = (null == nullptr);
+      bool nullptr_eq_nullptr = (nullptr == nullptr);
+
+      // We won't duplicate all of the tests above with `!=`, as we know that
+      // the implementation simply negates the result of the `==` comparison.
+      // Instaed, just spot-check one case.
+      bool p1_ne_p1 = (p1 != p1);
+
+      (void)0; // [[p]]
+    }
+  )cc";
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
+
+        // Check the we have indeed set things up so that `p1` and `p2` have
+        // different pointer values.
+        EXPECT_NE(&getValueForDecl<PointerValue>(ASTCtx, Env, "p1"),
+                  &getValueForDecl<PointerValue>(ASTCtx, Env, "p2"));
+
+        EXPECT_EQ(&getValueForDecl<BoolValue>(ASTCtx, Env, "p1_eq_p1"),
+                  &Env.getBoolLiteralValue(true));
+        EXPECT_EQ(&getValueForDecl<BoolValue>(ASTCtx, Env, "p1_eq_p2"),
+                  &Env.getBoolLiteralValue(true));
+        EXPECT_TRUE(isa<AtomicBoolValue>(
+            getValueForDecl<BoolValue>(ASTCtx, Env, "p1_eq_p_other")));
+
+        EXPECT_TRUE(isa<AtomicBoolValue>(
+            getValueForDecl<BoolValue>(ASTCtx, Env, "p1_eq_null")));
+        EXPECT_TRUE(isa<AtomicBoolValue>(
+            getValueForDecl<BoolValue>(ASTCtx, Env, "p1_eq_nullptr")));
+        EXPECT_EQ(&getValueForDecl<BoolValue>(ASTCtx, Env, "null_eq_nullptr"),
+                  &Env.getBoolLiteralValue(true));
+        EXPECT_EQ(
+            &getValueForDecl<BoolValue>(ASTCtx, Env, "nullptr_eq_nullptr"),
+            &Env.getBoolLiteralValue(true));
+
+        EXPECT_EQ(&getValueForDecl<BoolValue>(ASTCtx, Env, "p1_ne_p1"),
+                  &Env.getBoolLiteralValue(false));
+      });
+}
+
+TEST(TransferTest, PointerEqualityUnionMembers) {
+  std::string Code = R"cc(
+    union U {
+      int i1;
+      int i2;
+    };
+    void target() {
+      U u;
+      bool i1_eq_i2 = (&u.i1 == &u.i2);
+
+      (void)0; // [[p]]
+    }
+  )cc";
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
+
+        // FIXME: By the standard, `u.i1` and `u.i2` should have the same
+        // address, but we don't yet model this property of union members
+        // correctly. The result is therefore weaker than it could be (just an
+        // atom rather than a true literal), though not wrong.
+        EXPECT_TRUE(isa<AtomicBoolValue>(
+            getValueForDecl<BoolValue>(ASTCtx, Env, "i1_eq_i2")));
+      });
+}
+
+TEST(TransferTest, IntegerLiteralEquality) {
+  std::string Code = R"(
+    void target() {
+      bool equal = (42 == 42);
+      // [[p]]
+    }
+  )";
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
+
+        auto &Equal =
+            getValueForDecl<BoolValue>(ASTCtx, Env, "equal").formula();
+        EXPECT_TRUE(Env.proves(Equal));
       });
 }
 
@@ -3295,45 +4993,40 @@ TEST(TransferTest, CorrelatedBranches) {
     }
   )";
   runDataflow(
-      Code, [](llvm::ArrayRef<
-                   std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                   Results,
-               ASTContext &ASTCtx) {
-        ASSERT_THAT(Results, SizeIs(3));
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p0", "p1", "p2"));
 
         const ValueDecl *CDecl = findValueDecl(ASTCtx, "C");
         ASSERT_THAT(CDecl, NotNull());
 
         {
-          ASSERT_THAT(Results[2], Pair("p0", _));
-          const Environment &Env = Results[2].second.Env;
+          const Environment &Env = getEnvironmentAtAnnotation(Results, "p0");
           const ValueDecl *BDecl = findValueDecl(ASTCtx, "B");
           ASSERT_THAT(BDecl, NotNull());
-          auto &BVal = *cast<BoolValue>(Env.getValue(*BDecl, SkipPast::None));
+          auto &BVal = getFormula(*BDecl, Env);
 
-          EXPECT_TRUE(Env.flowConditionImplies(Env.makeNot(BVal)));
+          EXPECT_TRUE(Env.proves(Env.arena().makeNot(BVal)));
         }
 
         {
-          ASSERT_THAT(Results[1], Pair("p1", _));
-          const Environment &Env = Results[1].second.Env;
-          auto &CVal = *cast<BoolValue>(Env.getValue(*CDecl, SkipPast::None));
-          EXPECT_TRUE(Env.flowConditionImplies(CVal));
+          const Environment &Env = getEnvironmentAtAnnotation(Results, "p1");
+          auto &CVal = getFormula(*CDecl, Env);
+          EXPECT_TRUE(Env.proves(CVal));
         }
 
         {
-          ASSERT_THAT(Results[0], Pair("p2", _));
-          const Environment &Env = Results[0].second.Env;
-          auto &CVal = *cast<BoolValue>(Env.getValue(*CDecl, SkipPast::None));
-          EXPECT_TRUE(Env.flowConditionImplies(CVal));
+          const Environment &Env = getEnvironmentAtAnnotation(Results, "p2");
+          auto &CVal = getFormula(*CDecl, Env);
+          EXPECT_TRUE(Env.proves(CVal));
         }
       });
 }
 
 TEST(TransferTest, LoopWithAssignmentConverges) {
   std::string Code = R"(
-
-    bool &foo();
+    bool foo();
 
     void target() {
        do {
@@ -3348,24 +5041,59 @@ TEST(TransferTest, LoopWithAssignmentConverges) {
   // namely, that the analysis succeeds, rather than hitting the maximum number
   // of iterations.
   runDataflow(
-      Code, [](llvm::ArrayRef<
-                   std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                   Results,
-               ASTContext &ASTCtx) {
-        ASSERT_THAT(Results, ElementsAre(Pair("p", _)));
-        const Environment &Env = Results[0].second.Env;
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
 
         const ValueDecl *BarDecl = findValueDecl(ASTCtx, "Bar");
         ASSERT_THAT(BarDecl, NotNull());
 
-        auto &BarVal = *cast<BoolValue>(Env.getValue(*BarDecl, SkipPast::None));
-        EXPECT_TRUE(Env.flowConditionImplies(Env.makeNot(BarVal)));
+        auto &BarVal = getFormula(*BarDecl, Env);
+        EXPECT_TRUE(Env.proves(Env.arena().makeNot(BarVal)));
+      });
+}
+
+TEST(TransferTest, LoopWithStagedAssignments) {
+  std::string Code = R"(
+    bool foo();
+
+    void target() {
+      bool Bar = false;
+      bool Err = false;
+      while (foo()) {
+        if (Bar)
+          Err = true;
+        Bar = true;
+        /*[[p]]*/
+      }
+    }
+  )";
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
+
+        const ValueDecl *BarDecl = findValueDecl(ASTCtx, "Bar");
+        ASSERT_THAT(BarDecl, NotNull());
+        const ValueDecl *ErrDecl = findValueDecl(ASTCtx, "Err");
+        ASSERT_THAT(ErrDecl, NotNull());
+
+        auto &BarVal = getFormula(*BarDecl, Env);
+        auto &ErrVal = getFormula(*ErrDecl, Env);
+        EXPECT_TRUE(Env.proves(BarVal));
+        // An unsound analysis, for example only evaluating the loop once, can
+        // conclude that `Err` is false. So, we test that this conclusion is not
+        // reached.
+        EXPECT_FALSE(Env.proves(Env.arena().makeNot(ErrVal)));
       });
 }
 
 TEST(TransferTest, LoopWithReferenceAssignmentConverges) {
   std::string Code = R"(
-
     bool &foo();
 
     void target() {
@@ -3377,23 +5105,20 @@ TEST(TransferTest, LoopWithReferenceAssignmentConverges) {
       } while (true);
     }
   )";
-  // The key property that we are verifying is implicit in `runDataflow` --
-  // namely, that the analysis succeeds, rather than hitting the maximum number
-  // of iterations.
+  // The key property that we are verifying is that the analysis succeeds,
+  // rather than hitting the maximum number of iterations.
   runDataflow(
-      Code, [](llvm::ArrayRef<
-                   std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                   Results,
-               ASTContext &ASTCtx) {
-        ASSERT_THAT(Results, ElementsAre(Pair("p", _)));
-        const Environment &Env = Results[0].second.Env;
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
 
         const ValueDecl *BarDecl = findValueDecl(ASTCtx, "Bar");
         ASSERT_THAT(BarDecl, NotNull());
 
-        auto &BarVal =
-            *cast<BoolValue>(Env.getValue(*BarDecl, SkipPast::Reference));
-        EXPECT_TRUE(Env.flowConditionImplies(Env.makeNot(BarVal)));
+        auto &BarVal = getFormula(*BarDecl, Env);
+        EXPECT_TRUE(Env.proves(Env.arena().makeNot(BarVal)));
       });
 }
 
@@ -3417,14 +5142,14 @@ TEST(TransferTest, LoopWithStructReferenceAssignmentConverges) {
   // namely, that the analysis succeeds, rather than hitting the maximum number
   // of iterations.
   runDataflow(
-      Code, [](llvm::ArrayRef<
-                   std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                   Results,
-               ASTContext &ASTCtx) {
-        ASSERT_THAT(Results,
-                    ElementsAre(Pair("p-outer", _), Pair("p-inner", _)));
-        const Environment &OuterEnv = Results[0].second.Env;
-        const Environment &InnerEnv = Results[1].second.Env;
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p-inner", "p-outer"));
+        const Environment &InnerEnv =
+            getEnvironmentAtAnnotation(Results, "p-inner");
+        const Environment &OuterEnv =
+            getEnvironmentAtAnnotation(Results, "p-outer");
 
         const ValueDecl *ValDecl = findValueDecl(ASTCtx, "val");
         ASSERT_THAT(ValDecl, NotNull());
@@ -3433,27 +5158,107 @@ TEST(TransferTest, LoopWithStructReferenceAssignmentConverges) {
         ASSERT_THAT(LDecl, NotNull());
 
         // Inner.
-        auto *LVal =
-            dyn_cast<PointerValue>(InnerEnv.getValue(*LDecl, SkipPast::None));
+        auto *LVal = dyn_cast<PointerValue>(InnerEnv.getValue(*LDecl));
         ASSERT_THAT(LVal, NotNull());
 
         EXPECT_EQ(&LVal->getPointeeLoc(),
-                  InnerEnv.getStorageLocation(*ValDecl, SkipPast::Reference));
+                  InnerEnv.getStorageLocation(*ValDecl));
 
         // Outer.
-        LVal =
-            dyn_cast<PointerValue>(OuterEnv.getValue(*LDecl, SkipPast::None));
+        LVal = dyn_cast<PointerValue>(OuterEnv.getValue(*LDecl));
         ASSERT_THAT(LVal, NotNull());
 
         // The loop body may not have been executed, so we should not conclude
         // that `l` points to `val`.
         EXPECT_NE(&LVal->getPointeeLoc(),
-                  OuterEnv.getStorageLocation(*ValDecl, SkipPast::Reference));
+                  OuterEnv.getStorageLocation(*ValDecl));
+      });
+}
+
+TEST(TransferTest, LoopDereferencingChangingPointerConverges) {
+  std::string Code = R"cc(
+    bool some_condition();
+
+    void target(int i1, int i2) {
+      int *p = &i1;
+      while (true) {
+        (void)*p;
+        if (some_condition())
+          p = &i1;
+        else
+          p = &i2;
+      }
+    }
+  )cc";
+  ASSERT_THAT_ERROR(checkDataflowWithNoopAnalysis(Code), llvm::Succeeded());
+}
+
+TEST(TransferTest, LoopDereferencingChangingRecordPointerConverges) {
+  std::string Code = R"cc(
+    struct Lookup {
+      int x;
+    };
+
+    bool some_condition();
+
+    void target(Lookup l1, Lookup l2) {
+      Lookup *l = &l1;
+      while (true) {
+        (void)l->x;
+        if (some_condition())
+          l = &l1;
+        else
+          l = &l2;
+      }
+    }
+  )cc";
+  ASSERT_THAT_ERROR(checkDataflowWithNoopAnalysis(Code), llvm::Succeeded());
+}
+
+TEST(TransferTest, LoopWithShortCircuitedConditionConverges) {
+  std::string Code = R"cc(
+    bool foo();
+
+    void target() {
+      bool c = false;
+      while (foo() || foo()) {
+        c = true;
+      }
+    }
+  )cc";
+  ASSERT_THAT_ERROR(checkDataflowWithNoopAnalysis(Code), llvm::Succeeded());
+}
+
+TEST(TransferTest, LoopCanProveInvariantForBoolean) {
+  // Check that we can prove `b` is always false in the loop.
+  // This test exercises the logic in `widenDistinctValues()` that preserves
+  // information if the boolean can be proved to be either true or false in both
+  // the previous and current iteration.
+  std::string Code = R"cc(
+    int return_int();
+    void target() {
+      bool b = return_int() == 0;
+      if (b) return;
+      while (true) {
+        b;
+        // [[p]]
+        b = return_int() == 0;
+        if (b) return;
+      }
+    }
+  )cc";
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
+        auto &BVal = getValueForDecl<BoolValue>(ASTCtx, Env, "b");
+        EXPECT_TRUE(Env.proves(Env.arena().makeNot(BVal.formula())));
       });
 }
 
 TEST(TransferTest, DoesNotCrashOnUnionThisExpr) {
-  std::string Code = R"(
+  std::string Code = R"cc(
     union Union {
       int A;
       float B;
@@ -3464,15 +5269,30 @@ TEST(TransferTest, DoesNotCrashOnUnionThisExpr) {
       Union B;
       A = B;
     }
-  )";
+  )cc";
   // This is a crash regression test when calling the transfer function on a
   // `CXXThisExpr` that refers to a union.
   runDataflow(
       Code,
-      [](llvm::ArrayRef<
-             std::pair<std::string, DataflowAnalysisState<NoopLattice>>>,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &,
          ASTContext &) {},
       LangStandard::lang_cxx17, /*ApplyBuiltinTransfer=*/true, "operator=");
+}
+
+TEST(TransferTest, DoesNotCrashOnNullChildren) {
+  std::string Code = (CoroutineLibrary + R"cc(
+    task target() noexcept {
+      co_return;
+    }
+  )cc")
+                         .str();
+  // This is a crash regression test when calling `AdornedCFG::build` on a
+  // statement (in this case, the `CoroutineBodyStmt`) with null children.
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &,
+         ASTContext &) {},
+      LangStandard::lang_cxx20, /*ApplyBuiltinTransfer=*/true);
 }
 
 TEST(TransferTest, StructuredBindingAssignFromStructIntMembersToRefs) {
@@ -3493,12 +5313,11 @@ TEST(TransferTest, StructuredBindingAssignFromStructIntMembersToRefs) {
     }
   )";
   runDataflow(
-      Code, [](llvm::ArrayRef<
-                   std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                   Results,
-               ASTContext &ASTCtx) {
-        ASSERT_THAT(Results, ElementsAre(Pair("p", _)));
-        const Environment &Env = Results[0].second.Env;
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
 
         const ValueDecl *FooRefDecl = findValueDecl(ASTCtx, "FooRef");
         ASSERT_THAT(FooRefDecl, NotNull());
@@ -3515,26 +5334,24 @@ TEST(TransferTest, StructuredBindingAssignFromStructIntMembersToRefs) {
         const ValueDecl *BoundBarRefDecl = findValueDecl(ASTCtx, "BoundBarRef");
         ASSERT_THAT(BoundBarRefDecl, NotNull());
 
-        const StorageLocation *FooRefLoc =
-            Env.getStorageLocation(*FooRefDecl, SkipPast::Reference);
+        const StorageLocation *FooRefLoc = Env.getStorageLocation(*FooRefDecl);
         ASSERT_THAT(FooRefLoc, NotNull());
 
-        const StorageLocation *BarRefLoc =
-            Env.getStorageLocation(*BarRefDecl, SkipPast::Reference);
+        const StorageLocation *BarRefLoc = Env.getStorageLocation(*BarRefDecl);
         ASSERT_THAT(BarRefLoc, NotNull());
 
-        const Value *QuxVal = Env.getValue(*QuxDecl, SkipPast::None);
+        const Value *QuxVal = Env.getValue(*QuxDecl);
         ASSERT_THAT(QuxVal, NotNull());
 
         const StorageLocation *BoundFooRefLoc =
-            Env.getStorageLocation(*BoundFooRefDecl, SkipPast::Reference);
+            Env.getStorageLocation(*BoundFooRefDecl);
         EXPECT_EQ(BoundFooRefLoc, FooRefLoc);
 
         const StorageLocation *BoundBarRefLoc =
-            Env.getStorageLocation(*BoundBarRefDecl, SkipPast::Reference);
+            Env.getStorageLocation(*BoundBarRefDecl);
         EXPECT_EQ(BoundBarRefLoc, BarRefLoc);
 
-        EXPECT_EQ(Env.getValue(*BoundFooRefDecl, SkipPast::Reference), QuxVal);
+        EXPECT_EQ(Env.getValue(*BoundFooRefDecl), QuxVal);
       });
 }
 
@@ -3555,12 +5372,11 @@ TEST(TransferTest, StructuredBindingAssignFromStructRefMembersToRefs) {
     }
   )";
   runDataflow(
-      Code, [](llvm::ArrayRef<
-                   std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                   Results,
-               ASTContext &ASTCtx) {
-        ASSERT_THAT(Results, ElementsAre(Pair("p", _)));
-        const Environment &Env = Results[0].second.Env;
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
 
         const ValueDecl *FooRefDecl = findValueDecl(ASTCtx, "FooRef");
         ASSERT_THAT(FooRefDecl, NotNull());
@@ -3577,26 +5393,24 @@ TEST(TransferTest, StructuredBindingAssignFromStructRefMembersToRefs) {
         const ValueDecl *BoundBarRefDecl = findValueDecl(ASTCtx, "BoundBarRef");
         ASSERT_THAT(BoundBarRefDecl, NotNull());
 
-        const StorageLocation *FooRefLoc =
-            Env.getStorageLocation(*FooRefDecl, SkipPast::Reference);
+        const StorageLocation *FooRefLoc = Env.getStorageLocation(*FooRefDecl);
         ASSERT_THAT(FooRefLoc, NotNull());
 
-        const StorageLocation *BarRefLoc =
-            Env.getStorageLocation(*BarRefDecl, SkipPast::Reference);
+        const StorageLocation *BarRefLoc = Env.getStorageLocation(*BarRefDecl);
         ASSERT_THAT(BarRefLoc, NotNull());
 
-        const Value *QuxVal = Env.getValue(*QuxDecl, SkipPast::None);
+        const Value *QuxVal = Env.getValue(*QuxDecl);
         ASSERT_THAT(QuxVal, NotNull());
 
         const StorageLocation *BoundFooRefLoc =
-            Env.getStorageLocation(*BoundFooRefDecl, SkipPast::Reference);
+            Env.getStorageLocation(*BoundFooRefDecl);
         EXPECT_EQ(BoundFooRefLoc, FooRefLoc);
 
         const StorageLocation *BoundBarRefLoc =
-            Env.getStorageLocation(*BoundBarRefDecl, SkipPast::Reference);
+            Env.getStorageLocation(*BoundBarRefDecl);
         EXPECT_EQ(BoundBarRefLoc, BarRefLoc);
 
-        EXPECT_EQ(Env.getValue(*BoundFooRefDecl, SkipPast::Reference), QuxVal);
+        EXPECT_EQ(Env.getValue(*BoundFooRefDecl), QuxVal);
       });
 }
 
@@ -3618,12 +5432,11 @@ TEST(TransferTest, StructuredBindingAssignFromStructIntMembersToInts) {
     }
   )";
   runDataflow(
-      Code, [](llvm::ArrayRef<
-                   std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                   Results,
-               ASTContext &ASTCtx) {
-        ASSERT_THAT(Results, ElementsAre(Pair("p", _)));
-        const Environment &Env = Results[0].second.Env;
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
 
         const ValueDecl *FooRefDecl = findValueDecl(ASTCtx, "FooRef");
         ASSERT_THAT(FooRefDecl, NotNull());
@@ -3640,26 +5453,187 @@ TEST(TransferTest, StructuredBindingAssignFromStructIntMembersToInts) {
         const ValueDecl *QuxDecl = findValueDecl(ASTCtx, "Qux");
         ASSERT_THAT(QuxDecl, NotNull());
 
-        const StorageLocation *FooRefLoc =
-            Env.getStorageLocation(*FooRefDecl, SkipPast::Reference);
+        const StorageLocation *FooRefLoc = Env.getStorageLocation(*FooRefDecl);
         ASSERT_THAT(FooRefLoc, NotNull());
 
-        const StorageLocation *BarRefLoc =
-            Env.getStorageLocation(*BarRefDecl, SkipPast::Reference);
+        const StorageLocation *BarRefLoc = Env.getStorageLocation(*BarRefDecl);
         ASSERT_THAT(BarRefLoc, NotNull());
 
-        const Value *QuxVal = Env.getValue(*QuxDecl, SkipPast::None);
+        const Value *QuxVal = Env.getValue(*QuxDecl);
         ASSERT_THAT(QuxVal, NotNull());
 
         const StorageLocation *BoundFooLoc =
-            Env.getStorageLocation(*BoundFooDecl, SkipPast::Reference);
+            Env.getStorageLocation(*BoundFooDecl);
         EXPECT_NE(BoundFooLoc, FooRefLoc);
 
         const StorageLocation *BoundBarLoc =
-            Env.getStorageLocation(*BoundBarDecl, SkipPast::Reference);
+            Env.getStorageLocation(*BoundBarDecl);
         EXPECT_NE(BoundBarLoc, BarRefLoc);
 
-        EXPECT_EQ(Env.getValue(*BoundFooDecl, SkipPast::Reference), QuxVal);
+        EXPECT_EQ(Env.getValue(*BoundFooDecl), QuxVal);
+      });
+}
+
+TEST(TransferTest, StructuredBindingAssignFromTupleLikeType) {
+  std::string Code = R"(
+    namespace std {
+    using size_t = int;
+    template <class> struct tuple_size;
+    template <std::size_t, class> struct tuple_element;
+    template <class...> class tuple;
+
+    namespace {
+    template <class T, T v>
+    struct size_helper { static const T value = v; };
+    } // namespace
+
+    template <class... T>
+    struct tuple_size<tuple<T...>> : size_helper<std::size_t, sizeof...(T)> {};
+
+    template <std::size_t I, class... T>
+    struct tuple_element<I, tuple<T...>> {
+      using type =  __type_pack_element<I, T...>;
+    };
+
+    template <class...> class tuple {};
+
+    template <std::size_t I, class... T>
+    typename tuple_element<I, tuple<T...>>::type get(tuple<T...>);
+    } // namespace std
+
+    std::tuple<bool, int> makeTuple();
+
+    void target(bool B) {
+      auto [BoundFoo, BoundBar] = makeTuple();
+      bool Baz;
+      // Include if-then-else to test interaction of `BindingDecl` with join.
+      if (B) {
+        Baz = BoundFoo;
+        (void)BoundBar;
+        // [[p1]]
+      } else {
+        Baz = BoundFoo;
+      }
+      (void)0;
+      // [[p2]]
+    }
+  )";
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p1", "p2"));
+        const Environment &Env1 = getEnvironmentAtAnnotation(Results, "p1");
+
+        const ValueDecl *BoundFooDecl = findBindingDecl(ASTCtx, "BoundFoo");
+        ASSERT_THAT(BoundFooDecl, NotNull());
+
+        const ValueDecl *BoundBarDecl = findBindingDecl(ASTCtx, "BoundBar");
+        ASSERT_THAT(BoundBarDecl, NotNull());
+
+        const ValueDecl *BazDecl = findValueDecl(ASTCtx, "Baz");
+        ASSERT_THAT(BazDecl, NotNull());
+
+        // BindingDecls always map to references -- either lvalue or rvalue, so
+        // we still need to skip here.
+        const Value *BoundFooValue = Env1.getValue(*BoundFooDecl);
+        ASSERT_THAT(BoundFooValue, NotNull());
+        EXPECT_TRUE(isa<BoolValue>(BoundFooValue));
+
+        const Value *BoundBarValue = Env1.getValue(*BoundBarDecl);
+        ASSERT_THAT(BoundBarValue, NotNull());
+        EXPECT_TRUE(isa<IntegerValue>(BoundBarValue));
+
+        // Test that a `DeclRefExpr` to a `BindingDecl` works as expected.
+        EXPECT_EQ(Env1.getValue(*BazDecl), BoundFooValue);
+
+        const Environment &Env2 = getEnvironmentAtAnnotation(Results, "p2");
+
+        // Test that `BoundFooDecl` retains the value we expect, after the join.
+        BoundFooValue = Env2.getValue(*BoundFooDecl);
+        EXPECT_EQ(Env2.getValue(*BazDecl), BoundFooValue);
+      });
+}
+
+TEST(TransferTest, StructuredBindingAssignRefFromTupleLikeType) {
+  std::string Code = R"(
+    namespace std {
+    using size_t = int;
+    template <class> struct tuple_size;
+    template <std::size_t, class> struct tuple_element;
+    template <class...> class tuple;
+
+    namespace {
+    template <class T, T v>
+    struct size_helper { static const T value = v; };
+    } // namespace
+
+    template <class... T>
+    struct tuple_size<tuple<T...>> : size_helper<std::size_t, sizeof...(T)> {};
+
+    template <std::size_t I, class... T>
+    struct tuple_element<I, tuple<T...>> {
+      using type =  __type_pack_element<I, T...>;
+    };
+
+    template <class...> class tuple {};
+
+    template <std::size_t I, class... T>
+    typename tuple_element<I, tuple<T...>>::type get(tuple<T...>);
+    } // namespace std
+
+    std::tuple<bool, int> &getTuple();
+
+    void target(bool B) {
+      auto &[BoundFoo, BoundBar] = getTuple();
+      bool Baz;
+      // Include if-then-else to test interaction of `BindingDecl` with join.
+      if (B) {
+        Baz = BoundFoo;
+        (void)BoundBar;
+        // [[p1]]
+      } else {
+        Baz = BoundFoo;
+      }
+      (void)0;
+      // [[p2]]
+    }
+  )";
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p1", "p2"));
+        const Environment &Env1 = getEnvironmentAtAnnotation(Results, "p1");
+
+        const ValueDecl *BoundFooDecl = findBindingDecl(ASTCtx, "BoundFoo");
+        ASSERT_THAT(BoundFooDecl, NotNull());
+
+        const ValueDecl *BoundBarDecl = findBindingDecl(ASTCtx, "BoundBar");
+        ASSERT_THAT(BoundBarDecl, NotNull());
+
+        const ValueDecl *BazDecl = findValueDecl(ASTCtx, "Baz");
+        ASSERT_THAT(BazDecl, NotNull());
+
+        const Value *BoundFooValue = Env1.getValue(*BoundFooDecl);
+        ASSERT_THAT(BoundFooValue, NotNull());
+        EXPECT_TRUE(isa<BoolValue>(BoundFooValue));
+
+        const Value *BoundBarValue = Env1.getValue(*BoundBarDecl);
+        ASSERT_THAT(BoundBarValue, NotNull());
+        EXPECT_TRUE(isa<IntegerValue>(BoundBarValue));
+
+        // Test that a `DeclRefExpr` to a `BindingDecl` (with reference type)
+        // works as expected. We don't test aliasing properties of the
+        // reference, because we don't model `std::get` and so have no way to
+        // equate separate references into the tuple.
+        EXPECT_EQ(Env1.getValue(*BazDecl), BoundFooValue);
+
+        const Environment &Env2 = getEnvironmentAtAnnotation(Results, "p2");
+
+        // Test that `BoundFooDecl` retains the value we expect, after the join.
+        BoundFooValue = Env2.getValue(*BoundFooDecl);
+        EXPECT_EQ(Env2.getValue(*BazDecl), BoundFooValue);
       });
 }
 
@@ -3670,28 +5644,118 @@ TEST(TransferTest, BinaryOperatorComma) {
       // [[p]]
     }
   )";
-  runDataflow(Code,
-              [](llvm::ArrayRef<
-                     std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                     Results,
-                 ASTContext &ASTCtx) {
-                ASSERT_THAT(Results, ElementsAre(Pair("p", _)));
-                const Environment &Env = Results[0].second.Env;
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
 
-                const ValueDecl *BarDecl = findValueDecl(ASTCtx, "Bar");
-                ASSERT_THAT(BarDecl, NotNull());
+        const ValueDecl *BarDecl = findValueDecl(ASTCtx, "Bar");
+        ASSERT_THAT(BarDecl, NotNull());
 
-                const ValueDecl *BazDecl = findValueDecl(ASTCtx, "Baz");
-                ASSERT_THAT(BazDecl, NotNull());
+        const ValueDecl *BazDecl = findValueDecl(ASTCtx, "Baz");
+        ASSERT_THAT(BazDecl, NotNull());
 
-                const StorageLocation *BarLoc =
-                    Env.getStorageLocation(*BarDecl, SkipPast::Reference);
-                ASSERT_THAT(BarLoc, NotNull());
+        const StorageLocation *BarLoc = Env.getStorageLocation(*BarDecl);
+        ASSERT_THAT(BarLoc, NotNull());
 
-                const StorageLocation *BazLoc =
-                    Env.getStorageLocation(*BazDecl, SkipPast::Reference);
-                EXPECT_EQ(BazLoc, BarLoc);
-              });
+        const StorageLocation *BazLoc = Env.getStorageLocation(*BazDecl);
+        EXPECT_EQ(BazLoc, BarLoc);
+      });
+}
+
+TEST(TransferTest, ConditionalOperatorValue) {
+  std::string Code = R"(
+    void target(bool Cond, bool B1, bool B2) {
+      bool JoinSame = Cond ? B1 : B1;
+      bool JoinDifferent = Cond ? B1 : B2;
+      // [[p]]
+    }
+  )";
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        Environment Env = getEnvironmentAtAnnotation(Results, "p").fork();
+
+        auto &B1 = getValueForDecl<BoolValue>(ASTCtx, Env, "B1");
+        auto &B2 = getValueForDecl<BoolValue>(ASTCtx, Env, "B2");
+        auto &JoinSame = getValueForDecl<BoolValue>(ASTCtx, Env, "JoinSame");
+        auto &JoinDifferent =
+            getValueForDecl<BoolValue>(ASTCtx, Env, "JoinDifferent");
+
+        EXPECT_EQ(&JoinSame, &B1);
+
+        const Formula &JoinDifferentEqB1 =
+            Env.arena().makeEquals(JoinDifferent.formula(), B1.formula());
+        EXPECT_TRUE(Env.allows(JoinDifferentEqB1));
+        EXPECT_FALSE(Env.proves(JoinDifferentEqB1));
+
+        const Formula &JoinDifferentEqB2 =
+            Env.arena().makeEquals(JoinDifferent.formula(), B2.formula());
+        EXPECT_TRUE(Env.allows(JoinDifferentEqB2));
+        EXPECT_FALSE(Env.proves(JoinDifferentEqB1));
+      });
+}
+
+TEST(TransferTest, ConditionalOperatorLocation) {
+  std::string Code = R"(
+    void target(bool Cond, int I1, int I2) {
+      int &JoinSame = Cond ? I1 : I1;
+      int &JoinDifferent = Cond ? I1 : I2;
+      // [[p]]
+    }
+  )";
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        Environment Env = getEnvironmentAtAnnotation(Results, "p").fork();
+
+        StorageLocation &I1 = getLocForDecl(ASTCtx, Env, "I1");
+        StorageLocation &I2 = getLocForDecl(ASTCtx, Env, "I2");
+        StorageLocation &JoinSame = getLocForDecl(ASTCtx, Env, "JoinSame");
+        StorageLocation &JoinDifferent =
+            getLocForDecl(ASTCtx, Env, "JoinDifferent");
+
+        EXPECT_EQ(&JoinSame, &I1);
+
+        EXPECT_NE(&JoinDifferent, &I1);
+        EXPECT_NE(&JoinDifferent, &I2);
+      });
+}
+
+TEST(TransferTest, ConditionalOperatorOnConstantExpr) {
+  // This is a regression test: We used to crash when a `ConstantExpr` was used
+  // in the branches of a conditional operator.
+  std::string Code = R"cc(
+    consteval bool identity(bool B) { return B; }
+    void target(bool Cond) {
+      bool JoinTrueTrue = Cond ? identity(true) : identity(true);
+      bool JoinTrueFalse = Cond ? identity(true) : identity(false);
+      // [[p]]
+    }
+  )cc";
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        Environment Env = getEnvironmentAtAnnotation(Results, "p").fork();
+
+        auto &JoinTrueTrue =
+            getValueForDecl<BoolValue>(ASTCtx, Env, "JoinTrueTrue");
+        // FIXME: This test documents the current behavior, namely that we
+        // don't actually use the constant result of the `ConstantExpr` and
+        // instead treat it like a normal function call.
+        EXPECT_EQ(JoinTrueTrue.formula().kind(), Formula::Kind::AtomRef);
+        // EXPECT_TRUE(JoinTrueTrue.formula().literal());
+
+        auto &JoinTrueFalse =
+            getValueForDecl<BoolValue>(ASTCtx, Env, "JoinTrueFalse");
+        EXPECT_EQ(JoinTrueFalse.formula().kind(), Formula::Kind::AtomRef);
+      },
+      LangStandard::lang_cxx20);
 }
 
 TEST(TransferTest, IfStmtBranchExtendsFlowCondition) {
@@ -3707,25 +5771,23 @@ TEST(TransferTest, IfStmtBranchExtendsFlowCondition) {
     }
   )";
   runDataflow(
-      Code, [](llvm::ArrayRef<
-                   std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                   Results,
-               ASTContext &ASTCtx) {
-        ASSERT_THAT(Results,
-                    ElementsAre(Pair("if_else", _), Pair("if_then", _)));
-        const Environment &ThenEnv = Results[1].second.Env;
-        const Environment &ElseEnv = Results[0].second.Env;
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("if_then", "if_else"));
+        const Environment &ThenEnv =
+            getEnvironmentAtAnnotation(Results, "if_then");
+        const Environment &ElseEnv =
+            getEnvironmentAtAnnotation(Results, "if_else");
 
         const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
         ASSERT_THAT(FooDecl, NotNull());
 
-        BoolValue &ThenFooVal =
-            *cast<BoolValue>(ThenEnv.getValue(*FooDecl, SkipPast::None));
-        EXPECT_TRUE(ThenEnv.flowConditionImplies(ThenFooVal));
+        auto &ThenFooVal= getFormula(*FooDecl, ThenEnv);
+        EXPECT_TRUE(ThenEnv.proves(ThenFooVal));
 
-        BoolValue &ElseFooVal =
-            *cast<BoolValue>(ElseEnv.getValue(*FooDecl, SkipPast::None));
-        EXPECT_TRUE(ElseEnv.flowConditionImplies(ElseEnv.makeNot(ElseFooVal)));
+        auto &ElseFooVal = getFormula(*FooDecl, ElseEnv);
+        EXPECT_TRUE(ElseEnv.proves(ElseEnv.arena().makeNot(ElseFooVal)));
       });
 }
 
@@ -3741,26 +5803,25 @@ TEST(TransferTest, WhileStmtBranchExtendsFlowCondition) {
     }
   )";
   runDataflow(
-      Code, [](llvm::ArrayRef<
-                   std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                   Results,
-               ASTContext &ASTCtx) {
-        ASSERT_THAT(Results,
-                    ElementsAre(Pair("after_loop", _), Pair("loop_body", _)));
-        const Environment &LoopBodyEnv = Results[1].second.Env;
-        const Environment &AfterLoopEnv = Results[0].second.Env;
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(),
+                    UnorderedElementsAre("loop_body", "after_loop"));
+        const Environment &LoopBodyEnv =
+            getEnvironmentAtAnnotation(Results, "loop_body");
+        const Environment &AfterLoopEnv =
+            getEnvironmentAtAnnotation(Results, "after_loop");
 
         const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
         ASSERT_THAT(FooDecl, NotNull());
 
-        BoolValue &LoopBodyFooVal =
-            *cast<BoolValue>(LoopBodyEnv.getValue(*FooDecl, SkipPast::None));
-        EXPECT_TRUE(LoopBodyEnv.flowConditionImplies(LoopBodyFooVal));
+        auto &LoopBodyFooVal = getFormula(*FooDecl, LoopBodyEnv);
+        EXPECT_TRUE(LoopBodyEnv.proves(LoopBodyFooVal));
 
-        BoolValue &AfterLoopFooVal =
-            *cast<BoolValue>(AfterLoopEnv.getValue(*FooDecl, SkipPast::None));
-        EXPECT_TRUE(AfterLoopEnv.flowConditionImplies(
-            AfterLoopEnv.makeNot(AfterLoopFooVal)));
+        auto &AfterLoopFooVal = getFormula(*FooDecl, AfterLoopEnv);
+        EXPECT_TRUE(
+            AfterLoopEnv.proves(AfterLoopEnv.arena().makeNot(AfterLoopFooVal)));
       });
 }
 
@@ -3778,14 +5839,16 @@ TEST(TransferTest, DoWhileStmtBranchExtendsFlowCondition) {
     }
   )";
   runDataflow(
-      Code, [](llvm::ArrayRef<
-                   std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                   Results,
-               ASTContext &ASTCtx) {
-        ASSERT_THAT(Results,
-                    ElementsAre(Pair("after_loop", _), Pair("loop_body", _)));
-        const Environment &LoopBodyEnv = Results[1].second.Env;
-        const Environment &AfterLoopEnv = Results[0].second.Env;
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(),
+                    UnorderedElementsAre("loop_body", "after_loop"));
+        const Environment &LoopBodyEnv =
+            getEnvironmentAtAnnotation(Results, "loop_body");
+        const Environment &AfterLoopEnv =
+            getEnvironmentAtAnnotation(Results, "after_loop");
+        auto &A = AfterLoopEnv.arena();
 
         const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
         ASSERT_THAT(FooDecl, NotNull());
@@ -3793,21 +5856,15 @@ TEST(TransferTest, DoWhileStmtBranchExtendsFlowCondition) {
         const ValueDecl *BarDecl = findValueDecl(ASTCtx, "Bar");
         ASSERT_THAT(BarDecl, NotNull());
 
-        BoolValue &LoopBodyFooVal =
-            *cast<BoolValue>(LoopBodyEnv.getValue(*FooDecl, SkipPast::None));
-        BoolValue &LoopBodyBarVal =
-            *cast<BoolValue>(LoopBodyEnv.getValue(*BarDecl, SkipPast::None));
-        EXPECT_TRUE(LoopBodyEnv.flowConditionImplies(
-            LoopBodyEnv.makeOr(LoopBodyBarVal, LoopBodyFooVal)));
+        auto &LoopBodyFooVal= getFormula(*FooDecl, LoopBodyEnv);
+        auto &LoopBodyBarVal = getFormula(*BarDecl, LoopBodyEnv);
+        EXPECT_TRUE(
+            LoopBodyEnv.proves(A.makeOr(LoopBodyBarVal, LoopBodyFooVal)));
 
-        BoolValue &AfterLoopFooVal =
-            *cast<BoolValue>(AfterLoopEnv.getValue(*FooDecl, SkipPast::None));
-        BoolValue &AfterLoopBarVal =
-            *cast<BoolValue>(AfterLoopEnv.getValue(*BarDecl, SkipPast::None));
-        EXPECT_TRUE(AfterLoopEnv.flowConditionImplies(
-            AfterLoopEnv.makeNot(AfterLoopFooVal)));
-        EXPECT_TRUE(AfterLoopEnv.flowConditionImplies(
-            AfterLoopEnv.makeNot(AfterLoopBarVal)));
+        auto &AfterLoopFooVal = getFormula(*FooDecl, AfterLoopEnv);
+        auto &AfterLoopBarVal = getFormula(*BarDecl, AfterLoopEnv);
+        EXPECT_TRUE(AfterLoopEnv.proves(A.makeNot(AfterLoopFooVal)));
+        EXPECT_TRUE(AfterLoopEnv.proves(A.makeNot(AfterLoopBarVal)));
       });
 }
 
@@ -3823,26 +5880,25 @@ TEST(TransferTest, ForStmtBranchExtendsFlowCondition) {
     }
   )";
   runDataflow(
-      Code, [](llvm::ArrayRef<
-                   std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                   Results,
-               ASTContext &ASTCtx) {
-        ASSERT_THAT(Results,
-                    ElementsAre(Pair("after_loop", _), Pair("loop_body", _)));
-        const Environment &LoopBodyEnv = Results[1].second.Env;
-        const Environment &AfterLoopEnv = Results[0].second.Env;
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(),
+                    UnorderedElementsAre("loop_body", "after_loop"));
+        const Environment &LoopBodyEnv =
+            getEnvironmentAtAnnotation(Results, "loop_body");
+        const Environment &AfterLoopEnv =
+            getEnvironmentAtAnnotation(Results, "after_loop");
 
         const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
         ASSERT_THAT(FooDecl, NotNull());
 
-        BoolValue &LoopBodyFooVal =
-            *cast<BoolValue>(LoopBodyEnv.getValue(*FooDecl, SkipPast::None));
-        EXPECT_TRUE(LoopBodyEnv.flowConditionImplies(LoopBodyFooVal));
+        auto &LoopBodyFooVal= getFormula(*FooDecl, LoopBodyEnv);
+        EXPECT_TRUE(LoopBodyEnv.proves(LoopBodyFooVal));
 
-        BoolValue &AfterLoopFooVal =
-            *cast<BoolValue>(AfterLoopEnv.getValue(*FooDecl, SkipPast::None));
-        EXPECT_TRUE(AfterLoopEnv.flowConditionImplies(
-            AfterLoopEnv.makeNot(AfterLoopFooVal)));
+        auto &AfterLoopFooVal = getFormula(*FooDecl, AfterLoopEnv);
+        EXPECT_TRUE(
+            AfterLoopEnv.proves(AfterLoopEnv.arena().makeNot(AfterLoopFooVal)));
       });
 }
 
@@ -3856,19 +5912,18 @@ TEST(TransferTest, ForStmtBranchWithoutConditionDoesNotExtendFlowCondition) {
     }
   )";
   runDataflow(
-      Code, [](llvm::ArrayRef<
-                   std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                   Results,
-               ASTContext &ASTCtx) {
-        ASSERT_THAT(Results, ElementsAre(Pair("loop_body", _)));
-        const Environment &LoopBodyEnv = Results[0].second.Env;
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("loop_body"));
+        const Environment &LoopBodyEnv =
+            getEnvironmentAtAnnotation(Results, "loop_body");
 
         const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
         ASSERT_THAT(FooDecl, NotNull());
 
-        BoolValue &LoopBodyFooVal =
-            *cast<BoolValue>(LoopBodyEnv.getValue(*FooDecl, SkipPast::None));
-        EXPECT_FALSE(LoopBodyEnv.flowConditionImplies(LoopBodyFooVal));
+        auto &LoopBodyFooVal= getFormula(*FooDecl, LoopBodyEnv);
+        EXPECT_FALSE(LoopBodyEnv.proves(LoopBodyFooVal));
       });
 }
 
@@ -3883,23 +5938,127 @@ TEST(TransferTest, ContextSensitiveOptionDisabled) {
       // [[p]]
     }
   )";
-  runDataflow(Code,
-              [](llvm::ArrayRef<
-                     std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                     Results,
-                 ASTContext &ASTCtx) {
-                ASSERT_THAT(Results, ElementsAre(Pair("p", _)));
-                const Environment &Env = Results[0].second.Env;
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
 
-                const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
-                ASSERT_THAT(FooDecl, NotNull());
+        const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
+        ASSERT_THAT(FooDecl, NotNull());
 
-                auto &FooVal =
-                    *cast<BoolValue>(Env.getValue(*FooDecl, SkipPast::None));
-                EXPECT_FALSE(Env.flowConditionImplies(FooVal));
-                EXPECT_FALSE(Env.flowConditionImplies(Env.makeNot(FooVal)));
-              },
-              {TransferOptions{/*.ContextSensitiveOpts=*/llvm::None}});
+        auto &FooVal = getFormula(*FooDecl, Env);
+        EXPECT_FALSE(Env.proves(FooVal));
+        EXPECT_FALSE(Env.proves(Env.arena().makeNot(FooVal)));
+      },
+      {BuiltinOptions{/*.ContextSensitiveOpts=*/std::nullopt}});
+}
+
+TEST(TransferTest, ContextSensitiveReturnReference) {
+  std::string Code = R"(
+    class S {};
+    S& target(bool b, S &s) {
+      return s;
+      // [[p]]
+    }
+  )";
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
+
+        const ValueDecl *SDecl = findValueDecl(ASTCtx, "s");
+        ASSERT_THAT(SDecl, NotNull());
+
+        auto *SLoc = Env.getStorageLocation(*SDecl);
+        ASSERT_THAT(SLoc, NotNull());
+
+        ASSERT_THAT(Env.getReturnStorageLocation(), Eq(SLoc));
+      },
+      {BuiltinOptions{ContextSensitiveOptions{}}});
+}
+
+// This test is a regression test, based on a real crash.
+TEST(TransferTest, ContextSensitiveReturnReferenceWithConditionalOperator) {
+  std::string Code = R"(
+    class S {};
+    S& target(bool b, S &s) {
+      return b ? s : s;
+      // [[p]]
+    }
+  )";
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
+
+        const ValueDecl *SDecl = findValueDecl(ASTCtx, "s");
+        ASSERT_THAT(SDecl, NotNull());
+
+        auto *SLoc = Env.getStorageLocation(*SDecl);
+        EXPECT_THAT(SLoc, NotNull());
+
+        auto *Loc = Env.getReturnStorageLocation();
+        EXPECT_THAT(Loc, NotNull());
+
+        EXPECT_EQ(Loc, SLoc);
+      },
+      {BuiltinOptions{ContextSensitiveOptions{}}});
+}
+
+TEST(TransferTest, ContextSensitiveReturnOneOfTwoReferences) {
+  std::string Code = R"(
+    class S {};
+    S &callee(bool b, S &s1_parm, S &s2_parm) {
+      if (b)
+        return s1_parm;
+      else
+        return s2_parm;
+    }
+    void target(bool b) {
+      S s1;
+      S s2;
+      S &return_s1 = s1;
+      S &return_s2 = s2;
+      S &return_dont_know = callee(b, s1, s2);
+      // [[p]]
+    }
+  )";
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
+
+        const ValueDecl *S1 = findValueDecl(ASTCtx, "s1");
+        ASSERT_THAT(S1, NotNull());
+        const ValueDecl *S2 = findValueDecl(ASTCtx, "s2");
+        ASSERT_THAT(S2, NotNull());
+        const ValueDecl *ReturnS1 = findValueDecl(ASTCtx, "return_s1");
+        ASSERT_THAT(ReturnS1, NotNull());
+        const ValueDecl *ReturnS2 = findValueDecl(ASTCtx, "return_s2");
+        ASSERT_THAT(ReturnS2, NotNull());
+        const ValueDecl *ReturnDontKnow =
+            findValueDecl(ASTCtx, "return_dont_know");
+        ASSERT_THAT(ReturnDontKnow, NotNull());
+
+        StorageLocation *S1Loc = Env.getStorageLocation(*S1);
+        StorageLocation *S2Loc = Env.getStorageLocation(*S2);
+
+        EXPECT_THAT(Env.getStorageLocation(*ReturnS1), Eq(S1Loc));
+        EXPECT_THAT(Env.getStorageLocation(*ReturnS2), Eq(S2Loc));
+
+        // In the case where we don't have a consistent storage location for
+        // the return value, the framework creates a new storage location, which
+        // should be different from the storage locations of `s1` and `s2`.
+        EXPECT_THAT(Env.getStorageLocation(*ReturnDontKnow), Ne(S1Loc));
+        EXPECT_THAT(Env.getStorageLocation(*ReturnDontKnow), Ne(S2Loc));
+      },
+      {BuiltinOptions{ContextSensitiveOptions{}}});
 }
 
 TEST(TransferTest, ContextSensitiveDepthZero) {
@@ -3913,23 +6072,21 @@ TEST(TransferTest, ContextSensitiveDepthZero) {
       // [[p]]
     }
   )";
-  runDataflow(Code,
-              [](llvm::ArrayRef<
-                     std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                     Results,
-                 ASTContext &ASTCtx) {
-                ASSERT_THAT(Results, ElementsAre(Pair("p", _)));
-                const Environment &Env = Results[0].second.Env;
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
 
-                const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
-                ASSERT_THAT(FooDecl, NotNull());
+        const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
+        ASSERT_THAT(FooDecl, NotNull());
 
-                auto &FooVal =
-                    *cast<BoolValue>(Env.getValue(*FooDecl, SkipPast::None));
-                EXPECT_FALSE(Env.flowConditionImplies(FooVal));
-                EXPECT_FALSE(Env.flowConditionImplies(Env.makeNot(FooVal)));
-              },
-              {TransferOptions{ContextSensitiveOptions{/*.Depth=*/0}}});
+        auto &FooVal = getFormula(*FooDecl, Env);
+        EXPECT_FALSE(Env.proves(FooVal));
+        EXPECT_FALSE(Env.proves(Env.arena().makeNot(FooVal)));
+      },
+      {BuiltinOptions{ContextSensitiveOptions{/*.Depth=*/0}}});
 }
 
 TEST(TransferTest, ContextSensitiveSetTrue) {
@@ -3943,22 +6100,20 @@ TEST(TransferTest, ContextSensitiveSetTrue) {
       // [[p]]
     }
   )";
-  runDataflow(Code,
-              [](llvm::ArrayRef<
-                     std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                     Results,
-                 ASTContext &ASTCtx) {
-                ASSERT_THAT(Results, ElementsAre(Pair("p", _)));
-                const Environment &Env = Results[0].second.Env;
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
 
-                const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
-                ASSERT_THAT(FooDecl, NotNull());
+        const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
+        ASSERT_THAT(FooDecl, NotNull());
 
-                auto &FooVal =
-                    *cast<BoolValue>(Env.getValue(*FooDecl, SkipPast::None));
-                EXPECT_TRUE(Env.flowConditionImplies(FooVal));
-              },
-              {TransferOptions{ContextSensitiveOptions{}}});
+        auto &FooVal = getFormula(*FooDecl, Env);
+        EXPECT_TRUE(Env.proves(FooVal));
+      },
+      {BuiltinOptions{ContextSensitiveOptions{}}});
 }
 
 TEST(TransferTest, ContextSensitiveSetFalse) {
@@ -3972,22 +6127,20 @@ TEST(TransferTest, ContextSensitiveSetFalse) {
       // [[p]]
     }
   )";
-  runDataflow(Code,
-              [](llvm::ArrayRef<
-                     std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                     Results,
-                 ASTContext &ASTCtx) {
-                ASSERT_THAT(Results, ElementsAre(Pair("p", _)));
-                const Environment &Env = Results[0].second.Env;
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
 
-                const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
-                ASSERT_THAT(FooDecl, NotNull());
+        const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
+        ASSERT_THAT(FooDecl, NotNull());
 
-                auto &FooVal =
-                    *cast<BoolValue>(Env.getValue(*FooDecl, SkipPast::None));
-                EXPECT_TRUE(Env.flowConditionImplies(Env.makeNot(FooVal)));
-              },
-              {TransferOptions{ContextSensitiveOptions{}}});
+        auto &FooVal = getFormula(*FooDecl, Env);
+        EXPECT_TRUE(Env.proves(Env.arena().makeNot(FooVal)));
+      },
+      {BuiltinOptions{ContextSensitiveOptions{}}});
 }
 
 TEST(TransferTest, ContextSensitiveSetBothTrueAndFalse) {
@@ -4003,31 +6156,29 @@ TEST(TransferTest, ContextSensitiveSetBothTrueAndFalse) {
       // [[p]]
     }
   )";
-  runDataflow(Code,
-              [](llvm::ArrayRef<
-                     std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                     Results,
-                 ASTContext &ASTCtx) {
-                ASSERT_THAT(Results, ElementsAre(Pair("p", _)));
-                const Environment &Env = Results[0].second.Env;
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
+        auto &A = Env.arena();
 
-                const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
-                ASSERT_THAT(FooDecl, NotNull());
+        const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
+        ASSERT_THAT(FooDecl, NotNull());
 
-                const ValueDecl *BarDecl = findValueDecl(ASTCtx, "Bar");
-                ASSERT_THAT(BarDecl, NotNull());
+        const ValueDecl *BarDecl = findValueDecl(ASTCtx, "Bar");
+        ASSERT_THAT(BarDecl, NotNull());
 
-                auto &FooVal =
-                    *cast<BoolValue>(Env.getValue(*FooDecl, SkipPast::None));
-                EXPECT_TRUE(Env.flowConditionImplies(FooVal));
-                EXPECT_FALSE(Env.flowConditionImplies(Env.makeNot(FooVal)));
+        auto &FooVal = getFormula(*FooDecl, Env);
+        EXPECT_TRUE(Env.proves(FooVal));
+        EXPECT_FALSE(Env.proves(A.makeNot(FooVal)));
 
-                auto &BarVal =
-                    *cast<BoolValue>(Env.getValue(*BarDecl, SkipPast::None));
-                EXPECT_FALSE(Env.flowConditionImplies(BarVal));
-                EXPECT_TRUE(Env.flowConditionImplies(Env.makeNot(BarVal)));
-              },
-              {TransferOptions{ContextSensitiveOptions{}}});
+        auto &BarVal = getFormula(*BarDecl, Env);
+        EXPECT_FALSE(Env.proves(BarVal));
+        EXPECT_TRUE(Env.proves(A.makeNot(BarVal)));
+      },
+      {BuiltinOptions{ContextSensitiveOptions{}}});
 }
 
 TEST(TransferTest, ContextSensitiveSetTwoLayersDepthOne) {
@@ -4042,23 +6193,21 @@ TEST(TransferTest, ContextSensitiveSetTwoLayersDepthOne) {
       // [[p]]
     }
   )";
-  runDataflow(Code,
-              [](llvm::ArrayRef<
-                     std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                     Results,
-                 ASTContext &ASTCtx) {
-                ASSERT_THAT(Results, ElementsAre(Pair("p", _)));
-                const Environment &Env = Results[0].second.Env;
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
 
-                const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
-                ASSERT_THAT(FooDecl, NotNull());
+        const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
+        ASSERT_THAT(FooDecl, NotNull());
 
-                auto &FooVal =
-                    *cast<BoolValue>(Env.getValue(*FooDecl, SkipPast::None));
-                EXPECT_FALSE(Env.flowConditionImplies(FooVal));
-                EXPECT_FALSE(Env.flowConditionImplies(Env.makeNot(FooVal)));
-              },
-              {TransferOptions{ContextSensitiveOptions{/*.Depth=*/1}}});
+        auto &FooVal = getFormula(*FooDecl, Env);
+        EXPECT_FALSE(Env.proves(FooVal));
+        EXPECT_FALSE(Env.proves(Env.arena().makeNot(FooVal)));
+      },
+      {BuiltinOptions{ContextSensitiveOptions{/*.Depth=*/1}}});
 }
 
 TEST(TransferTest, ContextSensitiveSetTwoLayersDepthTwo) {
@@ -4073,22 +6222,20 @@ TEST(TransferTest, ContextSensitiveSetTwoLayersDepthTwo) {
       // [[p]]
     }
   )";
-  runDataflow(Code,
-              [](llvm::ArrayRef<
-                     std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                     Results,
-                 ASTContext &ASTCtx) {
-                ASSERT_THAT(Results, ElementsAre(Pair("p", _)));
-                const Environment &Env = Results[0].second.Env;
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
 
-                const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
-                ASSERT_THAT(FooDecl, NotNull());
+        const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
+        ASSERT_THAT(FooDecl, NotNull());
 
-                auto &FooVal =
-                    *cast<BoolValue>(Env.getValue(*FooDecl, SkipPast::None));
-                EXPECT_TRUE(Env.flowConditionImplies(FooVal));
-              },
-              {TransferOptions{ContextSensitiveOptions{/*.Depth=*/2}}});
+        auto &FooVal = getFormula(*FooDecl, Env);
+        EXPECT_TRUE(Env.proves(FooVal));
+      },
+      {BuiltinOptions{ContextSensitiveOptions{/*.Depth=*/2}}});
 }
 
 TEST(TransferTest, ContextSensitiveSetThreeLayersDepthTwo) {
@@ -4104,23 +6251,21 @@ TEST(TransferTest, ContextSensitiveSetThreeLayersDepthTwo) {
       // [[p]]
     }
   )";
-  runDataflow(Code,
-              [](llvm::ArrayRef<
-                     std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                     Results,
-                 ASTContext &ASTCtx) {
-                ASSERT_THAT(Results, ElementsAre(Pair("p", _)));
-                const Environment &Env = Results[0].second.Env;
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
 
-                const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
-                ASSERT_THAT(FooDecl, NotNull());
+        const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
+        ASSERT_THAT(FooDecl, NotNull());
 
-                auto &FooVal =
-                    *cast<BoolValue>(Env.getValue(*FooDecl, SkipPast::None));
-                EXPECT_FALSE(Env.flowConditionImplies(FooVal));
-                EXPECT_FALSE(Env.flowConditionImplies(Env.makeNot(FooVal)));
-              },
-              {TransferOptions{ContextSensitiveOptions{/*.Depth=*/2}}});
+        auto &FooVal = getFormula(*FooDecl, Env);
+        EXPECT_FALSE(Env.proves(FooVal));
+        EXPECT_FALSE(Env.proves(Env.arena().makeNot(FooVal)));
+      },
+      {BuiltinOptions{ContextSensitiveOptions{/*.Depth=*/2}}});
 }
 
 TEST(TransferTest, ContextSensitiveSetThreeLayersDepthThree) {
@@ -4136,22 +6281,20 @@ TEST(TransferTest, ContextSensitiveSetThreeLayersDepthThree) {
       // [[p]]
     }
   )";
-  runDataflow(Code,
-              [](llvm::ArrayRef<
-                     std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                     Results,
-                 ASTContext &ASTCtx) {
-                ASSERT_THAT(Results, ElementsAre(Pair("p", _)));
-                const Environment &Env = Results[0].second.Env;
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
 
-                const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
-                ASSERT_THAT(FooDecl, NotNull());
+        const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
+        ASSERT_THAT(FooDecl, NotNull());
 
-                auto &FooVal =
-                    *cast<BoolValue>(Env.getValue(*FooDecl, SkipPast::None));
-                EXPECT_TRUE(Env.flowConditionImplies(FooVal));
-              },
-              {TransferOptions{ContextSensitiveOptions{/*.Depth=*/3}}});
+        auto &FooVal = getFormula(*FooDecl, Env);
+        EXPECT_TRUE(Env.proves(FooVal));
+      },
+      {BuiltinOptions{ContextSensitiveOptions{/*.Depth=*/3}}});
 }
 
 TEST(TransferTest, ContextSensitiveMutualRecursion) {
@@ -4179,25 +6322,23 @@ TEST(TransferTest, ContextSensitiveMutualRecursion) {
       // [[p]]
     }
   )";
-  runDataflow(Code,
-              [](llvm::ArrayRef<
-                     std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                     Results,
-                 ASTContext &ASTCtx) {
-                ASSERT_THAT(Results, ElementsAre(Pair("p", _)));
-                // The analysis doesn't crash...
-                const Environment &Env = Results[0].second.Env;
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+        // The analysis doesn't crash...
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
 
-                const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
-                ASSERT_THAT(FooDecl, NotNull());
+        const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
+        ASSERT_THAT(FooDecl, NotNull());
 
-                auto &FooVal =
-                    *cast<BoolValue>(Env.getValue(*FooDecl, SkipPast::None));
-                // ... but it also can't prove anything here.
-                EXPECT_FALSE(Env.flowConditionImplies(FooVal));
-                EXPECT_FALSE(Env.flowConditionImplies(Env.makeNot(FooVal)));
-              },
-              {TransferOptions{ContextSensitiveOptions{/*.Depth=*/4}}});
+        auto &FooVal = getFormula(*FooDecl, Env);
+        // ... but it also can't prove anything here.
+        EXPECT_FALSE(Env.proves(FooVal));
+        EXPECT_FALSE(Env.proves(Env.arena().makeNot(FooVal)));
+      },
+      {BuiltinOptions{ContextSensitiveOptions{/*.Depth=*/4}}});
 }
 
 TEST(TransferTest, ContextSensitiveSetMultipleLines) {
@@ -4214,31 +6355,28 @@ TEST(TransferTest, ContextSensitiveSetMultipleLines) {
       // [[p]]
     }
   )";
-  runDataflow(Code,
-              [](llvm::ArrayRef<
-                     std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                     Results,
-                 ASTContext &ASTCtx) {
-                ASSERT_THAT(Results, ElementsAre(Pair("p", _)));
-                const Environment &Env = Results[0].second.Env;
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
 
-                const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
-                ASSERT_THAT(FooDecl, NotNull());
+        const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
+        ASSERT_THAT(FooDecl, NotNull());
 
-                const ValueDecl *BarDecl = findValueDecl(ASTCtx, "Bar");
-                ASSERT_THAT(BarDecl, NotNull());
+        const ValueDecl *BarDecl = findValueDecl(ASTCtx, "Bar");
+        ASSERT_THAT(BarDecl, NotNull());
 
-                auto &FooVal =
-                    *cast<BoolValue>(Env.getValue(*FooDecl, SkipPast::None));
-                EXPECT_TRUE(Env.flowConditionImplies(FooVal));
-                EXPECT_FALSE(Env.flowConditionImplies(Env.makeNot(FooVal)));
+        auto &FooVal = getFormula(*FooDecl, Env);
+        EXPECT_TRUE(Env.proves(FooVal));
+        EXPECT_FALSE(Env.proves(Env.arena().makeNot(FooVal)));
 
-                auto &BarVal =
-                    *cast<BoolValue>(Env.getValue(*BarDecl, SkipPast::None));
-                EXPECT_FALSE(Env.flowConditionImplies(BarVal));
-                EXPECT_TRUE(Env.flowConditionImplies(Env.makeNot(BarVal)));
-              },
-              {TransferOptions{ContextSensitiveOptions{}}});
+        auto &BarVal = getFormula(*BarDecl, Env);
+        EXPECT_FALSE(Env.proves(BarVal));
+        EXPECT_TRUE(Env.proves(Env.arena().makeNot(BarVal)));
+      },
+      {BuiltinOptions{ContextSensitiveOptions{}}});
 }
 
 TEST(TransferTest, ContextSensitiveSetMultipleBlocks) {
@@ -4259,31 +6397,28 @@ TEST(TransferTest, ContextSensitiveSetMultipleBlocks) {
       // [[p]]
     }
   )";
-  runDataflow(Code,
-              [](llvm::ArrayRef<
-                     std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                     Results,
-                 ASTContext &ASTCtx) {
-                ASSERT_THAT(Results, ElementsAre(Pair("p", _)));
-                const Environment &Env = Results[0].second.Env;
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
 
-                const ValueDecl *BarDecl = findValueDecl(ASTCtx, "Bar");
-                ASSERT_THAT(BarDecl, NotNull());
+        const ValueDecl *BarDecl = findValueDecl(ASTCtx, "Bar");
+        ASSERT_THAT(BarDecl, NotNull());
 
-                const ValueDecl *BazDecl = findValueDecl(ASTCtx, "Baz");
-                ASSERT_THAT(BazDecl, NotNull());
+        const ValueDecl *BazDecl = findValueDecl(ASTCtx, "Baz");
+        ASSERT_THAT(BazDecl, NotNull());
 
-                auto &BarVal =
-                    *cast<BoolValue>(Env.getValue(*BarDecl, SkipPast::None));
-                EXPECT_FALSE(Env.flowConditionImplies(BarVal));
-                EXPECT_TRUE(Env.flowConditionImplies(Env.makeNot(BarVal)));
+        auto &BarVal = getFormula(*BarDecl, Env);
+        EXPECT_FALSE(Env.proves(BarVal));
+        EXPECT_TRUE(Env.proves(Env.arena().makeNot(BarVal)));
 
-                auto &BazVal =
-                    *cast<BoolValue>(Env.getValue(*BazDecl, SkipPast::None));
-                EXPECT_TRUE(Env.flowConditionImplies(BazVal));
-                EXPECT_FALSE(Env.flowConditionImplies(Env.makeNot(BazVal)));
-              },
-              {TransferOptions{ContextSensitiveOptions{}}});
+        auto &BazVal = getFormula(*BazDecl, Env);
+        EXPECT_TRUE(Env.proves(BazVal));
+        EXPECT_FALSE(Env.proves(Env.arena().makeNot(BazVal)));
+      },
+      {BuiltinOptions{ContextSensitiveOptions{}}});
 }
 
 TEST(TransferTest, ContextSensitiveReturnVoid) {
@@ -4295,15 +6430,14 @@ TEST(TransferTest, ContextSensitiveReturnVoid) {
       // [[p]]
     }
   )";
-  runDataflow(Code,
-              [](llvm::ArrayRef<
-                     std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                     Results,
-                 ASTContext &ASTCtx) {
-                ASSERT_THAT(Results, ElementsAre(Pair("p", _)));
-                // This just tests that the analysis doesn't crash.
-              },
-              {TransferOptions{ContextSensitiveOptions{}}});
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+        // This just tests that the analysis doesn't crash.
+      },
+      {BuiltinOptions{ContextSensitiveOptions{}}});
 }
 
 TEST(TransferTest, ContextSensitiveReturnTrue) {
@@ -4315,22 +6449,20 @@ TEST(TransferTest, ContextSensitiveReturnTrue) {
       // [[p]]
     }
   )";
-  runDataflow(Code,
-              [](llvm::ArrayRef<
-                     std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                     Results,
-                 ASTContext &ASTCtx) {
-                ASSERT_THAT(Results, ElementsAre(Pair("p", _)));
-                const Environment &Env = Results[0].second.Env;
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
 
-                const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
-                ASSERT_THAT(FooDecl, NotNull());
+        const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
+        ASSERT_THAT(FooDecl, NotNull());
 
-                auto &FooVal =
-                    *cast<BoolValue>(Env.getValue(*FooDecl, SkipPast::None));
-                EXPECT_TRUE(Env.flowConditionImplies(FooVal));
-              },
-              {TransferOptions{ContextSensitiveOptions{}}});
+        auto &FooVal = getFormula(*FooDecl, Env);
+        EXPECT_TRUE(Env.proves(FooVal));
+      },
+      {BuiltinOptions{ContextSensitiveOptions{}}});
 }
 
 TEST(TransferTest, ContextSensitiveReturnFalse) {
@@ -4342,22 +6474,20 @@ TEST(TransferTest, ContextSensitiveReturnFalse) {
       // [[p]]
     }
   )";
-  runDataflow(Code,
-              [](llvm::ArrayRef<
-                     std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                     Results,
-                 ASTContext &ASTCtx) {
-                ASSERT_THAT(Results, ElementsAre(Pair("p", _)));
-                const Environment &Env = Results[0].second.Env;
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
 
-                const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
-                ASSERT_THAT(FooDecl, NotNull());
+        const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
+        ASSERT_THAT(FooDecl, NotNull());
 
-                auto &FooVal =
-                    *cast<BoolValue>(Env.getValue(*FooDecl, SkipPast::None));
-                EXPECT_TRUE(Env.flowConditionImplies(Env.makeNot(FooVal)));
-              },
-              {TransferOptions{ContextSensitiveOptions{}}});
+        auto &FooVal = getFormula(*FooDecl, Env);
+        EXPECT_TRUE(Env.proves(Env.arena().makeNot(FooVal)));
+      },
+      {BuiltinOptions{ContextSensitiveOptions{}}});
 }
 
 TEST(TransferTest, ContextSensitiveReturnArg) {
@@ -4372,22 +6502,20 @@ TEST(TransferTest, ContextSensitiveReturnArg) {
       // [[p]]
     }
   )";
-  runDataflow(Code,
-              [](llvm::ArrayRef<
-                     std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                     Results,
-                 ASTContext &ASTCtx) {
-                ASSERT_THAT(Results, ElementsAre(Pair("p", _)));
-                const Environment &Env = Results[0].second.Env;
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
 
-                const ValueDecl *BazDecl = findValueDecl(ASTCtx, "Baz");
-                ASSERT_THAT(BazDecl, NotNull());
+        const ValueDecl *BazDecl = findValueDecl(ASTCtx, "Baz");
+        ASSERT_THAT(BazDecl, NotNull());
 
-                auto &BazVal =
-                    *cast<BoolValue>(Env.getValue(*BazDecl, SkipPast::None));
-                EXPECT_TRUE(Env.flowConditionImplies(BazVal));
-              },
-              {TransferOptions{ContextSensitiveOptions{}}});
+        auto &BazVal = getFormula(*BazDecl, Env);
+        EXPECT_TRUE(Env.proves(BazVal));
+      },
+      {BuiltinOptions{ContextSensitiveOptions{}}});
 }
 
 TEST(TransferTest, ContextSensitiveReturnInt) {
@@ -4399,15 +6527,79 @@ TEST(TransferTest, ContextSensitiveReturnInt) {
       // [[p]]
     }
   )";
-  runDataflow(Code,
-              [](llvm::ArrayRef<
-                     std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                     Results,
-                 ASTContext &ASTCtx) {
-                ASSERT_THAT(Results, ElementsAre(Pair("p", _)));
-                // This just tests that the analysis doesn't crash.
-              },
-              {TransferOptions{ContextSensitiveOptions{}}});
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+        // This just tests that the analysis doesn't crash.
+      },
+      {BuiltinOptions{ContextSensitiveOptions{}}});
+}
+
+TEST(TransferTest, ContextSensitiveReturnRecord) {
+  std::string Code = R"(
+    struct S {
+      bool B;
+    };
+
+    S makeS(bool BVal) { return {BVal}; }
+
+    void target() {
+      S FalseS = makeS(false);
+      S TrueS = makeS(true);
+      // [[p]]
+    }
+  )";
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
+
+        auto &FalseSLoc =
+            getLocForDecl<RecordStorageLocation>(ASTCtx, Env, "FalseS");
+        auto &TrueSLoc =
+            getLocForDecl<RecordStorageLocation>(ASTCtx, Env, "TrueS");
+
+        EXPECT_EQ(getFieldValue(&FalseSLoc, "B", ASTCtx, Env),
+                  &Env.getBoolLiteralValue(false));
+        EXPECT_EQ(getFieldValue(&TrueSLoc, "B", ASTCtx, Env),
+                  &Env.getBoolLiteralValue(true));
+      },
+      {BuiltinOptions{ContextSensitiveOptions{}}});
+}
+
+TEST(TransferTest, ContextSensitiveReturnSelfReferentialRecord) {
+  std::string Code = R"(
+    struct S {
+      S() { self = this; }
+      S *self;
+    };
+
+    S makeS() {
+      // RVO guarantees that this will be constructed directly into `MyS`.
+      return S();
+    }
+
+    void target() {
+      S MyS = makeS();
+      // [[p]]
+    }
+  )";
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
+
+        auto &MySLoc = getLocForDecl<RecordStorageLocation>(ASTCtx, Env, "MyS");
+
+        auto *SelfVal =
+            cast<PointerValue>(getFieldValue(&MySLoc, "self", ASTCtx, Env));
+        EXPECT_EQ(&SelfVal->getPointeeLoc(), &MySLoc);
+      },
+      {BuiltinOptions{ContextSensitiveOptions{}}});
 }
 
 TEST(TransferTest, ContextSensitiveMethodLiteral) {
@@ -4423,22 +6615,20 @@ TEST(TransferTest, ContextSensitiveMethodLiteral) {
       // [[p]]
     }
   )";
-  runDataflow(Code,
-              [](llvm::ArrayRef<
-                     std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                     Results,
-                 ASTContext &ASTCtx) {
-                ASSERT_THAT(Results, ElementsAre(Pair("p", _)));
-                const Environment &Env = Results[0].second.Env;
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
 
-                const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
-                ASSERT_THAT(FooDecl, NotNull());
+        const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
+        ASSERT_THAT(FooDecl, NotNull());
 
-                auto &FooVal =
-                    *cast<BoolValue>(Env.getValue(*FooDecl, SkipPast::None));
-                EXPECT_TRUE(Env.flowConditionImplies(FooVal));
-              },
-              {TransferOptions{ContextSensitiveOptions{}}});
+        auto &FooVal = getFormula(*FooDecl, Env);
+        EXPECT_TRUE(Env.proves(FooVal));
+      },
+      {BuiltinOptions{ContextSensitiveOptions{}}});
 }
 
 TEST(TransferTest, ContextSensitiveMethodGetter) {
@@ -4457,29 +6647,27 @@ TEST(TransferTest, ContextSensitiveMethodGetter) {
       // [[p]]
     }
   )";
-  runDataflow(Code,
-              [](llvm::ArrayRef<
-                     std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                     Results,
-                 ASTContext &ASTCtx) {
-                ASSERT_THAT(Results, ElementsAre(Pair("p", _)));
-                const Environment &Env = Results[0].second.Env;
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
 
-                const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
-                ASSERT_THAT(FooDecl, NotNull());
+        const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
+        ASSERT_THAT(FooDecl, NotNull());
 
-                auto &FooVal =
-                    *cast<BoolValue>(Env.getValue(*FooDecl, SkipPast::None));
-                EXPECT_TRUE(Env.flowConditionImplies(FooVal));
-              },
-              {TransferOptions{ContextSensitiveOptions{}}});
+        auto &FooVal = getFormula(*FooDecl, Env);
+        EXPECT_TRUE(Env.proves(FooVal));
+      },
+      {BuiltinOptions{ContextSensitiveOptions{}}});
 }
 
 TEST(TransferTest, ContextSensitiveMethodSetter) {
   std::string Code = R"(
     class MyClass {
     public:
-      bool setField(bool Val) { Field = Val; }
+      void setField(bool Val) { Field = Val; }
 
       bool Field;
     };
@@ -4491,22 +6679,20 @@ TEST(TransferTest, ContextSensitiveMethodSetter) {
       // [[p]]
     }
   )";
-  runDataflow(Code,
-              [](llvm::ArrayRef<
-                     std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                     Results,
-                 ASTContext &ASTCtx) {
-                ASSERT_THAT(Results, ElementsAre(Pair("p", _)));
-                const Environment &Env = Results[0].second.Env;
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
 
-                const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
-                ASSERT_THAT(FooDecl, NotNull());
+        const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
+        ASSERT_THAT(FooDecl, NotNull());
 
-                auto &FooVal =
-                    *cast<BoolValue>(Env.getValue(*FooDecl, SkipPast::None));
-                EXPECT_TRUE(Env.flowConditionImplies(FooVal));
-              },
-              {TransferOptions{ContextSensitiveOptions{}}});
+        auto &FooVal = getFormula(*FooDecl, Env);
+        EXPECT_TRUE(Env.proves(FooVal));
+      },
+      {BuiltinOptions{ContextSensitiveOptions{}}});
 }
 
 TEST(TransferTest, ContextSensitiveMethodGetterAndSetter) {
@@ -4514,7 +6700,7 @@ TEST(TransferTest, ContextSensitiveMethodGetterAndSetter) {
     class MyClass {
     public:
       bool getField() { return Field; }
-      bool setField(bool Val) { Field = Val; }
+      void setField(bool Val) { Field = Val; }
 
     private:
       bool Field;
@@ -4527,22 +6713,89 @@ TEST(TransferTest, ContextSensitiveMethodGetterAndSetter) {
       // [[p]]
     }
   )";
-  runDataflow(Code,
-              [](llvm::ArrayRef<
-                     std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                     Results,
-                 ASTContext &ASTCtx) {
-                ASSERT_THAT(Results, ElementsAre(Pair("p", _)));
-                const Environment &Env = Results[0].second.Env;
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
 
-                const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
-                ASSERT_THAT(FooDecl, NotNull());
+        const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
+        ASSERT_THAT(FooDecl, NotNull());
 
-                auto &FooVal =
-                    *cast<BoolValue>(Env.getValue(*FooDecl, SkipPast::None));
-                EXPECT_TRUE(Env.flowConditionImplies(FooVal));
-              },
-              {TransferOptions{ContextSensitiveOptions{}}});
+        auto &FooVal = getFormula(*FooDecl, Env);
+        EXPECT_TRUE(Env.proves(FooVal));
+      },
+      {BuiltinOptions{ContextSensitiveOptions{}}});
+}
+
+
+TEST(TransferTest, ContextSensitiveMethodTwoLayersVoid) {
+  std::string Code = R"(
+    class MyClass {
+    public:
+      void Inner() { MyField = true; }
+      void Outer() { Inner(); }
+
+      bool MyField;
+    };
+
+    void target() {
+      MyClass MyObj;
+      MyObj.Outer();
+      bool Foo = MyObj.MyField;
+      // [[p]]
+    }
+  )";
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+        ;
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
+
+        const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
+        ASSERT_THAT(FooDecl, NotNull());
+
+        auto &FooVal = getFormula(*FooDecl, Env);
+        EXPECT_TRUE(Env.proves(FooVal));
+      },
+      {BuiltinOptions{ContextSensitiveOptions{}}});
+}
+
+TEST(TransferTest, ContextSensitiveMethodTwoLayersReturn) {
+  std::string Code = R"(
+    class MyClass {
+    public:
+      bool Inner() { return MyField; }
+      bool Outer() { return Inner(); }
+
+      bool MyField;
+    };
+
+    void target() {
+      MyClass MyObj;
+      MyObj.MyField = true;
+      bool Foo = MyObj.Outer();
+      // [[p]]
+    }
+  )";
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+        ;
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
+
+        const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
+        ASSERT_THAT(FooDecl, NotNull());
+
+        auto &FooVal = getFormula(*FooDecl, Env);
+        EXPECT_TRUE(Env.proves(FooVal));
+      },
+      {BuiltinOptions{ContextSensitiveOptions{}}});
 }
 
 TEST(TransferTest, ContextSensitiveConstructorBody) {
@@ -4560,22 +6813,20 @@ TEST(TransferTest, ContextSensitiveConstructorBody) {
       // [[p]]
     }
   )";
-  runDataflow(Code,
-              [](llvm::ArrayRef<
-                     std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                     Results,
-                 ASTContext &ASTCtx) {
-                ASSERT_THAT(Results, ElementsAre(Pair("p", _)));
-                const Environment &Env = Results[0].second.Env;
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
 
-                const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
-                ASSERT_THAT(FooDecl, NotNull());
+        const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
+        ASSERT_THAT(FooDecl, NotNull());
 
-                auto &FooVal =
-                    *cast<BoolValue>(Env.getValue(*FooDecl, SkipPast::None));
-                EXPECT_TRUE(Env.flowConditionImplies(FooVal));
-              },
-              {TransferOptions{ContextSensitiveOptions{}}});
+        auto &FooVal = getFormula(*FooDecl, Env);
+        EXPECT_TRUE(Env.proves(FooVal));
+      },
+      {BuiltinOptions{ContextSensitiveOptions{}}});
 }
 
 TEST(TransferTest, ContextSensitiveConstructorInitializer) {
@@ -4593,22 +6844,20 @@ TEST(TransferTest, ContextSensitiveConstructorInitializer) {
       // [[p]]
     }
   )";
-  runDataflow(Code,
-              [](llvm::ArrayRef<
-                     std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                     Results,
-                 ASTContext &ASTCtx) {
-                ASSERT_THAT(Results, ElementsAre(Pair("p", _)));
-                const Environment &Env = Results[0].second.Env;
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
 
-                const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
-                ASSERT_THAT(FooDecl, NotNull());
+        const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
+        ASSERT_THAT(FooDecl, NotNull());
 
-                auto &FooVal =
-                    *cast<BoolValue>(Env.getValue(*FooDecl, SkipPast::None));
-                EXPECT_TRUE(Env.flowConditionImplies(FooVal));
-              },
-              {TransferOptions{ContextSensitiveOptions{}}});
+        auto &FooVal = getFormula(*FooDecl, Env);
+        EXPECT_TRUE(Env.proves(FooVal));
+      },
+      {BuiltinOptions{ContextSensitiveOptions{}}});
 }
 
 TEST(TransferTest, ContextSensitiveConstructorDefault) {
@@ -4626,22 +6875,730 @@ TEST(TransferTest, ContextSensitiveConstructorDefault) {
       // [[p]]
     }
   )";
-  runDataflow(Code,
-              [](llvm::ArrayRef<
-                     std::pair<std::string, DataflowAnalysisState<NoopLattice>>>
-                     Results,
-                 ASTContext &ASTCtx) {
-                ASSERT_THAT(Results, ElementsAre(Pair("p", _)));
-                const Environment &Env = Results[0].second.Env;
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
 
-                const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
-                ASSERT_THAT(FooDecl, NotNull());
+        const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
+        ASSERT_THAT(FooDecl, NotNull());
 
-                auto &FooVal =
-                    *cast<BoolValue>(Env.getValue(*FooDecl, SkipPast::None));
-                EXPECT_TRUE(Env.flowConditionImplies(FooVal));
-              },
-              {TransferOptions{ContextSensitiveOptions{}}});
+        auto &FooVal = getFormula(*FooDecl, Env);
+        EXPECT_TRUE(Env.proves(FooVal));
+      },
+      {BuiltinOptions{ContextSensitiveOptions{}}});
+}
+
+TEST(TransferTest, ContextSensitiveSelfReferentialClass) {
+  // Test that the `this` pointer seen in the constructor has the same value
+  // as the address of the variable the object is constructed into.
+  std::string Code = R"(
+    class MyClass {
+    public:
+      MyClass() : Self(this) {}
+      MyClass *Self;
+    };
+
+    void target() {
+      MyClass MyObj;
+      MyClass *SelfPtr = MyObj.Self;
+      // [[p]]
+    }
+  )";
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+
+        const ValueDecl *MyObjDecl = findValueDecl(ASTCtx, "MyObj");
+        ASSERT_THAT(MyObjDecl, NotNull());
+
+        const ValueDecl *SelfDecl = findValueDecl(ASTCtx, "SelfPtr");
+        ASSERT_THAT(SelfDecl, NotNull());
+
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
+        auto &SelfVal = *cast<PointerValue>(Env.getValue(*SelfDecl));
+        EXPECT_EQ(Env.getStorageLocation(*MyObjDecl), &SelfVal.getPointeeLoc());
+      },
+      {BuiltinOptions{ContextSensitiveOptions{}}});
+}
+
+TEST(TransferTest, UnnamedBitfieldInitializer) {
+  std::string Code = R"(
+    struct B {};
+    struct A {
+      unsigned a;
+      unsigned : 4;
+      unsigned c;
+      B b;
+    };
+    void target() {
+      A a = {};
+      A test = a;
+      (void)test.c;
+    }
+  )";
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        // This doesn't need a body because this test was crashing the framework
+        // before handling correctly Unnamed bitfields in `InitListExpr`.
+      });
+}
+
+// Repro for a crash that used to occur with chained short-circuiting logical
+// operators.
+TEST(TransferTest, ChainedLogicalOps) {
+  std::string Code = R"(
+    bool target() {
+      bool b = true || false || false || false;
+      // [[p]]
+      return b;
+    }
+  )";
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
+        auto &B = getValueForDecl<BoolValue>(ASTCtx, Env, "b").formula();
+        EXPECT_TRUE(Env.proves(B));
+      });
+}
+
+// Repro for a crash that used to occur when we call a `noreturn` function
+// within one of the operands of a `&&` or `||` operator.
+TEST(TransferTest, NoReturnFunctionInsideShortCircuitedBooleanOp) {
+  std::string Code = R"(
+    __attribute__((noreturn)) int doesnt_return();
+    bool some_condition();
+    void target(bool b1, bool b2) {
+      // Neither of these should crash. In addition, if we don't terminate the
+      // program, we know that the operators need to trigger the short-circuit
+      // logic, so `NoreturnOnRhsOfAnd` will be false and `NoreturnOnRhsOfOr`
+      // will be true.
+      bool NoreturnOnRhsOfAnd = b1 && doesnt_return() > 0;
+      bool NoreturnOnRhsOfOr = b2 || doesnt_return() > 0;
+
+      // Calling a `noreturn` function on the LHS of an `&&` or `||` makes the
+      // entire expression unreachable. So we know that in both of the following
+      // cases, if `target()` terminates, the `else` branch was taken.
+      bool NoreturnOnLhsMakesAndUnreachable = false;
+      if (some_condition())
+         doesnt_return() > 0 && some_condition();
+      else
+         NoreturnOnLhsMakesAndUnreachable = true;
+
+      bool NoreturnOnLhsMakesOrUnreachable = false;
+      if (some_condition())
+         doesnt_return() > 0 || some_condition();
+      else
+         NoreturnOnLhsMakesOrUnreachable = true;
+
+      // [[p]]
+    }
+  )";
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
+        auto &A = Env.arena();
+
+        // Check that [[p]] is reachable with a non-false flow condition.
+        EXPECT_FALSE(Env.proves(A.makeLiteral(false)));
+
+        auto &B1 = getValueForDecl<BoolValue>(ASTCtx, Env, "b1").formula();
+        EXPECT_TRUE(Env.proves(A.makeNot(B1)));
+
+        auto &NoreturnOnRhsOfAnd =
+            getValueForDecl<BoolValue>(ASTCtx, Env, "NoreturnOnRhsOfAnd").formula();
+        EXPECT_TRUE(Env.proves(A.makeNot(NoreturnOnRhsOfAnd)));
+
+        auto &B2 = getValueForDecl<BoolValue>(ASTCtx, Env, "b2").formula();
+        EXPECT_TRUE(Env.proves(B2));
+
+        auto &NoreturnOnRhsOfOr =
+            getValueForDecl<BoolValue>(ASTCtx, Env, "NoreturnOnRhsOfOr")
+                .formula();
+        EXPECT_TRUE(Env.proves(NoreturnOnRhsOfOr));
+
+        auto &NoreturnOnLhsMakesAndUnreachable = getValueForDecl<BoolValue>(
+            ASTCtx, Env, "NoreturnOnLhsMakesAndUnreachable").formula();
+        EXPECT_TRUE(Env.proves(NoreturnOnLhsMakesAndUnreachable));
+
+        auto &NoreturnOnLhsMakesOrUnreachable = getValueForDecl<BoolValue>(
+            ASTCtx, Env, "NoreturnOnLhsMakesOrUnreachable").formula();
+        EXPECT_TRUE(Env.proves(NoreturnOnLhsMakesOrUnreachable));
+      });
+}
+
+TEST(TransferTest, NewExpressions) {
+  std::string Code = R"(
+    void target() {
+      int *p = new int(42);
+      // [[after_new]]
+    }
+  )";
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        const Environment &Env =
+            getEnvironmentAtAnnotation(Results, "after_new");
+
+        auto &P = getValueForDecl<PointerValue>(ASTCtx, Env, "p");
+
+        EXPECT_THAT(Env.getValue(P.getPointeeLoc()), NotNull());
+      });
+}
+
+TEST(TransferTest, NewExpressions_Structs) {
+  std::string Code = R"(
+    struct Inner {
+      int InnerField;
+    };
+
+    struct Outer {
+      Inner OuterField;
+    };
+
+    void target() {
+      Outer *p = new Outer;
+      // Access the fields to make sure the analysis actually generates children
+      // for them in the `RecordStorageLocation`.
+      p->OuterField.InnerField;
+      // [[after_new]]
+    }
+  )";
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        const Environment &Env =
+            getEnvironmentAtAnnotation(Results, "after_new");
+
+        const ValueDecl *OuterField = findValueDecl(ASTCtx, "OuterField");
+        const ValueDecl *InnerField = findValueDecl(ASTCtx, "InnerField");
+
+        auto &P = getValueForDecl<PointerValue>(ASTCtx, Env, "p");
+
+        auto &OuterLoc = cast<RecordStorageLocation>(P.getPointeeLoc());
+        auto &OuterFieldLoc =
+            *cast<RecordStorageLocation>(OuterLoc.getChild(*OuterField));
+        auto &InnerFieldLoc = *OuterFieldLoc.getChild(*InnerField);
+
+        EXPECT_THAT(Env.getValue(InnerFieldLoc), NotNull());
+      });
+}
+
+TEST(TransferTest, FunctionToPointerDecayHasValue) {
+  std::string Code = R"(
+    struct A { static void static_member_func(); };
+    void target() {
+      // To check that we're treating function-to-pointer decay correctly,
+      // create two pointers, then verify they refer to the same storage
+      // location.
+      // We need to do the test this way because even if an initializer (in this
+      // case, the function-to-pointer decay) does not create a value, we still
+      // create a value for the variable.
+      void (*non_member_p1)() = target;
+      void (*non_member_p2)() = target;
+
+      // Do the same thing but for a static member function.
+      void (*member_p1)() = A::static_member_func;
+      void (*member_p2)() = A::static_member_func;
+      // [[p]]
+    }
+  )";
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
+
+        auto &NonMemberP1 =
+            getValueForDecl<PointerValue>(ASTCtx, Env, "non_member_p1");
+        auto &NonMemberP2 =
+            getValueForDecl<PointerValue>(ASTCtx, Env, "non_member_p2");
+        EXPECT_EQ(&NonMemberP1.getPointeeLoc(), &NonMemberP2.getPointeeLoc());
+
+        auto &MemberP1 =
+            getValueForDecl<PointerValue>(ASTCtx, Env, "member_p1");
+        auto &MemberP2 =
+            getValueForDecl<PointerValue>(ASTCtx, Env, "member_p2");
+        EXPECT_EQ(&MemberP1.getPointeeLoc(), &MemberP2.getPointeeLoc());
+      });
+}
+
+// Check that a builtin function is not associated with a value. (It's only
+// possible to call builtin functions directly, not take their address.)
+TEST(TransferTest, BuiltinFunctionModeled) {
+  std::string Code = R"(
+    void target() {
+      __builtin_expect(0, 0);
+      // [[p]]
+    }
+  )";
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        using ast_matchers::selectFirst;
+        using ast_matchers::match;
+        using ast_matchers::traverse;
+        using ast_matchers::implicitCastExpr;
+        using ast_matchers::hasCastKind;
+
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
+
+        auto *ImplicitCast = selectFirst<ImplicitCastExpr>(
+            "implicit_cast",
+            match(traverse(TK_AsIs,
+                           implicitCastExpr(hasCastKind(CK_BuiltinFnToFnPtr))
+                               .bind("implicit_cast")),
+                  ASTCtx));
+
+        ASSERT_THAT(ImplicitCast, NotNull());
+        EXPECT_THAT(Env.getValue(*ImplicitCast), IsNull());
+      });
+}
+
+// Check that a callee of a member operator call is modeled as a `PointerValue`.
+// Member operator calls are unusual in that their callee is a pointer that
+// stems from a `FunctionToPointerDecay`. In calls to non-operator non-static
+// member functions, the callee is a `MemberExpr` (which does not have pointer
+// type).
+// We want to make sure that we produce a pointer value for the callee in this
+// specific scenario and that its storage location is durable (for convergence).
+TEST(TransferTest, MemberOperatorCallModelsPointerForCallee) {
+  std::string Code = R"(
+    struct S {
+      bool operator!=(S s);
+    };
+    void target() {
+      S s;
+      (void)(s != s);
+      (void)(s != s);
+      // [[p]]
+    }
+  )";
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        using ast_matchers::selectFirst;
+        using ast_matchers::match;
+        using ast_matchers::traverse;
+        using ast_matchers::cxxOperatorCallExpr;
+
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
+
+        auto Matches = match(
+            traverse(TK_AsIs, cxxOperatorCallExpr().bind("call")), ASTCtx);
+
+        ASSERT_EQ(Matches.size(), 2UL);
+
+        auto *Call1 = Matches[0].getNodeAs<CXXOperatorCallExpr>("call");
+        auto *Call2 = Matches[1].getNodeAs<CXXOperatorCallExpr>("call");
+
+        ASSERT_THAT(Call1, NotNull());
+        ASSERT_THAT(Call2, NotNull());
+
+        EXPECT_EQ(cast<ImplicitCastExpr>(Call1->getCallee())->getCastKind(),
+                  CK_FunctionToPointerDecay);
+        EXPECT_EQ(cast<ImplicitCastExpr>(Call2->getCallee())->getCastKind(),
+                  CK_FunctionToPointerDecay);
+
+        auto *Ptr1 = cast<PointerValue>(Env.getValue(*Call1->getCallee()));
+        auto *Ptr2 = cast<PointerValue>(Env.getValue(*Call2->getCallee()));
+
+        ASSERT_EQ(&Ptr1->getPointeeLoc(), &Ptr2->getPointeeLoc());
+      });
+}
+
+// Check that fields of anonymous records are modeled.
+TEST(TransferTest, AnonymousStruct) {
+  std::string Code = R"(
+    struct S {
+      struct {
+        bool b;
+      };
+    };
+    void target() {
+      S s;
+      s.b = true;
+      // [[p]]
+    }
+  )";
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
+        const ValueDecl *SDecl = findValueDecl(ASTCtx, "s");
+        const ValueDecl *BDecl = findValueDecl(ASTCtx, "b");
+        const IndirectFieldDecl *IndirectField =
+            findIndirectFieldDecl(ASTCtx, "b");
+
+        auto *S = cast<RecordStorageLocation>(Env.getStorageLocation(*SDecl));
+        auto &AnonStruct = *cast<RecordStorageLocation>(
+            S->getChild(*cast<ValueDecl>(IndirectField->chain().front())));
+
+        auto *B = cast<BoolValue>(getFieldValue(&AnonStruct, *BDecl, Env));
+        ASSERT_TRUE(Env.proves(B->formula()));
+      });
+}
+
+TEST(TransferTest, AnonymousStructWithInitializer) {
+  std::string Code = R"(
+    struct target {
+      target() {
+        (void)0;
+        // [[p]]
+      }
+      struct {
+        bool b = true;
+      };
+    };
+  )";
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
+        const ValueDecl *BDecl = findValueDecl(ASTCtx, "b");
+        const IndirectFieldDecl *IndirectField =
+            findIndirectFieldDecl(ASTCtx, "b");
+
+        auto *ThisLoc =
+            cast<RecordStorageLocation>(Env.getThisPointeeStorageLocation());
+        auto &AnonStruct = *cast<RecordStorageLocation>(ThisLoc->getChild(
+            *cast<ValueDecl>(IndirectField->chain().front())));
+
+        auto *B = cast<BoolValue>(getFieldValue(&AnonStruct, *BDecl, Env));
+        ASSERT_TRUE(Env.proves(B->formula()));
+      });
+}
+
+TEST(TransferTest, AnonymousStructWithReferenceField) {
+  std::string Code = R"(
+    int global_i = 0;
+    struct target {
+      target() {
+        (void)0;
+        // [[p]]
+      }
+      struct {
+        int &i = global_i;
+      };
+    };
+  )";
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
+        const ValueDecl *GlobalIDecl = findValueDecl(ASTCtx, "global_i");
+        const ValueDecl *IDecl = findValueDecl(ASTCtx, "i");
+        const IndirectFieldDecl *IndirectField =
+            findIndirectFieldDecl(ASTCtx, "i");
+
+        auto *ThisLoc =
+            cast<RecordStorageLocation>(Env.getThisPointeeStorageLocation());
+        auto &AnonStruct = *cast<RecordStorageLocation>(ThisLoc->getChild(
+            *cast<ValueDecl>(IndirectField->chain().front())));
+
+        ASSERT_EQ(AnonStruct.getChild(*IDecl),
+                  Env.getStorageLocation(*GlobalIDecl));
+      });
+}
+
+TEST(TransferTest, EvaluateBlockWithUnreachablePreds) {
+  // This is a crash repro.
+  // `false` block may not have been processed when we try to evaluate the `||`
+  // after visiting `true`, because it is not necessary (and therefore the edge
+  // is marked unreachable). Trying to get the analysis state via
+  // `getEnvironment` for the subexpression still should not crash.
+  std::string Code = R"(
+    int target(int i) {
+      if ((i < 0 && true) || false) {
+        return 0;
+      }
+      return 0;
+    }
+  )";
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {});
+}
+
+TEST(TransferTest, LambdaCaptureByCopy) {
+  std::string Code = R"(
+    void target(int Foo, int Bar) {
+      [Foo]() {
+        (void)0;
+        // [[p]]
+      }();
+    }
+  )";
+  runDataflowOnLambda(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
+
+        const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
+        ASSERT_THAT(FooDecl, NotNull());
+
+        const StorageLocation *FooLoc = Env.getStorageLocation(*FooDecl);
+        ASSERT_TRUE(isa_and_nonnull<ScalarStorageLocation>(FooLoc));
+
+        const Value *FooVal = Env.getValue(*FooLoc);
+        EXPECT_TRUE(isa_and_nonnull<IntegerValue>(FooVal));
+
+        const ValueDecl *BarDecl = findValueDecl(ASTCtx, "Bar");
+        ASSERT_THAT(BarDecl, NotNull());
+
+        const StorageLocation *BarLoc = Env.getStorageLocation(*BarDecl);
+        EXPECT_THAT(BarLoc, IsNull());
+      });
+}
+
+TEST(TransferTest, LambdaCaptureByReference) {
+  std::string Code = R"(
+    void target(int Foo, int Bar) {
+      [&Foo]() {
+        (void)0;
+        // [[p]]
+      }();
+    }
+  )";
+  runDataflowOnLambda(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
+
+        const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
+        ASSERT_THAT(FooDecl, NotNull());
+
+        const StorageLocation *FooLoc = Env.getStorageLocation(*FooDecl);
+        ASSERT_TRUE(isa_and_nonnull<ScalarStorageLocation>(FooLoc));
+
+        const Value *FooVal = Env.getValue(*FooLoc);
+        EXPECT_TRUE(isa_and_nonnull<IntegerValue>(FooVal));
+
+        const ValueDecl *BarDecl = findValueDecl(ASTCtx, "Bar");
+        ASSERT_THAT(BarDecl, NotNull());
+
+        const StorageLocation *BarLoc = Env.getStorageLocation(*BarDecl);
+        EXPECT_THAT(BarLoc, IsNull());
+      });
+}
+
+TEST(TransferTest, LambdaCaptureWithInitializer) {
+  std::string Code = R"(
+    void target(int Bar) {
+      [Foo=Bar]() {
+        (void)0;
+        // [[p]]
+      }();
+    }
+  )";
+  runDataflowOnLambda(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
+
+        const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
+        ASSERT_THAT(FooDecl, NotNull());
+
+        const StorageLocation *FooLoc = Env.getStorageLocation(*FooDecl);
+        ASSERT_TRUE(isa_and_nonnull<ScalarStorageLocation>(FooLoc));
+
+        const Value *FooVal = Env.getValue(*FooLoc);
+        EXPECT_TRUE(isa_and_nonnull<IntegerValue>(FooVal));
+
+        const ValueDecl *BarDecl = findValueDecl(ASTCtx, "Bar");
+        ASSERT_THAT(BarDecl, NotNull());
+
+        const StorageLocation *BarLoc = Env.getStorageLocation(*BarDecl);
+        EXPECT_THAT(BarLoc, IsNull());
+      });
+}
+
+TEST(TransferTest, LambdaCaptureByCopyImplicit) {
+  std::string Code = R"(
+    void target(int Foo, int Bar) {
+      [=]() {
+        Foo;
+        // [[p]]
+      }();
+    }
+  )";
+  runDataflowOnLambda(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
+
+        const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
+        ASSERT_THAT(FooDecl, NotNull());
+
+        const StorageLocation *FooLoc = Env.getStorageLocation(*FooDecl);
+        ASSERT_TRUE(isa_and_nonnull<ScalarStorageLocation>(FooLoc));
+
+        const Value *FooVal = Env.getValue(*FooLoc);
+        EXPECT_TRUE(isa_and_nonnull<IntegerValue>(FooVal));
+
+        const ValueDecl *BarDecl = findValueDecl(ASTCtx, "Bar");
+        ASSERT_THAT(BarDecl, NotNull());
+
+        // There is no storage location for `Bar` because it isn't used in the
+        // body of the lambda.
+        const StorageLocation *BarLoc = Env.getStorageLocation(*BarDecl);
+        EXPECT_THAT(BarLoc, IsNull());
+      });
+}
+
+TEST(TransferTest, LambdaCaptureByReferenceImplicit) {
+  std::string Code = R"(
+    void target(int Foo, int Bar) {
+      [&]() {
+        Foo;
+        // [[p]]
+      }();
+    }
+  )";
+  runDataflowOnLambda(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
+
+        const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
+        ASSERT_THAT(FooDecl, NotNull());
+
+        const StorageLocation *FooLoc = Env.getStorageLocation(*FooDecl);
+        ASSERT_TRUE(isa_and_nonnull<ScalarStorageLocation>(FooLoc));
+
+        const Value *FooVal = Env.getValue(*FooLoc);
+        EXPECT_TRUE(isa_and_nonnull<IntegerValue>(FooVal));
+
+        const ValueDecl *BarDecl = findValueDecl(ASTCtx, "Bar");
+        ASSERT_THAT(BarDecl, NotNull());
+
+        // There is no storage location for `Bar` because it isn't used in the
+        // body of the lambda.
+        const StorageLocation *BarLoc = Env.getStorageLocation(*BarDecl);
+        EXPECT_THAT(BarLoc, IsNull());
+      });
+}
+
+TEST(TransferTest, LambdaCaptureThis) {
+  std::string Code = R"(
+    struct Bar {
+      int Foo;
+
+      void target() {
+        [this]() {
+          Foo;
+          // [[p]]
+        }();
+      }
+    };
+  )";
+  runDataflowOnLambda(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        ASSERT_THAT(Results.keys(), UnorderedElementsAre("p"));
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
+
+        const RecordStorageLocation *ThisPointeeLoc =
+            Env.getThisPointeeStorageLocation();
+        ASSERT_THAT(ThisPointeeLoc, NotNull());
+
+        const ValueDecl *FooDecl = findValueDecl(ASTCtx, "Foo");
+        ASSERT_THAT(FooDecl, NotNull());
+
+        const StorageLocation *FooLoc = ThisPointeeLoc->getChild(*FooDecl);
+        ASSERT_TRUE(isa_and_nonnull<ScalarStorageLocation>(FooLoc));
+
+        const Value *FooVal = Env.getValue(*FooLoc);
+        EXPECT_TRUE(isa_and_nonnull<IntegerValue>(FooVal));
+      });
+}
+
+// This test verifies correct modeling of a relational dependency that goes
+// through unmodeled functions (the simple `cond()` in this case).
+TEST(TransferTest, ConditionalRelation) {
+  std::string Code = R"(
+    bool cond();
+    void target() {
+       bool a = true;
+       bool b = true;
+       if (cond()) {
+         a = false;
+         if (cond()) {
+           b = false;
+         }
+       }
+       (void)0;
+       // [[p]]
+    }
+ )";
+  runDataflow(
+      Code,
+      [](const llvm::StringMap<DataflowAnalysisState<NoopLattice>> &Results,
+         ASTContext &ASTCtx) {
+        const Environment &Env = getEnvironmentAtAnnotation(Results, "p");
+        auto &A = Env.arena();
+        auto &VarA = getValueForDecl<BoolValue>(ASTCtx, Env, "a").formula();
+        auto &VarB = getValueForDecl<BoolValue>(ASTCtx, Env, "b").formula();
+
+        EXPECT_FALSE(Env.allows(A.makeAnd(VarA, A.makeNot(VarB))));
+      });
+}
+
+// This is a crash repro.
+// We used to crash while transferring `S().i` because Clang contained a bug
+// causing the AST to be malformed.
+TEST(TransferTest, AnonymousUnionMemberExprInTemplate) {
+  using ast_matchers::functionDecl;
+  using ast_matchers::hasName;
+  using ast_matchers::unless;
+
+  std::string Code = R"cc(
+    struct S {
+      struct {
+        int i;
+      };
+    };
+
+    template <class>
+    void target() {
+        S().i;
+    }
+
+    template void target<int>();
+  )cc";
+  auto Matcher = functionDecl(hasName("target"), unless(isTemplated()));
+  ASSERT_THAT_ERROR(checkDataflowWithNoopAnalysis(Code, Matcher),
+                    llvm::Succeeded());
 }
 
 } // namespace

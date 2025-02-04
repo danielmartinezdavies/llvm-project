@@ -24,8 +24,8 @@
 #include "clang/AST/RecordLayout.h"
 #include "clang/AST/Type.h"
 #include "clang/Basic/TargetInfo.h"
-#include "llvm/ADT/FoldingSet.h"
 #include "llvm/ADT/iterator.h"
+#include <optional>
 
 using namespace clang;
 
@@ -75,17 +75,17 @@ struct DecompositionDeclName {
 }
 
 namespace llvm {
-template<typename T> bool isDenseMapKeyEmpty(T V) {
+template <typename T> static bool isDenseMapKeyEmpty(T V) {
   return llvm::DenseMapInfo<T>::isEqual(
       V, llvm::DenseMapInfo<T>::getEmptyKey());
 }
-template<typename T> bool isDenseMapKeyTombstone(T V) {
+template <typename T> static bool isDenseMapKeyTombstone(T V) {
   return llvm::DenseMapInfo<T>::isEqual(
       V, llvm::DenseMapInfo<T>::getTombstoneKey());
 }
 
-template<typename T>
-Optional<bool> areDenseMapKeysEqualSpecialValues(T LHS, T RHS) {
+template <typename T>
+static std::optional<bool> areDenseMapKeysEqualSpecialValues(T LHS, T RHS) {
   bool LHSEmpty = isDenseMapKeyEmpty(LHS);
   bool RHSEmpty = isDenseMapKeyEmpty(RHS);
   if (LHSEmpty || RHSEmpty)
@@ -96,7 +96,7 @@ Optional<bool> areDenseMapKeysEqualSpecialValues(T LHS, T RHS) {
   if (LHSTombstone || RHSTombstone)
     return LHSTombstone && RHSTombstone;
 
-  return None;
+  return std::nullopt;
 }
 
 template<>
@@ -113,8 +113,8 @@ struct DenseMapInfo<DecompositionDeclName> {
     return llvm::hash_combine_range(Key.begin(), Key.end());
   }
   static bool isEqual(DecompositionDeclName LHS, DecompositionDeclName RHS) {
-    if (Optional<bool> Result = areDenseMapKeysEqualSpecialValues(
-            LHS.Bindings, RHS.Bindings))
+    if (std::optional<bool> Result =
+            areDenseMapKeysEqualSpecialValues(LHS.Bindings, RHS.Bindings))
       return *Result;
 
     return LHS.Bindings.size() == RHS.Bindings.size() &&
@@ -224,7 +224,7 @@ public:
   MemberPointerInfo
   getMemberPointerInfo(const MemberPointerType *MPT) const override {
     const TargetInfo &Target = Context.getTargetInfo();
-    TargetInfo::IntType PtrDiff = Target.getPtrDiffType(0);
+    TargetInfo::IntType PtrDiff = Target.getPtrDiffType(LangAS::Default);
     MemberPointerInfo MPI;
     MPI.Width = Target.getTypeWidth(PtrDiff);
     MPI.Align = Target.getTypeAlign(PtrDiff);
@@ -251,8 +251,8 @@ public:
       return false;
 
     const ASTRecordLayout &Layout = Context.getASTRecordLayout(RD);
-    CharUnits PointerSize =
-      Context.toCharUnitsFromBits(Context.getTargetInfo().getPointerWidth(0));
+    CharUnits PointerSize = Context.toCharUnitsFromBits(
+        Context.getTargetInfo().getPointerWidth(LangAS::Default));
     return Layout.getNonVirtualSize() == PointerSize;
   }
 

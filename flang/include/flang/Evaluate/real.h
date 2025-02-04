@@ -18,8 +18,8 @@
 #include <limits>
 #include <string>
 
-// Some environments, viz. clang on Darwin, allow the macro HUGE
-// to leak out of <math.h> even when it is never directly included.
+// Some environments, viz. glibc 2.17 and *BSD, allow the macro HUGE
+// to leak out of <math.h>.
 #undef HUGE
 
 namespace llvm {
@@ -35,20 +35,19 @@ static constexpr std::int64_t ScaledLogBaseTenOfTwo{301029995664};
 // class template must be (or look like) an instance of Integer<>;
 // the second specifies the number of effective bits (binary precision)
 // in the fraction.
-template <typename WORD, int PREC>
-class Real : public common::RealDetails<PREC> {
+template <typename WORD, int PREC> class Real {
 public:
   using Word = WORD;
   static constexpr int binaryPrecision{PREC};
-  using Details = common::RealDetails<PREC>;
-  using Details::exponentBias;
-  using Details::exponentBits;
-  using Details::isImplicitMSB;
-  using Details::maxExponent;
-  using Details::significandBits;
+  static constexpr common::RealCharacteristics realChars{PREC};
+  static constexpr int exponentBias{realChars.exponentBias};
+  static constexpr int exponentBits{realChars.exponentBits};
+  static constexpr int isImplicitMSB{realChars.isImplicitMSB};
+  static constexpr int maxExponent{realChars.maxExponent};
+  static constexpr int significandBits{realChars.significandBits};
 
   static constexpr int bits{Word::bits};
-  static_assert(bits >= Details::bits);
+  static_assert(bits >= realChars.bits);
   using Fraction = Integer<binaryPrecision>; // all bits made explicit
 
   template <typename W, int P> friend class Real;
@@ -69,19 +68,60 @@ public:
     return !IsNotANumber() && IsSignBitSet();
   }
   constexpr bool IsNotANumber() const {
-    return Exponent() == maxExponent && !GetSignificand().IsZero();
+    auto expo{Exponent()};
+    auto sig{GetSignificand()};
+    if constexpr (bits == 80) { // x87
+      // 7FFF8000000000000000 is Infinity, not NaN, on 80387 & later.
+      if (expo == maxExponent) {
+        return sig != Significand{}.IBSET(63);
+      } else {
+        return expo != 0 && !sig.BTEST(63);
+      }
+    } else {
+      return expo == maxExponent && !sig.IsZero();
+    }
   }
   constexpr bool IsQuietNaN() const {
-    return Exponent() == maxExponent &&
-        GetSignificand().BTEST(significandBits - 1);
+    auto expo{Exponent()};
+    auto sig{GetSignificand()};
+    if constexpr (bits == 80) { // x87
+      if (expo == maxExponent) {
+        return sig.IBITS(62, 2) == 3;
+      } else {
+        return expo != 0 && !sig.BTEST(63);
+      }
+    } else {
+      return expo == maxExponent && sig.BTEST(significandBits - 1);
+    }
   }
   constexpr bool IsSignalingNaN() const {
-    return IsNotANumber() && !GetSignificand().BTEST(significandBits - 1);
+    auto expo{Exponent()};
+    auto sig{GetSignificand()};
+    if constexpr (bits == 80) { // x87
+      return expo == maxExponent && sig != Significand{}.IBSET(63) &&
+          sig.IBITS(62, 2) != 3;
+    } else {
+      return expo == maxExponent && !sig.IsZero() &&
+          !sig.BTEST(significandBits - 1);
+    }
   }
   constexpr bool IsInfinite() const {
-    return Exponent() == maxExponent && GetSignificand().IsZero();
+    if constexpr (bits == 80) { // x87
+      // 7FFF8000000000000000 is Infinity, not NaN, on 80387 & later.
+      return Exponent() == maxExponent &&
+          GetSignificand() == Significand{}.IBSET(63);
+    } else {
+      return Exponent() == maxExponent && GetSignificand().IsZero();
+    }
   }
-  constexpr bool IsFinite() const { return Exponent() != maxExponent; }
+  constexpr bool IsFinite() const {
+    auto expo{Exponent()};
+    if constexpr (bits == 80) { // x87
+      return expo != maxExponent && (expo == 0 || GetSignificand().BTEST(63));
+    } else {
+      return expo != maxExponent;
+    }
+  }
   constexpr bool IsZero() const {
     return Exponent() == 0 && GetSignificand().IsZero();
   }
@@ -129,8 +169,8 @@ public:
   // DIM(X,Y) = MAX(X-Y, 0)
   ValueWithRealFlags<Real> DIM(const Real &,
       Rounding rounding = TargetCharacteristics::defaultRounding) const;
-  // MOD(x,y) = x - AINT(x/y)*y
-  // MODULO(x,y) = x - FLOOR(x/y)*y
+  // MOD(x,y) = x - AINT(x/y)*y (in the standard)
+  // MODULO(x,y) = x - FLOOR(x/y)*y (in the standard)
   ValueWithRealFlags<Real> MOD(const Real &,
       Rounding rounding = TargetCharacteristics::defaultRounding) const;
   ValueWithRealFlags<Real> MODULO(const Real &,
@@ -164,13 +204,13 @@ public:
   }
 
   static constexpr int DIGITS{binaryPrecision};
-  static constexpr int PRECISION{Details::decimalPrecision};
-  static constexpr int RANGE{Details::decimalRange};
+  static constexpr int PRECISION{realChars.decimalPrecision};
+  static constexpr int RANGE{realChars.decimalRange};
   static constexpr int MAXEXPONENT{maxExponent - exponentBias};
   static constexpr int MINEXPONENT{2 - exponentBias};
   Real RRSPACING() const;
   Real SPACING() const;
-  Real SET_EXPONENT(int) const;
+  Real SET_EXPONENT(std::int64_t) const;
   Real FRACTION() const;
 
   // SCALE(); also known as IEEE_SCALB and (in IEEE-754 '08) ScaleB.
@@ -180,18 +220,35 @@ public:
     // Normalize a fraction with just its LSB set and then multiply.
     // (Set the LSB, not the MSB, in case the scale factor needs to
     //  be subnormal.)
-    auto adjust{exponentBias + binaryPrecision - 1};
+    constexpr auto adjust{exponentBias + binaryPrecision - 1};
+    constexpr auto maxCoeffExpo{maxExponent + binaryPrecision - 1};
     auto expo{adjust + by.ToInt64()};
+    RealFlags flags;
+    int rMask{1};
     if (IsZero()) {
       expo = exponentBias; // ignore by, don't overflow
-    } else if (by > INT{maxExponent}) {
-      expo = maxExponent + binaryPrecision - 1;
-    } else if (by < INT{-adjust}) {
-      expo = -1;
+    } else if (expo > maxCoeffExpo) {
+      if (Exponent() < exponentBias) {
+        // Must implement with two multiplications
+        return SCALE(INT{exponentBias})
+            .value.SCALE(by.SubtractSigned(INT{exponentBias}).value, rounding);
+      } else { // overflow
+        expo = maxCoeffExpo;
+      }
+    } else if (expo < 0) {
+      if (Exponent() > exponentBias) {
+        // Must implement with two multiplications
+        return SCALE(INT{-exponentBias})
+            .value.SCALE(by.AddSigned(INT{exponentBias}).value, rounding);
+      } else { // underflow to zero
+        expo = 0;
+        rMask = 0;
+        flags.set(RealFlag::Underflow);
+      }
     }
     Real twoPow;
-    RealFlags flags{
-        twoPow.Normalize(false, static_cast<int>(expo), Fraction::MASKR(1))};
+    flags |=
+        twoPow.Normalize(false, static_cast<int>(expo), Fraction::MASKR(rMask));
     ValueWithRealFlags<Real> result{Multiply(twoPow, rounding)};
     result.flags |= flags;
     return result;
@@ -222,13 +279,18 @@ public:
     if (negative) {
       infinity = infinity.IBSET(infinity.bits - 1);
     }
+    if constexpr (bits == 80) { // x87
+      // 7FFF8000000000000000 is Infinity, not NaN, on 80387 & later.
+      infinity = infinity.IBSET(63);
+    }
     return {infinity};
   }
 
   template <typename INT>
   static ValueWithRealFlags<Real> FromInteger(const INT &n,
+      bool isUnsigned = false,
       Rounding rounding = TargetCharacteristics::defaultRounding) {
-    bool isNegative{n.IsNegative()};
+    bool isNegative{!isUnsigned && n.IsNegative()};
     INT absN{n};
     if (isNegative) {
       absN = n.Negate().value; // overflow is safe to ignore
@@ -309,6 +371,10 @@ public:
       return result;
     }
     bool isNegative{x.IsNegative()};
+    if (x.IsInfinite()) {
+      result.value = Infinity(isNegative);
+      return result;
+    }
     A absX{x};
     if (isNegative) {
       absX = x.Negate();
@@ -431,7 +497,7 @@ extern template class Real<Integer<16>, 11>; // IEEE half format
 extern template class Real<Integer<16>, 8>; // the "other" half format
 extern template class Real<Integer<32>, 24>; // IEEE single
 extern template class Real<Integer<64>, 53>; // IEEE double
-extern template class Real<Integer<80>, 64>; // 80387 extended precision
+extern template class Real<X87IntegerContainer, 64>; // 80387 extended precision
 extern template class Real<Integer<128>, 113>; // IEEE quad
 // N.B. No "double-double" support.
 } // namespace Fortran::evaluate::value

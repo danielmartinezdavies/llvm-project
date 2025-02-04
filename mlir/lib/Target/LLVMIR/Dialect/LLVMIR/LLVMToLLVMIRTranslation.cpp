@@ -28,123 +28,6 @@ using mlir::LLVM::detail::getLLVMConstant;
 
 #include "mlir/Dialect/LLVMIR/LLVMConversionEnumsToLLVM.inc"
 
-/// Convert MLIR integer comparison predicate to LLVM IR comparison predicate.
-static llvm::CmpInst::Predicate getLLVMCmpPredicate(ICmpPredicate p) {
-  switch (p) {
-  case LLVM::ICmpPredicate::eq:
-    return llvm::CmpInst::Predicate::ICMP_EQ;
-  case LLVM::ICmpPredicate::ne:
-    return llvm::CmpInst::Predicate::ICMP_NE;
-  case LLVM::ICmpPredicate::slt:
-    return llvm::CmpInst::Predicate::ICMP_SLT;
-  case LLVM::ICmpPredicate::sle:
-    return llvm::CmpInst::Predicate::ICMP_SLE;
-  case LLVM::ICmpPredicate::sgt:
-    return llvm::CmpInst::Predicate::ICMP_SGT;
-  case LLVM::ICmpPredicate::sge:
-    return llvm::CmpInst::Predicate::ICMP_SGE;
-  case LLVM::ICmpPredicate::ult:
-    return llvm::CmpInst::Predicate::ICMP_ULT;
-  case LLVM::ICmpPredicate::ule:
-    return llvm::CmpInst::Predicate::ICMP_ULE;
-  case LLVM::ICmpPredicate::ugt:
-    return llvm::CmpInst::Predicate::ICMP_UGT;
-  case LLVM::ICmpPredicate::uge:
-    return llvm::CmpInst::Predicate::ICMP_UGE;
-  }
-  llvm_unreachable("incorrect comparison predicate");
-}
-
-static llvm::CmpInst::Predicate getLLVMCmpPredicate(FCmpPredicate p) {
-  switch (p) {
-  case LLVM::FCmpPredicate::_false:
-    return llvm::CmpInst::Predicate::FCMP_FALSE;
-  case LLVM::FCmpPredicate::oeq:
-    return llvm::CmpInst::Predicate::FCMP_OEQ;
-  case LLVM::FCmpPredicate::ogt:
-    return llvm::CmpInst::Predicate::FCMP_OGT;
-  case LLVM::FCmpPredicate::oge:
-    return llvm::CmpInst::Predicate::FCMP_OGE;
-  case LLVM::FCmpPredicate::olt:
-    return llvm::CmpInst::Predicate::FCMP_OLT;
-  case LLVM::FCmpPredicate::ole:
-    return llvm::CmpInst::Predicate::FCMP_OLE;
-  case LLVM::FCmpPredicate::one:
-    return llvm::CmpInst::Predicate::FCMP_ONE;
-  case LLVM::FCmpPredicate::ord:
-    return llvm::CmpInst::Predicate::FCMP_ORD;
-  case LLVM::FCmpPredicate::ueq:
-    return llvm::CmpInst::Predicate::FCMP_UEQ;
-  case LLVM::FCmpPredicate::ugt:
-    return llvm::CmpInst::Predicate::FCMP_UGT;
-  case LLVM::FCmpPredicate::uge:
-    return llvm::CmpInst::Predicate::FCMP_UGE;
-  case LLVM::FCmpPredicate::ult:
-    return llvm::CmpInst::Predicate::FCMP_ULT;
-  case LLVM::FCmpPredicate::ule:
-    return llvm::CmpInst::Predicate::FCMP_ULE;
-  case LLVM::FCmpPredicate::une:
-    return llvm::CmpInst::Predicate::FCMP_UNE;
-  case LLVM::FCmpPredicate::uno:
-    return llvm::CmpInst::Predicate::FCMP_UNO;
-  case LLVM::FCmpPredicate::_true:
-    return llvm::CmpInst::Predicate::FCMP_TRUE;
-  }
-  llvm_unreachable("incorrect comparison predicate");
-}
-
-static llvm::AtomicRMWInst::BinOp getLLVMAtomicBinOp(AtomicBinOp op) {
-  switch (op) {
-  case LLVM::AtomicBinOp::xchg:
-    return llvm::AtomicRMWInst::BinOp::Xchg;
-  case LLVM::AtomicBinOp::add:
-    return llvm::AtomicRMWInst::BinOp::Add;
-  case LLVM::AtomicBinOp::sub:
-    return llvm::AtomicRMWInst::BinOp::Sub;
-  case LLVM::AtomicBinOp::_and:
-    return llvm::AtomicRMWInst::BinOp::And;
-  case LLVM::AtomicBinOp::nand:
-    return llvm::AtomicRMWInst::BinOp::Nand;
-  case LLVM::AtomicBinOp::_or:
-    return llvm::AtomicRMWInst::BinOp::Or;
-  case LLVM::AtomicBinOp::_xor:
-    return llvm::AtomicRMWInst::BinOp::Xor;
-  case LLVM::AtomicBinOp::max:
-    return llvm::AtomicRMWInst::BinOp::Max;
-  case LLVM::AtomicBinOp::min:
-    return llvm::AtomicRMWInst::BinOp::Min;
-  case LLVM::AtomicBinOp::umax:
-    return llvm::AtomicRMWInst::BinOp::UMax;
-  case LLVM::AtomicBinOp::umin:
-    return llvm::AtomicRMWInst::BinOp::UMin;
-  case LLVM::AtomicBinOp::fadd:
-    return llvm::AtomicRMWInst::BinOp::FAdd;
-  case LLVM::AtomicBinOp::fsub:
-    return llvm::AtomicRMWInst::BinOp::FSub;
-  }
-  llvm_unreachable("incorrect atomic binary operator");
-}
-
-static llvm::AtomicOrdering getLLVMAtomicOrdering(AtomicOrdering ordering) {
-  switch (ordering) {
-  case LLVM::AtomicOrdering::not_atomic:
-    return llvm::AtomicOrdering::NotAtomic;
-  case LLVM::AtomicOrdering::unordered:
-    return llvm::AtomicOrdering::Unordered;
-  case LLVM::AtomicOrdering::monotonic:
-    return llvm::AtomicOrdering::Monotonic;
-  case LLVM::AtomicOrdering::acquire:
-    return llvm::AtomicOrdering::Acquire;
-  case LLVM::AtomicOrdering::release:
-    return llvm::AtomicOrdering::Release;
-  case LLVM::AtomicOrdering::acq_rel:
-    return llvm::AtomicOrdering::AcquireRelease;
-  case LLVM::AtomicOrdering::seq_cst:
-    return llvm::AtomicOrdering::SequentiallyConsistent;
-  }
-  llvm_unreachable("incorrect atomic ordering");
-}
-
 static llvm::FastMathFlags getFastmathFlags(FastmathFlagsInterface &op) {
   using llvmFMF = llvm::FastMathFlags;
   using FuncT = void (llvmFMF::*)(bool);
@@ -160,95 +43,11 @@ static llvm::FastMathFlags getFastmathFlags(FastmathFlagsInterface &op) {
       // clang-format on
   };
   llvm::FastMathFlags ret;
-  auto fmf = op.getFastmathFlags();
+  ::mlir::LLVM::FastmathFlags fmfMlir = op.getFastmathAttr().getValue();
   for (auto it : handlers)
-    if (bitEnumContains(fmf, it.first))
+    if (bitEnumContainsAll(fmfMlir, it.first))
       (ret.*(it.second))(true);
   return ret;
-}
-
-/// Returns an LLVM metadata node corresponding to a loop option. This metadata
-/// is attached to an llvm.loop node.
-static llvm::MDNode *getLoopOptionMetadata(llvm::LLVMContext &ctx,
-                                           LoopOptionCase option,
-                                           int64_t value) {
-  StringRef name;
-  llvm::Constant *cstValue = nullptr;
-  switch (option) {
-  case LoopOptionCase::disable_licm:
-    name = "llvm.licm.disable";
-    cstValue = llvm::ConstantInt::getBool(ctx, value);
-    break;
-  case LoopOptionCase::disable_unroll:
-    name = "llvm.loop.unroll.disable";
-    cstValue = llvm::ConstantInt::getBool(ctx, value);
-    break;
-  case LoopOptionCase::interleave_count:
-    name = "llvm.loop.interleave.count";
-    cstValue = llvm::ConstantInt::get(
-        llvm::IntegerType::get(ctx, /*NumBits=*/32), value);
-    break;
-  case LoopOptionCase::disable_pipeline:
-    name = "llvm.loop.pipeline.disable";
-    cstValue = llvm::ConstantInt::getBool(ctx, value);
-    break;
-  case LoopOptionCase::pipeline_initiation_interval:
-    name = "llvm.loop.pipeline.initiationinterval";
-    cstValue = llvm::ConstantInt::get(
-        llvm::IntegerType::get(ctx, /*NumBits=*/32), value);
-    break;
-  }
-  return llvm::MDNode::get(ctx, {llvm::MDString::get(ctx, name),
-                                 llvm::ConstantAsMetadata::get(cstValue)});
-}
-
-static void setLoopMetadata(Operation &opInst, llvm::Instruction &llvmInst,
-                            llvm::IRBuilderBase &builder,
-                            LLVM::ModuleTranslation &moduleTranslation) {
-  if (Attribute attr = opInst.getAttr(LLVMDialect::getLoopAttrName())) {
-    llvm::Module *module = builder.GetInsertBlock()->getModule();
-    llvm::MDNode *loopMD = moduleTranslation.lookupLoopOptionsMetadata(attr);
-    if (!loopMD) {
-      llvm::LLVMContext &ctx = module->getContext();
-
-      SmallVector<llvm::Metadata *> loopOptions;
-      // Reserve operand 0 for loop id self reference.
-      auto dummy = llvm::MDNode::getTemporary(ctx, llvm::None);
-      loopOptions.push_back(dummy.get());
-
-      auto loopAttr = attr.cast<DictionaryAttr>();
-      auto parallelAccessGroup =
-          loopAttr.getNamed(LLVMDialect::getParallelAccessAttrName());
-      if (parallelAccessGroup) {
-        SmallVector<llvm::Metadata *> parallelAccess;
-        parallelAccess.push_back(
-            llvm::MDString::get(ctx, "llvm.loop.parallel_accesses"));
-        for (SymbolRefAttr accessGroupRef : parallelAccessGroup->getValue()
-                                                .cast<ArrayAttr>()
-                                                .getAsRange<SymbolRefAttr>())
-          parallelAccess.push_back(
-              moduleTranslation.getAccessGroup(opInst, accessGroupRef));
-        loopOptions.push_back(llvm::MDNode::get(ctx, parallelAccess));
-      }
-
-      if (auto loopOptionsAttr = loopAttr.getAs<LoopOptionsAttr>(
-              LLVMDialect::getLoopOptionsAttrName())) {
-        for (auto option : loopOptionsAttr.getOptions())
-          loopOptions.push_back(
-              getLoopOptionMetadata(ctx, option.first, option.second));
-      }
-
-      // Create loop options and set the first operand to itself.
-      loopMD = llvm::MDNode::get(ctx, loopOptions);
-      loopMD->replaceOperandWith(0, loopMD);
-
-      // Store a map from this Attribute to the LLVM metadata in case we
-      // encounter it again.
-      moduleTranslation.mapLoopOptionsMetadata(attr, loopMD);
-    }
-
-    llvmInst.setMetadata(module->getMDKindID("llvm.loop"), loopMD);
-  }
 }
 
 /// Convert the value of a DenseI64ArrayAttr to a vector of unsigned indices.
@@ -256,6 +55,173 @@ static SmallVector<unsigned> extractPosition(ArrayRef<int64_t> indices) {
   SmallVector<unsigned> position;
   llvm::append_range(position, indices);
   return position;
+}
+
+/// Convert an LLVM type to a string for printing in diagnostics.
+static std::string diagStr(const llvm::Type *type) {
+  std::string str;
+  llvm::raw_string_ostream os(str);
+  type->print(os);
+  return str;
+}
+
+/// Get the declaration of an overloaded llvm intrinsic. First we get the
+/// overloaded argument types and/or result type from the CallIntrinsicOp, and
+/// then use those to get the correct declaration of the overloaded intrinsic.
+static FailureOr<llvm::Function *>
+getOverloadedDeclaration(CallIntrinsicOp op, llvm::Intrinsic::ID id,
+                         llvm::Module *module,
+                         LLVM::ModuleTranslation &moduleTranslation) {
+  SmallVector<llvm::Type *, 8> allArgTys;
+  for (Type type : op->getOperandTypes())
+    allArgTys.push_back(moduleTranslation.convertType(type));
+
+  llvm::Type *resTy;
+  if (op.getNumResults() == 0)
+    resTy = llvm::Type::getVoidTy(module->getContext());
+  else
+    resTy = moduleTranslation.convertType(op.getResult(0).getType());
+
+  // ATM we do not support variadic intrinsics.
+  llvm::FunctionType *ft = llvm::FunctionType::get(resTy, allArgTys, false);
+
+  SmallVector<llvm::Intrinsic::IITDescriptor, 8> table;
+  getIntrinsicInfoTableEntries(id, table);
+  ArrayRef<llvm::Intrinsic::IITDescriptor> tableRef = table;
+
+  SmallVector<llvm::Type *, 8> overloadedArgTys;
+  if (llvm::Intrinsic::matchIntrinsicSignature(ft, tableRef,
+                                               overloadedArgTys) !=
+      llvm::Intrinsic::MatchIntrinsicTypesResult::MatchIntrinsicTypes_Match) {
+    return mlir::emitError(op.getLoc(), "call intrinsic signature ")
+           << diagStr(ft) << " to overloaded intrinsic " << op.getIntrinAttr()
+           << " does not match any of the overloads";
+  }
+
+  ArrayRef<llvm::Type *> overloadedArgTysRef = overloadedArgTys;
+  return llvm::Intrinsic::getOrInsertDeclaration(module, id,
+                                                 overloadedArgTysRef);
+}
+
+static llvm::OperandBundleDef
+convertOperandBundle(OperandRange bundleOperands, StringRef bundleTag,
+                     LLVM::ModuleTranslation &moduleTranslation) {
+  std::vector<llvm::Value *> operands;
+  operands.reserve(bundleOperands.size());
+  for (Value bundleArg : bundleOperands)
+    operands.push_back(moduleTranslation.lookupValue(bundleArg));
+  return llvm::OperandBundleDef(bundleTag.str(), std::move(operands));
+}
+
+static SmallVector<llvm::OperandBundleDef>
+convertOperandBundles(OperandRangeRange bundleOperands, ArrayAttr bundleTags,
+                      LLVM::ModuleTranslation &moduleTranslation) {
+  SmallVector<llvm::OperandBundleDef> bundles;
+  bundles.reserve(bundleOperands.size());
+
+  for (auto [operands, tagAttr] : llvm::zip_equal(bundleOperands, bundleTags)) {
+    StringRef tag = cast<StringAttr>(tagAttr).getValue();
+    bundles.push_back(convertOperandBundle(operands, tag, moduleTranslation));
+  }
+  return bundles;
+}
+
+static SmallVector<llvm::OperandBundleDef>
+convertOperandBundles(OperandRangeRange bundleOperands,
+                      std::optional<ArrayAttr> bundleTags,
+                      LLVM::ModuleTranslation &moduleTranslation) {
+  if (!bundleTags)
+    return {};
+  return convertOperandBundles(bundleOperands, *bundleTags, moduleTranslation);
+}
+
+/// Builder for LLVM_CallIntrinsicOp
+static LogicalResult
+convertCallLLVMIntrinsicOp(CallIntrinsicOp op, llvm::IRBuilderBase &builder,
+                           LLVM::ModuleTranslation &moduleTranslation) {
+  llvm::Module *module = builder.GetInsertBlock()->getModule();
+  llvm::Intrinsic::ID id =
+      llvm::Intrinsic::lookupIntrinsicID(op.getIntrinAttr());
+  if (!id)
+    return mlir::emitError(op.getLoc(), "could not find LLVM intrinsic: ")
+           << op.getIntrinAttr();
+
+  llvm::Function *fn = nullptr;
+  if (llvm::Intrinsic::isOverloaded(id)) {
+    auto fnOrFailure =
+        getOverloadedDeclaration(op, id, module, moduleTranslation);
+    if (failed(fnOrFailure))
+      return failure();
+    fn = *fnOrFailure;
+  } else {
+    fn = llvm::Intrinsic::getOrInsertDeclaration(module, id, {});
+  }
+
+  // Check the result type of the call.
+  const llvm::Type *intrinType =
+      op.getNumResults() == 0
+          ? llvm::Type::getVoidTy(module->getContext())
+          : moduleTranslation.convertType(op.getResultTypes().front());
+  if (intrinType != fn->getReturnType()) {
+    return mlir::emitError(op.getLoc(), "intrinsic call returns ")
+           << diagStr(intrinType) << " but " << op.getIntrinAttr()
+           << " actually returns " << diagStr(fn->getReturnType());
+  }
+
+  // Check the argument types of the call. If the function is variadic, check
+  // the subrange of required arguments.
+  if (!fn->getFunctionType()->isVarArg() &&
+      op.getArgs().size() != fn->arg_size()) {
+    return mlir::emitError(op.getLoc(), "intrinsic call has ")
+           << op.getArgs().size() << " operands but " << op.getIntrinAttr()
+           << " expects " << fn->arg_size();
+  }
+  if (fn->getFunctionType()->isVarArg() &&
+      op.getArgs().size() < fn->arg_size()) {
+    return mlir::emitError(op.getLoc(), "intrinsic call has ")
+           << op.getArgs().size() << " operands but variadic "
+           << op.getIntrinAttr() << " expects at least " << fn->arg_size();
+  }
+  // Check the arguments up to the number the function requires.
+  for (unsigned i = 0, e = fn->arg_size(); i != e; ++i) {
+    const llvm::Type *expected = fn->getArg(i)->getType();
+    const llvm::Type *actual =
+        moduleTranslation.convertType(op.getOperandTypes()[i]);
+    if (actual != expected) {
+      return mlir::emitError(op.getLoc(), "intrinsic call operand #")
+             << i << " has type " << diagStr(actual) << " but "
+             << op.getIntrinAttr() << " expects " << diagStr(expected);
+    }
+  }
+
+  FastmathFlagsInterface itf = op;
+  builder.setFastMathFlags(getFastmathFlags(itf));
+
+  auto *inst = builder.CreateCall(
+      fn, moduleTranslation.lookupValues(op.getArgs()),
+      convertOperandBundles(op.getOpBundleOperands(), op.getOpBundleTags(),
+                            moduleTranslation));
+  if (op.getNumResults() == 1)
+    moduleTranslation.mapValue(op->getResults().front()) = inst;
+  return success();
+}
+
+static void convertLinkerOptionsOp(ArrayAttr options,
+                                   llvm::IRBuilderBase &builder,
+                                   LLVM::ModuleTranslation &moduleTranslation) {
+  llvm::Module *llvmModule = moduleTranslation.getLLVMModule();
+  llvm::LLVMContext &context = llvmModule->getContext();
+  llvm::NamedMDNode *linkerMDNode =
+      llvmModule->getOrInsertNamedMetadata("llvm.linker.options");
+  SmallVector<llvm::Metadata *> MDNodes;
+  MDNodes.reserve(options.size());
+  for (auto s : options.getAsRange<StringAttr>()) {
+    auto *MDNode = llvm::MDString::get(context, s.getValue());
+    MDNodes.push_back(MDNode);
+  }
+
+  auto *listMDNode = llvm::MDTuple::get(context, MDNodes);
+  linkerMDNode->addOperand(listMDNode);
 }
 
 static LogicalResult
@@ -272,32 +238,57 @@ convertOperationImpl(Operation &opInst, llvm::IRBuilderBase &builder,
   // Emit function calls.  If the "callee" attribute is present, this is a
   // direct function call and we also need to look up the remapped function
   // itself.  Otherwise, this is an indirect call and the callee is the first
-  // operand, look it up as a normal value.  Return the llvm::Value representing
-  // the function result, which may be of llvm::VoidTy type.
-  auto convertCall = [&](Operation &op) -> llvm::Value * {
-    auto operands = moduleTranslation.lookupValues(op.getOperands());
+  // operand, look it up as a normal value.
+  if (auto callOp = dyn_cast<LLVM::CallOp>(opInst)) {
+    auto operands = moduleTranslation.lookupValues(callOp.getCalleeOperands());
+    SmallVector<llvm::OperandBundleDef> opBundles =
+        convertOperandBundles(callOp.getOpBundleOperands(),
+                              callOp.getOpBundleTags(), moduleTranslation);
     ArrayRef<llvm::Value *> operandsRef(operands);
-    if (auto attr = op.getAttrOfType<FlatSymbolRefAttr>("callee"))
-      return builder.CreateCall(
-          moduleTranslation.lookupFunction(attr.getValue()), operandsRef);
-    auto calleeType =
-        op.getOperands().front().getType().cast<LLVMPointerType>();
-    auto *calleeFunctionType = cast<llvm::FunctionType>(
-        moduleTranslation.convertType(calleeType.getElementType()));
-    return builder.CreateCall(calleeFunctionType, operandsRef.front(),
-                              operandsRef.drop_front());
-  };
-
-  // Emit calls.  If the called function has a result, remap the corresponding
-  // value.  Note that LLVM IR dialect CallOp has either 0 or 1 result.
-  if (isa<LLVM::CallOp>(opInst)) {
-    llvm::Value *result = convertCall(opInst);
-    if (opInst.getNumResults() != 0) {
-      moduleTranslation.mapValue(opInst.getResult(0), result);
-      return success();
+    llvm::CallInst *call;
+    if (auto attr = callOp.getCalleeAttr()) {
+      call =
+          builder.CreateCall(moduleTranslation.lookupFunction(attr.getValue()),
+                             operandsRef, opBundles);
+    } else {
+      llvm::FunctionType *calleeType = llvm::cast<llvm::FunctionType>(
+          moduleTranslation.convertType(callOp.getCalleeFunctionType()));
+      call = builder.CreateCall(calleeType, operandsRef.front(),
+                                operandsRef.drop_front(), opBundles);
     }
+    call->setCallingConv(convertCConvToLLVM(callOp.getCConv()));
+    call->setTailCallKind(convertTailCallKindToLLVM(callOp.getTailCallKind()));
+    if (callOp.getConvergentAttr())
+      call->addFnAttr(llvm::Attribute::Convergent);
+    if (callOp.getNoUnwindAttr())
+      call->addFnAttr(llvm::Attribute::NoUnwind);
+    if (callOp.getWillReturnAttr())
+      call->addFnAttr(llvm::Attribute::WillReturn);
+
+    if (MemoryEffectsAttr memAttr = callOp.getMemoryEffectsAttr()) {
+      llvm::MemoryEffects memEffects =
+          llvm::MemoryEffects(llvm::MemoryEffects::Location::ArgMem,
+                              convertModRefInfoToLLVM(memAttr.getArgMem())) |
+          llvm::MemoryEffects(
+              llvm::MemoryEffects::Location::InaccessibleMem,
+              convertModRefInfoToLLVM(memAttr.getInaccessibleMem())) |
+          llvm::MemoryEffects(llvm::MemoryEffects::Location::Other,
+                              convertModRefInfoToLLVM(memAttr.getOther()));
+      call->setMemoryEffects(memEffects);
+    }
+
+    moduleTranslation.setAccessGroupsMetadata(callOp, call);
+    moduleTranslation.setAliasScopeMetadata(callOp, call);
+    moduleTranslation.setTBAAMetadata(callOp, call);
+    // If the called function has a result, remap the corresponding value.  Note
+    // that LLVM IR dialect CallOp has either 0 or 1 result.
+    if (opInst.getNumResults() != 0)
+      moduleTranslation.mapValue(opInst.getResult(0), call);
     // Check that LLVM call returns void for 0-result functions.
-    return success(result->getType()->isVoidTy());
+    else if (!call->getType()->isVoidTy())
+      return failure();
+    moduleTranslation.mapCall(callOp, call);
+    return success();
   }
 
   if (auto inlineAsmOp = dyn_cast<LLVM::InlineAsmOp>(opInst)) {
@@ -338,9 +329,9 @@ convertOperationImpl(Operation &opInst, llvm::IRBuilderBase &builder,
         Attribute attr = it.value();
         if (!attr)
           continue;
-        DictionaryAttr dAttr = attr.cast<DictionaryAttr>();
+        DictionaryAttr dAttr = cast<DictionaryAttr>(attr);
         TypeAttr tAttr =
-            dAttr.get(InlineAsmOp::getElementTypeAttrName()).cast<TypeAttr>();
+            cast<TypeAttr>(dAttr.get(InlineAsmOp::getElementTypeAttrName()));
         llvm::AttrBuilder b(moduleTranslation.getLLVMContext());
         llvm::Type *ty = moduleTranslation.convertType(tAttr.getValue());
         b.addTypeAttr(llvm::Attribute::ElementType, ty);
@@ -360,24 +351,27 @@ convertOperationImpl(Operation &opInst, llvm::IRBuilderBase &builder,
 
   if (auto invOp = dyn_cast<LLVM::InvokeOp>(opInst)) {
     auto operands = moduleTranslation.lookupValues(invOp.getCalleeOperands());
+    SmallVector<llvm::OperandBundleDef> opBundles =
+        convertOperandBundles(invOp.getOpBundleOperands(),
+                              invOp.getOpBundleTags(), moduleTranslation);
     ArrayRef<llvm::Value *> operandsRef(operands);
-    llvm::Instruction *result;
+    llvm::InvokeInst *result;
     if (auto attr = opInst.getAttrOfType<FlatSymbolRefAttr>("callee")) {
       result = builder.CreateInvoke(
           moduleTranslation.lookupFunction(attr.getValue()),
           moduleTranslation.lookupBlock(invOp.getSuccessor(0)),
-          moduleTranslation.lookupBlock(invOp.getSuccessor(1)), operandsRef);
+          moduleTranslation.lookupBlock(invOp.getSuccessor(1)), operandsRef,
+          opBundles);
     } else {
-      auto calleeType =
-          invOp.getCalleeOperands().front().getType().cast<LLVMPointerType>();
-      auto *calleeFunctionType = cast<llvm::FunctionType>(
-          moduleTranslation.convertType(calleeType.getElementType()));
+      llvm::FunctionType *calleeType = llvm::cast<llvm::FunctionType>(
+          moduleTranslation.convertType(invOp.getCalleeFunctionType()));
       result = builder.CreateInvoke(
-          calleeFunctionType, operandsRef.front(),
+          calleeType, operandsRef.front(),
           moduleTranslation.lookupBlock(invOp.getSuccessor(0)),
           moduleTranslation.lookupBlock(invOp.getSuccessor(1)),
-          operandsRef.drop_front());
+          operandsRef.drop_front(), opBundles);
     }
+    result->setCallingConv(convertCConvToLLVM(invOp.getCConv()));
     moduleTranslation.mapBranch(invOp, result);
     // InvokeOp can only have 0 or 1 result
     if (invOp->getNumResults() != 0) {
@@ -404,55 +398,38 @@ convertOperationImpl(Operation &opInst, llvm::IRBuilderBase &builder,
     return success();
   }
 
-  // Emit branches.  We need to look up the remapped blocks and ignore the block
-  // arguments that were transformed into PHI nodes.
+  // Emit branches.  We need to look up the remapped blocks and ignore the
+  // block arguments that were transformed into PHI nodes.
   if (auto brOp = dyn_cast<LLVM::BrOp>(opInst)) {
     llvm::BranchInst *branch =
         builder.CreateBr(moduleTranslation.lookupBlock(brOp.getSuccessor()));
     moduleTranslation.mapBranch(&opInst, branch);
-    setLoopMetadata(opInst, *branch, builder, moduleTranslation);
+    moduleTranslation.setLoopMetadata(&opInst, branch);
     return success();
   }
   if (auto condbrOp = dyn_cast<LLVM::CondBrOp>(opInst)) {
-    llvm::MDNode *branchWeights = nullptr;
-    if (auto weights = condbrOp.getBranchWeights()) {
-      // Map weight attributes to LLVM metadata.
-      auto weightValues = weights->getValues<APInt>();
-      auto trueWeight = weightValues[0].getSExtValue();
-      auto falseWeight = weightValues[1].getSExtValue();
-      branchWeights =
-          llvm::MDBuilder(moduleTranslation.getLLVMContext())
-              .createBranchWeights(static_cast<uint32_t>(trueWeight),
-                                   static_cast<uint32_t>(falseWeight));
-    }
     llvm::BranchInst *branch = builder.CreateCondBr(
         moduleTranslation.lookupValue(condbrOp.getOperand(0)),
         moduleTranslation.lookupBlock(condbrOp.getSuccessor(0)),
-        moduleTranslation.lookupBlock(condbrOp.getSuccessor(1)), branchWeights);
+        moduleTranslation.lookupBlock(condbrOp.getSuccessor(1)));
     moduleTranslation.mapBranch(&opInst, branch);
-    setLoopMetadata(opInst, *branch, builder, moduleTranslation);
+    moduleTranslation.setLoopMetadata(&opInst, branch);
     return success();
   }
   if (auto switchOp = dyn_cast<LLVM::SwitchOp>(opInst)) {
-    llvm::MDNode *branchWeights = nullptr;
-    if (auto weights = switchOp.getBranchWeights()) {
-      llvm::SmallVector<uint32_t> weightValues;
-      weightValues.reserve(weights->size());
-      for (llvm::APInt weight : weights->cast<DenseIntElementsAttr>())
-        weightValues.push_back(weight.getLimitedValue());
-      branchWeights = llvm::MDBuilder(moduleTranslation.getLLVMContext())
-                          .createBranchWeights(weightValues);
-    }
-
     llvm::SwitchInst *switchInst = builder.CreateSwitch(
         moduleTranslation.lookupValue(switchOp.getValue()),
         moduleTranslation.lookupBlock(switchOp.getDefaultDestination()),
-        switchOp.getCaseDestinations().size(), branchWeights);
+        switchOp.getCaseDestinations().size());
+
+    // Handle switch with zero cases.
+    if (!switchOp.getCaseValues())
+      return success();
 
     auto *ty = llvm::cast<llvm::IntegerType>(
         moduleTranslation.convertType(switchOp.getValue().getType()));
     for (auto i :
-         llvm::zip(switchOp.getCaseValues()->cast<DenseIntElementsAttr>(),
+         llvm::zip(llvm::cast<DenseIntElementsAttr>(*switchOp.getCaseValues()),
                    switchOp.getCaseDestinations()))
       switchInst->addCase(
           llvm::ConstantInt::get(ty, std::get<0>(i).getLimitedValue()),

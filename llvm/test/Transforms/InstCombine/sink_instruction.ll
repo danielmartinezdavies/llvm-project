@@ -27,9 +27,12 @@ endif:          ; preds = %entry
   ret i32 %tmp.2
 }
 
+; We fail to reach a fixpoint, because sunk instructions get revisited too
+; early. In @test2 the sunk add is revisited before the dominating condition
+; is visited and added to the DomConditionCache.
 
 ;; PHI use, sink divide before call.
-define i32 @test2(i32 %x) nounwind ssp {
+define i32 @test2(i32 %x) nounwind ssp "instcombine-no-verify-fixpoint" {
 ; CHECK-LABEL: @test2(
 ; CHECK-NEXT:  entry:
 ; CHECK-NEXT:    br label [[BB:%.*]]
@@ -41,7 +44,7 @@ define i32 @test2(i32 %x) nounwind ssp {
 ; CHECK:       bb1:
 ; CHECK-NEXT:    [[TMP1:%.*]] = add nsw i32 [[X_ADDR_17]], 1
 ; CHECK-NEXT:    [[TMP2:%.*]] = sdiv i32 [[TMP1]], [[X_ADDR_17]]
-; CHECK-NEXT:    [[TMP3:%.*]] = tail call i32 @bar() #[[ATTR1:[0-9]+]]
+; CHECK-NEXT:    [[TMP3:%.*]] = tail call i32 @bar() #[[ATTR3:[0-9]+]]
 ; CHECK-NEXT:    br label [[BB2]]
 ; CHECK:       bb2:
 ; CHECK-NEXT:    [[X_ADDR_0]] = phi i32 [ [[TMP2]], [[BB1]] ], [ [[X_ADDR_17]], [[BB]] ]
@@ -78,17 +81,17 @@ bb4:                                              ; preds = %bb2
 
 declare i32 @bar()
 
-define i32 @test3(i32* nocapture readonly %P, i32 %i) {
+define i32 @test3(ptr nocapture readonly %P, i32 %i) {
 ; CHECK-LABEL: @test3(
 ; CHECK-NEXT:  entry:
 ; CHECK-NEXT:    switch i32 [[I:%.*]], label [[SW_EPILOG:%.*]] [
-; CHECK-NEXT:    i32 5, label [[SW_BB:%.*]]
-; CHECK-NEXT:    i32 2, label [[SW_BB]]
+; CHECK-NEXT:      i32 5, label [[SW_BB:%.*]]
+; CHECK-NEXT:      i32 2, label [[SW_BB]]
 ; CHECK-NEXT:    ]
 ; CHECK:       sw.bb:
 ; CHECK-NEXT:    [[IDXPROM:%.*]] = sext i32 [[I]] to i64
-; CHECK-NEXT:    [[ARRAYIDX:%.*]] = getelementptr inbounds i32, i32* [[P:%.*]], i64 [[IDXPROM]]
-; CHECK-NEXT:    [[TMP0:%.*]] = load i32, i32* [[ARRAYIDX]], align 4
+; CHECK-NEXT:    [[ARRAYIDX:%.*]] = getelementptr inbounds i32, ptr [[P:%.*]], i64 [[IDXPROM]]
+; CHECK-NEXT:    [[TMP0:%.*]] = load i32, ptr [[ARRAYIDX]], align 4
 ; CHECK-NEXT:    [[ADD:%.*]] = add nsw i32 [[TMP0]], [[I]]
 ; CHECK-NEXT:    br label [[SW_EPILOG]]
 ; CHECK:       sw.epilog:
@@ -97,8 +100,8 @@ define i32 @test3(i32* nocapture readonly %P, i32 %i) {
 ;
 entry:
   %idxprom = sext i32 %i to i64
-  %arrayidx = getelementptr inbounds i32, i32* %P, i64 %idxprom
-  %0 = load i32, i32* %arrayidx, align 4
+  %arrayidx = getelementptr inbounds i32, ptr %P, i64 %idxprom
+  %0 = load i32, ptr %arrayidx, align 4
   switch i32 %i, label %sw.epilog [
   i32 5, label %sw.bb
   i32 2, label %sw.bb
@@ -141,12 +144,12 @@ endif:          ; preds = %entry
 }
 
 ; Two uses in a single user (phi node). We just bail out.
-define i32 @test5(i32* nocapture readonly %P, i32 %i, i1 %cond) {
+define i32 @test5(ptr nocapture readonly %P, i32 %i, i1 %cond) {
 ; CHECK-LABEL: @test5(
 ; CHECK-NEXT:  entry:
 ; CHECK-NEXT:    [[IDXPROM:%.*]] = sext i32 [[I:%.*]] to i64
-; CHECK-NEXT:    [[ARRAYIDX:%.*]] = getelementptr inbounds i32, i32* [[P:%.*]], i64 [[IDXPROM]]
-; CHECK-NEXT:    [[TMP0:%.*]] = load i32, i32* [[ARRAYIDX]], align 4
+; CHECK-NEXT:    [[ARRAYIDX:%.*]] = getelementptr inbounds i32, ptr [[P:%.*]], i64 [[IDXPROM]]
+; CHECK-NEXT:    [[TMP0:%.*]] = load i32, ptr [[ARRAYIDX]], align 4
 ; CHECK-NEXT:    br i1 [[COND:%.*]], label [[DISPATCHBB:%.*]], label [[SW_EPILOG:%.*]]
 ; CHECK:       dispatchBB:
 ; CHECK-NEXT:    [[ADD:%.*]] = shl nsw i32 [[I]], 1
@@ -159,8 +162,8 @@ define i32 @test5(i32* nocapture readonly %P, i32 %i, i1 %cond) {
 ;
 entry:
   %idxprom = sext i32 %i to i64
-  %arrayidx = getelementptr inbounds i32, i32* %P, i64 %idxprom
-  %0 = load i32, i32* %arrayidx, align 4
+  %arrayidx = getelementptr inbounds i32, ptr %P, i64 %idxprom
+  %0 = load i32, ptr %arrayidx, align 4
   br i1 %cond, label %dispatchBB, label %sw.epilog
 
 dispatchBB:
@@ -176,18 +179,18 @@ sw.epilog:                                        ; preds = %entry, %sw.bb
 }
 
 ; Multiple uses but from same BB. We can sink.
-define i32 @test6(i32* nocapture readonly %P, i32 %i, i1 %cond) {
+define i32 @test6(ptr nocapture readonly %P, i32 %i, i1 %cond) {
 ; CHECK-LABEL: @test6(
 ; CHECK-NEXT:  entry:
-; CHECK-NEXT:    [[ADD:%.*]] = shl nsw i32 [[I]], 1
+; CHECK-NEXT:    [[ADD:%.*]] = shl nsw i32 [[I:%.*]], 1
 ; CHECK-NEXT:    br label [[DISPATCHBB:%.*]]
 ; CHECK:       dispatchBB:
-; CHECK-NEXT:    [[IDXPROM:%.*]] = sext i32 [[I:%.*]] to i64
-; CHECK-NEXT:    [[ARRAYIDX:%.*]] = getelementptr inbounds i32, i32* [[P:%.*]], i64 [[IDXPROM]]
-; CHECK-NEXT:    [[TMP0:%.*]] = load i32, i32* [[ARRAYIDX]], align 4
+; CHECK-NEXT:    [[IDXPROM:%.*]] = sext i32 [[I]] to i64
+; CHECK-NEXT:    [[ARRAYIDX:%.*]] = getelementptr inbounds i32, ptr [[P:%.*]], i64 [[IDXPROM]]
+; CHECK-NEXT:    [[TMP0:%.*]] = load i32, ptr [[ARRAYIDX]], align 4
 ; CHECK-NEXT:    switch i32 [[I]], label [[SW_BB:%.*]] [
-; CHECK-NEXT:    i32 5, label [[SW_EPILOG:%.*]]
-; CHECK-NEXT:    i32 2, label [[SW_EPILOG]]
+; CHECK-NEXT:      i32 5, label [[SW_EPILOG:%.*]]
+; CHECK-NEXT:      i32 2, label [[SW_EPILOG]]
 ; CHECK-NEXT:    ]
 ; CHECK:       sw.bb:
 ; CHECK-NEXT:    br label [[SW_EPILOG]]
@@ -197,8 +200,8 @@ define i32 @test6(i32* nocapture readonly %P, i32 %i, i1 %cond) {
 ;
 entry:
   %idxprom = sext i32 %i to i64
-  %arrayidx = getelementptr inbounds i32, i32* %P, i64 %idxprom
-  %0 = load i32, i32* %arrayidx, align 4
+  %arrayidx = getelementptr inbounds i32, ptr %P, i64 %idxprom
+  %0 = load i32, ptr %arrayidx, align 4
   %add = add nsw i32 %i, %i
   br label %dispatchBB
 
@@ -268,3 +271,114 @@ abort:
   call void @abort()
   unreachable
 }
+
+; Loads marked invariant can be sunk past potential memory writes.
+
+define i32 @invariant_load_metadata(ptr %p, i1 %cond) {
+; CHECK-LABEL: @invariant_load_metadata(
+; CHECK-NEXT:  entry:
+; CHECK-NEXT:    br i1 [[COND:%.*]], label [[BLOCK:%.*]], label [[END:%.*]]
+; CHECK:       block:
+; CHECK-NEXT:    call void @fn()
+; CHECK-NEXT:    br label [[END]]
+; CHECK:       end:
+; CHECK-NEXT:    [[V:%.*]] = load i32, ptr [[P:%.*]], align 4, !invariant.load [[META0:![0-9]+]]
+; CHECK-NEXT:    ret i32 [[V]]
+;
+entry:
+  %v = load i32, ptr %p, !invariant.load !0
+  br i1 %cond, label %block, label %end
+block:
+  call void @fn()
+  br label %end
+end:
+  ret i32 %v
+}
+
+; Loads not marked invariant cannot be sunk past potential memory writes.
+
+define i32 @invariant_load_neg(ptr %p, i1 %cond) {
+; CHECK-LABEL: @invariant_load_neg(
+; CHECK-NEXT:  entry:
+; CHECK-NEXT:    [[V:%.*]] = load i32, ptr [[P:%.*]], align 4
+; CHECK-NEXT:    br i1 [[COND:%.*]], label [[BLOCK:%.*]], label [[END:%.*]]
+; CHECK:       block:
+; CHECK-NEXT:    call void @fn()
+; CHECK-NEXT:    br label [[END]]
+; CHECK:       end:
+; CHECK-NEXT:    ret i32 [[V]]
+;
+entry:
+  %v = load i32, ptr %p
+  br i1 %cond, label %block, label %end
+block:
+  call void @fn()
+  br label %end
+end:
+  ret i32 %v
+}
+
+; Loads that aren't marked invariant but used in one branch
+; can be sunk to that branch.
+
+define void @invariant_load_use_in_br(ptr %p, i1 %cond) {
+; CHECK-LABEL: @invariant_load_use_in_br(
+; CHECK-NEXT:  entry:
+; CHECK-NEXT:    br i1 [[COND:%.*]], label [[TRUE_BR:%.*]], label [[FALSE_BR:%.*]]
+; CHECK:       true.br:
+; CHECK-NEXT:    call void @fn()
+; CHECK-NEXT:    br label [[EXIT:%.*]]
+; CHECK:       false.br:
+; CHECK-NEXT:    [[VAL:%.*]] = load i32, ptr [[P:%.*]], align 4
+; CHECK-NEXT:    call void @fn(i32 [[VAL]])
+; CHECK-NEXT:    br label [[EXIT]]
+; CHECK:       exit:
+; CHECK-NEXT:    ret void
+;
+entry:
+  %val = load i32, ptr %p
+  br i1 %cond, label %true.br, label %false.br
+true.br:
+  call void @fn()
+  br label %exit
+false.br:
+  call void @fn(i32 %val)
+  br label %exit
+exit:
+  ret void
+}
+
+; Invariant loads marked with metadata can be sunk past calls.
+
+define void @invariant_load_metadata_call(ptr %p, i1 %cond) {
+; CHECK-LABEL: @invariant_load_metadata_call(
+; CHECK-NEXT:  entry:
+; CHECK-NEXT:    call void @fn()
+; CHECK-NEXT:    br i1 [[COND:%.*]], label [[TRUE_BR:%.*]], label [[FALSE_BR:%.*]]
+; CHECK:       true.br:
+; CHECK-NEXT:    call void @fn()
+; CHECK-NEXT:    br label [[EXIT:%.*]]
+; CHECK:       false.br:
+; CHECK-NEXT:    [[VAL:%.*]] = load i32, ptr [[P:%.*]], align 4, !invariant.load [[META0]]
+; CHECK-NEXT:    call void @fn(i32 [[VAL]])
+; CHECK-NEXT:    br label [[EXIT]]
+; CHECK:       exit:
+; CHECK-NEXT:    ret void
+;
+entry:
+  %val = load i32, ptr %p, !invariant.load !0
+  call void @fn()
+  br i1 %cond, label %true.br, label %false.br
+true.br:
+  call void @fn()
+  br label %exit
+false.br:
+  call void @fn(i32 %val)
+  br label %exit
+exit:
+  ret void
+}
+
+declare void @fn()
+
+!0 = !{}

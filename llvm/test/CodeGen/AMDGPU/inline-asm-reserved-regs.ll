@@ -41,11 +41,11 @@ entry:
 }
 
 ; FIXME: This should warn too
-; ERR-NOT: warning
-define amdgpu_kernel void @def_exec(i64 addrspace(1)* %ptr) {
+; ERR-NOT: warning: inline asm clobber list contains reserved registers
+define amdgpu_kernel void @def_exec(ptr addrspace(1) %ptr) {
 entry:
   %exec = call i64 asm sideeffect "; def $0", "={exec}"()
-  store i64 %exec, i64 addrspace(1)* %ptr
+  store i64 %exec, ptr addrspace(1) %ptr
   ret void
 }
 

@@ -15,10 +15,14 @@
 #include <__config>
 #include <__iterator/iterator_traits.h>
 #include <__utility/move.h>
+#include <__utility/pair.h>
 
 #if !defined(_LIBCPP_HAS_NO_PRAGMA_SYSTEM_HEADER)
 #  pragma GCC system_header
 #endif
+
+_LIBCPP_PUSH_MACROS
+#include <__undef_macros>
 
 _LIBCPP_BEGIN_NAMESPACE_STD
 
@@ -39,7 +43,7 @@ _LIBCPP_HIDE_FROM_ABI _LIBCPP_CONSTEXPR_SINCE_CXX20 __set_union_result<_InIter1,
     _InIter1 __first1, _Sent1 __last1, _InIter2 __first2, _Sent2 __last2, _OutIter __result, _Compare&& __comp) {
   for (; __first1 != __last1; ++__result) {
     if (__first2 == __last2) {
-      auto __ret1 = std::__copy_impl(std::move(__first1), std::move(__last1), std::move(__result));
+      auto __ret1 = std::__copy(std::move(__first1), std::move(__last1), std::move(__result));
       return __set_union_result<_InIter1, _InIter2, _OutIter>(
           std::move(__ret1.first), std::move(__first2), std::move((__ret1.second)));
     }
@@ -54,7 +58,7 @@ _LIBCPP_HIDE_FROM_ABI _LIBCPP_CONSTEXPR_SINCE_CXX20 __set_union_result<_InIter1,
       ++__first1;
     }
   }
-  auto __ret2 = std::__copy_impl(std::move(__first2), std::move(__last2), std::move(__result));
+  auto __ret2 = std::__copy(std::move(__first2), std::move(__last2), std::move(__result));
   return __set_union_result<_InIter1, _InIter2, _OutIter>(
       std::move(__first1), std::move(__ret2.first), std::move((__ret2.second)));
 }
@@ -67,8 +71,7 @@ _LIBCPP_HIDE_FROM_ABI _LIBCPP_CONSTEXPR_SINCE_CXX20 _OutputIterator set_union(
     _InputIterator2 __last2,
     _OutputIterator __result,
     _Compare __comp) {
-  typedef typename __comp_ref_type<_Compare>::type _Comp_ref;
-  return std::__set_union<_Comp_ref>(
+  return std::__set_union<__comp_ref_type<_Compare> >(
              std::move(__first1),
              std::move(__last1),
              std::move(__first2),
@@ -91,10 +94,11 @@ _LIBCPP_HIDE_FROM_ABI _LIBCPP_CONSTEXPR_SINCE_CXX20 _OutputIterator set_union(
       std::move(__first2),
       std::move(__last2),
       std::move(__result),
-      __less<typename iterator_traits<_InputIterator1>::value_type,
-             typename iterator_traits<_InputIterator2>::value_type>());
+      __less<>());
 }
 
 _LIBCPP_END_NAMESPACE_STD
+
+_LIBCPP_POP_MACROS
 
 #endif // _LIBCPP___ALGORITHM_SET_UNION_H

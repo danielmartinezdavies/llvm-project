@@ -10,10 +10,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "ARMTargetMachine.h"
 #include "ARMTargetTransformInfo.h"
 #include "llvm/CodeGen/SelectionDAG.h"
-#include "llvm/IR/DerivedTypes.h"
 #include "llvm/Support/CommandLine.h"
 using namespace llvm;
 
@@ -31,6 +29,11 @@ cl::opt<TPLoop::MemTransfer> EnableMemtransferTPLoop(
                clEnumValN(TPLoop::Allow, "allow",
                           "Allow (may be subject to certain conditions) "
                           "conversion of memcpy to TP loop.")));
+
+bool ARMSelectionDAGInfo::isTargetMemoryOpcode(unsigned Opcode) const {
+  return Opcode >= ARMISD::FIRST_MEMORY_OPCODE &&
+         Opcode <= ARMISD::LAST_MEMORY_OPCODE;
+}
 
 // Emit, if possible, a specialized version of the given Libcall. Typically this
 // means selecting the appropriately aligned version, but we also convert memset
@@ -65,9 +68,8 @@ SDValue ARMSelectionDAGInfo::EmitSpecializedLibcall(
     break;
   case RTLIB::MEMSET:
     AEABILibcall = AEABI_MEMSET;
-    if (ConstantSDNode *ConstantSrc = dyn_cast<ConstantSDNode>(Src))
-      if (ConstantSrc->getZExtValue() == 0)
-        AEABILibcall = AEABI_MEMCLR;
+    if (isNullConstant(Src))
+      AEABILibcall = AEABI_MEMCLR;
     break;
   default:
     return SDValue();
@@ -266,8 +268,7 @@ SDValue ARMSelectionDAGInfo::EmitTargetCodeForMemcpy(
     SrcOff += VTSize;
     BytesLeft -= VTSize;
   }
-  Chain = DAG.getNode(ISD::TokenFactor, dl, MVT::Other,
-                      makeArrayRef(TFOps, i));
+  Chain = DAG.getNode(ISD::TokenFactor, dl, MVT::Other, ArrayRef(TFOps, i));
 
   i = 0;
   BytesLeft = BytesLeftSave;
@@ -282,8 +283,7 @@ SDValue ARMSelectionDAGInfo::EmitTargetCodeForMemcpy(
     DstOff += VTSize;
     BytesLeft -= VTSize;
   }
-  return DAG.getNode(ISD::TokenFactor, dl, MVT::Other,
-                     makeArrayRef(TFOps, i));
+  return DAG.getNode(ISD::TokenFactor, dl, MVT::Other, ArrayRef(TFOps, i));
 }
 
 SDValue ARMSelectionDAGInfo::EmitTargetCodeForMemmove(

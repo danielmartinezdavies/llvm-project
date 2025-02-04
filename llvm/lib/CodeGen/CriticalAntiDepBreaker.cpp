@@ -49,7 +49,7 @@ CriticalAntiDepBreaker::~CriticalAntiDepBreaker() = default;
 
 void CriticalAntiDepBreaker::StartBlock(MachineBasicBlock *BB) {
   const unsigned BBSize = BB->size();
-  for (unsigned i = 0, e = TRI->getNumRegs(); i != e; ++i) {
+  for (unsigned i = 1, e = TRI->getNumRegs(); i != e; ++i) {
     // Clear out the register class data.
     Classes[i] = nullptr;
 
@@ -67,7 +67,7 @@ void CriticalAntiDepBreaker::StartBlock(MachineBasicBlock *BB) {
   for (const MachineBasicBlock *Succ : BB->successors())
     for (const auto &LI : Succ->liveins()) {
       for (MCRegAliasIterator AI(LI.PhysReg, TRI, true); AI.isValid(); ++AI) {
-        unsigned Reg = *AI;
+        unsigned Reg = (*AI).id();
         Classes[Reg] = reinterpret_cast<TargetRegisterClass *>(-1);
         KillIndices[Reg] = BBSize;
         DefIndices[Reg] = ~0u;
@@ -85,7 +85,7 @@ void CriticalAntiDepBreaker::StartBlock(MachineBasicBlock *BB) {
     if (!IsReturnBlock && !Pristine.test(Reg))
       continue;
     for (MCRegAliasIterator AI(*I, TRI, true); AI.isValid(); ++AI) {
-      unsigned Reg = *AI;
+      unsigned Reg = (*AI).id();
       Classes[Reg] = reinterpret_cast<TargetRegisterClass *>(-1);
       KillIndices[Reg] = BBSize;
       DefIndices[Reg] = ~0u;
@@ -111,7 +111,7 @@ void CriticalAntiDepBreaker::Observe(MachineInstr &MI, unsigned Count,
     return;
   assert(Count < InsertPosIndex && "Instruction index out of expected range!");
 
-  for (unsigned Reg = 0; Reg != TRI->getNumRegs(); ++Reg) {
+  for (unsigned Reg = 1; Reg != TRI->getNumRegs(); ++Reg) {
     if (KillIndices[Reg] != ~0u) {
       // If Reg is currently live, then mark that it can't be renamed as
       // we don't know the extent of its live-range anymore (now that it
@@ -200,7 +200,7 @@ void CriticalAntiDepBreaker::PrescanInstruction(MachineInstr &MI) {
       // If an alias of the reg is used during the live range, give up.
       // Note that this allows us to skip checking if AntiDepReg
       // overlaps with any of the aliases, among other things.
-      unsigned AliasReg = *AI;
+      unsigned AliasReg = (*AI).id();
       if (Classes[AliasReg]) {
         Classes[AliasReg] = reinterpret_cast<TargetRegisterClass *>(-1);
         Classes[Reg] = reinterpret_cast<TargetRegisterClass *>(-1);
@@ -213,9 +213,8 @@ void CriticalAntiDepBreaker::PrescanInstruction(MachineInstr &MI) {
 
     if (MO.isUse() && Special) {
       if (!KeepRegs.test(Reg)) {
-        for (MCSubRegIterator SubRegs(Reg, TRI, /*IncludeSelf=*/true);
-             SubRegs.isValid(); ++SubRegs)
-          KeepRegs.set(*SubRegs);
+        for (MCPhysReg SubReg : TRI->subregs_inclusive(Reg))
+          KeepRegs.set(SubReg);
       }
     }
   }
@@ -238,13 +237,11 @@ void CriticalAntiDepBreaker::PrescanInstruction(MachineInstr &MI) {
     // itself can't be changed.
     if (MI.isRegTiedToUseOperand(I) &&
         Classes[Reg] == reinterpret_cast<TargetRegisterClass *>(-1)) {
-      for (MCSubRegIterator SubRegs(Reg, TRI, /*IncludeSelf=*/true);
-           SubRegs.isValid(); ++SubRegs) {
-        KeepRegs.set(*SubRegs);
+      for (MCPhysReg SubReg : TRI->subregs_inclusive(Reg)) {
+        KeepRegs.set(SubReg);
       }
-      for (MCSuperRegIterator SuperRegs(Reg, TRI);
-           SuperRegs.isValid(); ++SuperRegs) {
-        KeepRegs.set(*SuperRegs);
+      for (MCPhysReg SuperReg : TRI->superregs(Reg)) {
+        KeepRegs.set(SuperReg);
       }
     }
   }
@@ -264,14 +261,11 @@ void CriticalAntiDepBreaker::ScanInstruction(MachineInstr &MI, unsigned Count) {
 
       if (MO.isRegMask()) {
         auto ClobbersPhysRegAndSubRegs = [&](unsigned PhysReg) {
-          for (MCSubRegIterator SRI(PhysReg, TRI, true); SRI.isValid(); ++SRI)
-            if (!MO.clobbersPhysReg(*SRI))
-              return false;
-
-          return true;
+          return all_of(TRI->subregs_inclusive(PhysReg),
+                        [&](MCPhysReg SR) { return MO.clobbersPhysReg(SR); });
         };
 
-        for (unsigned i = 0, e = TRI->getNumRegs(); i != e; ++i) {
+        for (unsigned i = 1, e = TRI->getNumRegs(); i != e; ++i) {
           if (ClobbersPhysRegAndSubRegs(i)) {
             DefIndices[i] = Count;
             KillIndices[i] = ~0u;
@@ -297,8 +291,7 @@ void CriticalAntiDepBreaker::ScanInstruction(MachineInstr &MI, unsigned Count) {
 
       // For the reg itself and all subregs: update the def to current;
       // reset the kill state, any restrictions, and references.
-      for (MCSubRegIterator SRI(Reg, TRI, true); SRI.isValid(); ++SRI) {
-        unsigned SubregReg = *SRI;
+      for (MCPhysReg SubregReg : TRI->subregs_inclusive(Reg)) {
         DefIndices[SubregReg] = Count;
         KillIndices[SubregReg] = ~0u;
         Classes[SubregReg] = nullptr;
@@ -307,8 +300,8 @@ void CriticalAntiDepBreaker::ScanInstruction(MachineInstr &MI, unsigned Count) {
           KeepRegs.reset(SubregReg);
       }
       // Conservatively mark super-registers as unusable.
-      for (MCSuperRegIterator SR(Reg, TRI); SR.isValid(); ++SR)
-        Classes[*SR] = reinterpret_cast<TargetRegisterClass *>(-1);
+      for (MCPhysReg SR : TRI->superregs(Reg))
+        Classes[SR] = reinterpret_cast<TargetRegisterClass *>(-1);
     }
   }
   for (unsigned i = 0, e = MI.getNumOperands(); i != e; ++i) {
@@ -334,7 +327,7 @@ void CriticalAntiDepBreaker::ScanInstruction(MachineInstr &MI, unsigned Count) {
     // It wasn't previously live but now it is, this is a kill.
     // Repeat for all aliases.
     for (MCRegAliasIterator AI(Reg, TRI, true); AI.isValid(); ++AI) {
-      unsigned AliasReg = *AI;
+      unsigned AliasReg = (*AI).id();
       if (KillIndices[AliasReg] == ~0u) {
         KillIndices[AliasReg] = Count;
         DefIndices[AliasReg] = ~0u;
@@ -470,7 +463,7 @@ BreakAntiDependencies(const std::vector<SUnit> &SUnits,
     LLVM_DEBUG(dbgs() << "Critical path has total latency "
                       << (Max->getDepth() + Max->Latency) << "\n");
     LLVM_DEBUG(dbgs() << "Available regs:");
-    for (unsigned Reg = 0; Reg < TRI->getNumRegs(); ++Reg) {
+    for (unsigned Reg = 1; Reg < TRI->getNumRegs(); ++Reg) {
       if (KillIndices[Reg] == ~0u)
         LLVM_DEBUG(dbgs() << " " << printReg(Reg, TRI));
     }

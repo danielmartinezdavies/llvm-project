@@ -9,7 +9,13 @@
 #ifndef LLVM_LIB_TARGET_AARCH64_MCTARGETDESC_AARCH64TARGETSTREAMER_H
 #define LLVM_LIB_TARGET_AARCH64_MCTARGETDESC_AARCH64TARGETSTREAMER_H
 
+#include "AArch64MCExpr.h"
+#include "llvm/ADT/StringRef.h"
+#include "llvm/IR/Instructions.h"
+#include "llvm/MC/MCELFStreamer.h"
 #include "llvm/MC/MCStreamer.h"
+#include "llvm/Support/AArch64BuildAttributes.h"
+#include <cstdint>
 
 namespace {
 class AArch64ELFStreamer;
@@ -30,12 +36,18 @@ public:
   /// MCExpr that can be used to refer to the constant pool location.
   const MCExpr *addConstantPoolEntry(const MCExpr *, unsigned Size, SMLoc Loc);
 
-  /// Callback used to implemnt the .ltorg directive.
+  /// Callback used to implement the .ltorg directive.
   /// Emit contents of constant pool for the current section.
   void emitCurrentConstantPool();
 
   /// Callback used to implement the .note.gnu.property section.
-  void emitNoteSection(unsigned Flags);
+  void emitNoteSection(unsigned Flags, uint64_t PAuthABIPlatform = -1,
+                       uint64_t PAuthABIVersion = -1);
+
+  /// Callback used to emit AUTH expressions (e.g. signed
+  /// personality function pointer).
+  void emitAuthValue(const MCExpr *Expr, uint16_t Discriminator,
+                     AArch64PACKey::ID Key, bool HasAddressDiversity);
 
   /// Callback used to implement the .inst directive.
   virtual void emitInst(uint32_t Inst);
@@ -66,7 +78,39 @@ public:
   virtual void emitARM64WinCFITrapFrame() {}
   virtual void emitARM64WinCFIMachineFrame() {}
   virtual void emitARM64WinCFIContext() {}
+  virtual void emitARM64WinCFIECContext() {}
   virtual void emitARM64WinCFIClearUnwoundToCall() {}
+  virtual void emitARM64WinCFIPACSignLR() {}
+  virtual void emitARM64WinCFISaveAnyRegI(unsigned Reg, int Offset) {}
+  virtual void emitARM64WinCFISaveAnyRegIP(unsigned Reg, int Offset) {}
+  virtual void emitARM64WinCFISaveAnyRegD(unsigned Reg, int Offset) {}
+  virtual void emitARM64WinCFISaveAnyRegDP(unsigned Reg, int Offset) {}
+  virtual void emitARM64WinCFISaveAnyRegQ(unsigned Reg, int Offset) {}
+  virtual void emitARM64WinCFISaveAnyRegQP(unsigned Reg, int Offset) {}
+  virtual void emitARM64WinCFISaveAnyRegIX(unsigned Reg, int Offset) {}
+  virtual void emitARM64WinCFISaveAnyRegIPX(unsigned Reg, int Offset) {}
+  virtual void emitARM64WinCFISaveAnyRegDX(unsigned Reg, int Offset) {}
+  virtual void emitARM64WinCFISaveAnyRegDPX(unsigned Reg, int Offset) {}
+  virtual void emitARM64WinCFISaveAnyRegQX(unsigned Reg, int Offset) {}
+  virtual void emitARM64WinCFISaveAnyRegQPX(unsigned Reg, int Offset) {}
+
+  /// Build attributes implementation
+  virtual void
+  emitAtributesSubsection(StringRef VendorName,
+                          AArch64BuildAttrs::SubsectionOptional IsOptional,
+                          AArch64BuildAttrs::SubsectionType ParameterType);
+  virtual void emitAttribute(StringRef VendorName, unsigned Tag, unsigned Value,
+                             std::string String, bool Override);
+  void activateAtributesSubsection(StringRef VendorName);
+  std::unique_ptr<MCELFStreamer::AttributeSubSection>
+  getActiveAtributesSubsection();
+  std::unique_ptr<MCELFStreamer::AttributeSubSection>
+  getAtributesSubsectionByName(StringRef Name);
+  void
+  insertAttributeInPlace(const MCELFStreamer::AttributeItem &Attr,
+                         MCELFStreamer::AttributeSubSection &AttSubSection);
+
+  SmallVector<MCELFStreamer::AttributeSubSection, 64> AttributeSubSections;
 
 private:
   std::unique_ptr<AssemblerConstantPools> ConstantPools;
@@ -76,20 +120,23 @@ class AArch64TargetELFStreamer : public AArch64TargetStreamer {
 private:
   AArch64ELFStreamer &getStreamer();
 
+  MCSection *AttributeSection = nullptr;
+
+  /// Build attributes implementation
+  void emitAtributesSubsection(
+      StringRef VendorName, AArch64BuildAttrs::SubsectionOptional IsOptional,
+      AArch64BuildAttrs::SubsectionType ParameterType) override;
+  void emitAttribute(StringRef VendorName, unsigned Tag, unsigned Value,
+                     std::string String, bool Override = false) override;
   void emitInst(uint32_t Inst) override;
   void emitDirectiveVariantPCS(MCSymbol *Symbol) override;
+  void finish() override;
 
 public:
   AArch64TargetELFStreamer(MCStreamer &S) : AArch64TargetStreamer(S) {}
 };
 
 class AArch64TargetWinCOFFStreamer : public llvm::AArch64TargetStreamer {
-private:
-  // True if we are processing SEH directives in an epilogue.
-  bool InEpilogCFI = false;
-
-  // Symbol of the current epilog for which we are processing SEH directives.
-  MCSymbol *CurrentEpilog = nullptr;
 public:
   AArch64TargetWinCOFFStreamer(llvm::MCStreamer &S)
     : AArch64TargetStreamer(S) {}
@@ -119,7 +166,21 @@ public:
   void emitARM64WinCFITrapFrame() override;
   void emitARM64WinCFIMachineFrame() override;
   void emitARM64WinCFIContext() override;
+  void emitARM64WinCFIECContext() override;
   void emitARM64WinCFIClearUnwoundToCall() override;
+  void emitARM64WinCFIPACSignLR() override;
+  void emitARM64WinCFISaveAnyRegI(unsigned Reg, int Offset) override;
+  void emitARM64WinCFISaveAnyRegIP(unsigned Reg, int Offset) override;
+  void emitARM64WinCFISaveAnyRegD(unsigned Reg, int Offset) override;
+  void emitARM64WinCFISaveAnyRegDP(unsigned Reg, int Offset) override;
+  void emitARM64WinCFISaveAnyRegQ(unsigned Reg, int Offset) override;
+  void emitARM64WinCFISaveAnyRegQP(unsigned Reg, int Offset) override;
+  void emitARM64WinCFISaveAnyRegIX(unsigned Reg, int Offset) override;
+  void emitARM64WinCFISaveAnyRegIPX(unsigned Reg, int Offset) override;
+  void emitARM64WinCFISaveAnyRegDX(unsigned Reg, int Offset) override;
+  void emitARM64WinCFISaveAnyRegDPX(unsigned Reg, int Offset) override;
+  void emitARM64WinCFISaveAnyRegQX(unsigned Reg, int Offset) override;
+  void emitARM64WinCFISaveAnyRegQPX(unsigned Reg, int Offset) override;
 
 private:
   void emitARM64WinUnwindCode(unsigned UnwindCode, int Reg, int Offset);
@@ -127,6 +188,8 @@ private:
 
 MCTargetStreamer *
 createAArch64ObjectTargetStreamer(MCStreamer &S, const MCSubtargetInfo &STI);
+
+MCTargetStreamer *createAArch64NullTargetStreamer(MCStreamer &S);
 
 } // end namespace llvm
 

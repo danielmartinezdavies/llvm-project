@@ -69,12 +69,7 @@ static bool isIncompletePhi(const til::SExpr *E) {
 
 using CallingContext = SExprBuilder::CallingContext;
 
-til::SExpr *SExprBuilder::lookupStmt(const Stmt *S) {
-  auto It = SMap.find(S);
-  if (It != SMap.end())
-    return It->second;
-  return nullptr;
-}
+til::SExpr *SExprBuilder::lookupStmt(const Stmt *S) { return SMap.lookup(S); }
 
 til::SCFG *SExprBuilder::buildCFG(CFGWalker &Walker) {
   Walker.walk(*this);
@@ -102,7 +97,7 @@ static StringRef ClassifyDiagnostic(QualType VDT) {
     if (const auto *TD = TT->getDecl())
       if (const auto *CA = TD->getAttr<CapabilityAttr>())
         return ClassifyDiagnostic(CA);
-  } else if (VDT->isPointerType() || VDT->isReferenceType())
+  } else if (VDT->isPointerOrReferenceType())
     return ClassifyDiagnostic(VDT->getPointeeType());
 
   return "mutex";
@@ -115,19 +110,23 @@ static StringRef ClassifyDiagnostic(QualType VDT) {
 /// \param D       The declaration to which the attribute is attached.
 /// \param DeclExp An expression involving the Decl to which the attribute
 ///                is attached.  E.g. the call to a function.
+/// \param Self    S-expression to substitute for a \ref CXXThisExpr in a call,
+///                or argument to a cleanup function.
 CapabilityExpr SExprBuilder::translateAttrExpr(const Expr *AttrExp,
                                                const NamedDecl *D,
                                                const Expr *DeclExp,
-                                               VarDecl *SelfDecl) {
+                                               til::SExpr *Self) {
   // If we are processing a raw attribute expression, with no substitutions.
-  if (!DeclExp)
+  if (!DeclExp && !Self)
     return translateAttrExpr(AttrExp, nullptr);
 
   CallingContext Ctx(nullptr, D);
 
   // Examine DeclExp to find SelfArg and FunArgs, which are used to substitute
   // for formal parameters when we call buildMutexID later.
-  if (const auto *ME = dyn_cast<MemberExpr>(DeclExp)) {
+  if (!DeclExp)
+    /* We'll use Self. */;
+  else if (const auto *ME = dyn_cast<MemberExpr>(DeclExp)) {
     Ctx.SelfArg   = ME->getBase();
     Ctx.SelfArrow = ME->isArrow();
   } else if (const auto *CE = dyn_cast<CXXMemberCallExpr>(DeclExp)) {
@@ -136,35 +135,52 @@ CapabilityExpr SExprBuilder::translateAttrExpr(const Expr *AttrExp,
     Ctx.NumArgs   = CE->getNumArgs();
     Ctx.FunArgs   = CE->getArgs();
   } else if (const auto *CE = dyn_cast<CallExpr>(DeclExp)) {
-    Ctx.NumArgs = CE->getNumArgs();
-    Ctx.FunArgs = CE->getArgs();
+    // Calls to operators that are members need to be treated like member calls.
+    if (isa<CXXOperatorCallExpr>(CE) && isa<CXXMethodDecl>(D)) {
+      Ctx.SelfArg = CE->getArg(0);
+      Ctx.SelfArrow = false;
+      Ctx.NumArgs = CE->getNumArgs() - 1;
+      Ctx.FunArgs = CE->getArgs() + 1;
+    } else {
+      Ctx.NumArgs = CE->getNumArgs();
+      Ctx.FunArgs = CE->getArgs();
+    }
   } else if (const auto *CE = dyn_cast<CXXConstructExpr>(DeclExp)) {
     Ctx.SelfArg = nullptr;  // Will be set below
     Ctx.NumArgs = CE->getNumArgs();
     Ctx.FunArgs = CE->getArgs();
-  } else if (D && isa<CXXDestructorDecl>(D)) {
-    // There's no such thing as a "destructor call" in the AST.
-    Ctx.SelfArg = DeclExp;
   }
 
-  // Hack to handle constructors, where self cannot be recovered from
-  // the expression.
-  if (SelfDecl && !Ctx.SelfArg) {
-    DeclRefExpr SelfDRE(SelfDecl->getASTContext(), SelfDecl, false,
-                        SelfDecl->getType(), VK_LValue,
-                        SelfDecl->getLocation());
-    Ctx.SelfArg = &SelfDRE;
+  // Usually we want to substitute the self-argument for "this", but lambdas
+  // are an exception: "this" on or in a lambda call operator doesn't refer
+  // to the lambda, but to captured "this" in the context it was created in.
+  // This can happen for operator calls and member calls, so fix it up here.
+  if (const auto *CMD = dyn_cast<CXXMethodDecl>(D))
+    if (CMD->getParent()->isLambda())
+      Ctx.SelfArg = nullptr;
+
+  if (Self) {
+    assert(!Ctx.SelfArg && "Ambiguous self argument");
+    assert(isa<FunctionDecl>(D) && "Self argument requires function");
+    if (isa<CXXMethodDecl>(D))
+      Ctx.SelfArg = Self;
+    else
+      Ctx.FunArgs = Self;
 
     // If the attribute has no arguments, then assume the argument is "this".
     if (!AttrExp)
-      return translateAttrExpr(Ctx.SelfArg, nullptr);
+      return CapabilityExpr(
+          Self,
+          ClassifyDiagnostic(
+              cast<CXXMethodDecl>(D)->getFunctionObjectParameterType()),
+          false);
     else  // For most attributes.
       return translateAttrExpr(AttrExp, &Ctx);
   }
 
   // If the attribute has no arguments, then assume the argument is "this".
   if (!AttrExp)
-    return translateAttrExpr(Ctx.SelfArg, nullptr);
+    return translateAttrExpr(cast<const Expr *>(Ctx.SelfArg), nullptr);
   else  // For most attributes.
     return translateAttrExpr(AttrExp, &Ctx);
 }
@@ -177,7 +193,7 @@ CapabilityExpr SExprBuilder::translateAttrExpr(const Expr *AttrExp,
     return CapabilityExpr();
 
   if (const auto* SLit = dyn_cast<StringLiteral>(AttrExp)) {
-    if (SLit->getString() == StringRef("*"))
+    if (SLit->getString() == "*")
       // The "*" expr is a universal lock, which essentially turns off
       // checks until it is removed from the lockset.
       return CapabilityExpr(new (Arena) til::Wildcard(), StringRef("wildcard"),
@@ -197,7 +213,7 @@ CapabilityExpr SExprBuilder::translateAttrExpr(const Expr *AttrExp,
   else if (const auto *UO = dyn_cast<UnaryOperator>(AttrExp)) {
     if (UO->getOpcode() == UO_LNot) {
       Neg = true;
-      AttrExp = UO->getSubExpr();
+      AttrExp = UO->getSubExpr()->IgnoreImplicit();
     }
   }
 
@@ -216,6 +232,16 @@ CapabilityExpr SExprBuilder::translateAttrExpr(const Expr *AttrExp,
       return CapabilityExpr(CE->expr(), Kind, Neg);
   }
   return CapabilityExpr(E, Kind, Neg);
+}
+
+til::LiteralPtr *SExprBuilder::createVariable(const VarDecl *VD) {
+  return new (Arena) til::LiteralPtr(VD);
+}
+
+std::pair<til::LiteralPtr *, StringRef>
+SExprBuilder::createThisPlaceholder(const Expr *Exp) {
+  return {new (Arena) til::LiteralPtr(nullptr),
+          ClassifyDiagnostic(Exp->getType())};
 }
 
 // Translate a clang statement or expression to a TIL expression.
@@ -309,8 +335,14 @@ til::SExpr *SExprBuilder::translateDeclRefExpr(const DeclRefExpr *DRE,
               ? (cast<FunctionDecl>(D)->getCanonicalDecl() == Canonical)
               : (cast<ObjCMethodDecl>(D)->getCanonicalDecl() == Canonical)) {
         // Substitute call arguments for references to function parameters
-        assert(I < Ctx->NumArgs);
-        return translate(Ctx->FunArgs[I], Ctx->Prev);
+        if (const Expr *const *FunArgs =
+                dyn_cast<const Expr *const *>(Ctx->FunArgs)) {
+          assert(I < Ctx->NumArgs);
+          return translate(FunArgs[I], Ctx->Prev);
+        }
+
+        assert(I == 0);
+        return cast<til::SExpr *>(Ctx->FunArgs);
       }
     }
     // Map the param back to the param of the original function declaration
@@ -327,8 +359,12 @@ til::SExpr *SExprBuilder::translateDeclRefExpr(const DeclRefExpr *DRE,
 til::SExpr *SExprBuilder::translateCXXThisExpr(const CXXThisExpr *TE,
                                                CallingContext *Ctx) {
   // Substitute for 'this'
-  if (Ctx && Ctx->SelfArg)
-    return translate(Ctx->SelfArg, Ctx->Prev);
+  if (Ctx && Ctx->SelfArg) {
+    if (const auto *SelfArg = dyn_cast<const Expr *>(Ctx->SelfArg))
+      return translate(SelfArg, Ctx->Prev);
+    else
+      return cast<til::SExpr *>(Ctx->SelfArg);
+  }
   assert(SelfVar && "We have no variable for 'this'!");
   return SelfVar;
 }
@@ -637,7 +673,7 @@ SExprBuilder::translateAbstractConditionalOperator(
 til::SExpr *
 SExprBuilder::translateDeclStmt(const DeclStmt *S, CallingContext *Ctx) {
   DeclGroupRef DGrp = S->getDeclGroup();
-  for (auto I : DGrp) {
+  for (auto *I : DGrp) {
     if (auto *VD = dyn_cast_or_null<VarDecl>(I)) {
       Expr *E = VD->getInit();
       til::SExpr* SE = translate(E, Ctx);
@@ -975,7 +1011,7 @@ void SExprBuilder::exitCFG(const CFGBlock *Last) {
   IncompleteArgs.clear();
 }
 
-/*
+#ifndef NDEBUG
 namespace {
 
 class TILPrinter :
@@ -996,4 +1032,4 @@ void printSCFG(CFGWalker &Walker) {
 
 } // namespace threadSafety
 } // namespace clang
-*/
+#endif // NDEBUG

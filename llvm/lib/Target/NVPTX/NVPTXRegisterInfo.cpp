@@ -11,15 +11,13 @@
 //===----------------------------------------------------------------------===//
 
 #include "NVPTXRegisterInfo.h"
+#include "MCTargetDesc/NVPTXInstPrinter.h"
 #include "NVPTX.h"
-#include "NVPTXSubtarget.h"
 #include "NVPTXTargetMachine.h"
 #include "llvm/ADT/BitVector.h"
 #include "llvm/CodeGen/MachineFrameInfo.h"
 #include "llvm/CodeGen/MachineFunction.h"
-#include "llvm/CodeGen/MachineInstrBuilder.h"
 #include "llvm/CodeGen/TargetInstrInfo.h"
-#include "llvm/MC/MachineLocation.h"
 
 using namespace llvm;
 
@@ -29,16 +27,10 @@ namespace llvm {
 std::string getNVPTXRegClassName(TargetRegisterClass const *RC) {
   if (RC == &NVPTX::Float32RegsRegClass)
     return ".f32";
-  if (RC == &NVPTX::Float16RegsRegClass)
-    // Ideally fp16 registers should be .f16, but this syntax is only
-    // supported on sm_53+. On the other hand, .b16 registers are
-    // accepted for all supported fp16 instructions on all GPU
-    // variants, so we can use them instead.
-    return ".b16";
-  if (RC == &NVPTX::Float16x2RegsRegClass)
-    return ".b32";
   if (RC == &NVPTX::Float64RegsRegClass)
     return ".f64";
+  if (RC == &NVPTX::Int128RegsRegClass)
+    return ".b128";
   if (RC == &NVPTX::Int64RegsRegClass)
     // We use untyped (.b) integer registers here as NVCC does.
     // Correctness of generated code does not depend on register type,
@@ -73,12 +65,10 @@ std::string getNVPTXRegClassName(TargetRegisterClass const *RC) {
 std::string getNVPTXRegClassStr(TargetRegisterClass const *RC) {
   if (RC == &NVPTX::Float32RegsRegClass)
     return "%f";
-  if (RC == &NVPTX::Float16RegsRegClass)
-    return "%h";
-  if (RC == &NVPTX::Float16x2RegsRegClass)
-    return "%hh";
   if (RC == &NVPTX::Float64RegsRegClass)
     return "%fd";
+  if (RC == &NVPTX::Int128RegsRegClass)
+    return "%rq";
   if (RC == &NVPTX::Int64RegsRegClass)
     return "%rd";
   if (RC == &NVPTX::Int32RegsRegClass)
@@ -93,7 +83,8 @@ std::string getNVPTXRegClassStr(TargetRegisterClass const *RC) {
 }
 }
 
-NVPTXRegisterInfo::NVPTXRegisterInfo() : NVPTXGenRegisterInfo(0) {}
+NVPTXRegisterInfo::NVPTXRegisterInfo()
+    : NVPTXGenRegisterInfo(0), StrPool(StrAlloc) {}
 
 #define GET_REGINFO_TARGET_DESC
 #include "NVPTXGenRegisterInfo.inc"
@@ -118,7 +109,7 @@ BitVector NVPTXRegisterInfo::getReservedRegs(const MachineFunction &MF) const {
   return Reserved;
 }
 
-void NVPTXRegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator II,
+bool NVPTXRegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator II,
                                             int SPAdj, unsigned FIOperandNum,
                                             RegScavenger *RS) const {
   assert(SPAdj == 0 && "Unexpected");
@@ -133,6 +124,7 @@ void NVPTXRegisterInfo::eliminateFrameIndex(MachineBasicBlock::iterator II,
   // Using I0 as the frame pointer
   MI.getOperand(FIOperandNum).ChangeToRegister(getFrameRegister(MF), false);
   MI.getOperand(FIOperandNum + 1).ChangeToImmediate(Offset);
+  return false;
 }
 
 Register NVPTXRegisterInfo::getFrameRegister(const MachineFunction &MF) const {
@@ -146,4 +138,50 @@ NVPTXRegisterInfo::getFrameLocalRegister(const MachineFunction &MF) const {
   const NVPTXTargetMachine &TM =
       static_cast<const NVPTXTargetMachine &>(MF.getTarget());
   return TM.is64Bit() ? NVPTX::VRFrameLocal64 : NVPTX::VRFrameLocal32;
+}
+
+void NVPTXRegisterInfo::clearDebugRegisterMap() const {
+  debugRegisterMap.clear();
+}
+
+static uint64_t encodeRegisterForDwarf(std::string registerName) {
+  if (registerName.length() > 8) {
+    // The name is more than 8 characters long, and so won't fit into 64 bits.
+    return 0;
+  }
+
+  // Encode the name string into a DWARF register number using cuda-gdb's
+  // encoding.  See cuda_check_dwarf2_reg_ptx_virtual_register in cuda-tdep.c,
+  // https://github.com/NVIDIA/cuda-gdb/blob/e5cf3bddae520ffb326f95b4d98ce5c7474b828b/gdb/cuda/cuda-tdep.c#L353
+  // IE the bytes of the string are concatenated in reverse into a single
+  // number, which is stored in ULEB128, but in practice must be no more than 8
+  // bytes (excluding null terminator, which is not included).
+  uint64_t result = 0;
+  for (unsigned char c : registerName)
+    result = (result << 8) | c;
+  return result;
+}
+
+void NVPTXRegisterInfo::addToDebugRegisterMap(
+    uint64_t preEncodedVirtualRegister, std::string registerName) const {
+  uint64_t mapped = encodeRegisterForDwarf(registerName);
+  if (mapped == 0)
+    return;
+  debugRegisterMap.insert({preEncodedVirtualRegister, mapped});
+}
+
+int64_t NVPTXRegisterInfo::getDwarfRegNum(MCRegister RegNum, bool isEH) const {
+  if (RegNum.isPhysical()) {
+    std::string name = NVPTXInstPrinter::getRegisterName(RegNum.id());
+    // In NVPTXFrameLowering.cpp, we do arrange for %Depot to be accessible from
+    // %SP. Using the %Depot register doesn't provide any debug info in
+    // cuda-gdb, but switching it to %SP does.
+    if (RegNum.id() == NVPTX::VRDepot)
+      name = "%SP";
+    return encodeRegisterForDwarf(name);
+  }
+  uint64_t lookup = debugRegisterMap.lookup(RegNum.id());
+  if (lookup)
+    return lookup;
+  return -1;
 }

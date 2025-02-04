@@ -24,9 +24,7 @@
 #include "llvm/MC/MCInstrInfo.h"
 #include "llvm/MC/MCRegisterInfo.h"
 #include "llvm/MC/MCSubtargetInfo.h"
-#include "llvm/Support/Endian.h"
 #include "llvm/Support/EndianStream.h"
-#include "llvm/Support/raw_ostream.h"
 
 #define DEBUG_TYPE "mccodeemitter"
 
@@ -74,12 +72,13 @@ public:
   MSP430MCCodeEmitter(MCContext &ctx, MCInstrInfo const &MCII)
       : Ctx(ctx), MCII(MCII) {}
 
-  void encodeInstruction(const MCInst &MI, raw_ostream &OS,
+  void encodeInstruction(const MCInst &MI, SmallVectorImpl<char> &CB,
                          SmallVectorImpl<MCFixup> &Fixups,
                          const MCSubtargetInfo &STI) const override;
 };
 
-void MSP430MCCodeEmitter::encodeInstruction(const MCInst &MI, raw_ostream &OS,
+void MSP430MCCodeEmitter::encodeInstruction(const MCInst &MI,
+                                            SmallVectorImpl<char> &CB,
                                             SmallVectorImpl<MCFixup> &Fixups,
                                             const MCSubtargetInfo &STI) const {
   const MCInstrDesc &Desc = MCII.get(MI.getOpcode());
@@ -93,7 +92,8 @@ void MSP430MCCodeEmitter::encodeInstruction(const MCInst &MI, raw_ostream &OS,
   size_t WordCount = Size / 2;
 
   while (WordCount--) {
-    support::endian::write(OS, (uint16_t)BinaryOpCode, support::little);
+    support::endian::write(CB, (uint16_t)BinaryOpCode,
+                           llvm::endianness::little);
     BinaryOpCode >>= 16;
   }
 }

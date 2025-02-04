@@ -1,4 +1,4 @@
-// RUN: %clang_cc1 -no-opaque-pointers -triple sparcv9-unknown-unknown -emit-llvm %s -o - | FileCheck %s
+// RUN: %clang_cc1 -triple sparcv9-unknown-unknown -emit-llvm %s -o - | FileCheck %s
 #include <stdarg.h>
 
 // CHECK-LABEL: define{{.*}} void @f_void()
@@ -21,12 +21,53 @@ char f_int_4(char x) { return x; }
 // CHECK-LABEL: define{{.*}} fp128 @f_ld(fp128 noundef %x)
 long double f_ld(long double x) { return x; }
 
+// Zero-sized structs reserves an argument register slot if passed directly.
+struct empty {};
+struct emptyarr { struct empty a[10]; };
+
+// CHECK-LABEL: define{{.*}} i64 @f_empty(i64 %x.coerce)
+struct empty f_empty(struct empty x) { return x; }
+
+// CHECK-LABEL: define{{.*}} i64 @f_emptyarr(i64 %x.coerce)
+struct empty f_emptyarr(struct emptyarr x) { return x.a[0]; }
+
+// CHECK-LABEL: define{{.*}} i64 @f_emptyvar(i32 noundef zeroext %count, ...)
+long f_emptyvar(unsigned count, ...) {
+    long ret;
+    va_list args;
+    va_start(args, count);
+
+// CHECK: %[[CUR:[^ ]+]] = load ptr, ptr %args
+// CHECK-DAG: %[[NXT:[^ ]+]] = getelementptr inbounds i8, ptr %[[CUR]], i64 8
+// CHECK-DAG: store ptr %[[NXT]], ptr %args
+    va_arg(args, struct empty);
+
+// CHECK: %[[CUR:[^ ]+]] = load ptr, ptr %args
+// CHECK-DAG: %[[NXT:[^ ]+]] = getelementptr inbounds i8, ptr %[[CUR]], i64 8
+// CHECK-DAG: store ptr %[[NXT]], ptr %args
+// CHECK-DAG: load i64, ptr %[[CUR]]
+    ret = va_arg(args, long);
+    va_end(args);
+    return ret;
+}
+
+// If the zero-sized struct is contained in a non-zero-sized struct,
+// though, it doesn't reserve any registers.
+struct emptymixed { struct empty a; long b; };
+struct emptyflex { unsigned count; struct empty data[10]; };
+
+// CHECK-LABEL: define{{.*}} i64 @f_emptymixed(i64 %x.coerce)
+long f_emptymixed(struct emptymixed x) { return x.b; }
+
+// CHECK-LABEL: define{{.*}} i64 @f_emptyflex(i64 %x.coerce, i64 noundef %y)
+long f_emptyflex(struct emptyflex x, long y) { return y; }
+
 // Small structs are passed in registers.
 struct small {
   int *a, *b;
 };
 
-// CHECK-LABEL: define{{.*}} %struct.small @f_small(i32* %x.coerce0, i32* %x.coerce1)
+// CHECK-LABEL: define{{.*}} %struct.small @f_small(ptr %x.coerce0, ptr %x.coerce1)
 struct small f_small(struct small x) {
   x.a += *x.b;
   x.b = 0;
@@ -39,7 +80,7 @@ struct medium {
   int *c, *d;
 };
 
-// CHECK-LABEL: define{{.*}} %struct.medium @f_medium(%struct.medium* noundef %x)
+// CHECK-LABEL: define{{.*}} %struct.medium @f_medium(ptr noundef %x)
 struct medium f_medium(struct medium x) {
   x.a += *x.b;
   x.b = 0;
@@ -53,7 +94,7 @@ struct large {
   int x;
 };
 
-// CHECK-LABEL: define{{.*}} void @f_large(%struct.large* noalias sret(%struct.large) align 8 %agg.result, %struct.large* noundef %x)
+// CHECK-LABEL: define{{.*}} void @f_large(ptr dead_on_unwind noalias writable sret(%struct.large) align 8 %agg.result, ptr noundef %x)
 struct large f_large(struct large x) {
   x.a += *x.b;
   x.b = 0;
@@ -120,8 +161,8 @@ void call_tiny(void) {
   f_tiny(x);
 }
 
-// CHECK-LABEL: define{{.*}} signext i32 @f_variable(i8* noundef %f, ...)
-// CHECK: %ap = alloca i8*
+// CHECK-LABEL: define{{.*}} signext i32 @f_variable(ptr noundef %f, ...)
+// CHECK: %ap = alloca ptr
 // CHECK: call void @llvm.va_start
 //
 int f_variable(char *f, ...) {
@@ -131,50 +172,45 @@ int f_variable(char *f, ...) {
   va_start(ap, f);
   while ((c = *f++)) switch (c) {
 
-// CHECK: %[[CUR:[^ ]+]] = load i8*, i8** %ap
-// CHECK-DAG: %[[NXT:[^ ]+]] = getelementptr inbounds i8, i8* %[[CUR]], i64 8
-// CHECK-DAG: store i8* %[[NXT]], i8** %ap
-// CHECK-DAG: %[[EXT:[^ ]+]] = getelementptr inbounds i8, i8* %[[CUR]], i64 4
-// CHECK-DAG: %[[ADR:[^ ]+]] = bitcast i8* %[[EXT]] to i32*
-// CHECK-DAG: load i32, i32* %[[ADR]]
+// CHECK: %[[CUR:[^ ]+]] = load ptr, ptr %ap
+// CHECK-DAG: %[[NXT:[^ ]+]] = getelementptr inbounds i8, ptr %[[CUR]], i64 8
+// CHECK-DAG: store ptr %[[NXT]], ptr %ap
+// CHECK-DAG: %[[EXT:[^ ]+]] = getelementptr inbounds i8, ptr %[[CUR]], i64 4
+// CHECK-DAG: load i32, ptr %[[EXT]]
 // CHECK: br
   case 'i':
     s += va_arg(ap, int);
     break;
 
-// CHECK: %[[CUR:[^ ]+]] = load i8*, i8** %ap
-// CHECK-DAG: %[[NXT:[^ ]+]] = getelementptr inbounds i8, i8* %[[CUR]], i64 8
-// CHECK-DAG: store i8* %[[NXT]], i8** %ap
-// CHECK-DAG: %[[ADR:[^ ]+]] = bitcast i8* %[[CUR]] to i64*
-// CHECK-DAG: load i64, i64* %[[ADR]]
+// CHECK: %[[CUR:[^ ]+]] = load ptr, ptr %ap
+// CHECK-DAG: %[[NXT:[^ ]+]] = getelementptr inbounds i8, ptr %[[CUR]], i64 8
+// CHECK-DAG: store ptr %[[NXT]], ptr %ap
+// CHECK-DAG: load i64, ptr %[[CUR]]
 // CHECK: br
   case 'l':
     s += va_arg(ap, long);
     break;
 
-// CHECK: %[[CUR:[^ ]+]] = load i8*, i8** %ap
-// CHECK-DAG: %[[NXT:[^ ]+]] = getelementptr inbounds i8, i8* %[[CUR]], i64 8
-// CHECK-DAG: store i8* %[[NXT]], i8** %ap
-// CHECK-DAG: %[[ADR:[^ ]+]] = bitcast i8* %[[CUR]] to %struct.tiny*
+// CHECK: %[[CUR:[^ ]+]] = load ptr, ptr %ap
+// CHECK-DAG: %[[NXT:[^ ]+]] = getelementptr inbounds i8, ptr %[[CUR]], i64 8
+// CHECK-DAG: store ptr %[[NXT]], ptr %ap
 // CHECK: br
   case 't':
     s += va_arg(ap, struct tiny).a;
     break;
 
-// CHECK: %[[CUR:[^ ]+]] = load i8*, i8** %ap
-// CHECK-DAG: %[[NXT:[^ ]+]] = getelementptr inbounds i8, i8* %[[CUR]], i64 16
-// CHECK-DAG: store i8* %[[NXT]], i8** %ap
-// CHECK-DAG: %[[ADR:[^ ]+]] = bitcast i8* %[[CUR]] to %struct.small*
+// CHECK: %[[CUR:[^ ]+]] = load ptr, ptr %ap
+// CHECK-DAG: %[[NXT:[^ ]+]] = getelementptr inbounds i8, ptr %[[CUR]], i64 16
+// CHECK-DAG: store ptr %[[NXT]], ptr %ap
 // CHECK: br
   case 's':
     s += *va_arg(ap, struct small).a;
     break;
 
-// CHECK: %[[CUR:[^ ]+]] = load i8*, i8** %ap
-// CHECK-DAG: %[[NXT:[^ ]+]] = getelementptr inbounds i8, i8* %[[CUR]], i64 8
-// CHECK-DAG: store i8* %[[NXT]], i8** %ap
-// CHECK-DAG: %[[IND:[^ ]+]] = bitcast i8* %[[CUR]] to %struct.medium**
-// CHECK-DAG: %[[ADR:[^ ]+]] = load %struct.medium*, %struct.medium** %[[IND]]
+// CHECK: %[[CUR:[^ ]+]] = load ptr, ptr %ap
+// CHECK-DAG: %[[NXT:[^ ]+]] = getelementptr inbounds i8, ptr %[[CUR]], i64 8
+// CHECK-DAG: store ptr %[[NXT]], ptr %ap
+// CHECK-DAG: %[[ADR:[^ ]+]] = load ptr, ptr %[[CUR]]
 // CHECK: br
   case 'm':
     s += *va_arg(ap, struct medium).a;

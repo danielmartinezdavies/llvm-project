@@ -1,6 +1,8 @@
 set(LLVM_LINK_COMPONENTS
   ${LLVM_TARGETS_TO_BUILD}
+  AsmParser
   CodeGen
+  CodeGenTypes
   Core
   FileCheck
   GlobalISel
@@ -8,11 +10,13 @@ set(LLVM_LINK_COMPONENTS
   MIRParser
   Support
   Target
+  TargetParser
   )
 
 add_llvm_unittest(GlobalISelTests
   ConstantFoldingTest.cpp
   CSETest.cpp
+  GIMatchTableExecutorTest.cpp
   LegalizerTest.cpp
   LegalizerHelperTest.cpp
   LegalizerInfoTest.cpp
@@ -23,4 +27,6 @@ add_llvm_unittest(GlobalISelTests
   KnownBitsVectorTest.cpp
   GISelUtilsTest.cpp
   GISelAliasTest.cpp
+  CallLowering.cpp
+  InstructionSelectTest.cpp
   )

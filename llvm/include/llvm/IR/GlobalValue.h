@@ -24,7 +24,6 @@
 #include "llvm/IR/Value.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/ErrorHandling.h"
-#include "llvm/Support/MD5.h"
 #include <cassert>
 #include <cstdint>
 #include <string>
@@ -33,6 +32,7 @@ namespace llvm {
 
 class Comdat;
 class ConstantRange;
+class DataLayout;
 class Error;
 class GlobalObject;
 class Module;
@@ -40,6 +40,10 @@ class Module;
 namespace Intrinsic {
 typedef unsigned ID;
 } // end namespace Intrinsic
+
+// Choose ';' as the delimiter. ':' was used once but it doesn't work well for
+// Objective-C functions which commonly have :'s in their names.
+inline constexpr char GlobalIdentifierDelimiter = ';';
 
 class GlobalValue : public Constant {
 public:
@@ -73,9 +77,10 @@ public:
   };
 
 protected:
-  GlobalValue(Type *Ty, ValueTy VTy, Use *Ops, unsigned NumOps,
-              LinkageTypes Linkage, const Twine &Name, unsigned AddressSpace)
-      : Constant(PointerType::get(Ty, AddressSpace), VTy, Ops, NumOps),
+  GlobalValue(Type *Ty, ValueTy VTy, AllocInfo AllocInfo, LinkageTypes Linkage,
+              const Twine &Name, unsigned AddressSpace)
+      : Constant(PointerType::get(Ty->getContext(), AddressSpace), VTy,
+                 AllocInfo),
         ValueType(Ty), Visibility(DefaultVisibility),
         UnnamedAddrVal(unsigned(UnnamedAddr::None)),
         DllStorageClass(DefaultStorageClass), ThreadLocal(NotThreadLocal),
@@ -198,7 +203,9 @@ public:
 
   GlobalValue(const GlobalValue &) = delete;
 
-  unsigned getAddressSpace() const;
+  unsigned getAddressSpace() const {
+    return getType()->getAddressSpace();
+  }
 
   enum class UnnamedAddr {
     None,
@@ -275,7 +282,11 @@ public:
   bool hasDLLExportStorageClass() const {
     return DllStorageClass == DLLExportStorageClass;
   }
-  void setDLLStorageClass(DLLStorageClassTypes C) { DllStorageClass = C; }
+  void setDLLStorageClass(DLLStorageClassTypes C) {
+    assert((!hasLocalLinkage() || C == DefaultStorageClass) &&
+           "local linkage requires DefaultStorageClass");
+    DllStorageClass = C;
+  }
 
   bool hasSection() const { return !getSection().empty(); }
   StringRef getSection() const;
@@ -350,6 +361,7 @@ public:
   // storage is shared between `G1` and `G2`.
   void setSanitizerMetadata(SanitizerMetadata Meta);
   void removeSanitizerMetadata();
+  void setNoSanitizeMetadata();
 
   bool isTagged() const {
     return hasSanitizerMetadata() && getSanitizerMetadata().Memtag;
@@ -524,8 +536,10 @@ public:
   }
 
   void setLinkage(LinkageTypes LT) {
-    if (isLocalLinkage(LT))
+    if (isLocalLinkage(LT)) {
       Visibility = DefaultVisibility;
+      DllStorageClass = DefaultStorageClass;
+    }
     Linkage = LT;
     if (isImplicitDSOLocal())
       setDSOLocal(true);
@@ -552,8 +566,7 @@ public:
   /// arbitrary GlobalValue, this is not the function you're looking for; see
   /// Mangler.h.
   static StringRef dropLLVMManglingEscape(StringRef Name) {
-    if (!Name.empty() && Name[0] == '\1')
-      return Name.substr(1);
+    Name.consume_front("\1");
     return Name;
   }
 
@@ -576,7 +589,7 @@ public:
 
   /// Return a 64-bit global unique ID constructed from global value name
   /// (i.e. returned by getGlobalIdentifier()).
-  static GUID getGUID(StringRef GlobalName) { return MD5Hash(GlobalName); }
+  static GUID getGUID(StringRef GlobalName);
 
   /// Return a 64-bit global unique ID constructed from global value name
   /// (i.e. returned by getGlobalIdentifier()).
@@ -630,8 +643,8 @@ public:
   bool isAbsoluteSymbolRef() const;
 
   /// If this is an absolute symbol reference, returns the range of the symbol,
-  /// otherwise returns None.
-  Optional<ConstantRange> getAbsoluteSymbolRange() const;
+  /// otherwise returns std::nullopt.
+  std::optional<ConstantRange> getAbsoluteSymbolRange() const;
 
   /// This method unlinks 'this' from the containing module, but does not delete
   /// it.
@@ -643,6 +656,11 @@ public:
   /// Get the module that this global value is contained inside of...
   Module *getParent() { return Parent; }
   const Module *getParent() const { return Parent; }
+
+  /// Get the data layout of the module this global belongs to.
+  ///
+  /// Requires the global to have a parent module.
+  const DataLayout &getDataLayout() const;
 
   // Methods for support type inquiry through isa, cast, and dyn_cast:
   static bool classof(const Value *V) {

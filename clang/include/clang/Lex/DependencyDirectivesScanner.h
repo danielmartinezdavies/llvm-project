@@ -68,6 +68,7 @@ enum DirectiveKind : uint8_t {
   pp_pragma_push_macro,
   pp_pragma_pop_macro,
   pp_pragma_include_alias,
+  pp_pragma_system_header,
   pp_include_next,
   pp_if,
   pp_ifdef,
@@ -82,6 +83,9 @@ enum DirectiveKind : uint8_t {
   cxx_import_decl,
   cxx_export_module_decl,
   cxx_export_import_decl,
+  /// Indicates that there are tokens present between the last scanned directive
+  /// and eof. The \p Directive::Tokens array will be empty for this kind.
+  tokens_present_before_eof,
   pp_eof,
 };
 

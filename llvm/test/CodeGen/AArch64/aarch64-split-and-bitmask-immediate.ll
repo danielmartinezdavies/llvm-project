@@ -20,7 +20,7 @@ entry:
 define i8 @test2(i32 %a) {
 ; CHECK-LABEL: test2:
 ; CHECK:       // %bb.0: // %entry
-; CHECK-NEXT:    mov w8, #135
+; CHECK-NEXT:    mov w8, #135 // =0x87
 ; CHECK-NEXT:    and w8, w0, w8
 ; CHECK-NEXT:    cmp w8, #1024
 ; CHECK-NEXT:    cset w0, eq
@@ -37,7 +37,7 @@ entry:
 define i8 @test3(i32 %a) {
 ; CHECK-LABEL: test3:
 ; CHECK:       // %bb.0: // %entry
-; CHECK-NEXT:    mov w8, #1024
+; CHECK-NEXT:    mov w8, #1024 // =0x400
 ; CHECK-NEXT:    movk w8, #33, lsl #16
 ; CHECK-NEXT:    and w8, w0, w8
 ; CHECK-NEXT:    cmp w8, #1024
@@ -84,7 +84,7 @@ entry:
 define i8 @test6(i64 %a) {
 ; CHECK-LABEL: test6:
 ; CHECK:       // %bb.0: // %entry
-; CHECK-NEXT:    mov w8, #135
+; CHECK-NEXT:    mov w8, #135 // =0x87
 ; CHECK-NEXT:    and x8, x0, x8
 ; CHECK-NEXT:    cmp x8, #1024
 ; CHECK-NEXT:    cset w0, eq
@@ -101,7 +101,7 @@ entry:
 define i8 @test7(i64 %a) {
 ; CHECK-LABEL: test7:
 ; CHECK:       // %bb.0: // %entry
-; CHECK-NEXT:    mov w8, #1024
+; CHECK-NEXT:    mov w8, #1024 // =0x400
 ; CHECK-NEXT:    movk w8, #33, lsl #16
 ; CHECK-NEXT:    and x8, x0, x8
 ; CHECK-NEXT:    cmp x8, #1024
@@ -116,7 +116,7 @@ entry:
 
 ; The split bitmask immediates should be hoisted outside loop because they are
 ; loop invariant.
-define void @test8(i64 %a, i64* noalias %src, i64* noalias %dst, i64 %n) {
+define void @test8(i64 %a, ptr noalias %src, ptr noalias %dst, i64 %n) {
 ; CHECK-LABEL: test8:
 ; CHECK:       // %bb.0: // %loop.ph
 ; CHECK-NEXT:    and x9, x0, #0x3ffc00
@@ -134,9 +134,8 @@ define void @test8(i64 %a, i64* noalias %src, i64* noalias %dst, i64 %n) {
 ; CHECK-NEXT:    b.hs .LBB7_1
 ; CHECK-NEXT:  // %bb.3: // %if.then
 ; CHECK-NEXT:    // in Loop: Header=BB7_2 Depth=1
-; CHECK-NEXT:    lsl x10, x8, #3
-; CHECK-NEXT:    ldr x11, [x1, x10]
-; CHECK-NEXT:    str x11, [x2, x10]
+; CHECK-NEXT:    ldr x10, [x1, x8, lsl #3]
+; CHECK-NEXT:    str x10, [x2, x8, lsl #3]
 ; CHECK-NEXT:    b .LBB7_1
 ; CHECK-NEXT:  .LBB7_4: // %exit
 ; CHECK-NEXT:    ret
@@ -150,10 +149,10 @@ loop:
   br i1 %cmp, label %if.then, label %if.else
 
 if.then:
-  %src.arrayidx = getelementptr inbounds i64, i64* %src, i64 %iv
-  %val = load i64, i64* %src.arrayidx
-  %dst.arrayidx = getelementptr inbounds i64, i64* %dst, i64 %iv
-  store i64 %val, i64* %dst.arrayidx
+  %src.arrayidx = getelementptr inbounds i64, ptr %src, i64 %iv
+  %val = load i64, ptr %src.arrayidx
+  %dst.arrayidx = getelementptr inbounds i64, ptr %dst, i64 %iv
+  store i64 %val, ptr %dst.arrayidx
   br label %for.inc
 
 if.else:
@@ -169,13 +168,13 @@ exit:
 }
 
 ; This constant should not be split because the `and` is not loop invariant.
-define i32 @test9(i32* nocapture %x, i32* nocapture readonly %y, i32 %n) {
+define i32 @test9(ptr nocapture %x, ptr nocapture readonly %y, i32 %n) {
 ; CHECK-LABEL: test9:
 ; CHECK:       // %bb.0: // %entry
 ; CHECK-NEXT:    cmp w2, #1
 ; CHECK-NEXT:    b.lt .LBB8_3
 ; CHECK-NEXT:  // %bb.1: // %for.body.preheader
-; CHECK-NEXT:    mov w9, #1024
+; CHECK-NEXT:    mov w9, #1024 // =0x400
 ; CHECK-NEXT:    mov w8, w2
 ; CHECK-NEXT:    movk w9, #32, lsl #16
 ; CHECK-NEXT:  .LBB8_2: // %for.body
@@ -201,11 +200,11 @@ for.cond.cleanup:                                 ; preds = %for.body, %entry
 
 for.body:                                         ; preds = %for.body.preheader, %for.body
   %indvars.iv = phi i64 [ 0, %for.body.preheader ], [ %indvars.iv.next, %for.body ]
-  %arrayidx = getelementptr inbounds i32, i32* %y, i64 %indvars.iv
-  %0 = load i32, i32* %arrayidx, align 4
+  %arrayidx = getelementptr inbounds i32, ptr %y, i64 %indvars.iv
+  %0 = load i32, ptr %arrayidx, align 4
   %and = and i32 %0, 2098176
-  %arrayidx2 = getelementptr inbounds i32, i32* %x, i64 %indvars.iv
-  store i32 %and, i32* %arrayidx2, align 4
+  %arrayidx2 = getelementptr inbounds i32, ptr %x, i64 %indvars.iv
+  store i32 %and, ptr %arrayidx2, align 4
   %indvars.iv.next = add nuw nsw i64 %indvars.iv, 1
   %exitcond.not = icmp eq i64 %indvars.iv.next, %wide.trip.count
   br i1 %exitcond.not, label %for.cond.cleanup, label %for.body
@@ -222,11 +221,11 @@ for.body:                                         ; preds = %for.body.preheader,
 ;
 ; In this case, the constant should not be split because it causes more
 ; instructions.
-define void @test10(i32* nocapture %x, i32* nocapture readonly %y, i32* nocapture %z) {
+define void @test10(ptr nocapture %x, ptr nocapture readonly %y, ptr nocapture %z) {
 ; CHECK-LABEL: test10:
 ; CHECK:       // %bb.0: // %entry
 ; CHECK-NEXT:    ldr w8, [x1]
-; CHECK-NEXT:    mov w9, #1024
+; CHECK-NEXT:    mov w9, #1024 // =0x400
 ; CHECK-NEXT:    movk w9, #32, lsl #16
 ; CHECK-NEXT:    and w8, w8, w9
 ; CHECK-NEXT:    str w8, [x0]
@@ -235,12 +234,12 @@ define void @test10(i32* nocapture %x, i32* nocapture readonly %y, i32* nocaptur
 ; CHECK-NEXT:    str w8, [x2]
 ; CHECK-NEXT:    ret
 entry:
-  %0 = load i32, i32* %y, align 4
+  %0 = load i32, ptr %y, align 4
   %and = and i32 %0, 2098176
-  store i32 %and, i32* %x, align 4
-  %1 = load i32, i32* %y, align 4
+  store i32 %and, ptr %x, align 4
+  %1 = load i32, ptr %y, align 4
   %or = or i32 %1, 2098176
-  store i32 %or, i32* %z, align 4
+  store i32 %or, ptr %z, align 4
   ret void
 }
 
@@ -253,7 +252,7 @@ entry:
 define i8 @test11(i64 %a) {
 ; CHECK-LABEL: test11:
 ; CHECK:       // %bb.0: // %entry
-; CHECK-NEXT:    mov w8, #-1610612736
+; CHECK-NEXT:    mov w8, #-1610612736 // =0xa0000000
 ; CHECK-NEXT:    and x8, x0, x8
 ; CHECK-NEXT:    cmp x8, #1024
 ; CHECK-NEXT:    cset w0, eq

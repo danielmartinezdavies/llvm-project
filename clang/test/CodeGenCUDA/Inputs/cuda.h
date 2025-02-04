@@ -12,6 +12,7 @@
 #define __managed__ __attribute__((managed))
 #endif
 #define __launch_bounds__(...) __attribute__((launch_bounds(__VA_ARGS__)))
+#define __grid_constant__ __attribute__((grid_constant))
 #else
 #define __constant__
 #define __device__
@@ -20,6 +21,7 @@
 #define __shared__
 #define __managed__
 #define __launch_bounds__(...)
+#define __grid_constant__
 #endif
 
 struct dim3 {
@@ -35,7 +37,7 @@ int hipConfigureCall(dim3 gridSize, dim3 blockSize, size_t sharedSize = 0,
 extern "C" hipError_t __hipPushCallConfiguration(dim3 gridSize, dim3 blockSize,
                                                  size_t sharedSize = 0,
                                                  hipStream_t stream = 0);
-#ifndef HIP_API_PER_THREAD_DEFAULT_STREAM
+#ifndef __HIP_API_PER_THREAD_DEFAULT_STREAM__
 extern "C" hipError_t hipLaunchKernel(const void *func, dim3 gridDim,
                                       dim3 blockDim, void **args,
                                       size_t sharedMem,
@@ -45,7 +47,12 @@ extern "C" hipError_t hipLaunchKernel_spt(const void *func, dim3 gridDim,
                                       dim3 blockDim, void **args,
                                       size_t sharedMem,
                                       hipStream_t stream);
-#endif //HIP_API_PER_THREAD_DEFAULT_STREAM
+#endif // __HIP_API_PER_THREAD_DEFAULT_STREAM__
+#elif __OFFLOAD_VIA_LLVM__
+extern "C" unsigned __llvmPushCallConfiguration(dim3 gridDim, dim3 blockDim,
+                                     size_t sharedMem = 0, void *stream = 0);
+extern "C" unsigned llvmLaunchKernel(const void *func, dim3 gridDim, dim3 blockDim,
+                          void **args, size_t sharedMem = 0, void *stream = 0);
 #else
 typedef struct cudaStream *cudaStream_t;
 typedef enum cudaError {} cudaError_t;
@@ -58,6 +65,10 @@ extern "C" int __cudaPushCallConfiguration(dim3 gridSize, dim3 blockSize,
 extern "C" cudaError_t cudaLaunchKernel(const void *func, dim3 gridDim,
                                         dim3 blockDim, void **args,
                                         size_t sharedMem, cudaStream_t stream);
+extern "C" cudaError_t cudaLaunchKernel_ptsz(const void *func, dim3 gridDim,
+                                        dim3 blockDim, void **args,
+                                        size_t sharedMem, cudaStream_t stream);
+
 #endif
 
 extern "C" __device__ int printf(const char*, ...);

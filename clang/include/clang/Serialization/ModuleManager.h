@@ -15,7 +15,6 @@
 #define LLVM_CLANG_SERIALIZATION_MODULEMANAGER_H
 
 #include "clang/Basic/LLVM.h"
-#include "clang/Basic/Module.h"
 #include "clang/Basic/SourceLocation.h"
 #include "clang/Serialization/ModuleFile.h"
 #include "llvm/ADT/DenseMap.h"
@@ -39,7 +38,6 @@ class FileManager;
 class GlobalModuleIndex;
 class HeaderSearch;
 class InMemoryModuleCache;
-class ModuleMap;
 class PCHContainerReader;
 
 namespace serialization {
@@ -47,7 +45,7 @@ namespace serialization {
 /// Manages the set of modules loaded by an AST reader.
 class ModuleManager {
   /// The chain of AST files, in the order in which we started to load
-  /// them (this order isn't really useful for anything).
+  /// them.
   SmallVector<std::unique_ptr<ModuleFile>, 2> Chain;
 
   /// The chain of non-module PCH files. The first entry is the one named
@@ -250,7 +248,7 @@ public:
                             std::string &ErrorStr);
 
   /// Remove the modules starting from First (to the end).
-  void removeModules(ModuleIterator First, ModuleMap *modMap);
+  void removeModules(ModuleIterator First);
 
   /// Add an in-memory buffer the list of known buffers
   void addInMemoryBuffer(StringRef FileName,
@@ -303,7 +301,7 @@ public:
   /// modification time criteria, false if the file is either available and
   /// suitable, or is missing.
   bool lookupModuleFile(StringRef FileName, off_t ExpectedSize,
-                        time_t ExpectedModTime, Optional<FileEntryRef> &File);
+                        time_t ExpectedModTime, OptionalFileEntryRef &File);
 
   /// View the graphviz representation of the module graph.
   void viewGraph();

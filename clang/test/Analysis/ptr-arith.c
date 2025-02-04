@@ -1,5 +1,7 @@
-// RUN: %clang_analyze_cc1 -analyzer-checker=alpha.core.FixedAddr,alpha.core.PointerArithm,alpha.core.PointerSub,debug.ExprInspection -Wno-pointer-to-int-cast -verify -triple x86_64-apple-darwin9 -Wno-tautological-pointer-compare -analyzer-config eagerly-assume=false %s
-// RUN: %clang_analyze_cc1 -analyzer-checker=alpha.core.FixedAddr,alpha.core.PointerArithm,alpha.core.PointerSub,debug.ExprInspection -Wno-pointer-to-int-cast -verify -triple i686-apple-darwin9 -Wno-tautological-pointer-compare -analyzer-config eagerly-assume=false %s
+// RUN: %clang_analyze_cc1 -analyzer-checker=alpha.core.FixedAddr,alpha.core.PointerArithm,debug.ExprInspection -Wno-pointer-to-int-cast -verify -triple x86_64-apple-darwin9 -Wno-tautological-pointer-compare -analyzer-config eagerly-assume=false %s
+// RUN: %clang_analyze_cc1 -analyzer-checker=alpha.core.FixedAddr,alpha.core.PointerArithm,debug.ExprInspection -Wno-pointer-to-int-cast -verify -triple i686-apple-darwin9 -Wno-tautological-pointer-compare -analyzer-config eagerly-assume=false %s
+
+#include "Inputs/system-header-simulator.h"
 
 void clang_analyzer_eval(int);
 void clang_analyzer_dump(int);
@@ -35,19 +37,24 @@ domain_port (const char *domain_b, const char *domain_e,
   return port;
 }
 
-void f3(void) {
-  int x, y;
-  int d = &y - &x; // expected-warning{{Subtraction of two pointers that do not point to the same memory chunk may cause incorrect result}}
-
-  int a[10];
-  int *p = &a[2];
-  int *q = &a[8];
-  d = q-p; // no-warning
-}
+#define FIXED_VALUE (int*) 0x1111
 
 void f4(void) {
   int *p;
   p = (int*) 0x10000; // expected-warning{{Using a fixed address is not portable because that address will probably not be valid in all environments or platforms}}
+
+  int *p1;
+  p1 = p; // no warning
+
+  long x = 0x10100;
+  x += 10;
+  p = (int*) x; // expected-warning{{Using a fixed address is not portable because that address will probably not be valid in all environments or platforms}}
+
+  struct sigaction sa;
+  sa.sa_handler = SIG_IGN; // no warning (exclude macros defined in system header)
+  sigaction(SIGINT, &sa, NULL);
+
+  p = FIXED_VALUE; // expected-warning{{Using a fixed address is not portable because that address will probably not be valid in all environments or platforms}}
 }
 
 void f5(void) {
@@ -340,11 +347,11 @@ struct s {
 void struct_pointer_canon(struct s *ps) {
   struct s ss = *ps;
   clang_analyzer_dump((*ps).v);
-  // expected-warning-re@-1{{reg_${{[[:digit:]]+}}<int SymRegion{reg_${{[[:digit:]]+}}<struct s * ps>}.v>}}
+  // expected-warning-re@-1{{reg_${{[[:digit:]]+}}<int Element{SymRegion{reg_${{[[:digit:]]+}}<struct s * ps>},0 S64b,struct s}.v>}}
   clang_analyzer_dump(ps[0].v);
-  // expected-warning-re@-1{{reg_${{[[:digit:]]+}}<int SymRegion{reg_${{[[:digit:]]+}}<struct s * ps>}.v>}}
+  // expected-warning-re@-1{{reg_${{[[:digit:]]+}}<int Element{SymRegion{reg_${{[[:digit:]]+}}<struct s * ps>},0 S64b,struct s}.v>}}
   clang_analyzer_dump(ps->v);
-  // expected-warning-re@-1{{reg_${{[[:digit:]]+}}<int SymRegion{reg_${{[[:digit:]]+}}<struct s * ps>}.v>}}
+  // expected-warning-re@-1{{reg_${{[[:digit:]]+}}<int Element{SymRegion{reg_${{[[:digit:]]+}}<struct s * ps>},0 S64b,struct s}.v>}}
   clang_analyzer_eval((*ps).v == ps[0].v); // expected-warning{{TRUE}}
   clang_analyzer_eval((*ps).v == ps->v);   // expected-warning{{TRUE}}
   clang_analyzer_eval(ps[0].v == ps->v);   // expected-warning{{TRUE}}
@@ -360,11 +367,11 @@ typedef struct s T2;
 void struct_pointer_canon_typedef(T1 *ps) {
   T2 ss = *ps;
   clang_analyzer_dump((*ps).v);
-  // expected-warning-re@-1{{reg_${{[[:digit:]]+}}<int SymRegion{reg_${{[[:digit:]]+}}<T1 * ps>}.v>}}
+  // expected-warning-re@-1{{reg_${{[[:digit:]]+}}<int Element{SymRegion{reg_${{[[:digit:]]+}}<T1 * ps>},0 S64b,struct s}.v>}}
   clang_analyzer_dump(ps[0].v);
-  // expected-warning-re@-1{{reg_${{[[:digit:]]+}}<int SymRegion{reg_${{[[:digit:]]+}}<T1 * ps>}.v>}}
+  // expected-warning-re@-1{{reg_${{[[:digit:]]+}}<int Element{SymRegion{reg_${{[[:digit:]]+}}<T1 * ps>},0 S64b,struct s}.v>}}
   clang_analyzer_dump(ps->v);
-  // expected-warning-re@-1{{reg_${{[[:digit:]]+}}<int SymRegion{reg_${{[[:digit:]]+}}<T1 * ps>}.v>}}
+  // expected-warning-re@-1{{reg_${{[[:digit:]]+}}<int Element{SymRegion{reg_${{[[:digit:]]+}}<T1 * ps>},0 S64b,struct s}.v>}}
   clang_analyzer_eval((*ps).v == ps[0].v); // expected-warning{{TRUE}}
   clang_analyzer_eval((*ps).v == ps->v);   // expected-warning{{TRUE}}
   clang_analyzer_eval(ps[0].v == ps->v);   // expected-warning{{TRUE}}
@@ -378,11 +385,11 @@ void struct_pointer_canon_bidim_typedef(T1 **ps) {
 void struct_pointer_canon_const(const struct s *ps) {
   struct s ss = *ps;
   clang_analyzer_dump((*ps).v);
-  // expected-warning-re@-1{{reg_${{[[:digit:]]+}}<int SymRegion{reg_${{[[:digit:]]+}}<const struct s * ps>}.v>}}
+  // expected-warning-re@-1{{reg_${{[[:digit:]]+}}<int Element{SymRegion{reg_${{[[:digit:]]+}}<const struct s * ps>},0 S64b,struct s}.v>}}
   clang_analyzer_dump(ps[0].v);
-  // expected-warning-re@-1{{reg_${{[[:digit:]]+}}<int SymRegion{reg_${{[[:digit:]]+}}<const struct s * ps>}.v>}}
+  // expected-warning-re@-1{{reg_${{[[:digit:]]+}}<int Element{SymRegion{reg_${{[[:digit:]]+}}<const struct s * ps>},0 S64b,struct s}.v>}}
   clang_analyzer_dump(ps->v);
-  // expected-warning-re@-1{{reg_${{[[:digit:]]+}}<int SymRegion{reg_${{[[:digit:]]+}}<const struct s * ps>}.v>}}
+  // expected-warning-re@-1{{reg_${{[[:digit:]]+}}<int Element{SymRegion{reg_${{[[:digit:]]+}}<const struct s * ps>},0 S64b,struct s}.v>}}
   clang_analyzer_eval((*ps).v == ps[0].v); // expected-warning{{TRUE}}
   clang_analyzer_eval((*ps).v == ps->v);   // expected-warning{{TRUE}}
   clang_analyzer_eval(ps[0].v == ps->v);   // expected-warning{{TRUE}}

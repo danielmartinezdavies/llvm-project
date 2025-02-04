@@ -23,6 +23,7 @@
 #include "lldb/Utility/Log.h"
 #include "lldb/Utility/Status.h"
 #include "lldb/Utility/StreamString.h"
+#include <optional>
 
 using namespace lldb;
 using namespace lldb_private;
@@ -60,71 +61,6 @@ void PlatformRemoteDarwinDevice::GetStatus(Stream &strm) {
     strm.Printf(" SDK Roots: [%2u] \"%s\"\n", i,
                 sdk_dir_info.directory.GetPath().c_str());
   }
-}
-
-Status PlatformRemoteDarwinDevice::ResolveExecutable(
-    const ModuleSpec &ms, lldb::ModuleSP &exe_module_sp,
-    const FileSpecList *module_search_paths_ptr) {
-  Status error;
-  // Nothing special to do here, just use the actual file and architecture
-
-  ModuleSpec resolved_module_spec(ms);
-
-  // Resolve any executable within a bundle on MacOSX
-  // TODO: verify that this handles shallow bundles, if not then implement one
-  // ourselves
-  Host::ResolveExecutableInBundle(resolved_module_spec.GetFileSpec());
-
-  if (FileSystem::Instance().Exists(resolved_module_spec.GetFileSpec())) {
-    if (resolved_module_spec.GetArchitecture().IsValid() ||
-        resolved_module_spec.GetUUID().IsValid()) {
-      error = ModuleList::GetSharedModule(resolved_module_spec, exe_module_sp,
-                                          nullptr, nullptr, nullptr);
-
-      if (exe_module_sp && exe_module_sp->GetObjectFile())
-        return error;
-      exe_module_sp.reset();
-    }
-    // No valid architecture was specified or the exact ARM slice wasn't found
-    // so ask the platform for the architectures that we should be using (in
-    // the correct order) and see if we can find a match that way
-    StreamString arch_names;
-    llvm::ListSeparator LS;
-    ArchSpec process_host_arch;
-    for (const ArchSpec &arch : GetSupportedArchitectures(process_host_arch)) {
-      resolved_module_spec.GetArchitecture() = arch;
-      error = ModuleList::GetSharedModule(resolved_module_spec, exe_module_sp,
-                                          nullptr, nullptr, nullptr);
-      // Did we find an executable using one of the
-      if (error.Success()) {
-        if (exe_module_sp && exe_module_sp->GetObjectFile())
-          break;
-        else
-          error.SetErrorToGenericError();
-      }
-
-      arch_names << LS << arch.GetArchitectureName();
-    }
-
-    if (error.Fail() || !exe_module_sp) {
-      if (FileSystem::Instance().Readable(resolved_module_spec.GetFileSpec())) {
-        error.SetErrorStringWithFormatv(
-            "'{0}' doesn't contain any '{1}' platform architectures: {2}",
-            resolved_module_spec.GetFileSpec(), GetPluginName(),
-            arch_names.GetData());
-      } else {
-        error.SetErrorStringWithFormat(
-            "'%s' is not readable",
-            resolved_module_spec.GetFileSpec().GetPath().c_str());
-      }
-    }
-  } else {
-    error.SetErrorStringWithFormat(
-        "'%s' does not exist",
-        resolved_module_spec.GetFileSpec().GetPath().c_str());
-  }
-
-  return error;
 }
 
 bool PlatformRemoteDarwinDevice::GetFileInSDK(const char *platform_file_path,
@@ -211,11 +147,11 @@ Status PlatformRemoteDarwinDevice::GetSymbolFile(const FileSpec &platform_file,
     if (FileSystem::Instance().Exists(local_file))
       return error;
 
-    error.SetErrorStringWithFormatv(
+    error = Status::FromErrorStringWithFormatv(
         "unable to locate a platform file for '{0}' in platform '{1}'",
         platform_file_path, GetPluginName());
   } else {
-    error.SetErrorString("invalid platform file argument");
+    error = Status::FromErrorString("invalid platform file argument");
   }
   return error;
 }
@@ -355,7 +291,7 @@ Status PlatformRemoteDarwinDevice::GetSharedModule(
 uint32_t PlatformRemoteDarwinDevice::GetConnectedSDKIndex() {
   if (IsConnected()) {
     if (m_connected_module_sdk_idx == UINT32_MAX) {
-      if (llvm::Optional<std::string> build = GetRemoteOSBuildString()) {
+      if (std::optional<std::string> build = GetRemoteOSBuildString()) {
         const uint32_t num_sdk_infos = m_sdk_directory_infos.size();
         for (uint32_t i = 0; i < num_sdk_infos; ++i) {
           const SDKDirectoryInfo &sdk_dir_info = m_sdk_directory_infos[i];

@@ -9,15 +9,15 @@ void F1(const int i);
 // CHECK-FIXES: void F1(int i);
 
 void F2(const int *const i);
-// CHECK-MESSAGES: :[[@LINE-1]]:9: warning: parameter 'i' is const-qualified
+// CHECK-MESSAGES: :[[@LINE-1]]:20: warning: parameter 'i' is const-qualified
 // CHECK-FIXES: void F2(const int *i);
 
 void F3(int const i);
-// CHECK-MESSAGES: :[[@LINE-1]]:9: warning: parameter 'i' is const-qualified
+// CHECK-MESSAGES: :[[@LINE-1]]:13: warning: parameter 'i' is const-qualified
 // CHECK-FIXES: void F3(int i);
 
 void F4(alias_type const i);
-// CHECK-MESSAGES: :[[@LINE-1]]:9: warning: parameter 'i' is const-qualified
+// CHECK-MESSAGES: :[[@LINE-1]]:20: warning: parameter 'i' is const-qualified
 // CHECK-FIXES: void F4(alias_type i);
 
 void F5(const int);
@@ -25,7 +25,7 @@ void F5(const int);
 // CHECK-FIXES: void F5(int);
 
 void F6(const int *const);
-// CHECK-MESSAGES: :[[@LINE-1]]:9: warning: parameter 1 is const-qualified
+// CHECK-MESSAGES: :[[@LINE-1]]:20: warning: parameter 1 is const-qualified
 // CHECK-FIXES: void F6(const int *);
 
 void F7(int, const int);
@@ -42,7 +42,7 @@ void F9(const int long_name);
 // CHECK-FIXES: void F9(int long_name);
 
 void F10(const int *const *const long_name);
-// CHECK-MESSAGES: :[[@LINE-1]]:10: warning: parameter 'long_name'
+// CHECK-MESSAGES: :[[@LINE-1]]:28: warning: parameter 'long_name'
 // CHECK-FIXES: void F10(const int *const *long_name);
 
 void F11(const unsigned int /*v*/);
@@ -71,11 +71,11 @@ void F15(const A<const int> Named);
 // CHECK-FIXES: void F15(A<const int> Named);
 
 void F16(const A<const int> *const);
-// CHECK-MESSAGES: :[[@LINE-1]]:10: warning: parameter 1 is const-qualified
+// CHECK-MESSAGES: :[[@LINE-1]]:30: warning: parameter 1 is const-qualified
 // CHECK-FIXES: void F16(const A<const int> *);
 
 void F17(const A<const int> *const Named);
-// CHECK-MESSAGES: :[[@LINE-1]]:10: warning: parameter 'Named' is const-qualified
+// CHECK-MESSAGES: :[[@LINE-1]]:30: warning: parameter 'Named' is const-qualified
 // CHECK-FIXES: void F17(const A<const int> *Named);
 
 struct Foo {
@@ -170,12 +170,17 @@ void NF(const int*);
 void NF(const int* const*);
 void NF(alias_const_type);
 
-// Regression test for when the 'const' token is not in the code.
+// Regression tests involving macros, which are ignored by default.
 #define CONCAT(a, b) a##b
 void ConstNotVisible(CONCAT(cons, t) int i);
-// CHECK-MESSAGES: :[[@LINE-1]]:22: warning: parameter 'i'
-// We warn, but we can't give a fix
-// CHECK-FIXES: void ConstNotVisible(CONCAT(cons, t) int i);
+
+#define CONST_INT_PARAM const int i
+void ConstInMacro(CONST_INT_PARAM);
+
+#define DECLARE_FUNCTION_WITH_ARG(x) struct InsideMacro{ x }
+DECLARE_FUNCTION_WITH_ARG(
+    void member_function(const int i);
+);
 
 // Regression test. We should not warn (or crash) on lambda expressions
 auto lambda_with_name = [](const int n) {};

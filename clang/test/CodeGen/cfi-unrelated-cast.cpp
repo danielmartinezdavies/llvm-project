@@ -1,5 +1,5 @@
 // STL allocators should not have unrelated-cast tests applied
-// RUN: %clang_cc1 -flto -triple x86_64-unknown-linux -fvisibility hidden -fsanitize=cfi-unrelated-cast -emit-llvm -o - %s | FileCheck %s
+// RUN: %clang_cc1 -flto -triple x86_64-unknown-linux -fvisibility=hidden -fsanitize=cfi-unrelated-cast -emit-llvm -o - %s | FileCheck %s
 
 #include <stddef.h>
 
@@ -29,7 +29,7 @@ class C1 {
   virtual void f() {}
 };
 
-C1 *f1() {
+void f1() {
   myalloc<C1> allocator;
   (void)allocator.allocate(16);
   (void)allocator.allocate(16, 0);

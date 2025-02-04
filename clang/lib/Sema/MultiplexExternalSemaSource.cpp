@@ -16,31 +16,37 @@ using namespace clang;
 
 char MultiplexExternalSemaSource::ID;
 
-///Constructs a new multiplexing external sema source and appends the
+/// Constructs a new multiplexing external sema source and appends the
 /// given element to it.
 ///
-MultiplexExternalSemaSource::MultiplexExternalSemaSource(ExternalSemaSource &s1,
-                                                        ExternalSemaSource &s2){
-  Sources.push_back(&s1);
-  Sources.push_back(&s2);
+MultiplexExternalSemaSource::MultiplexExternalSemaSource(
+    ExternalSemaSource *S1, ExternalSemaSource *S2) {
+  S1->Retain();
+  S2->Retain();
+  Sources.push_back(S1);
+  Sources.push_back(S2);
 }
 
 // pin the vtable here.
-MultiplexExternalSemaSource::~MultiplexExternalSemaSource() {}
+MultiplexExternalSemaSource::~MultiplexExternalSemaSource() {
+  for (auto *S : Sources)
+    S->Release();
+}
 
-///Appends new source to the source list.
+/// Appends new source to the source list.
 ///
 ///\param[in] source - An ExternalSemaSource.
 ///
-void MultiplexExternalSemaSource::addSource(ExternalSemaSource &source) {
-  Sources.push_back(&source);
+void MultiplexExternalSemaSource::AddSource(ExternalSemaSource *Source) {
+  Source->Retain();
+  Sources.push_back(Source);
 }
 
 //===----------------------------------------------------------------------===//
 // ExternalASTSource.
 //===----------------------------------------------------------------------===//
 
-Decl *MultiplexExternalSemaSource::GetExternalDecl(uint32_t ID) {
+Decl *MultiplexExternalSemaSource::GetExternalDecl(GlobalDeclID ID) {
   for(size_t i = 0; i < Sources.size(); ++i)
     if (Decl *Result = Sources[i]->GetExternalDecl(ID))
       return Result;
@@ -101,12 +107,31 @@ MultiplexExternalSemaSource::hasExternalDefinitions(const Decl *D) {
   return EK_ReplyHazy;
 }
 
-bool MultiplexExternalSemaSource::
-FindExternalVisibleDeclsByName(const DeclContext *DC, DeclarationName Name) {
+bool MultiplexExternalSemaSource::FindExternalVisibleDeclsByName(
+    const DeclContext *DC, DeclarationName Name,
+    const DeclContext *OriginalDC) {
   bool AnyDeclsFound = false;
   for (size_t i = 0; i < Sources.size(); ++i)
-    AnyDeclsFound |= Sources[i]->FindExternalVisibleDeclsByName(DC, Name);
+    AnyDeclsFound |=
+        Sources[i]->FindExternalVisibleDeclsByName(DC, Name, OriginalDC);
   return AnyDeclsFound;
+}
+
+bool MultiplexExternalSemaSource::LoadExternalSpecializations(
+    const Decl *D, bool OnlyPartial) {
+  bool Loaded = false;
+  for (size_t i = 0; i < Sources.size(); ++i)
+    Loaded |= Sources[i]->LoadExternalSpecializations(D, OnlyPartial);
+  return Loaded;
+}
+
+bool MultiplexExternalSemaSource::LoadExternalSpecializations(
+    const Decl *D, ArrayRef<TemplateArgument> TemplateArgs) {
+  bool AnyNewSpecsLoaded = false;
+  for (size_t i = 0; i < Sources.size(); ++i)
+    AnyNewSpecsLoaded |=
+        Sources[i]->LoadExternalSpecializations(D, TemplateArgs);
+  return AnyNewSpecsLoaded;
 }
 
 void MultiplexExternalSemaSource::completeVisibleDeclsMap(const DeclContext *DC){
@@ -334,4 +359,10 @@ bool MultiplexExternalSemaSource::MaybeDiagnoseMissingCompleteType(
       return true;
   }
   return false;
+}
+
+void MultiplexExternalSemaSource::AssignedLambdaNumbering(
+    CXXRecordDecl *Lambda) {
+  for (auto *Source : Sources)
+    Source->AssignedLambdaNumbering(Lambda);
 }

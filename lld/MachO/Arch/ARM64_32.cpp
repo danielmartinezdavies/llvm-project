@@ -29,14 +29,13 @@ namespace {
 
 struct ARM64_32 : ARM64Common {
   ARM64_32();
-  void writeStub(uint8_t *buf, const Symbol &) const override;
+  void writeStub(uint8_t *buf, const Symbol &, uint64_t) const override;
   void writeStubHelperHeader(uint8_t *buf) const override;
   void writeStubHelperEntry(uint8_t *buf, const Symbol &,
                             uint64_t entryAddr) const override;
   void writeObjCMsgSendStub(uint8_t *buf, Symbol *sym, uint64_t stubsAddr,
-                            uint64_t stubOffset, uint64_t selrefsVA,
-                            uint64_t selectorIndex, uint64_t gotAddr,
-                            uint64_t msgSendIndex) const override;
+                            uint64_t &stubOffset, uint64_t selrefVA,
+                            Symbol *objcMsgSend) const override;
 };
 
 } // namespace
@@ -70,8 +69,9 @@ static constexpr uint32_t stubCode[] = {
     0xd61f0200, // 08: br    x16
 };
 
-void ARM64_32::writeStub(uint8_t *buf8, const Symbol &sym) const {
-  ::writeStub<ILP32>(buf8, stubCode, sym);
+void ARM64_32::writeStub(uint8_t *buf8, const Symbol &sym,
+                         uint64_t pointerVA) const {
+  ::writeStub(buf8, stubCode, sym, pointerVA);
 }
 
 static constexpr uint32_t stubHelperHeaderCode[] = {
@@ -99,10 +99,9 @@ void ARM64_32::writeStubHelperEntry(uint8_t *buf8, const Symbol &sym,
 }
 
 void ARM64_32::writeObjCMsgSendStub(uint8_t *buf, Symbol *sym,
-                                    uint64_t stubsAddr, uint64_t stubOffset,
-                                    uint64_t selrefsVA, uint64_t selectorIndex,
-                                    uint64_t gotAddr,
-                                    uint64_t msgSendIndex) const {
+                                    uint64_t stubsAddr, uint64_t &stubOffset,
+                                    uint64_t selrefVA,
+                                    Symbol *objcMsgSend) const {
   fatal("TODO: implement this");
 }
 

@@ -11,13 +11,18 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "mlir/Dialect/GPU/Transforms/ParallelLoopMapper.h"
-
-#include "PassDetail.h"
-#include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/GPU/Transforms/Passes.h"
+
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/GPU/IR/GPUDialect.h"
+#include "mlir/Dialect/GPU/Transforms/ParallelLoopMapper.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/AffineMap.h"
+
+namespace mlir {
+#define GEN_PASS_DEF_GPUMAPPARALLELLOOPSPASS
+#include "mlir/Dialect/GPU/Transforms/Passes.h.inc"
+} // namespace mlir
 
 namespace mlir {
 
@@ -36,6 +41,7 @@ gpu::setMappingAttr(ParallelOp ploopOp,
         specifiedMappings.count(processor))
       return ploopOp.emitError(
           "invalid mapping multiple loops to same processor");
+    specifiedMappings.insert(processor);
   }
   ArrayRef<Attribute> mappingAsAttrs(mapping.data(), mapping.size());
   ploopOp->setAttr(getMappingAttrName(),
@@ -129,7 +135,7 @@ static void mapParallelOp(ParallelOp parallelOp,
 
 namespace {
 struct GpuMapParallelLoopsPass
-    : public GpuMapParallelLoopsPassBase<GpuMapParallelLoopsPass> {
+    : public impl::GpuMapParallelLoopsPassBase<GpuMapParallelLoopsPass> {
   void runOnOperation() override {
     for (Region &region : getOperation()->getRegions()) {
       region.walk([](ParallelOp parallelOp) { mapParallelOp(parallelOp); });

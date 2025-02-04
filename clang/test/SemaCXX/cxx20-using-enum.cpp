@@ -1,5 +1,6 @@
 // RUN: %clang_cc1 -fsyntax-only -std=c++17 -verify %s
-// RUN: %clang_cc1 -fsyntax-only -std=c++20 -verify %s
+// RUN: %clang_cc1 -fsyntax-only -std=c++17 -verify %s -fexperimental-new-constant-interpreter
+// RUN: %clang_cc1 -fsyntax-only -std=c++20 -verify %s -fexperimental-new-constant-interpreter
 
 // p1099 'using enum ELABORATED-ENUM-SPECIFIER ;'
 
@@ -8,7 +9,7 @@ namespace Bob {
 enum A { a, // expected-note{{declared here}}
          b,
          c };
-class C; // expected-note{{previous use}}
+class C;
 enum class D : int;
 enum class D { d,
                e,
@@ -20,11 +21,11 @@ using enum Bob::A;
 #if __cplusplus < 202002
 // expected-warning@-2{{is a C++20 extension}}
 #endif
-using enum Bob::B; // expected-error{{no enum named 'B'}}
+using enum Bob::B; // expected-error{{unknown type name B}}
 #if __cplusplus < 202002
 // expected-warning@-2{{is a C++20 extension}}
 #endif
-using enum Bob::C; // expected-error{{tag type that does not match}}
+using enum Bob::C; // expected-error{{'Bob::C' is not an enumerated type}}
 #if __cplusplus < 202002
 // expected-warning@-2{{is a C++20 extension}}
 #endif
@@ -38,6 +39,16 @@ using enum Bob::D;
 #if __cplusplus < 202002
 // expected-warning@-2{{is a C++20 extension}}
 #endif
+
+void DR2621() {
+  using A_t = Bob::A;
+  using enum A_t;
+#if __cplusplus < 202002
+// expected-warning@-2{{is a C++20 extension}}
+#endif
+  A_t x = a;
+}
+
 } // namespace One
 
 namespace Two {
@@ -137,13 +148,10 @@ template <int I> struct C {
   enum class D { d,
                  e,
                  f };
-  using enum D;
-
-  static constexpr int W = int(f) + I;
+  using enum D; // expected-error {{using-enum cannot name a dependent type}}
 };
 
 static_assert(C<2>::V == 4);
-static_assert(C<20>::W == 22);
 
 } // namespace Seven
 
@@ -229,5 +237,41 @@ class TPLa {
 TPLa<int> a;
 
 } // namespace Thirteen
+
+namespace Fourteen {
+template<typename T>
+int A = T();
+
+using enum A<int>; // expected-error {{A is not an enumerated type}}
+} // namespace Fourteen
+
+namespace GH58057 {
+struct Wrap {
+enum Things {
+  Value1,
+  Value2
+};
+};
+
+using enum Wrap::Things;
+
+int f() {
+  return (Value1 | Value2);
+}
+}
+
+namespace GH59014 {
+struct X {
+  enum Masks {Mask = 1,Shift = 0};
+};
+
+void f(int a) {
+  using enum X::Masks;
+
+  auto u = (Mask);
+  auto v = (Mask << Shift);
+  void (~(Mask));
+}
+}
 
 #endif

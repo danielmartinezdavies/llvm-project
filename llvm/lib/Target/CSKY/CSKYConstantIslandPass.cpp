@@ -28,7 +28,6 @@
 #include "llvm/ADT/StringRef.h"
 #include "llvm/CodeGen/MachineBasicBlock.h"
 #include "llvm/CodeGen/MachineConstantPool.h"
-#include "llvm/CodeGen/MachineDominators.h"
 #include "llvm/CodeGen/MachineFrameInfo.h"
 #include "llvm/CodeGen/MachineFunction.h"
 #include "llvm/CodeGen/MachineFunctionPass.h"
@@ -216,11 +215,6 @@ public:
   StringRef getPassName() const override { return "CSKY Constant Islands"; }
 
   bool runOnMachineFunction(MachineFunction &F) override;
-
-  void getAnalysisUsage(AnalysisUsage &AU) const override {
-    AU.addRequired<MachineDominatorTree>();
-    MachineFunctionPass::getAnalysisUsage(AU);
-  }
 
   MachineFunctionProperties getRequiredProperties() const override {
     return MachineFunctionProperties().set(
@@ -573,10 +567,6 @@ void CSKYConstantIslands::initializeFunctionInfo(
           CPEntry *CPE = findConstPoolEntry(CPI, CPEMI);
           assert(CPE && "Cannot find a corresponding CPEntry!");
           CPE->RefCount++;
-
-          // Instructions can only use one CP entry, don't bother scanning the
-          // rest of the operands.
-          break;
         }
     }
   }

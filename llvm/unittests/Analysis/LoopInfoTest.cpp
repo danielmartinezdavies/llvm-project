@@ -13,6 +13,7 @@
 #include "llvm/AsmParser/Parser.h"
 #include "llvm/IR/Constants.h"
 #include "llvm/IR/Dominators.h"
+#include "llvm/IR/Module.h"
 #include "llvm/Support/SourceMgr.h"
 #include "gtest/gtest.h"
 
@@ -270,8 +271,8 @@ TEST(LoopInfoTest, CanonicalLoop) {
         Loop *L = LI.getLoopFor(Header);
         EXPECT_NE(L, nullptr);
 
-        Optional<Loop::LoopBounds> Bounds = L->getBounds(SE);
-        EXPECT_NE(Bounds, None);
+        std::optional<Loop::LoopBounds> Bounds = L->getBounds(SE);
+        EXPECT_NE(Bounds, std::nullopt);
         ConstantInt *InitialIVValue =
             dyn_cast<ConstantInt>(&Bounds->getInitialIVValue());
         EXPECT_TRUE(InitialIVValue && InitialIVValue->isZero());
@@ -329,8 +330,8 @@ TEST(LoopInfoTest, LoopWithInverseGuardSuccs) {
         Loop *L = LI.getLoopFor(Header);
         EXPECT_NE(L, nullptr);
 
-        Optional<Loop::LoopBounds> Bounds = L->getBounds(SE);
-        EXPECT_NE(Bounds, None);
+        std::optional<Loop::LoopBounds> Bounds = L->getBounds(SE);
+        EXPECT_NE(Bounds, std::nullopt);
         ConstantInt *InitialIVValue =
             dyn_cast<ConstantInt>(&Bounds->getInitialIVValue());
         EXPECT_TRUE(InitialIVValue && InitialIVValue->isZero());
@@ -388,8 +389,8 @@ TEST(LoopInfoTest, LoopWithSwappedGuardCmp) {
         Loop *L = LI.getLoopFor(Header);
         EXPECT_NE(L, nullptr);
 
-        Optional<Loop::LoopBounds> Bounds = L->getBounds(SE);
-        EXPECT_NE(Bounds, None);
+        std::optional<Loop::LoopBounds> Bounds = L->getBounds(SE);
+        EXPECT_NE(Bounds, std::nullopt);
         ConstantInt *InitialIVValue =
             dyn_cast<ConstantInt>(&Bounds->getInitialIVValue());
         EXPECT_TRUE(InitialIVValue && InitialIVValue->isZero());
@@ -447,8 +448,8 @@ TEST(LoopInfoTest, LoopWithInverseLatchSuccs) {
         Loop *L = LI.getLoopFor(Header);
         EXPECT_NE(L, nullptr);
 
-        Optional<Loop::LoopBounds> Bounds = L->getBounds(SE);
-        EXPECT_NE(Bounds, None);
+        std::optional<Loop::LoopBounds> Bounds = L->getBounds(SE);
+        EXPECT_NE(Bounds, std::nullopt);
         ConstantInt *InitialIVValue =
             dyn_cast<ConstantInt>(&Bounds->getInitialIVValue());
         EXPECT_TRUE(InitialIVValue && InitialIVValue->isZero());
@@ -506,8 +507,8 @@ TEST(LoopInfoTest, LoopWithLatchCmpNE) {
         Loop *L = LI.getLoopFor(Header);
         EXPECT_NE(L, nullptr);
 
-        Optional<Loop::LoopBounds> Bounds = L->getBounds(SE);
-        EXPECT_NE(Bounds, None);
+        std::optional<Loop::LoopBounds> Bounds = L->getBounds(SE);
+        EXPECT_NE(Bounds, std::nullopt);
         ConstantInt *InitialIVValue =
             dyn_cast<ConstantInt>(&Bounds->getInitialIVValue());
         EXPECT_TRUE(InitialIVValue && InitialIVValue->isZero());
@@ -566,8 +567,8 @@ TEST(LoopInfoTest, LoopWithGuardCmpSLE) {
         Loop *L = LI.getLoopFor(Header);
         EXPECT_NE(L, nullptr);
 
-        Optional<Loop::LoopBounds> Bounds = L->getBounds(SE);
-        EXPECT_NE(Bounds, None);
+        std::optional<Loop::LoopBounds> Bounds = L->getBounds(SE);
+        EXPECT_NE(Bounds, std::nullopt);
         ConstantInt *InitialIVValue =
             dyn_cast<ConstantInt>(&Bounds->getInitialIVValue());
         EXPECT_TRUE(InitialIVValue && InitialIVValue->isZero());
@@ -625,8 +626,8 @@ TEST(LoopInfoTest, LoopNonConstantStep) {
         Loop *L = LI.getLoopFor(Header);
         EXPECT_NE(L, nullptr);
 
-        Optional<Loop::LoopBounds> Bounds = L->getBounds(SE);
-        EXPECT_NE(Bounds, None);
+        std::optional<Loop::LoopBounds> Bounds = L->getBounds(SE);
+        EXPECT_NE(Bounds, std::nullopt);
         ConstantInt *InitialIVValue =
             dyn_cast<ConstantInt>(&Bounds->getInitialIVValue());
         EXPECT_TRUE(InitialIVValue && InitialIVValue->isZero());
@@ -681,8 +682,8 @@ TEST(LoopInfoTest, LoopUnsignedBounds) {
         Loop *L = LI.getLoopFor(Header);
         EXPECT_NE(L, nullptr);
 
-        Optional<Loop::LoopBounds> Bounds = L->getBounds(SE);
-        EXPECT_NE(Bounds, None);
+        std::optional<Loop::LoopBounds> Bounds = L->getBounds(SE);
+        EXPECT_NE(Bounds, std::nullopt);
         ConstantInt *InitialIVValue =
             dyn_cast<ConstantInt>(&Bounds->getInitialIVValue());
         EXPECT_TRUE(InitialIVValue && InitialIVValue->isZero());
@@ -740,8 +741,8 @@ TEST(LoopInfoTest, DecreasingLoop) {
         Loop *L = LI.getLoopFor(Header);
         EXPECT_NE(L, nullptr);
 
-        Optional<Loop::LoopBounds> Bounds = L->getBounds(SE);
-        EXPECT_NE(Bounds, None);
+        std::optional<Loop::LoopBounds> Bounds = L->getBounds(SE);
+        EXPECT_NE(Bounds, std::nullopt);
         EXPECT_EQ(Bounds->getInitialIVValue().getName(), "ub");
         EXPECT_EQ(Bounds->getStepInst().getName(), "inc");
         ConstantInt *StepValue =
@@ -800,8 +801,8 @@ TEST(LoopInfoTest, CannotFindDirection) {
         Loop *L = LI.getLoopFor(Header);
         EXPECT_NE(L, nullptr);
 
-        Optional<Loop::LoopBounds> Bounds = L->getBounds(SE);
-        EXPECT_NE(Bounds, None);
+        std::optional<Loop::LoopBounds> Bounds = L->getBounds(SE);
+        EXPECT_NE(Bounds, std::nullopt);
         ConstantInt *InitialIVValue =
             dyn_cast<ConstantInt>(&Bounds->getInitialIVValue());
         EXPECT_TRUE(InitialIVValue && InitialIVValue->isZero());
@@ -860,8 +861,8 @@ TEST(LoopInfoTest, ZextIndVar) {
         Loop *L = LI.getLoopFor(Header);
         EXPECT_NE(L, nullptr);
 
-        Optional<Loop::LoopBounds> Bounds = L->getBounds(SE);
-        EXPECT_NE(Bounds, None);
+        std::optional<Loop::LoopBounds> Bounds = L->getBounds(SE);
+        EXPECT_NE(Bounds, std::nullopt);
         ConstantInt *InitialIVValue =
             dyn_cast<ConstantInt>(&Bounds->getInitialIVValue());
         EXPECT_TRUE(InitialIVValue && InitialIVValue->isZero());
@@ -921,8 +922,8 @@ TEST(LoopInfoTest, MultiExitingLoop) {
         Loop *L = LI.getLoopFor(Header);
         EXPECT_NE(L, nullptr);
 
-        Optional<Loop::LoopBounds> Bounds = L->getBounds(SE);
-        EXPECT_NE(Bounds, None);
+        std::optional<Loop::LoopBounds> Bounds = L->getBounds(SE);
+        EXPECT_NE(Bounds, std::nullopt);
         ConstantInt *InitialIVValue =
             dyn_cast<ConstantInt>(&Bounds->getInitialIVValue());
         EXPECT_TRUE(InitialIVValue && InitialIVValue->isZero());
@@ -981,8 +982,8 @@ TEST(LoopInfoTest, MultiExitLoop) {
         Loop *L = LI.getLoopFor(Header);
         EXPECT_NE(L, nullptr);
 
-        Optional<Loop::LoopBounds> Bounds = L->getBounds(SE);
-        EXPECT_NE(Bounds, None);
+        std::optional<Loop::LoopBounds> Bounds = L->getBounds(SE);
+        EXPECT_NE(Bounds, std::nullopt);
         ConstantInt *InitialIVValue =
             dyn_cast<ConstantInt>(&Bounds->getInitialIVValue());
         EXPECT_TRUE(InitialIVValue && InitialIVValue->isZero());
@@ -1033,8 +1034,8 @@ TEST(LoopInfoTest, UnguardedLoop) {
         Loop *L = LI.getLoopFor(Header);
         EXPECT_NE(L, nullptr);
 
-        Optional<Loop::LoopBounds> Bounds = L->getBounds(SE);
-        EXPECT_NE(Bounds, None);
+        std::optional<Loop::LoopBounds> Bounds = L->getBounds(SE);
+        EXPECT_NE(Bounds, std::nullopt);
         ConstantInt *InitialIVValue =
             dyn_cast<ConstantInt>(&Bounds->getInitialIVValue());
         EXPECT_TRUE(InitialIVValue && InitialIVValue->isZero());
@@ -1091,8 +1092,8 @@ TEST(LoopInfoTest, UnguardedLoopWithControlFlow) {
         Loop *L = LI.getLoopFor(Header);
         EXPECT_NE(L, nullptr);
 
-        Optional<Loop::LoopBounds> Bounds = L->getBounds(SE);
-        EXPECT_NE(Bounds, None);
+        std::optional<Loop::LoopBounds> Bounds = L->getBounds(SE);
+        EXPECT_NE(Bounds, std::nullopt);
         ConstantInt *InitialIVValue =
             dyn_cast<ConstantInt>(&Bounds->getInitialIVValue());
         EXPECT_TRUE(InitialIVValue && InitialIVValue->isZero());
@@ -1162,8 +1163,8 @@ TEST(LoopInfoTest, LoopNest) {
         Loop *L = LI.getLoopFor(Header);
         EXPECT_NE(L, nullptr);
 
-        Optional<Loop::LoopBounds> Bounds = L->getBounds(SE);
-        EXPECT_NE(Bounds, None);
+        std::optional<Loop::LoopBounds> Bounds = L->getBounds(SE);
+        EXPECT_NE(Bounds, std::nullopt);
         ConstantInt *InitialIVValue =
             dyn_cast<ConstantInt>(&Bounds->getInitialIVValue());
         EXPECT_TRUE(InitialIVValue && InitialIVValue->isZero());
@@ -1188,8 +1189,8 @@ TEST(LoopInfoTest, LoopNest) {
         L = LI.getLoopFor(Header);
         EXPECT_NE(L, nullptr);
 
-        Optional<Loop::LoopBounds> InnerBounds = L->getBounds(SE);
-        EXPECT_NE(InnerBounds, None);
+        std::optional<Loop::LoopBounds> InnerBounds = L->getBounds(SE);
+        EXPECT_NE(InnerBounds, std::nullopt);
         InitialIVValue =
             dyn_cast<ConstantInt>(&InnerBounds->getInitialIVValue());
         EXPECT_TRUE(InitialIVValue && InitialIVValue->isZero());
@@ -1255,8 +1256,8 @@ TEST(LoopInfoTest, AuxiliaryIV) {
         Loop *L = LI.getLoopFor(Header);
         EXPECT_NE(L, nullptr);
 
-        Optional<Loop::LoopBounds> Bounds = L->getBounds(SE);
-        EXPECT_NE(Bounds, None);
+        std::optional<Loop::LoopBounds> Bounds = L->getBounds(SE);
+        EXPECT_NE(Bounds, std::nullopt);
         ConstantInt *InitialIVValue =
             dyn_cast<ConstantInt>(&Bounds->getInitialIVValue());
         EXPECT_TRUE(InitialIVValue && InitialIVValue->isZero());

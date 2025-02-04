@@ -34,7 +34,7 @@ class IntEnumAttrCaseBase<I intType, string sym, string strVal, int intVal> :
     EnumAttrCaseInfo<sym, intVal, strVal>,
     SignlessIntegerAttrBase<intType, "case " # strVal> {
   let predicate =
-    CPred<"$_self.cast<::mlir::IntegerAttr>().getInt() == " # intVal>;
+    CPred<"::llvm::cast<::mlir::IntegerAttr>($_self).getInt() == " # intVal>;
 }
 
 // Cases of integer enum attributes with a specific type. By default, the string
@@ -51,23 +51,22 @@ class BitEnumAttrCaseBase<I intType, string sym, int val, string str = sym> :
     EnumAttrCaseInfo<sym, val, str>,
     SignlessIntegerAttrBase<intType, "case " #str>;
 
-// A bit enum case stored with a 32-bit IntegerAttr. `val` here is *not* the
-// ordinal number of a bit that is set. It is a 32-bit integer value with bits
-// set to match the case.
+class I8BitEnumAttrCase<string sym, int val, string str = sym>
+    : BitEnumAttrCaseBase<I8, sym, val, str>;
+class I16BitEnumAttrCase<string sym, int val, string str = sym>
+    : BitEnumAttrCaseBase<I16, sym, val, str>;
 class I32BitEnumAttrCase<string sym, int val, string str = sym>
     : BitEnumAttrCaseBase<I32, sym, val, str>;
-
-// A bit enum case stored with a 64-bit IntegerAttr. `val` here is *not* the
-// ordinal number of a bit that is set. It is a 64-bit integer value with bits
-// bits set to match the case.
 class I64BitEnumAttrCase<string sym, int val, string str = sym>
     : BitEnumAttrCaseBase<I64, sym, val, str>;
 
-// The special bit enum case for I32 with no bits set (i.e. value = 0).
+// The special bit enum case with no bits set (i.e. value = 0).
+class I8BitEnumAttrCaseNone<string sym, string str = sym>
+    : I8BitEnumAttrCase<sym, 0, str>;
+class I16BitEnumAttrCaseNone<string sym, string str = sym>
+    : I16BitEnumAttrCase<sym, 0, str>;
 class I32BitEnumAttrCaseNone<string sym, string str = sym>
     : I32BitEnumAttrCase<sym, 0, str>;
-
-// The special bit enum case for I64 with no bits set (i.e. value = 0).
 class I64BitEnumAttrCaseNone<string sym, string str = sym>
     : I64BitEnumAttrCase<sym, 0, str>;
 
@@ -80,16 +79,14 @@ class BitEnumAttrCaseBit<I intType, string sym, int pos, string str = sym>
       "bit position larger than underlying storage";
 }
 
-// A bit enum case for a single bit in a 32-bit enum, specified by the
-// bit position.
+class I8BitEnumAttrCaseBit<string sym, int pos, string str = sym>
+    : BitEnumAttrCaseBit<I8, sym, pos, str>;
+class I16BitEnumAttrCaseBit<string sym, int pos, string str = sym>
+    : BitEnumAttrCaseBit<I16, sym, pos, str>;
 class I32BitEnumAttrCaseBit<string sym, int pos, string str = sym>
     : BitEnumAttrCaseBit<I32, sym, pos, str>;
-
-// A bit enum case for a single bit in a 64-bit enum, specified by the
-// bit position.
 class I64BitEnumAttrCaseBit<string sym, int pos, string str = sym>
     : BitEnumAttrCaseBit<I64, sym, pos, str>;
-
 
 // A bit enum case for a group/list of previously declared cases, providing
 // a convenient alias for that group.
@@ -99,14 +96,15 @@ class BitEnumAttrCaseGroup<I intType, string sym,
           !foldl(0, cases, value, bitcase, !or(value, bitcase.value)),
           str>;
 
-// A 32-bit enum case for a group/list of previously declared cases, providing
-// a convenient alias for that group.
+class I8BitEnumAttrCaseGroup<string sym, list<BitEnumAttrCaseBase> cases,
+                              string str = sym>
+    : BitEnumAttrCaseGroup<I8, sym, cases, str>;
+class I16BitEnumAttrCaseGroup<string sym, list<BitEnumAttrCaseBase> cases,
+                              string str = sym>
+    : BitEnumAttrCaseGroup<I16, sym, cases, str>;
 class I32BitEnumAttrCaseGroup<string sym, list<BitEnumAttrCaseBase> cases,
                               string str = sym>
     : BitEnumAttrCaseGroup<I32, sym, cases, str>;
-
-// A 64-bit enum case for a group/list of previously declared cases, providing
-// a convenient alias for that group.
 class I64BitEnumAttrCaseGroup<string sym, list<BitEnumAttrCaseBase> cases,
                               string str = sym>
     : BitEnumAttrCaseGroup<I64, sym, cases, str>;
@@ -115,6 +113,13 @@ class I64BitEnumAttrCaseGroup<string sym, list<BitEnumAttrCaseBase> cases,
 class EnumAttrInfo<
     string name, list<EnumAttrCaseInfo> cases, Attr baseClass> :
       Attr<baseClass.predicate, baseClass.summary> {
+
+  // Generate a description of this enums members for the MLIR docs.
+  let description =
+        "Enum cases:\n" # !interleave(
+          !foreach(case, cases,
+              "* " # case.str  # " (`" # case.symbol # "`)"), "\n");
+
   // The C++ enum class name
   string className = name;
 
@@ -132,7 +137,7 @@ class EnumAttrInfo<
   // type to the corresponding symbol. It will have the following signature:
   //
   // ```c++
-  // llvm::Optional<<qualified-enum-class-name>> <fn-name>(<underlying-type>);
+  // std::optional<<qualified-enum-class-name>> <fn-name>(<underlying-type>);
   // ```
   string underlyingToSymbolFnName = "symbolize" # name;
 
@@ -140,7 +145,7 @@ class EnumAttrInfo<
   // corresponding symbol. It will have the following signature:
   //
   // ```c++
-  // llvm::Optional<<qualified-enum-class-name>> <fn-name>(llvm::StringRef);
+  // std::optional<<qualified-enum-class-name>> <fn-name>(llvm::StringRef);
   // ```
   string stringToSymbolFnName = "symbolize" # name;
 
@@ -170,7 +175,7 @@ class EnumAttrInfo<
 
   // Override Attr class fields for specialized class
   let predicate = !if(genSpecializedAttr,
-    CPred<"$_self.isa<" # cppNamespace # "::" # specializedAttrClassName # ">()">,
+    CPred<"::llvm::isa<" # cppNamespace # "::" # specializedAttrClassName # ">($_self)">,
     baseAttrClass.predicate);
   let storageType = !if(genSpecializedAttr,
     cppNamespace # "::" # specializedAttrClassName,
@@ -222,7 +227,7 @@ class IntEnumAttr<I intType, string name, string summary,
                           stringToSymbolFnName # [{(enumKeyword);
     if (maybeEnum)
       return *maybeEnum;
-    return {(::mlir::LogicalResult)($_parser.emitError(loc) << "expected " }] #
+    return {(::llvm::LogicalResult)($_parser.emitError(loc) << "expected " }] #
     [{<< "}] # cppType # [{" << " to be one of: " << }] #
     !interleave(!foreach(enum, enumerants, "\"" # enum.str # "\""),
                 [{ << ", " << }]) # [{)};
@@ -252,7 +257,7 @@ class BitEnumAttrBase<I intType, list<BitEnumAttrCaseBase> cases,
   let predicate = And<[
     SignlessIntegerAttrBase<intType, summary>.predicate,
     // Make sure we don't have unknown bit set.
-    CPred<"!($_self.cast<::mlir::IntegerAttr>().getValue().getZExtValue() & (~("
+    CPred<"!(::llvm::cast<::mlir::IntegerAttr>($_self).getValue().getZExtValue() & (~("
           # !interleave(!foreach(case, cases, case.value # "u"), "|") #
           ")))">
   ]>;
@@ -295,7 +300,7 @@ class BitEnumAttr<I intType, string name, string summary,
       auto maybeEnum = }] # cppNamespace # "::" #
                             stringToSymbolFnName # [{(enumKeyword);
       if (!maybeEnum) {
-          return {(::mlir::LogicalResult)($_parser.emitError(loc) << }] #
+          return {(::llvm::LogicalResult)($_parser.emitError(loc) << }] #
               [{"expected " << "}] # cppType # [{" << " to be one of: " << }] #
               !interleave(!foreach(enum, enumerants, "\"" # enum.str # "\""),
                           [{ << ", " << }]) # [{)};
@@ -315,6 +320,18 @@ class BitEnumAttr<I intType, string name, string summary,
   // group with all bits set in reverse declaration order) will be printed (for
   // conciseness).
   bit printBitEnumPrimaryGroups = 0;
+}
+
+class I8BitEnumAttr<string name, string summary,
+                     list<BitEnumAttrCaseBase> cases>
+    : BitEnumAttr<I8, name, summary, cases> {
+  let underlyingType = "uint8_t";
+}
+
+class I16BitEnumAttr<string name, string summary,
+                     list<BitEnumAttrCaseBase> cases>
+    : BitEnumAttr<I16, name, summary, cases> {
+  let underlyingType = "uint16_t";
 }
 
 class I32BitEnumAttr<string name, string summary,
@@ -371,6 +388,7 @@ class EnumAttr<Dialect dialect, EnumAttrInfo enumInfo, string name = "",
                list <Trait> traits = []>
     : AttrDef<dialect, enumInfo.className, traits> {
   let summary = enumInfo.summary;
+  let description = enumInfo.description;
 
   // The backing enumeration.
   EnumAttrInfo enum = enumInfo;
@@ -397,6 +415,58 @@ class EnumAttr<Dialect dialect, EnumAttrInfo enumInfo, string name = "",
   // The default assembly format for enum attributes. Selected to best work with
   // operation assembly formats.
   let assemblyFormat = "$value";
+}
+
+class _symbolToValue<EnumAttrInfo enumAttrInfo, string case> {
+  defvar cases =
+    !filter(iter, enumAttrInfo.enumerants, !eq(iter.str, case));
+
+  assert !not(!empty(cases)), "failed to find enum-case '" # case # "'";
+
+  // `!empty` check to not cause an error if the cases are empty.
+  // The assertion catches the issue later and emits a proper error message.
+  string value = enumAttrInfo.cppType # "::"
+    # !if(!empty(cases), "", !head(cases).symbol);
+}
+
+class _bitSymbolsToValue<BitEnumAttr bitEnumAttr, string case> {
+  defvar pos = !find(case, "|");
+
+  // Recursive instantiation looking up the symbol before the `|` in
+  // enum cases.
+  string value = !if(
+    !eq(pos, -1), /*baseCase=*/_symbolToValue<bitEnumAttr, case>.value,
+    /*rec=*/_symbolToValue<bitEnumAttr, !substr(case, 0, pos)>.value # "|"
+    # _bitSymbolsToValue<bitEnumAttr, !substr(case, !add(pos, 1))>.value
+  );
+}
+
+class ConstantEnumCaseBase<Attr attribute,
+    EnumAttrInfo enumAttrInfo, string case>
+  : ConstantAttr<attribute,
+  !if(!isa<BitEnumAttr>(enumAttrInfo),
+    _bitSymbolsToValue<!cast<BitEnumAttr>(enumAttrInfo), case>.value,
+    _symbolToValue<enumAttrInfo, case>.value
+  )
+>;
+
+/// Attribute constraint matching a constant enum case. `attribute` should be
+/// one of `EnumAttrInfo` or `EnumAttr` and `symbol` the string representation
+/// of an enum case. Multiple enum values of a bit-enum can be combined using
+/// `|` as a separator. Note that there mustn't be any whitespace around the
+/// separator.
+/// This attribute constraint is additionally buildable, making it possible to
+/// use it in result patterns.
+///
+/// Examples:
+/// * ConstantEnumCase<Arith_IntegerOverflowAttr, "nsw|nuw">
+/// * ConstantEnumCase<Arith_CmpIPredicateAttr, "slt">
+class ConstantEnumCase<Attr attribute, string case>
+  : ConstantEnumCaseBase<attribute,
+    !if(!isa<EnumAttrInfo>(attribute), !cast<EnumAttrInfo>(attribute),
+          !cast<EnumAttr>(attribute).enum), case> {
+  assert !or(!isa<EnumAttr>(attribute), !isa<EnumAttrInfo>(attribute)),
+    "attribute must be one of 'EnumAttr' or 'EnumAttrInfo'";
 }
 
 #endif // ENUMATTR_TD

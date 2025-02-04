@@ -1,6 +1,0 @@
-omp_*
-*llvm_*
-__kmpc_*
-
-memcmp
-printf

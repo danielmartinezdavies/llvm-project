@@ -16,6 +16,7 @@
 
 #include <chrono>
 #include <cstring>
+#include <optional>
 
 #include "lldb/Core/ModuleSpec.h"
 #include "lldb/Host/Config.h"
@@ -35,16 +36,16 @@
 #include "lldb/Utility/StreamString.h"
 #include "lldb/Utility/StructuredData.h"
 #include "llvm/ADT/StringSwitch.h"
-#include "llvm/ADT/Triple.h"
 #include "llvm/Support/JSON.h"
+#include "llvm/TargetParser/Triple.h"
 
 #include "ProcessGDBRemoteLog.h"
 #include "lldb/Utility/StringExtractorGDBRemote.h"
 
 #ifdef __ANDROID__
 #include "lldb/Host/android/HostInfoAndroid.h"
+#include "lldb/Host/common/ZipFileResolver.h"
 #endif
-
 
 using namespace lldb;
 using namespace lldb_private::process_gdb_remote;
@@ -57,11 +58,9 @@ const static uint32_t g_default_packet_timeout_sec = 0; // not specified
 #endif
 
 // GDBRemoteCommunicationServerCommon constructor
-GDBRemoteCommunicationServerCommon::GDBRemoteCommunicationServerCommon(
-    const char *comm_name, const char *listener_name)
-    : GDBRemoteCommunicationServer(comm_name, listener_name),
-      m_process_launch_info(), m_process_launch_error(), m_proc_infos(),
-      m_proc_infos_index(0) {
+GDBRemoteCommunicationServerCommon::GDBRemoteCommunicationServerCommon()
+    : GDBRemoteCommunicationServer(), m_process_launch_info(),
+      m_process_launch_error(), m_proc_infos(), m_proc_infos_index(0) {
   RegisterMemberFunctionHandler(StringExtractorGDBRemote::eServerPacketType_A,
                                 &GDBRemoteCommunicationServerCommon::Handle_A);
   RegisterMemberFunctionHandler(
@@ -188,8 +187,8 @@ GDBRemoteCommunicationServerCommon::Handle_qHostInfo(
   response.PutStringAsRawHex8(host_triple.getTriple());
   response.Printf(";ptrsize:%u;", host_arch.GetAddressByteSize());
 
-  const char *distribution_id = host_arch.GetDistributionId().AsCString();
-  if (distribution_id) {
+  llvm::StringRef distribution_id = HostInfo::GetDistributionId();
+  if (!distribution_id.empty()) {
     response.PutCString("distribution_id:");
     response.PutStringAsRawHex8(distribution_id);
     response.PutCString(";");
@@ -232,7 +231,8 @@ GDBRemoteCommunicationServerCommon::Handle_qHostInfo(
       host_arch.GetMachine() == llvm::Triple::aarch64_32 ||
       host_arch.GetMachine() == llvm::Triple::aarch64_be ||
       host_arch.GetMachine() == llvm::Triple::arm ||
-      host_arch.GetMachine() == llvm::Triple::armeb || host_arch.IsMIPS())
+      host_arch.GetMachine() == llvm::Triple::armeb || host_arch.IsMIPS() ||
+      host_arch.GetTriple().isLoongArch())
     response.Printf("watchpoint_exceptions_received:before;");
   else
     response.Printf("watchpoint_exceptions_received:after;");
@@ -268,12 +268,12 @@ GDBRemoteCommunicationServerCommon::Handle_qHostInfo(
   }
 #endif
 
-  if (llvm::Optional<std::string> s = HostInfo::GetOSBuildString()) {
+  if (std::optional<std::string> s = HostInfo::GetOSBuildString()) {
     response.PutCString("os_build:");
     response.PutStringAsRawHex8(*s);
     response.PutChar(';');
   }
-  if (llvm::Optional<std::string> s = HostInfo::GetOSKernelDescription()) {
+  if (std::optional<std::string> s = HostInfo::GetOSKernelDescription()) {
     response.PutCString("os_kernel:");
     response.PutStringAsRawHex8(*s);
     response.PutChar(';');
@@ -341,13 +341,13 @@ GDBRemoteCommunicationServerCommon::Handle_qfProcessInfo(
     llvm::StringRef value;
     while (packet.GetNameColonValue(key, value)) {
       bool success = true;
-      if (key.equals("name")) {
+      if (key == "name") {
         StringExtractor extractor(value);
         std::string file;
         extractor.GetHexByteString(file);
         match_info.GetProcessInfo().GetExecutableFile().SetFile(
             file, FileSpec::Style::native);
-      } else if (key.equals("name_match")) {
+      } else if (key == "name_match") {
         NameMatch name_match = llvm::StringSwitch<NameMatch>(value)
                                    .Case("equals", NameMatch::Equals)
                                    .Case("starts_with", NameMatch::StartsWith)
@@ -358,40 +358,40 @@ GDBRemoteCommunicationServerCommon::Handle_qfProcessInfo(
         match_info.SetNameMatchType(name_match);
         if (name_match == NameMatch::Ignore)
           return SendErrorResponse(2);
-      } else if (key.equals("pid")) {
+      } else if (key == "pid") {
         lldb::pid_t pid = LLDB_INVALID_PROCESS_ID;
         if (value.getAsInteger(0, pid))
           return SendErrorResponse(2);
         match_info.GetProcessInfo().SetProcessID(pid);
-      } else if (key.equals("parent_pid")) {
+      } else if (key == "parent_pid") {
         lldb::pid_t pid = LLDB_INVALID_PROCESS_ID;
         if (value.getAsInteger(0, pid))
           return SendErrorResponse(2);
         match_info.GetProcessInfo().SetParentProcessID(pid);
-      } else if (key.equals("uid")) {
+      } else if (key == "uid") {
         uint32_t uid = UINT32_MAX;
         if (value.getAsInteger(0, uid))
           return SendErrorResponse(2);
         match_info.GetProcessInfo().SetUserID(uid);
-      } else if (key.equals("gid")) {
+      } else if (key == "gid") {
         uint32_t gid = UINT32_MAX;
         if (value.getAsInteger(0, gid))
           return SendErrorResponse(2);
         match_info.GetProcessInfo().SetGroupID(gid);
-      } else if (key.equals("euid")) {
+      } else if (key == "euid") {
         uint32_t uid = UINT32_MAX;
         if (value.getAsInteger(0, uid))
           return SendErrorResponse(2);
         match_info.GetProcessInfo().SetEffectiveUserID(uid);
-      } else if (key.equals("egid")) {
+      } else if (key == "egid") {
         uint32_t gid = UINT32_MAX;
         if (value.getAsInteger(0, gid))
           return SendErrorResponse(2);
         match_info.GetProcessInfo().SetEffectiveGroupID(gid);
-      } else if (key.equals("all_users")) {
+      } else if (key == "all_users") {
         match_info.SetMatchAllUsers(
             OptionArgParser::ToBoolean(value, false, &success));
-      } else if (key.equals("triple")) {
+      } else if (key == "triple") {
         match_info.GetProcessInfo().GetArchitecture() =
             HostInfo::GetAugmentedArchSpec(value);
       } else {
@@ -434,7 +434,7 @@ GDBRemoteCommunicationServerCommon::Handle_qUserName(
   packet.SetFilePos(::strlen("qUserName:"));
   uint32_t uid = packet.GetU32(UINT32_MAX);
   if (uid != UINT32_MAX) {
-    if (llvm::Optional<llvm::StringRef> name =
+    if (std::optional<llvm::StringRef> name =
             HostInfo::GetUserIDResolver().GetUserName(uid)) {
       StreamString response;
       response.PutStringAsRawHex8(*name);
@@ -454,7 +454,7 @@ GDBRemoteCommunicationServerCommon::Handle_qGroupName(
   packet.SetFilePos(::strlen("qGroupName:"));
   uint32_t gid = packet.GetU32(UINT32_MAX);
   if (gid != UINT32_MAX) {
-    if (llvm::Optional<llvm::StringRef> name =
+    if (std::optional<llvm::StringRef> name =
             HostInfo::GetUserIDResolver().GetGroupName(gid)) {
       StreamString response;
       response.PutStringAsRawHex8(*name);
@@ -473,7 +473,7 @@ GDBRemoteCommunicationServerCommon::Handle_qSpeedTest(
   llvm::StringRef key;
   llvm::StringRef value;
   bool success = packet.GetNameColonValue(key, value);
-  if (success && key.equals("response_size")) {
+  if (success && key == "response_size") {
     uint32_t response_size = 0;
     if (!value.getAsInteger(0, response_size)) {
       if (response_size == 0)
@@ -495,6 +495,17 @@ GDBRemoteCommunicationServerCommon::Handle_qSpeedTest(
     }
   }
   return SendErrorResponse(7);
+}
+
+static GDBErrno system_errno_to_gdb(int err) {
+  switch (err) {
+#define HANDLE_ERRNO(name, value)                                              \
+  case name:                                                                   \
+    return GDB_##name;
+#include "Plugins/Process/gdb-remote/GDBRemoteErrno.def"
+  default:
+    return GDB_EUNKNOWN;
+  }
 }
 
 GDBRemoteCommunication::PacketResult
@@ -523,9 +534,7 @@ GDBRemoteCommunicationServerCommon::Handle_vFile_Open(
         } else {
           response.PutCString("-1");
           std::error_code code = errorToErrorCode(file.takeError());
-          if (code.category() == std::system_category()) {
-            response.Printf(",%x", code.value());
-          }
+          response.Printf(",%x", system_errno_to_gdb(code.value()));
         }
 
         return SendPacketNoLock(response.GetString());
@@ -533,17 +542,6 @@ GDBRemoteCommunicationServerCommon::Handle_vFile_Open(
     }
   }
   return SendErrorResponse(18);
-}
-
-static GDBErrno system_errno_to_gdb(int err) {
-  switch (err) {
-#define HANDLE_ERRNO(name, value)                                              \
-  case name:                                                                   \
-    return GDB_##name;
-#include "Plugins/Process/gdb-remote/GDBRemoteErrno.def"
-  default:
-    return GDB_EUNKNOWN;
-  }
 }
 
 GDBRemoteCommunication::PacketResult
@@ -728,7 +726,8 @@ GDBRemoteCommunicationServerCommon::Handle_vFile_unlink(
   packet.GetHexByteString(path);
   Status error(llvm::sys::fs::remove(path));
   StreamString response;
-  response.Printf("F%x,%x", error.GetError(), error.GetError());
+  response.Printf("F%x,%x", error.GetError(),
+                  system_errno_to_gdb(error.GetError()));
   return SendPacketNoLock(response.GetString());
 }
 
@@ -774,7 +773,7 @@ template <typename T, typename U>
 static void fill_clamp(T &dest, U src, typename T::value_type fallback) {
   static_assert(std::is_unsigned<typename T::value_type>::value,
                 "Destination type must be unsigned.");
-  using UU = typename std::make_unsigned<U>::type;
+  using UU = std::make_unsigned_t<U>;
   constexpr auto T_max = std::numeric_limits<typename T::value_type>::max();
   dest = src >= 0 && static_cast<UU>(src) <= T_max ? src : fallback;
 }
@@ -1139,7 +1138,7 @@ GDBRemoteCommunicationServerCommon::Handle_qModuleInfo(
 
   response.PutCString("file_path:");
   response.PutStringAsRawHex8(
-        matched_module_spec.GetFileSpec().GetPath().c_str());
+      matched_module_spec.GetFileSpec().GetPath().c_str());
   response.PutChar(';');
   response.PutCString("file_offset:");
   response.PutHex64(file_offset);
@@ -1327,16 +1326,49 @@ GDBRemoteCommunicationServerCommon::GetModuleInfo(llvm::StringRef module_path,
 
   const FileSpec module_path_spec =
       FindModuleFile(req_module_path_spec.GetPath(), arch);
-  const ModuleSpec module_spec(module_path_spec, arch);
+
+  lldb::offset_t file_offset = 0;
+  lldb::offset_t file_size = 0;
+#ifdef __ANDROID__
+  // In Android API level 23 and above, dynamic loader is able to load .so file
+  // directly from zip file. In that case, module_path will be
+  // "zip_path!/so_path". Resolve the zip file path, .so file offset and size.
+  ZipFileResolver::FileKind file_kind = ZipFileResolver::eFileKindInvalid;
+  std::string file_path;
+  if (!ZipFileResolver::ResolveSharedLibraryPath(
+          module_path_spec, file_kind, file_path, file_offset, file_size)) {
+    return ModuleSpec();
+  }
+  lldbassert(file_kind != ZipFileResolver::eFileKindInvalid);
+  // For zip .so file, this file_path will contain only the actual zip file
+  // path for the object file processing. Otherwise it is the same as
+  // module_path.
+  const FileSpec actual_module_path_spec(file_path);
+#else
+  // It is just module_path_spec reference for other platforms.
+  const FileSpec &actual_module_path_spec = module_path_spec;
+#endif
+
+  const ModuleSpec module_spec(actual_module_path_spec, arch);
 
   ModuleSpecList module_specs;
-  if (!ObjectFile::GetModuleSpecifications(module_path_spec, 0, 0,
-                                           module_specs))
+  if (!ObjectFile::GetModuleSpecifications(actual_module_path_spec, file_offset,
+                                           file_size, module_specs))
     return ModuleSpec();
 
   ModuleSpec matched_module_spec;
   if (!module_specs.FindMatchingModuleSpec(module_spec, matched_module_spec))
     return ModuleSpec();
+
+#ifdef __ANDROID__
+  if (file_kind == ZipFileResolver::eFileKindZip) {
+    // For zip .so file, matched_module_spec contains only the actual zip file
+    // path for the object file processing. Overwrite the matched_module_spec
+    // file spec with the original module_path_spec to pass "zip_path!/so_path"
+    // through to PlatformAndroid::DownloadModuleSlice.
+    *matched_module_spec.GetFileSpecPtr() = module_path_spec;
+  }
+#endif
 
   return matched_module_spec;
 }

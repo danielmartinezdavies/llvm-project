@@ -11,14 +11,14 @@
 //
 // clang-format off
 
-// UNSUPPORTED: libcpp-has-no-incomplete-format
-
 // <format>
 
 // Test the feature test macros defined by <format>
 
-/*  Constant            Value
-    __cpp_lib_format    202106L [C++20]
+/*  Constant                   Value
+    __cpp_lib_format           202110L [C++20]
+    __cpp_lib_format_ranges    202207L [C++23]
+    __cpp_lib_format_uchar     202311L [C++20]
 */
 
 #include <format>
@@ -30,10 +30,26 @@
 #   error "__cpp_lib_format should not be defined before c++20"
 # endif
 
+# ifdef __cpp_lib_format_ranges
+#   error "__cpp_lib_format_ranges should not be defined before c++23"
+# endif
+
+# ifdef __cpp_lib_format_uchar
+#   error "__cpp_lib_format_uchar should not be defined before c++20"
+# endif
+
 #elif TEST_STD_VER == 14
 
 # ifdef __cpp_lib_format
 #   error "__cpp_lib_format should not be defined before c++20"
+# endif
+
+# ifdef __cpp_lib_format_ranges
+#   error "__cpp_lib_format_ranges should not be defined before c++23"
+# endif
+
+# ifdef __cpp_lib_format_uchar
+#   error "__cpp_lib_format_uchar should not be defined before c++20"
 # endif
 
 #elif TEST_STD_VER == 17
@@ -42,35 +58,79 @@
 #   error "__cpp_lib_format should not be defined before c++20"
 # endif
 
+# ifdef __cpp_lib_format_ranges
+#   error "__cpp_lib_format_ranges should not be defined before c++23"
+# endif
+
+# ifdef __cpp_lib_format_uchar
+#   error "__cpp_lib_format_uchar should not be defined before c++20"
+# endif
+
 #elif TEST_STD_VER == 20
 
-# if !defined(_LIBCPP_AVAILABILITY_DISABLE_FTM___cpp_lib_format) && !defined(_LIBCPP_HAS_NO_INCOMPLETE_FORMAT)
-#   ifndef __cpp_lib_format
-#     error "__cpp_lib_format should be defined in c++20"
-#   endif
-#   if __cpp_lib_format != 202106L
-#     error "__cpp_lib_format should have the value 202106L in c++20"
-#   endif
-# else
-#   ifdef __cpp_lib_format
-#     error "__cpp_lib_format should not be defined when !defined(_LIBCPP_AVAILABILITY_DISABLE_FTM___cpp_lib_format) && !defined(_LIBCPP_HAS_NO_INCOMPLETE_FORMAT) is not defined!"
-#   endif
+# ifndef __cpp_lib_format
+#   error "__cpp_lib_format should be defined in c++20"
+# endif
+# if __cpp_lib_format != 202110L
+#   error "__cpp_lib_format should have the value 202110L in c++20"
 # endif
 
-#elif TEST_STD_VER > 20
-
-# if !defined(_LIBCPP_AVAILABILITY_DISABLE_FTM___cpp_lib_format) && !defined(_LIBCPP_HAS_NO_INCOMPLETE_FORMAT)
-#   ifndef __cpp_lib_format
-#     error "__cpp_lib_format should be defined in c++2b"
-#   endif
-#   if __cpp_lib_format != 202106L
-#     error "__cpp_lib_format should have the value 202106L in c++2b"
-#   endif
-# else
-#   ifdef __cpp_lib_format
-#     error "__cpp_lib_format should not be defined when !defined(_LIBCPP_AVAILABILITY_DISABLE_FTM___cpp_lib_format) && !defined(_LIBCPP_HAS_NO_INCOMPLETE_FORMAT) is not defined!"
-#   endif
+# ifdef __cpp_lib_format_ranges
+#   error "__cpp_lib_format_ranges should not be defined before c++23"
 # endif
 
-#endif // TEST_STD_VER > 20
+# ifndef __cpp_lib_format_uchar
+#   error "__cpp_lib_format_uchar should be defined in c++20"
+# endif
+# if __cpp_lib_format_uchar != 202311L
+#   error "__cpp_lib_format_uchar should have the value 202311L in c++20"
+# endif
+
+#elif TEST_STD_VER == 23
+
+# ifndef __cpp_lib_format
+#   error "__cpp_lib_format should be defined in c++23"
+# endif
+# if __cpp_lib_format != 202110L
+#   error "__cpp_lib_format should have the value 202110L in c++23"
+# endif
+
+# ifndef __cpp_lib_format_ranges
+#   error "__cpp_lib_format_ranges should be defined in c++23"
+# endif
+# if __cpp_lib_format_ranges != 202207L
+#   error "__cpp_lib_format_ranges should have the value 202207L in c++23"
+# endif
+
+# ifndef __cpp_lib_format_uchar
+#   error "__cpp_lib_format_uchar should be defined in c++23"
+# endif
+# if __cpp_lib_format_uchar != 202311L
+#   error "__cpp_lib_format_uchar should have the value 202311L in c++23"
+# endif
+
+#elif TEST_STD_VER > 23
+
+# ifndef __cpp_lib_format
+#   error "__cpp_lib_format should be defined in c++26"
+# endif
+# if __cpp_lib_format != 202110L
+#   error "__cpp_lib_format should have the value 202110L in c++26"
+# endif
+
+# ifndef __cpp_lib_format_ranges
+#   error "__cpp_lib_format_ranges should be defined in c++26"
+# endif
+# if __cpp_lib_format_ranges != 202207L
+#   error "__cpp_lib_format_ranges should have the value 202207L in c++26"
+# endif
+
+# ifndef __cpp_lib_format_uchar
+#   error "__cpp_lib_format_uchar should be defined in c++26"
+# endif
+# if __cpp_lib_format_uchar != 202311L
+#   error "__cpp_lib_format_uchar should have the value 202311L in c++26"
+# endif
+
+#endif // TEST_STD_VER > 23
 

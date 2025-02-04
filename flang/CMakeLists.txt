@@ -1,4 +1,11 @@
-cmake_minimum_required(VERSION 3.13.4)
+cmake_minimum_required(VERSION 3.20.0)
+set(LLVM_SUBPROJECT_TITLE "Flang")
+
+if(NOT DEFINED LLVM_COMMON_CMAKE_UTILS)
+  set(LLVM_COMMON_CMAKE_UTILS ${CMAKE_CURRENT_SOURCE_DIR}/../cmake)
+endif()
+include(${LLVM_COMMON_CMAKE_UTILS}/Modules/CMakePolicy.cmake
+  NO_POLICY_SCOPE)
 
 set(CMAKE_BUILD_WITH_INSTALL_NAME_DIR ON)
 
@@ -6,6 +13,14 @@ set(CMAKE_BUILD_WITH_INSTALL_NAME_DIR ON)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED TRUE)
 set(CMAKE_CXX_EXTENSIONS OFF)
+
+if (LLVM_ENABLE_EH)
+  # To match with the flang guidelines we currently disable
+  # building with exception support in core LLVM.
+  message(FATAL_ERROR "Flang does not currently support building with \
+          LLVM exceptions enabled.  Please disable LLVM_ENABLE_EH when building \
+          flang.")
+endif()
 
 set(FLANG_SOURCE_DIR ${CMAKE_CURRENT_SOURCE_DIR})
 
@@ -18,6 +33,17 @@ if (CMAKE_SOURCE_DIR STREQUAL CMAKE_BINARY_DIR AND NOT MSVC_IDE)
 endif()
 
 option(FLANG_ENABLE_WERROR "Fail and stop building flang if a warning is triggered." OFF)
+
+# The out of tree builds of the compiler and the Fortran runtime
+# must use the same setting of FLANG_RUNTIME_F128_MATH_LIB
+# to be composable. Failure to synchronize this setting may result
+# in linking errors or fatal failures in F128 runtime functions.
+set(FLANG_RUNTIME_F128_MATH_LIB "" CACHE STRING
+  "Specifies the target library used for implementing IEEE-754 128-bit float \
+  math in F18 runtime, e.g. it might be libquadmath for targets where \
+  REAL(16) is mapped to __float128, or libm for targets where REAL(16) \
+  is mapped to long double, etc."
+  )
 
 # Check for a standalone build and configure as appropriate from
 # there.
@@ -32,8 +58,30 @@ endif()
 # Must go below project(..)
 include(GNUInstallDirs)
 
+# MSVC + clang-cl build requires clang_rt.builtin.${target} library
+if (MSVC AND CMAKE_CXX_COMPILER_ID MATCHES Clang)
+  include(HandleCompilerRT)
+  find_compiler_rt_library(builtins CLANG_RT_BUILTINS_LIBRARY)
+  get_filename_component(LIBDIR "${CLANG_RT_BUILTINS_LIBRARY}" DIRECTORY)
+  if (IS_DIRECTORY "${LIBDIR}")
+    link_libraries(${CLANG_RT_BUILTINS_LIBRARY})
+  endif()
+
+  if (MSVC_VERSION EQUAL 1942)
+    message(FATAL_ERROR "Flang cannot be built with clang and the MSVC 17.12 "
+            "toolchain version. Please upgrade to 17.13 or later, or switch "
+            "to the 17.10 LTSC release. "
+            "See https://github.com/microsoft/STL/issues/4959 for more details.")
+  endif()
+endif()
+
+if(CMAKE_SIZEOF_VOID_P EQUAL 4)
+  message(FATAL_ERROR "flang isn't supported on 32 bit CPUs")
+endif()
+
 if (FLANG_STANDALONE_BUILD)
   set(FLANG_BINARY_DIR ${CMAKE_CURRENT_BINARY_DIR})
+  set(CMAKE_INCLUDE_CURRENT_DIR ON)
   if (NOT MSVC_IDE)
     set(LLVM_ENABLE_ASSERTIONS ${ENABLE_ASSERTIONS}
       CACHE BOOL "Enable assertions")
@@ -41,29 +89,39 @@ if (FLANG_STANDALONE_BUILD)
     mark_as_advanced(LLVM_ENABLE_ASSERTIONS)
   endif()
 
-  # We need a pre-built/installed version of LLVM.
-  find_package(LLVM REQUIRED HINTS "${LLVM_CMAKE_DIR}")
   # If the user specifies a relative path to LLVM_DIR, the calls to include
   # LLVM modules fail. Append the absolute path to LLVM_DIR instead.
-  get_filename_component(LLVM_DIR_ABSOLUTE ${LLVM_DIR} REALPATH)
-  list(APPEND CMAKE_MODULE_PATH ${LLVM_DIR_ABSOLUTE})
+  if (LLVM_DIR)
+    get_filename_component(LLVM_DIR_ABSOLUTE ${LLVM_DIR}
+      REALPATH BASE_DIR ${CMAKE_CURRENT_BINARY_DIR})
+    list(APPEND CMAKE_MODULE_PATH ${LLVM_DIR_ABSOLUTE})
+  endif()
+  # We need a pre-built/installed version of LLVM.
+  find_package(LLVM REQUIRED HINTS "${LLVM_DIR_ABSOLUTE}")
+  if (NOT LLVM_DIR_ABSOLUTE)
+    # If the user did not specify a LLVM_DIR (and therefore LLVM_DIR_ABSOLUTE
+    # was not set), append the discovered path to CMAKE_MODULE_PATH.
+    list(APPEND CMAKE_MODULE_PATH ${LLVM_DIR})
+  endif()
 
   # Users might specify a path to CLANG_DIR that's:
   #   * a full path, or
   #   * a path relative to the path of this script.
   # Append the absolute path to CLANG_DIR so that find_package works in both
   # cases.
-  get_filename_component(
-    CLANG_DIR_ABSOLUTE
-    ${CLANG_DIR}
-    REALPATH
-    ${CMAKE_CURRENT_SOURCE_DIR})
-  list(APPEND CMAKE_MODULE_PATH ${CLANG_DIR_ABSOLUTE})
+  if (CLANG_DIR)
+    get_filename_component(
+      CLANG_DIR_ABSOLUTE
+      ${CLANG_DIR}
+      REALPATH
+      BASE_DIR ${CMAKE_CURRENT_BINARY_DIR})
+    list(APPEND CMAKE_MODULE_PATH ${CLANG_DIR_ABSOLUTE})
 
-  # TODO: Remove when libclangDriver is lifted out of Clang
-  find_package(Clang REQUIRED PATHS "${CLANG_DIR_ABSOLUTE}" NO_DEFAULT_PATH)
-  if (NOT Clang_FOUND)
-    message(FATAL_ERROR "Failed to find Clang")
+    # TODO: Remove when libclangDriver is lifted out of Clang
+    find_package(Clang REQUIRED PATHS "${CLANG_DIR_ABSOLUTE}" NO_DEFAULT_PATH)
+  else()
+    find_package(Clang REQUIRED)
+    list(APPEND CMAKE_MODULE_PATH ${Clang_DIR})
   endif()
 
   # If LLVM links to zlib we need the imported targets so we can too.
@@ -75,7 +133,6 @@ if (FLANG_STANDALONE_BUILD)
     set(USE_NO_MAYBE_UNINITIALIZED 1)
   endif()
 
-  include(CMakeParseArguments)
   include(AddLLVM)
   include(HandleLLVMOptions)
   include(VersionFromVCS)
@@ -84,20 +141,26 @@ if (FLANG_STANDALONE_BUILD)
   include(AddClang)
 
   include(TableGen)
-  find_package(MLIR REQUIRED CONFIG)
-  # Use SYSTEM for the same reasons as for LLVM includes
-  include_directories(SYSTEM ${MLIR_INCLUDE_DIRS})
   # If the user specifies a relative path to MLIR_DIR, the calls to include
   # MLIR modules fail. Append the absolute path to MLIR_DIR instead.
-  get_filename_component(MLIR_DIR_ABSOLUTE ${MLIR_DIR} REALPATH)
-  list(APPEND CMAKE_MODULE_PATH ${MLIR_DIR_ABSOLUTE})
+  if (MLIR_DIR)
+    get_filename_component(MLIR_DIR_ABSOLUTE ${MLIR_DIR}
+      REALPATH BASE_DIR ${CMAKE_CURRENT_BINARY_DIR})
+    list(APPEND CMAKE_MODULE_PATH ${MLIR_DIR_ABSOLUTE})
+  endif()
+  find_package(MLIR REQUIRED CONFIG HINTS ${MLIR_DIR_ABSOLUTE})
+  if (NOT MLIR_DIR_ABSOLUTE)
+    list(APPEND CMAKE_MODULE_PATH ${MLIR_DIR})
+  endif()
+  # Use SYSTEM for the same reasons as for LLVM includes
+  include_directories(SYSTEM ${MLIR_INCLUDE_DIRS})
   include(AddMLIR)
   find_program(MLIR_TABLEGEN_EXE "mlir-tblgen" ${LLVM_TOOLS_BINARY_DIR}
     NO_DEFAULT_PATH)
 
   option(LLVM_INSTALL_TOOLCHAIN_ONLY
     "Only include toolchain files in the 'install' target." OFF)
-  option(LLVM_FORCE_USE_OLD_HOST_TOOLCHAIN
+  option(LLVM_FORCE_USE_OLD_TOOLCHAIN
     "Set to ON to force using an old, unsupported host toolchain." OFF)
 
 
@@ -133,7 +196,6 @@ if (FLANG_STANDALONE_BUILD)
   set(CMAKE_ARCHIVE_OUTPUT_DIRECTORY
     ${CMAKE_BINARY_DIR}/lib${LLVM_LIBDIR_SUFFIX})
 
-  set(BACKEND_PACKAGE_STRING "LLVM ${LLVM_PACKAGE_VERSION}")
   set(LLVM_EXTERNAL_LIT "${LLVM_TOOLS_BINARY_DIR}/llvm-lit" CACHE STRING "Command used to spawn lit")
 
   option(FLANG_INCLUDE_TESTS
@@ -143,29 +205,12 @@ if (FLANG_STANDALONE_BUILD)
   get_errc_messages(LLVM_LIT_ERRC_MESSAGES)
 
 #Handle unittests when out-of-tree
-#LLVM_BUILD_MAIN_SRC_DIR - Path to llvm source when out-of-tree.
   set(FLANG_GTEST_AVAIL 0)
   if (FLANG_INCLUDE_TESTS)
-    set(UNITTEST_DIR ${LLVM_BUILD_MAIN_SRC_DIR}/utils/unittest)
+    set(UNITTEST_DIR ${LLVM_THIRD_PARTY_DIR}/unittest)
     if(EXISTS ${UNITTEST_DIR}/googletest/include/gtest/gtest.h)
       if (NOT TARGET llvm_gtest)
-        add_library(llvm_gtest
-          ${UNITTEST_DIR}/googletest/src/gtest-all.cc
-          ${UNITTEST_DIR}/googlemock/src/gmock-all.cc
-          )
-        target_include_directories(llvm_gtest
-          PUBLIC
-          "${UNITTEST_DIR}/googletest/include"
-          "${UNITTEST_DIR}/googlemock/include"
-
-          PRIVATE
-          "${UNITTEST_DIR}/googletest"
-          "${UNITTEST_DIR}/googlemock"
-          )
-         find_package(Threads)
-         target_link_libraries(llvm_gtest PUBLIC Threads::Threads)
-        add_library(llvm_gtest_main ${UNITTEST_DIR}/UnitTestMain/TestMain.cpp)
-        target_link_libraries(gtest_main PUBLIC llvm_gtest)
+        add_subdirectory(${UNITTEST_DIR} third-party/unittest)
       endif()
       set(FLANG_GTEST_AVAIL 1)
     else()
@@ -195,9 +240,8 @@ else()
     set(FLANG_BINARY_DIR ${CMAKE_CURRENT_BINARY_DIR})
   endif()
 
-  set(BACKEND_PACKAGE_STRING "${PACKAGE_STRING}")
-  set(MLIR_MAIN_SRC_DIR ${LLVM_MAIN_SRC_DIR}/../mlir/include ) # --src-root
-  set(MLIR_INCLUDE_DIR ${LLVM_MAIN_SRC_DIR}/../mlir/include ) # --includedir
+  set(MLIR_MAIN_SRC_DIR ${LLVM_MAIN_SRC_DIR}/../mlir ) # --src-root
+  set(MLIR_INCLUDE_DIR ${MLIR_MAIN_SRC_DIR}/include ) # --includedir
   set(MLIR_TABLEGEN_OUTPUT_DIR ${CMAKE_BINARY_DIR}/tools/mlir/include)
   include_directories(SYSTEM ${MLIR_INCLUDE_DIR})
   include_directories(SYSTEM ${MLIR_TABLEGEN_OUTPUT_DIR})
@@ -235,10 +279,6 @@ include_directories(BEFORE
   ${FLANG_BINARY_DIR}/include
   ${FLANG_SOURCE_DIR}/include)
 
-if(NOT DEFINED LLVM_COMMON_CMAKE_UTILS)
-  set(LLVM_COMMON_CMAKE_UTILS ${FLANG_SOURCE_DIR}/../cmake)
-endif()
-
 # Add Flang-centric modules to cmake path.
 list(INSERT CMAKE_MODULE_PATH 0
   "${FLANG_SOURCE_DIR}/cmake/modules"
@@ -270,6 +310,9 @@ endif()
 
 
 set(PACKAGE_VERSION "${LLVM_PACKAGE_VERSION}")
+if (NOT PACKAGE_VERSION)
+  set(PACKAGE_VERSION ${LLVM_VERSION_MAJOR})
+endif()
 
 
 if (NOT DEFINED FLANG_VERSION_MAJOR)
@@ -310,6 +353,12 @@ set(FLANG_REPOSITORY_STRING "" CACHE STRING
   "Vendor-specific text for showing the repository the source is taken from.")
 if (FLANG_REPOSITORY_STRING)
   add_definitions(-DFLANG_REPOSITORY_STRING="${FLANG_REPOSITORY_STRING}")
+endif()
+
+if (FLANG_RUNTIME_F128_MATH_LIB)
+  add_compile_definitions(
+    FLANG_RUNTIME_F128_MATH_LIB="${FLANG_RUNTIME_F128_MATH_LIB}"
+    )
 endif()
 
 include(TestBigEndian)
@@ -387,6 +436,14 @@ if (LLVM_COMPILER_IS_GCC_COMPATIBLE)
 
 endif()
 
+# Clang on Darwin enables non-POSIX extensions by default, which allows the
+# macro HUGE to leak out of <math.h> even when it is never directly included,
+# conflicting with Flang's HUGE symbols.
+# Set _POSIX_C_SOURCE to avoid including these extensions.
+if (APPLE)
+  set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -D_POSIX_C_SOURCE=200809")
+endif()
+
 list(REMOVE_DUPLICATES CMAKE_CXX_FLAGS)
 
 # Determine HOST_LINK_VERSION on Darwin.
@@ -408,9 +465,17 @@ if (APPLE)
   endif()
 endif()
 
-include(CMakeParseArguments)
 include(AddFlang)
 
+if (FLANG_INCLUDE_TESTS)
+  add_compile_definitions(FLANG_INCLUDE_TESTS=1)
+endif()
+
+option(FLANG_CUF_RUNTIME
+  "Compile CUDA Fortran runtime sources" OFF)
+if (FLANG_CUF_RUNTIME)
+  find_package(CUDAToolkit REQUIRED)
+endif()
 
 add_subdirectory(include)
 add_subdirectory(lib)
@@ -421,13 +486,12 @@ option(FLANG_BUILD_TOOLS
 if (FLANG_BUILD_TOOLS)
   add_subdirectory(tools)
 endif()
+
 add_subdirectory(runtime)
 
-option(FLANG_BUILD_EXAMPLES "Build Flang example programs by default." OFF)
-if (FLANG_BUILD_EXAMPLES AND FLANG_STANDALONE_BUILD)
-  message(FATAL_ERROR "Examples are not supported in out-of-tree builds.")
+if (LLVM_INCLUDE_EXAMPLES)
+  add_subdirectory(examples)
 endif()
-add_subdirectory(examples)
 
 if (FLANG_INCLUDE_TESTS)
   add_subdirectory(test)
@@ -444,7 +508,7 @@ endif()
 
 # Custom target to install Flang libraries.
 add_custom_target(flang-libraries)
-set_target_properties(flang-libraries PROPERTIES FOLDER "Misc")
+set_target_properties(flang-libraries PROPERTIES FOLDER "Flang/Meta")
 
 if (NOT LLVM_ENABLE_IDE)
   add_llvm_install_targets(install-flang-libraries
@@ -464,6 +528,9 @@ if (FLANG_LIBS)
 endif()
 
 if (NOT LLVM_INSTALL_TOOLCHAIN_ONLY)
+  add_llvm_install_targets(install-flang-headers
+    COMPONENT flang-headers)
+
   install(DIRECTORY include/flang
     DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}"
     COMPONENT flang-headers
@@ -483,3 +550,18 @@ if (NOT LLVM_INSTALL_TOOLCHAIN_ONLY)
     PATTERN "*.inc"
     )
 endif()
+
+# Put ISO_Fortran_binding.h into the include files of the build area now
+# so that we can run tests before installing
+include(GetClangResourceDir)
+get_clang_resource_dir(HEADER_BINARY_DIR PREFIX ${LLVM_LIBRARY_OUTPUT_INTDIR}/.. SUBDIR include)
+configure_file(
+  ${FLANG_SOURCE_DIR}/include/flang/ISO_Fortran_binding.h
+  ${HEADER_BINARY_DIR}/ISO_Fortran_binding.h)
+
+# And also install it into the install area
+get_clang_resource_dir(HEADER_INSTALL_DIR SUBDIR include)
+install(
+  FILES include/flang/ISO_Fortran_binding.h
+  DESTINATION ${HEADER_INSTALL_DIR} )
+

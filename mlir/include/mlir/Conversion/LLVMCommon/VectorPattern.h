@@ -32,7 +32,7 @@ struct NDVectorTypeInfo {
 // Iterates on the llvm array type until we hit a non-array type (which is
 // asserted to be an llvm vector type).
 NDVectorTypeInfo extractNDVectorTypeInfo(VectorType vectorType,
-                                         LLVMTypeConverter &converter);
+                                         const LLVMTypeConverter &converter);
 
 // Express `linearIndex` in terms of coordinates of `basis`.
 // Returns the empty vector when linearIndex is out of the range [0, P] where
@@ -50,20 +50,43 @@ void nDVectorIterate(const NDVectorTypeInfo &info, OpBuilder &builder,
                      function_ref<void(ArrayRef<int64_t>)> fun);
 
 LogicalResult handleMultidimensionalVectors(
-    Operation *op, ValueRange operands, LLVMTypeConverter &typeConverter,
+    Operation *op, ValueRange operands, const LLVMTypeConverter &typeConverter,
     std::function<Value(Type, ValueRange)> createOperand,
     ConversionPatternRewriter &rewriter);
 
-LogicalResult vectorOneToOneRewrite(Operation *op, StringRef targetOp,
-                                    ValueRange operands,
-                                    LLVMTypeConverter &typeConverter,
-                                    ConversionPatternRewriter &rewriter);
+LogicalResult vectorOneToOneRewrite(
+    Operation *op, StringRef targetOp, ValueRange operands,
+    ArrayRef<NamedAttribute> targetAttrs,
+    const LLVMTypeConverter &typeConverter, ConversionPatternRewriter &rewriter,
+    IntegerOverflowFlags overflowFlags = IntegerOverflowFlags::none);
 } // namespace detail
 } // namespace LLVM
 
+// Default attribute conversion class, which passes all source attributes
+// through to the target op, unmodified.
+template <typename SourceOp, typename TargetOp>
+class AttrConvertPassThrough {
+public:
+  AttrConvertPassThrough(SourceOp srcOp) : srcAttrs(srcOp->getAttrs()) {}
+
+  ArrayRef<NamedAttribute> getAttrs() const { return srcAttrs; }
+  LLVM::IntegerOverflowFlags getOverflowFlags() const {
+    return LLVM::IntegerOverflowFlags::none;
+  }
+
+private:
+  ArrayRef<NamedAttribute> srcAttrs;
+};
+
 /// Basic lowering implementation to rewrite Ops with just one result to the
 /// LLVM Dialect. This supports higher-dimensional vector types.
-template <typename SourceOp, typename TargetOp>
+/// The AttrConvert template template parameter should be a template class
+/// with SourceOp and TargetOp type parameters, a constructor that takes
+/// a SourceOp instance, and a getAttrs() method that returns
+/// ArrayRef<NamedAttribute>.
+template <typename SourceOp, typename TargetOp,
+          template <typename, typename> typename AttrConvert =
+              AttrConvertPassThrough>
 class VectorConvertToLLVMPattern : public ConvertOpToLLVMPattern<SourceOp> {
 public:
   using ConvertOpToLLVMPattern<SourceOp>::ConvertOpToLLVMPattern;
@@ -75,9 +98,13 @@ public:
     static_assert(
         std::is_base_of<OpTrait::OneResult<SourceOp>, SourceOp>::value,
         "expected single result op");
+    // Determine attributes for the target op
+    AttrConvert<SourceOp, TargetOp> attrConvert(op);
+
     return LLVM::detail::vectorOneToOneRewrite(
         op, TargetOp::getOperationName(), adaptor.getOperands(),
-        *this->getTypeConverter(), rewriter);
+        attrConvert.getAttrs(), *this->getTypeConverter(), rewriter,
+        attrConvert.getOverflowFlags());
   }
 };
 } // namespace mlir

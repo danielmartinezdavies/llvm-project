@@ -34,8 +34,7 @@
 #include "llvm/Support/FileUtilities.h"
 #include "llvm/Support/FormatVariadic.h"
 #include "llvm/Support/FormattedStream.h"
-#include "llvm/Support/Host.h"
-#include "llvm/Support/InitLLVM.h"
+#include "llvm/Support/LLVMDriver.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Path.h"
 #include "llvm/Support/Process.h"
@@ -43,7 +42,9 @@
 #include "llvm/Support/TargetSelect.h"
 #include "llvm/Support/ToolOutputFile.h"
 #include "llvm/Support/WithColor.h"
+#include "llvm/TargetParser/Host.h"
 #include <ctime>
+#include <optional>
 
 using namespace llvm;
 using namespace llvm::opt;
@@ -52,32 +53,30 @@ namespace {
 
 enum ID {
   OPT_INVALID = 0, // This is not an option ID.
-#define OPTION(PREFIX, NAME, ID, KIND, GROUP, ALIAS, ALIASARGS, FLAGS, PARAM,  \
-               HELPTEXT, METAVAR, VALUES)                                      \
-  OPT_##ID,
+#define OPTION(...) LLVM_MAKE_OPT_ID(__VA_ARGS__),
 #include "Opts.inc"
 #undef OPTION
 };
 
-#define PREFIX(NAME, VALUE) const char *const NAME[] = VALUE;
+#define OPTTABLE_STR_TABLE_CODE
 #include "Opts.inc"
-#undef PREFIX
+#undef OPTTABLE_STR_TABLE_CODE
 
-const opt::OptTable::Info InfoTable[] = {
-#define OPTION(PREFIX, NAME, ID, KIND, GROUP, ALIAS, ALIASARGS, FLAGS, PARAM,  \
-               HELPTEXT, METAVAR, VALUES)                                      \
-  {                                                                            \
-      PREFIX,      NAME,      HELPTEXT,                                        \
-      METAVAR,     OPT_##ID,  opt::Option::KIND##Class,                        \
-      PARAM,       FLAGS,     OPT_##GROUP,                                     \
-      OPT_##ALIAS, ALIASARGS, VALUES},
+#define OPTTABLE_PREFIXES_TABLE_CODE
+#include "Opts.inc"
+#undef OPTTABLE_PREFIXES_TABLE_CODE
+
+static constexpr opt::OptTable::Info InfoTable[] = {
+#define OPTION(...) LLVM_CONSTRUCT_OPT_INFO(__VA_ARGS__),
 #include "Opts.inc"
 #undef OPTION
 };
 
-class MLOptTable : public opt::OptTable {
+class MLOptTable : public opt::GenericOptTable {
 public:
-  MLOptTable() : OptTable(InfoTable, /*IgnoreCase=*/false) {}
+  MLOptTable()
+      : opt::GenericOptTable(OptionStrTable, OptionPrefixesTable, InfoTable,
+                             /*IgnoreCase=*/false) {}
 };
 } // namespace
 
@@ -86,7 +85,7 @@ static Triple GetTriple(StringRef ProgName, opt::InputArgList &Args) {
   StringRef DefaultBitness = "32";
   SmallString<255> Program = ProgName;
   sys::path::replace_extension(Program, "");
-  if (Program.endswith("ml64"))
+  if (Program.ends_with("ml64"))
     DefaultBitness = "64";
 
   StringRef TripleName =
@@ -189,8 +188,7 @@ static int AssembleInput(StringRef ProgName, const Target *TheTarget,
   return Res;
 }
 
-int main(int Argc, char **Argv) {
-  InitLLVM X(Argc, Argv);
+int llvm_ml_main(int Argc, char **Argv, const llvm::ToolContext &) {
   StringRef ProgName = sys::path::filename(Argv[0]);
 
   // Initialize targets and assembly printers/parsers.
@@ -201,7 +199,7 @@ int main(int Argc, char **Argv) {
 
   MLOptTable T;
   unsigned MissingArgIndex, MissingArgCount;
-  ArrayRef<const char *> ArgsArr = makeArrayRef(Argv + 1, Argc - 1);
+  ArrayRef<const char *> ArgsArr = ArrayRef(Argv + 1, Argc - 1);
   opt::InputArgList InputArgs =
       T.ParseArgs(ArgsArr, MissingArgIndex, MissingArgCount);
 
@@ -268,6 +266,9 @@ int main(int Argc, char **Argv) {
   MCTargetOptions MCOptions;
   MCOptions.AssemblyLanguage = "masm";
   MCOptions.MCFatalWarnings = InputArgs.hasArg(OPT_fatal_warnings);
+  MCOptions.MCSaveTempLabels = InputArgs.hasArg(OPT_save_temp_labels);
+  MCOptions.ShowMCInst = InputArgs.hasArg(OPT_show_inst);
+  MCOptions.AsmVerbose = true;
 
   Triple TheTriple = GetTriple(ProgName, InputArgs);
   std::string Error;
@@ -303,7 +304,7 @@ int main(int Argc, char **Argv) {
   std::vector<std::string> IncludeDirs =
       InputArgs.getAllArgValues(OPT_include_path);
   if (!InputArgs.hasArg(OPT_ignore_include_envvar)) {
-    if (llvm::Optional<std::string> IncludeEnvVar =
+    if (std::optional<std::string> IncludeEnvVar =
             llvm::sys::Process::GetEnv("INCLUDE")) {
       SmallVector<StringRef, 8> Dirs;
       StringRef(*IncludeEnvVar)
@@ -334,9 +335,6 @@ int main(int Argc, char **Argv) {
   std::unique_ptr<MCObjectFileInfo> MOFI(TheTarget->createMCObjectFileInfo(
       Ctx, /*PIC=*/false, /*LargeCodeModel=*/true));
   Ctx.setObjectFileInfo(MOFI.get());
-
-  if (InputArgs.hasArg(OPT_save_temp_labels))
-    Ctx.setAllowTemporaryLabels(false);
 
   // Set compilation information.
   SmallString<128> CWD;
@@ -392,10 +390,8 @@ int main(int Argc, char **Argv) {
     std::unique_ptr<MCAsmBackend> MAB(
         TheTarget->createMCAsmBackend(*STI, *MRI, MCOptions));
     auto FOut = std::make_unique<formatted_raw_ostream>(*OS);
-    Str.reset(TheTarget->createAsmStreamer(
-        Ctx, std::move(FOut), /*asmverbose*/ true,
-        /*useDwarfDirectory*/ true, IP, std::move(CE), std::move(MAB),
-        InputArgs.hasArg(OPT_show_inst)));
+    Str.reset(TheTarget->createAsmStreamer(Ctx, std::move(FOut), IP,
+                                           std::move(CE), std::move(MAB)));
 
   } else if (FileType == "null") {
     Str.reset(TheTarget->createNullStreamer(Ctx));
@@ -409,9 +405,8 @@ int main(int Argc, char **Argv) {
     MCAsmBackend *MAB = TheTarget->createMCAsmBackend(*STI, *MRI, MCOptions);
     Str.reset(TheTarget->createMCObjectStreamer(
         TheTriple, Ctx, std::unique_ptr<MCAsmBackend>(MAB),
-        MAB->createObjectWriter(*OS), std::unique_ptr<MCCodeEmitter>(CE), *STI,
-        MCOptions.MCRelaxAll, MCOptions.MCIncrementalLinkerCompatible,
-        /*DWARFMustBeAtTheEnd*/ false));
+        MAB->createObjectWriter(*OS), std::unique_ptr<MCCodeEmitter>(CE),
+        *STI));
   } else {
     llvm_unreachable("Invalid file type!");
   }
@@ -432,9 +427,6 @@ int main(int Argc, char **Argv) {
     Str->emitSymbolAttribute(Feat00Sym, MCSA_Global);
     Str->emitAssignment(Feat00Sym, MCConstantExpr::create(Feat00Flags, Ctx));
   }
-
-  // Use Assembler information for parsing.
-  Str->setUseAssemblerInfoForParsing(true);
 
   int Res = 1;
   if (InputArgs.hasArg(OPT_as_lex)) {

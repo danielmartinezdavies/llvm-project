@@ -1,4 +1,11 @@
-#include "bolt/Profile/DataAggregator.h"
+//===- bolt/tools/heatmap/heatmap.cpp - Profile heatmap visualization tool ===//
+//
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+
 #include "bolt/Rewrite/RewriteInstance.h"
 #include "bolt/Utils/CommandLineOpts.h"
 #include "llvm/MC/TargetRegistry.h"
@@ -6,7 +13,8 @@
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Errc.h"
 #include "llvm/Support/Error.h"
-#include "llvm/Support/Path.h"
+#include "llvm/Support/FileSystem.h"
+#include "llvm/Support/Program.h"
 #include "llvm/Support/TargetSelect.h"
 
 using namespace llvm;
@@ -46,11 +54,11 @@ static std::string GetExecutablePath(const char *Argv0) {
     if (llvm::ErrorOr<std::string> P =
             llvm::sys::findProgramByName(ExecutablePath))
       ExecutablePath = *P;
-  return std::string(ExecutablePath.str());
+  return std::string(ExecutablePath);
 }
 
 int main(int argc, char **argv) {
-  cl::HideUnrelatedOptions(makeArrayRef(opts::HeatmapCategories));
+  cl::HideUnrelatedOptions(ArrayRef(opts::HeatmapCategories));
   cl::ParseCommandLineOptions(argc, argv, "");
 
   if (opts::PerfData.empty()) {
@@ -85,8 +93,7 @@ int main(int argc, char **argv) {
   Binary &Binary = *BinaryOrErr.get().getBinary();
 
   if (auto *e = dyn_cast<ELFObjectFileBase>(&Binary)) {
-    auto RIOrErr =
-        RewriteInstance::createRewriteInstance(e, argc, argv, ToolPath);
+    auto RIOrErr = RewriteInstance::create(e, argc, argv, ToolPath);
     if (Error E = RIOrErr.takeError())
       report_error("RewriteInstance", std::move(E));
 

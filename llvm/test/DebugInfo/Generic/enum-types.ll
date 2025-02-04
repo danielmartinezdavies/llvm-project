@@ -1,5 +1,6 @@
 ;
 ; RUN: %llc_dwarf -filetype=obj -O0 -dwarf-linkage-names=All < %s | llvm-dwarfdump -v -debug-info - | FileCheck %s
+; RUN: %llc_dwarf --try-experimental-debuginfo-iterators -filetype=obj -O0 -dwarf-linkage-names=All < %s | llvm-dwarfdump -v -debug-info - | FileCheck %s
 
 ; Make sure we can handle enums with the same identifier but in enum types of
 ; different compile units.
@@ -23,8 +24,8 @@
 define void @_Z4topA2EA(i32 %sa) #0 !dbg !7 {
 entry:
   %sa.addr = alloca i32, align 4
-  store i32 %sa, i32* %sa.addr, align 4
-  call void @llvm.dbg.declare(metadata i32* %sa.addr, metadata !22, metadata !DIExpression()), !dbg !23
+  store i32 %sa, ptr %sa.addr, align 4
+  call void @llvm.dbg.declare(metadata ptr %sa.addr, metadata !22, metadata !DIExpression()), !dbg !23
   ret void, !dbg !24
 }
 
@@ -35,8 +36,8 @@ declare void @llvm.dbg.declare(metadata, metadata, metadata) #1
 define void @_Z4topB2EA(i32 %sa) #0 !dbg !17 {
 entry:
   %sa.addr = alloca i32, align 4
-  store i32 %sa, i32* %sa.addr, align 4
-  call void @llvm.dbg.declare(metadata i32* %sa.addr, metadata !25, metadata !DIExpression()), !dbg !26
+  store i32 %sa, ptr %sa.addr, align 4
+  call void @llvm.dbg.declare(metadata ptr %sa.addr, metadata !25, metadata !DIExpression()), !dbg !26
   ret void, !dbg !27
 }
 

@@ -6,12 +6,13 @@ target triple = "x86_64-unknown-linux-gnu"
 
 %test1.struct = type { i32, i32 }
 @test1.aligned_glbl = global %test1.struct zeroinitializer, align 4
-define void @test1(i64 *%ptr) {
+define void @test1(ptr %ptr) {
 ; CHECK-LABEL: @test1(
-; CHECK-NEXT:    store i64 0, i64* [[PTR:%.*]], align 8
+; CHECK-NEXT:    store i64 0, ptr [[PTR:%.*]], align 8
 ; CHECK-NEXT:    ret void
 ;
-  store i64 and (i64 ptrtoint (i32* getelementptr (%test1.struct, %test1.struct* @test1.aligned_glbl, i32 0, i32 1) to i64), i64 3), i64* %ptr
+  %and = and i64 ptrtoint (ptr getelementptr (%test1.struct, ptr @test1.aligned_glbl, i32 0, i32 1) to i64), 3
+  store i64 %and, ptr %ptr
   ret void
 }
 
@@ -21,11 +22,12 @@ define void @test1(i64 *%ptr) {
 
 define i64 @OpenFilter(i64 %x) {
 ; CHECK-LABEL: @OpenFilter(
-; CHECK-NEXT:    [[T:%.*]] = sub i64 [[X:%.*]], zext (i8 ptrtoint ([9 x i8]* @channel_wg4idx to i8) to i64)
-; CHECK-NEXT:    [[R:%.*]] = and i64 [[T]], 255
+; CHECK-NEXT:    [[TMP1:%.*]] = trunc i64 [[X:%.*]] to i8
+; CHECK-NEXT:    [[T:%.*]] = sub i8 [[TMP1]], ptrtoint (ptr @channel_wg4idx to i8)
+; CHECK-NEXT:    [[R:%.*]] = zext i8 [[T]] to i64
 ; CHECK-NEXT:    ret i64 [[R]]
 ;
-  %sub = sub i64 %x, ptrtoint ([9 x i8]* @channel_wg4idx to i64)
+  %sub = sub i64 %x, ptrtoint (ptr @channel_wg4idx to i64)
   %t = trunc i64 %sub to i8
   %r = zext i8 %t to i64
   ret i64 %r

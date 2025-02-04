@@ -1,4 +1,4 @@
-//=- RISCVMachineFunctionInfo.h - RISCV machine function info -----*- C++ -*-=//
+//=- RISCVMachineFunctionInfo.h - RISC-V machine function info ----*- C++ -*-=//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -65,9 +65,24 @@ private:
   uint64_t RVVPadding = 0;
   /// Size of stack frame to save callee saved registers
   unsigned CalleeSavedStackSize = 0;
+  /// Is there any vector argument or return?
+  bool IsVectorCall = false;
+
+  /// Registers that have been sign extended from i32.
+  SmallVector<Register, 8> SExt32Registers;
+
+  /// Size of stack frame for Zcmp PUSH/POP
+  unsigned RVPushStackSize = 0;
+  unsigned RVPushRegs = 0;
+  int RVPushRlist = llvm::RISCVZC::RLISTENCODE::INVALID_RLIST;
+
+  int64_t StackProbeSize = 0;
+
+  /// Does it probe the stack for a dynamic allocation?
+  bool HasDynamicAllocation = false;
 
 public:
-  RISCVMachineFunctionInfo(const MachineFunction &MF) {}
+  RISCVMachineFunctionInfo(const Function &F, const RISCVSubtarget *STI);
 
   MachineFunctionInfo *
   clone(BumpPtrAllocator &Allocator, MachineFunction &DestMF,
@@ -94,13 +109,18 @@ public:
     BranchRelaxationScratchFrameIndex = Index;
   }
 
+  unsigned getReservedSpillsSize() const {
+    return LibCallStackSize + RVPushStackSize;
+  }
+
   unsigned getLibCallStackSize() const { return LibCallStackSize; }
   void setLibCallStackSize(unsigned Size) { LibCallStackSize = Size; }
 
   bool useSaveRestoreLibCalls(const MachineFunction &MF) const {
     // We cannot use fixed locations for the callee saved spill slots if the
     // function uses a varargs save area, or is an interrupt handler.
-    return MF.getSubtarget<RISCVSubtarget>().enableSaveRestore() &&
+    return !isPushable(MF) &&
+           MF.getSubtarget<RISCVSubtarget>().enableSaveRestore() &&
            VarArgsSaveSize == 0 && !MF.getFrameInfo().hasTailCall() &&
            !MF.getFunction().hasFnAttribute("interrupt");
   }
@@ -117,7 +137,34 @@ public:
   unsigned getCalleeSavedStackSize() const { return CalleeSavedStackSize; }
   void setCalleeSavedStackSize(unsigned Size) { CalleeSavedStackSize = Size; }
 
+  bool isPushable(const MachineFunction &MF) const {
+    // We cannot use fixed locations for the callee saved spill slots if the
+    // function uses a varargs save area.
+    // TODO: Use a separate placement for vararg registers to enable Zcmp.
+    return MF.getSubtarget<RISCVSubtarget>().hasStdExtZcmp() &&
+           !MF.getTarget().Options.DisableFramePointerElim(MF) &&
+           VarArgsSaveSize == 0;
+  }
+
+  int getRVPushRlist() const { return RVPushRlist; }
+  void setRVPushRlist(int Rlist) { RVPushRlist = Rlist; }
+
+  unsigned getRVPushRegs() const { return RVPushRegs; }
+  void setRVPushRegs(unsigned Regs) { RVPushRegs = Regs; }
+
+  unsigned getRVPushStackSize() const { return RVPushStackSize; }
+  void setRVPushStackSize(unsigned Size) { RVPushStackSize = Size; }
+
   void initializeBaseYamlFields(const yaml::RISCVMachineFunctionInfo &YamlMFI);
+
+  void addSExt32Register(Register Reg);
+  bool isSExt32Register(Register Reg) const;
+
+  bool isVectorCall() const { return IsVectorCall; }
+  void setIsVectorCall() { IsVectorCall = true; }
+
+  bool hasDynamicAllocation() const { return HasDynamicAllocation; }
+  void setDynamicAllocation() { HasDynamicAllocation = true; }
 };
 
 } // end namespace llvm

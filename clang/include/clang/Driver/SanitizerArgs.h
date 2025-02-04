@@ -25,20 +25,27 @@ class SanitizerArgs {
   SanitizerSet Sanitizers;
   SanitizerSet RecoverableSanitizers;
   SanitizerSet TrapSanitizers;
+  SanitizerSet MergeHandlers;
+  SanitizerMaskCutoffs SkipHotCutoffs;
 
   std::vector<std::string> UserIgnorelistFiles;
   std::vector<std::string> SystemIgnorelistFiles;
   std::vector<std::string> CoverageAllowlistFiles;
   std::vector<std::string> CoverageIgnorelistFiles;
+  std::vector<std::string> BinaryMetadataIgnorelistFiles;
   int CoverageFeatures = 0;
+  int BinaryMetadataFeatures = 0;
+  int OverflowPatternExclusions = 0;
   int MsanTrackOrigins = 0;
   bool MsanUseAfterDtor = true;
-  bool MsanParamRetval = false;
+  bool MsanParamRetval = true;
   bool CfiCrossDso = false;
   bool CfiICallGeneralizePointers = false;
+  bool CfiICallNormalizeIntegers = false;
   bool CfiCanonicalJumpTables = false;
   int AsanFieldPadding = 0;
   bool SharedRuntime = false;
+  bool StableABI = false;
   bool AsanUseAfterScope = true;
   bool AsanPoisonCustomArrayCookie = false;
   bool AsanGlobalsDeadStripping = false;
@@ -72,6 +79,7 @@ public:
                 bool DiagnoseErrors = true);
 
   bool needsSharedRt() const { return SharedRuntime; }
+  bool needsStableAbi() const { return StableABI; }
 
   bool needsMemProfRt() const { return NeedsMemProfRt; }
   bool needsAsanRt() const { return Sanitizers.has(SanitizerKind::Address); }
@@ -81,6 +89,7 @@ public:
   bool needsHwasanAliasesRt() const {
     return needsHwasanRt() && HwasanUseAliases;
   }
+  bool needsTysanRt() const { return Sanitizers.has(SanitizerKind::Type); }
   bool needsTsanRt() const { return Sanitizers.has(SanitizerKind::Thread); }
   bool needsMsanRt() const { return Sanitizers.has(SanitizerKind::Memory); }
   bool needsFuzzer() const { return Sanitizers.has(SanitizerKind::Fuzzer); }
@@ -91,6 +100,7 @@ public:
   }
   bool needsFuzzerInterceptors() const;
   bool needsUbsanRt() const;
+  bool needsUbsanCXXRt() const;
   bool requiresMinimalRuntime() const { return MinimalRuntime; }
   bool needsDfsanRt() const { return Sanitizers.has(SanitizerKind::DataFlow); }
   bool needsSafeStackRt() const { return SafeStackRuntime; }
@@ -98,6 +108,10 @@ public:
   bool needsCfiDiagRt() const;
   bool needsStatsRt() const { return Stats; }
   bool needsScudoRt() const { return Sanitizers.has(SanitizerKind::Scudo); }
+  bool needsNsanRt() const {
+    return Sanitizers.has(SanitizerKind::NumericalStability);
+  }
+  bool needsRtsanRt() const { return Sanitizers.has(SanitizerKind::Realtime); }
 
   bool hasMemTag() const {
     return hasMemtagHeap() || hasMemtagStack() || hasMemtagGlobals();
@@ -114,6 +128,10 @@ public:
   const std::string &getMemtagMode() const {
     assert(!MemtagMode.empty());
     return MemtagMode;
+  }
+
+  bool hasShadowCallStack() const {
+    return Sanitizers.has(SanitizerKind::ShadowCallStack);
   }
 
   bool requiresPIE() const;

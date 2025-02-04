@@ -1,5 +1,5 @@
 add_custom_target(LLDBUnitTests)
-set_target_properties(LLDBUnitTests PROPERTIES FOLDER "lldb tests")
+set_target_properties(LLDBUnitTests PROPERTIES FOLDER "LLDB/Tests")
 
 add_dependencies(lldb-unit-test-deps LLDBUnitTests)
 
@@ -9,13 +9,6 @@ include_directories(${LLDB_PROJECT_ROOT}/unittests)
 if (CXX_SUPPORTS_SUGGEST_OVERRIDE_FLAG)
   add_compile_options("-Wno-suggest-override")
 endif()
-
-set(LLDB_GTEST_COMMON_INCLUDE ${CMAKE_CURRENT_SOURCE_DIR}/gtest_common.h)
-if (MSVC)
-  list(APPEND LLVM_COMPILE_FLAGS /FI ${LLDB_GTEST_COMMON_INCLUDE})
-else ()
-  list(APPEND LLVM_COMPILE_FLAGS -include ${LLDB_GTEST_COMMON_INCLUDE})
-endif ()
 
 function(add_lldb_unittest test_name)
   cmake_parse_arguments(ARG
@@ -59,6 +52,7 @@ if (NOT CMAKE_SYSTEM_NAME MATCHES "Windows")
   add_subdirectory(API)
 endif()
 add_subdirectory(Breakpoint)
+add_subdirectory(Callback)
 add_subdirectory(Core)
 add_subdirectory(DataFormatter)
 add_subdirectory(Disassembler)
@@ -80,6 +74,7 @@ add_subdirectory(tools)
 add_subdirectory(UnwindAssembly)
 add_subdirectory(Utility)
 add_subdirectory(Thread)
+add_subdirectory(ValueObject)
 
 if(LLDB_CAN_USE_DEBUGSERVER AND LLDB_TOOL_DEBUGSERVER_BUILD AND NOT LLDB_USE_SYSTEM_DEBUGSERVER)
   add_subdirectory(debugserver)

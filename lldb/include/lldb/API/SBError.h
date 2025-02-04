@@ -13,6 +13,9 @@
 
 namespace lldb_private {
 class ScriptInterpreter;
+namespace python {
+class SWIGBridge;
+}
 } // namespace lldb_private
 
 namespace lldb {
@@ -23,10 +26,16 @@ public:
 
   SBError(const lldb::SBError &rhs);
 
+  SBError(const char *message);
+
   ~SBError();
 
   const SBError &operator=(const lldb::SBError &rhs);
 
+  /// Get the error string as a NULL terminated UTF8 c-string.
+  ///
+  /// This SBError object owns the returned string and this object must be kept
+  /// around long enough to use the returned string.
   const char *GetCString() const;
 
   void Clear();
@@ -35,7 +44,12 @@ public:
 
   bool Success() const;
 
+  /// Get the error code.
   uint32_t GetError() const;
+
+  /// Get the error in machine-readable form. Particularly useful for
+  /// compiler diagnostics.
+  SBStructuredData GetErrorData() const;
 
   lldb::ErrorType GetType() const;
 
@@ -47,8 +61,14 @@ public:
 
   void SetErrorString(const char *err_str);
 
-  int SetErrorStringWithFormat(const char *format, ...)
-      __attribute__((format(printf, 2, 3)));
+#ifndef SWIG
+  __attribute__((format(printf, 2, 3)))
+#else
+  // clang-format off
+  %varargs(3, char *str = NULL) SetErrorStringWithFormat;
+  // clang-format on
+#endif
+  int SetErrorStringWithFormat(const char *format, ...);
 
   explicit operator bool() const;
 
@@ -62,8 +82,11 @@ protected:
   friend class SBBreakpointName;
   friend class SBCommandReturnObject;
   friend class SBCommunication;
+  friend class SBSaveCoreOptions;
   friend class SBData;
   friend class SBDebugger;
+  friend class SBFile;
+  friend class SBFormat;
   friend class SBHostOS;
   friend class SBPlatform;
   friend class SBProcess;
@@ -73,10 +96,13 @@ protected:
   friend class SBThread;
   friend class SBTrace;
   friend class SBValue;
+  friend class SBValueList;
   friend class SBWatchpoint;
-  friend class SBFile;
 
   friend class lldb_private::ScriptInterpreter;
+  friend class lldb_private::python::SWIGBridge;
+
+  SBError(lldb_private::Status &&error);
 
   lldb_private::Status *get();
 
@@ -86,7 +112,7 @@ protected:
 
   lldb_private::Status &ref();
 
-  void SetError(const lldb_private::Status &lldb_error);
+  void SetError(lldb_private::Status &&lldb_error);
 
 private:
   std::unique_ptr<lldb_private::Status> m_opaque_up;

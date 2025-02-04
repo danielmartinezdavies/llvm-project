@@ -14,21 +14,25 @@
 
 #include "mlir/Dialect/Affine/Analysis/LoopAnalysis.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
-#include "mlir/Dialect/Arithmetic/IR/Arithmetic.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
+#include "mlir/Dialect/Utils/IndexingUtils.h"
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/IntegerSet.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/TypeUtilities.h"
 #include "mlir/Support/LLVM.h"
-#include "mlir/Support/MathExtras.h"
-#include <numeric>
 
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SetVector.h"
+
+#define DEBUG_TYPE "vector-utils"
+
+#define DBGS() (llvm::dbgs() << '[' << DEBUG_TYPE << "] ")
+#define LDBG(X) LLVM_DEBUG(DBGS() << X << "\n")
 
 using namespace mlir;
 
@@ -36,83 +40,65 @@ using namespace mlir;
 /// the type of `source`.
 Value mlir::vector::createOrFoldDimOp(OpBuilder &b, Location loc, Value source,
                                       int64_t dim) {
-  if (source.getType().isa<UnrankedMemRefType, MemRefType>())
+  if (isa<UnrankedMemRefType, MemRefType>(source.getType()))
     return b.createOrFold<memref::DimOp>(loc, source, dim);
-  if (source.getType().isa<UnrankedTensorType, RankedTensorType>())
+  if (isa<UnrankedTensorType, RankedTensorType>(source.getType()))
     return b.createOrFold<tensor::DimOp>(loc, source, dim);
   llvm_unreachable("Expected MemRefType or TensorType");
 }
 
-/// Return the number of elements of basis, `0` if empty.
-int64_t mlir::computeMaxLinearIndex(ArrayRef<int64_t> basis) {
-  if (basis.empty())
-    return 0;
-  return std::accumulate(basis.begin(), basis.end(), 1,
-                         std::multiplies<int64_t>());
-}
-
-SmallVector<int64_t, 4> mlir::computeStrides(ArrayRef<int64_t> shape,
-                                             ArrayRef<int64_t> sizes) {
-  int64_t rank = shape.size();
-  // Compute the count for each dimension.
-  SmallVector<int64_t, 4> sliceDimCounts(rank);
-  for (int64_t r = 0; r < rank; ++r)
-    sliceDimCounts[r] = ceilDiv(shape[r], sizes[r]);
-  // Use that to compute the slice stride for each dimension.
-  SmallVector<int64_t, 4> sliceStrides(rank);
-  sliceStrides[rank - 1] = 1;
-  for (int64_t r = rank - 2; r >= 0; --r)
-    sliceStrides[r] = sliceStrides[r + 1] * sliceDimCounts[r + 1];
-  return sliceStrides;
-}
-
-SmallVector<int64_t, 4> mlir::computeElementOffsetsFromVectorSliceOffsets(
-    ArrayRef<int64_t> sizes, ArrayRef<int64_t> vectorOffsets) {
-  SmallVector<int64_t, 4> result;
-  for (auto it : llvm::zip(vectorOffsets, sizes))
-    result.push_back(std::get<0>(it) * std::get<1>(it));
-  return result;
-}
-
-Optional<SmallVector<int64_t, 4>> mlir::shapeRatio(ArrayRef<int64_t> superShape,
-                                                   ArrayRef<int64_t> subShape) {
-  if (superShape.size() < subShape.size()) {
-    return Optional<SmallVector<int64_t, 4>>();
+/// Given the n-D transpose pattern 'transp', return true if 'dim0' and 'dim1'
+/// should be transposed with each other within the context of their 2D
+/// transposition slice.
+///
+/// Example 1: dim0 = 0, dim1 = 2, transp = [2, 1, 0]
+///   Return true: dim0 and dim1 are transposed within the context of their 2D
+///   transposition slice ([1, 0]).
+///
+/// Example 2: dim0 = 0, dim1 = 1, transp = [2, 1, 0]
+///   Return true: dim0 and dim1 are transposed within the context of their 2D
+///   transposition slice ([1, 0]). Paradoxically, note how dim1 (1) is *not*
+///   transposed within the full context of the transposition.
+///
+/// Example 3: dim0 = 0, dim1 = 1, transp = [2, 0, 1]
+///   Return false: dim0 and dim1 are *not* transposed within the context of
+///   their 2D transposition slice ([0, 1]). Paradoxically, note how dim0 (0)
+///   and dim1 (1) are transposed within the full context of the of the
+///   transposition.
+static bool areDimsTransposedIn2DSlice(int64_t dim0, int64_t dim1,
+                                       ArrayRef<int64_t> transp) {
+  // Perform a linear scan along the dimensions of the transposed pattern. If
+  // dim0 is found first, dim0 and dim1 are not transposed within the context of
+  // their 2D slice. Otherwise, 'dim1' is found first and they are transposed.
+  for (int64_t permDim : transp) {
+    if (permDim == dim0)
+      return false;
+    if (permDim == dim1)
+      return true;
   }
 
-  // Starting from the end, compute the integer divisors.
-  std::vector<int64_t> result;
-  result.reserve(superShape.size());
-  for (auto [superSize, subSize] :
-       llvm::zip(llvm::reverse(superShape), llvm::reverse(subShape))) {
-    assert(superSize > 0 && "superSize must be > 0");
-    assert(subSize > 0 && "subSize must be > 0");
-
-    // If integral division does not occur, return and let the caller decide.
-    if (superSize % subSize != 0)
-      return None;
-    result.push_back(superSize / subSize);
-  }
-
-  // At this point we computed the ratio (in reverse) for the common
-  // size. Fill with the remaining entries from the super-vector shape (still in
-  // reverse).
-  int commonSize = subShape.size();
-  std::copy(superShape.rbegin() + commonSize, superShape.rend(),
-            std::back_inserter(result));
-
-  assert(result.size() == superShape.size() &&
-         "super to sub shape ratio is not of the same size as the super rank");
-
-  // Reverse again to get it back in the proper order and return.
-  return SmallVector<int64_t, 4>{result.rbegin(), result.rend()};
+  llvm_unreachable("Ill-formed transpose pattern");
 }
 
-Optional<SmallVector<int64_t, 4>> mlir::shapeRatio(VectorType superVectorType,
-                                                   VectorType subVectorType) {
-  assert(superVectorType.getElementType() == subVectorType.getElementType() &&
-         "vector types must be of the same elemental type");
-  return shapeRatio(superVectorType.getShape(), subVectorType.getShape());
+FailureOr<std::pair<int, int>>
+mlir::vector::isTranspose2DSlice(vector::TransposeOp op) {
+  VectorType srcType = op.getSourceVectorType();
+  SmallVector<int64_t> srcGtOneDims;
+  for (auto [index, size] : llvm::enumerate(srcType.getShape()))
+    if (size > 1)
+      srcGtOneDims.push_back(index);
+
+  if (srcGtOneDims.size() != 2)
+    return failure();
+
+  // Check whether the two source vector dimensions that are greater than one
+  // must be transposed with each other so that we can apply one of the 2-D
+  // transpose pattens. Otherwise, these patterns are not applicable.
+  if (!areDimsTransposedIn2DSlice(srcGtOneDims[0], srcGtOneDims[1],
+                                  op.getPermutation()))
+    return failure();
+
+  return std::pair<int, int>(srcGtOneDims[0], srcGtOneDims[1]);
 }
 
 /// Constructs a permutation map from memref indices to vector dimension.
@@ -144,13 +130,13 @@ static AffineMap makePermutationMap(
     return AffineMap();
   MLIRContext *context =
       enclosingLoopToVectorDim.begin()->getFirst()->getContext();
-  SmallVector<AffineExpr, 4> perm(enclosingLoopToVectorDim.size(),
-                                  getAffineConstantExpr(0, context));
+  SmallVector<AffineExpr> perm(enclosingLoopToVectorDim.size(),
+                               getAffineConstantExpr(0, context));
 
   for (auto kvp : enclosingLoopToVectorDim) {
     assert(kvp.second < perm.size());
-    auto invariants = getInvariantAccesses(
-        cast<AffineForOp>(kvp.first).getInductionVar(), indices);
+    auto invariants = affine::getInvariantAccesses(
+        cast<affine::AffineForOp>(kvp.first).getInductionVar(), indices);
     unsigned numIndices = indices.size();
     unsigned countInvariantIndices = 0;
     for (unsigned dim = 0; dim < numIndices; ++dim) {
@@ -166,6 +152,7 @@ static AffineMap makePermutationMap(
             countInvariantIndices == numIndices - 1) &&
            "Vectorization prerequisite violated: at most 1 index may be "
            "invariant wrt a vectorized loop");
+    (void)countInvariantIndices;
   }
   return AffineMap::get(indices.size(), 0, perm, context);
 }
@@ -179,7 +166,7 @@ static SetVector<Operation *> getParentsOfType(Block *block) {
   SetVector<Operation *> res;
   auto *current = block->getParentOp();
   while (current) {
-    if (auto typedParent = dyn_cast<T>(current)) {
+    if ([[maybe_unused]] auto typedParent = dyn_cast<T>(current)) {
       assert(res.count(current) == 0 && "Already inserted");
       res.insert(current);
     }
@@ -190,7 +177,7 @@ static SetVector<Operation *> getParentsOfType(Block *block) {
 
 /// Returns the enclosing AffineForOp, from closest to farthest.
 static SetVector<Operation *> getEnclosingforOps(Block *block) {
-  return getParentsOfType<AffineForOp>(block);
+  return getParentsOfType<affine::AffineForOp>(block);
 }
 
 AffineMap mlir::makePermutationMap(
@@ -237,7 +224,7 @@ bool matcher::operatesOnSuperVectorsOf(Operation &op,
     }
     return false;
   } else if (op.getNumResults() == 1) {
-    if (auto v = op.getResult(0).getType().dyn_cast<VectorType>()) {
+    if (auto v = dyn_cast<VectorType>(op.getResult(0).getType())) {
       superVectorType = v;
     } else {
       // Not a vector type.
@@ -251,7 +238,8 @@ bool matcher::operatesOnSuperVectorsOf(Operation &op,
   }
 
   // Get the ratio.
-  auto ratio = shapeRatio(superVectorType, subVectorType);
+  auto ratio =
+      computeShapeRatio(superVectorType.getShape(), subVectorType.getShape());
 
   // Sanity check.
   assert((ratio || !mustDivide) &&
@@ -264,4 +252,146 @@ bool matcher::operatesOnSuperVectorsOf(Operation &op,
   // the vector type (but we would have to look at the compute and distinguish
   // between parallel, reduction and possibly other cases.
   return ratio.has_value();
+}
+
+bool vector::isContiguousSlice(MemRefType memrefType, VectorType vectorType) {
+  if (vectorType.isScalable())
+    return false;
+
+  ArrayRef<int64_t> vectorShape = vectorType.getShape();
+  auto vecRank = vectorType.getRank();
+
+  if (!memrefType.areTrailingDimsContiguous(vecRank))
+    return false;
+
+  // Extract the trailing dims and strides of the input memref
+  auto memrefShape = memrefType.getShape().take_back(vecRank);
+
+  // Compare the dims of `vectorType` against `memrefType` (in reverse).
+  // In the most basic case, all dims will match.
+  auto firstNonMatchingDim =
+      std::mismatch(vectorShape.rbegin(), vectorShape.rend(),
+                    memrefShape.rbegin(), memrefShape.rend());
+  if (firstNonMatchingDim.first == vectorShape.rend())
+    return true;
+
+  // One non-matching dim is still fine, however the remaining leading dims of
+  // `vectorType` need to be 1.
+  SmallVector<int64_t> leadingDims(++firstNonMatchingDim.first,
+                                   vectorShape.rend());
+
+  return llvm::all_of(leadingDims, [](auto x) { return x == 1; });
+}
+
+std::optional<StaticTileOffsetRange>
+vector::createUnrollIterator(VectorType vType, int64_t targetRank) {
+  if (vType.getRank() <= targetRank)
+    return {};
+  // Attempt to unroll until targetRank or the first scalable dimension (which
+  // cannot be unrolled).
+  auto shapeToUnroll = vType.getShape().drop_back(targetRank);
+  auto scalableDimsToUnroll = vType.getScalableDims().drop_back(targetRank);
+  auto it =
+      std::find(scalableDimsToUnroll.begin(), scalableDimsToUnroll.end(), true);
+  auto firstScalableDim = it - scalableDimsToUnroll.begin();
+  if (firstScalableDim == 0)
+    return {};
+  // All scalable dimensions should be removed now.
+  scalableDimsToUnroll = scalableDimsToUnroll.slice(0, firstScalableDim);
+  assert(!llvm::is_contained(scalableDimsToUnroll, true) &&
+         "unexpected leading scalable dimension");
+  // Create an unroll iterator for leading dimensions.
+  shapeToUnroll = shapeToUnroll.slice(0, firstScalableDim);
+  return StaticTileOffsetRange(shapeToUnroll, /*unrollStep=*/1);
+}
+
+SmallVector<OpFoldResult> vector::getMixedSizesXfer(bool hasTensorSemantics,
+                                                    Operation *xfer,
+                                                    RewriterBase &rewriter) {
+  auto loc = xfer->getLoc();
+
+  Value base = TypeSwitch<Operation *, Value>(xfer)
+                   .Case<vector::TransferReadOp>(
+                       [&](auto readOp) { return readOp.getSource(); })
+                   .Case<vector::TransferWriteOp>(
+                       [&](auto writeOp) { return writeOp.getOperand(1); });
+
+  SmallVector<OpFoldResult> mixedSourceDims =
+      hasTensorSemantics ? tensor::getMixedSizes(rewriter, loc, base)
+                         : memref::getMixedSizes(rewriter, loc, base);
+  return mixedSourceDims;
+}
+
+bool vector::isLinearizableVector(VectorType type) {
+  return (type.getRank() > 1) && (type.getNumScalableDims() <= 1);
+}
+
+Value vector::createReadOrMaskedRead(OpBuilder &builder, Location loc,
+                                     Value source, ArrayRef<int64_t> readShape,
+                                     Value padValue,
+                                     bool useInBoundsInsteadOfMasking) {
+  assert(llvm::none_of(readShape,
+                       [](int64_t s) { return s == ShapedType::kDynamic; }) &&
+         "expected static shape");
+  auto sourceShapedType = cast<ShapedType>(source.getType());
+  auto sourceShape = sourceShapedType.getShape();
+  assert(sourceShape.size() == readShape.size() && "expected same ranks.");
+  auto maskType = VectorType::get(readShape, builder.getI1Type());
+  auto vectorType = VectorType::get(readShape, padValue.getType());
+  assert(padValue.getType() == sourceShapedType.getElementType() &&
+         "expected same pad element type to match source element type");
+  int64_t readRank = readShape.size();
+  auto zero = builder.create<arith::ConstantIndexOp>(loc, 0);
+  SmallVector<bool> inBoundsVal(readRank, true);
+  if (useInBoundsInsteadOfMasking) {
+    // Update the inBounds attribute.
+    for (unsigned i = 0; i < readRank; i++)
+      inBoundsVal[i] = (sourceShape[i] == readShape[i]) &&
+                       !ShapedType::isDynamic(sourceShape[i]);
+  }
+  auto transferReadOp = builder.create<vector::TransferReadOp>(
+      loc,
+      /*vectorType=*/vectorType,
+      /*source=*/source,
+      /*indices=*/SmallVector<Value>(readRank, zero),
+      /*padding=*/padValue,
+      /*inBounds=*/inBoundsVal);
+
+  if (llvm::equal(readShape, sourceShape) || useInBoundsInsteadOfMasking)
+    return transferReadOp;
+  SmallVector<OpFoldResult> mixedSourceDims =
+      tensor::getMixedSizes(builder, loc, source);
+  Value mask =
+      builder.create<vector::CreateMaskOp>(loc, maskType, mixedSourceDims);
+  return mlir::vector::maskOperation(builder, transferReadOp, mask)
+      ->getResult(0);
+}
+
+LogicalResult
+vector::isValidMaskedInputVector(ArrayRef<int64_t> shape,
+                                 ArrayRef<int64_t> inputVectorSizes) {
+  LDBG("Iteration space static sizes:");
+  LLVM_DEBUG(llvm::interleaveComma(shape, llvm::dbgs()));
+  LLVM_DEBUG(llvm::dbgs() << "\n");
+
+  if (inputVectorSizes.size() != shape.size()) {
+    LDBG("Input vector sizes don't match the number of loops");
+    return failure();
+  }
+  if (ShapedType::isDynamicShape(inputVectorSizes)) {
+    LDBG("Input vector sizes can't have dynamic dimensions");
+    return failure();
+  }
+  if (!llvm::all_of(llvm::zip(shape, inputVectorSizes),
+                    [](std::tuple<int64_t, int64_t> sizePair) {
+                      int64_t staticSize = std::get<0>(sizePair);
+                      int64_t inputSize = std::get<1>(sizePair);
+                      return ShapedType::isDynamic(staticSize) ||
+                             staticSize <= inputSize;
+                    })) {
+    LDBG("Input vector sizes must be greater than or equal to iteration space "
+         "static sizes");
+    return failure();
+  }
+  return success();
 }

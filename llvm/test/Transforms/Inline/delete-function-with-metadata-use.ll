@@ -1,19 +1,20 @@
 ; RUN: opt -passes=inline < %s -S | FileCheck %s
+; RUN: opt -passes=inline < %s -S --try-experimental-debuginfo-iterators | FileCheck %s
 
 ; CHECK: define {{.*}}@f1
 ; CHECK-NOT: define
 
-%a = type { i8*, i8* }
+%a = type { ptr, ptr }
 
 $f3 = comdat any
 
 define linkonce_odr void @f1() {
-  call void @f2(void ()* @f3)
+  call void @f2(ptr @f3)
   ret void
 }
 
-define linkonce_odr void @f2(void ()* %__f) {
-  call void @llvm.dbg.value(metadata void ()* %__f, metadata !2, metadata !DIExpression()), !dbg !10
+define linkonce_odr void @f2(ptr %__f) {
+  call void @llvm.dbg.value(metadata ptr %__f, metadata !2, metadata !DIExpression()), !dbg !10
   call void %__f()
   ret void
 }

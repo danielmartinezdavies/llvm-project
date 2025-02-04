@@ -1,5 +1,5 @@
-// RUN: %clang_cc1 -triple i686-mingw32 -ast-dump %s | FileCheck %s
-// RUN: %clang_cc1 -triple i686-mingw32 -std=c++1z -ast-dump %s | FileCheck %s -check-prefix=CHECK-1Z
+// RUN: %clang_cc1 -triple i686-mingw32 %std_cxx11-14 -ast-dump %s | FileCheck %s
+// RUN: %clang_cc1 -triple i686-mingw32 %std_cxx17- -ast-dump %s | FileCheck %s -check-prefix=CHECK-1Z
 
 template<class T>
 class P {
@@ -49,14 +49,14 @@ void construct() {
   A a = A(12);
   // CHECK: CXXConstructExpr {{0x[0-9a-fA-F]+}} <col:9, col:13> 'A':'foo::A' 'void (int){{( __attribute__\(\(thiscall\)\))?}}'
   D d = D(12);
-  // CHECK: CXXConstructExpr {{0x[0-9a-fA-F]+}} <col:9, col:13> 'D':'D' 'void (int){{( __attribute__\(\(thiscall\)\))?}}'
+  // CHECK: CXXConstructExpr {{0x[0-9a-fA-F]+}} <col:9, col:13> 'D' 'void (int){{( __attribute__\(\(thiscall\)\))?}}'
 }
 
 namespace PR38987 {
 struct A { A(); };
 template <class T> void f() { T{}; }
 template void f<A>();
-// CHECK: CXXTemporaryObjectExpr {{.*}} <col:31, col:33> 'PR38987::A':'PR38987::A'
+// CHECK: CXXTemporaryObjectExpr {{.*}} <col:31, col:33> 'PR38987::A'
 }
 
 void abort() __attribute__((noreturn));

@@ -6,18 +6,23 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "PassDetail.h"
 #include "flang/Optimizer/Dialect/FIRDialect.h"
 #include "flang/Optimizer/Dialect/FIROps.h"
 #include "flang/Optimizer/Dialect/FIRType.h"
-#include "flang/Optimizer/Support/FIRContext.h"
-#include "flang/Optimizer/Support/KindMapping.h"
+#include "flang/Optimizer/Dialect/Support/FIRContext.h"
+#include "flang/Optimizer/Dialect/Support/KindMapping.h"
 #include "flang/Optimizer/Transforms/Passes.h"
+#include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/Diagnostics.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "llvm/Support/Debug.h"
+
+namespace fir {
+#define GEN_PASS_DEF_CHARACTERCONVERSION
+#include "flang/Optimizer/Transforms/Passes.h.inc"
+} // namespace fir
 
 #define DEBUG_TYPE "flang-character-conversion"
 
@@ -33,7 +38,7 @@ class CharacterConvertConversion
 public:
   using OpRewritePattern::OpRewritePattern;
 
-  mlir::LogicalResult
+  llvm::LogicalResult
   matchAndRewrite(fir::CharConvertOp conv,
                   mlir::PatternRewriter &rewriter) const override {
     auto kindMap = fir::getKindMapping(conv->getParentOfType<mlir::ModuleOp>());
@@ -55,8 +60,8 @@ public:
     // For each code point in the `from` string, convert naively to the `to`
     // string code point. Conversion is done blindly on size only, not value.
     auto getCharBits = [&](mlir::Type t) {
-      auto chrTy = fir::unwrapSequenceType(fir::dyn_cast_ptrEleTy(t))
-                       .cast<fir::CharacterType>();
+      auto chrTy = mlir::cast<fir::CharacterType>(
+          fir::unwrapSequenceType(fir::dyn_cast_ptrEleTy(t)));
       return kindMap.getCharacterBitsize(chrTy.getFKind());
     };
     auto fromBits = getCharBits(conv.getFrom().getType());
@@ -95,8 +100,11 @@ public:
 /// Rewrite the `fir.char_convert` op into a loop. This pass must be run only on
 /// fir::CharConvertOp.
 class CharacterConversion
-    : public fir::CharacterConversionBase<CharacterConversion> {
+    : public fir::impl::CharacterConversionBase<CharacterConversion> {
 public:
+  using fir::impl::CharacterConversionBase<
+      CharacterConversion>::CharacterConversionBase;
+
   void runOnOperation() override {
     CharacterConversionOptions clOpts{useRuntimeCalls.getValue()};
     if (clOpts.runtimeName.empty()) {
@@ -105,8 +113,8 @@ public:
       mlir::RewritePatternSet patterns(context);
       patterns.insert<CharacterConvertConversion>(context);
       mlir::ConversionTarget target(*context);
-      target.addLegalDialect<mlir::AffineDialect, fir::FIROpsDialect,
-                             mlir::arith::ArithmeticDialect,
+      target.addLegalDialect<mlir::affine::AffineDialect, fir::FIROpsDialect,
+                             mlir::arith::ArithDialect,
                              mlir::func::FuncDialect>();
 
       // apply the patterns
@@ -125,7 +133,3 @@ public:
   }
 };
 } // end anonymous namespace
-
-std::unique_ptr<mlir::Pass> fir::createCharacterConversionPass() {
-  return std::make_unique<CharacterConversion>();
-}

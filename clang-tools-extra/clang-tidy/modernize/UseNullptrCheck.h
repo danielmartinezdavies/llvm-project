@@ -11,9 +11,7 @@
 
 #include "../ClangTidyCheck.h"
 
-namespace clang {
-namespace tidy {
-namespace modernize {
+namespace clang::tidy::modernize {
 
 class UseNullptrCheck : public ClangTidyCheck {
 public:
@@ -21,7 +19,7 @@ public:
   bool isLanguageVersionSupported(const LangOptions &LangOpts) const override {
     // FIXME this should be CPlusPlus11 but that causes test cases to
     // erroneously fail.
-    return LangOpts.CPlusPlus;
+    return LangOpts.CPlusPlus || LangOpts.C23;
   }
   void storeOptions(ClangTidyOptions::OptionMap &Opts) override;
   void registerMatchers(ast_matchers::MatchFinder *Finder) override;
@@ -30,10 +28,9 @@ public:
 private:
   const StringRef NullMacrosStr;
   SmallVector<StringRef, 1> NullMacros;
+  std::vector<StringRef> IgnoredTypes;
 };
 
-} // namespace modernize
-} // namespace tidy
-} // namespace clang
+} // namespace clang::tidy::modernize
 
 #endif // LLVM_CLANG_TOOLS_EXTRA_CLANG_TIDY_MODERNIZE_USE_NULLPTR_H

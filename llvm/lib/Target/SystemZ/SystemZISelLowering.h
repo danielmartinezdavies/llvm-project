@@ -19,14 +19,15 @@
 #include "llvm/CodeGen/MachineBasicBlock.h"
 #include "llvm/CodeGen/SelectionDAG.h"
 #include "llvm/CodeGen/TargetLowering.h"
+#include <optional>
 
 namespace llvm {
 namespace SystemZISD {
 enum NodeType : unsigned {
   FIRST_NUMBER = ISD::BUILTIN_OP_END,
 
-  // Return with a flag operand.  Operand 0 is the chain operand.
-  RET_FLAG,
+  // Return with a glue operand.  Operand 0 is the chain operand.
+  RET_GLUE,
 
   // Calls a function.  Operand 0 is the chain operand and operand 1
   // is the target address.  The arguments start at operand 2.
@@ -145,9 +146,6 @@ enum NodeType : unsigned {
   // Store the CC value in bits 29 and 28 of an integer.
   IPM,
 
-  // Compiler barrier only; generate a no-op.
-  MEMBARRIER,
-
   // Transaction begin.  The first operand is the chain, the second
   // the TDB pointer, and the third the immediate control field.
   // Returns CC value and chain.
@@ -217,16 +215,24 @@ enum NodeType : unsigned {
   UNPACK_LOW,
   UNPACKL_LOW,
 
-  // Shift each element of vector operand 0 by the number of bits specified
-  // by scalar operand 1.
+  // Shift/rotate each element of vector operand 0 by the number of bits
+  // specified by scalar operand 1.
   VSHL_BY_SCALAR,
   VSRL_BY_SCALAR,
   VSRA_BY_SCALAR,
+  VROTL_BY_SCALAR,
 
   // For each element of the output type, sum across all sub-elements of
   // operand 0 belonging to the corresponding element, and add in the
   // rightmost sub-element of the corresponding element of operand 1.
   VSUM,
+
+  // Compute carry/borrow indication for add/subtract.
+  VACC, VSCBI,
+  // Add/subtract with carry/borrow.
+  VAC, VSBI,
+  // Compute carry/borrow indication for add/subtract with carry/borrow.
+  VACCC, VSBCBI,
 
   // Compare integer vector operands 0 and 1 to produce the usual 0/-1
   // vector result.  VICMPE is for equality, VICMPH for "signed greater than"
@@ -266,6 +272,10 @@ enum NodeType : unsigned {
   // AND the two vector operands together and set CC based on the result.
   VTM,
 
+  // i128 high integer comparisons.
+  SCMP128HI,
+  UCMP128HI,
+
   // String operations that set CC as a side-effect.
   VFAE_CC,
   VFAEZ_CC,
@@ -285,9 +295,20 @@ enum NodeType : unsigned {
   // Operand 1: the bit mask
   TDC,
 
+  // z/OS XPLINK ADA Entry
+  // Wraps a TargetGlobalAddress that should be loaded from a function's
+  // AssociatedData Area (ADA). Tha ADA is passed to the function by the
+  // caller in the XPLink ABI defined register R5.
+  // Operand 0: the GlobalValue/External Symbol
+  // Operand 1: the ADA register
+  // Operand 2: the offset (0 for the first and 8 for the second element in the
+  // function descriptor)
+  ADA_ENTRY,
+
   // Strict variants of scalar floating-point comparisons.
   // Quiet and signaling versions.
-  STRICT_FCMP = ISD::FIRST_TARGET_STRICTFP_OPCODE,
+  FIRST_STRICTFP_OPCODE,
+  STRICT_FCMP = FIRST_STRICTFP_OPCODE,
   STRICT_FCMPS,
 
   // Strict variants of vector floating-point comparisons.
@@ -302,6 +323,7 @@ enum NodeType : unsigned {
   // Strict variants of VEXTEND and VROUND.
   STRICT_VEXTEND,
   STRICT_VROUND,
+  LAST_STRICTFP_OPCODE = STRICT_VROUND,
 
   // Wrappers around the inner loop of an 8- or 16-bit ATOMIC_SWAP or
   // ATOMIC_LOAD_<op>.
@@ -313,7 +335,8 @@ enum NodeType : unsigned {
   //            operand into the high bits
   // Operand 3: the negative of operand 2, for rotating the other way
   // Operand 4: the width of the field in bits (8 or 16)
-  ATOMIC_SWAPW = ISD::FIRST_TARGET_MEMORY_OPCODE,
+  FIRST_MEMORY_OPCODE,
+  ATOMIC_SWAPW = FIRST_MEMORY_OPCODE,
   ATOMIC_LOADW_ADD,
   ATOMIC_LOADW_SUB,
   ATOMIC_LOADW_AND,
@@ -358,10 +381,14 @@ enum NodeType : unsigned {
   // Element swapping load/store.  Same operands as regular load/store.
   VLER, VSTER,
 
+  // Use STORE CLOCK FAST to store current TOD clock value.
+  STCKF,
+
   // Prefetch from the second operand using the 4-bit control code in
   // the first operand.  The code is 1 for a load prefetch and 2 for
   // a store prefetch.
-  PREFETCH
+  PREFETCH,
+  LAST_MEMORY_OPCODE = PREFETCH,
 };
 
 // Return true if OPCODE is some kind of PC-relative address.
@@ -417,18 +444,24 @@ public:
   }
   unsigned
   getNumRegisters(LLVMContext &Context, EVT VT,
-                  Optional<MVT> RegisterVT) const override {
+                  std::optional<MVT> RegisterVT) const override {
     // i128 inline assembly operand.
     if (VT == MVT::i128 && RegisterVT && *RegisterVT == MVT::Untyped)
       return 1;
     return TargetLowering::getNumRegisters(Context, VT);
   }
-  bool isCheapToSpeculateCtlz(Type *) const override { return true; }
-  bool preferZeroCompareBranch() const override { return true; }
-  bool hasBitPreservingFPLogic(EVT VT) const override {
-    EVT ScVT = VT.getScalarType();
-    return ScVT == MVT::f32 || ScVT == MVT::f64 || ScVT == MVT::f128;
+  MVT getRegisterTypeForCallingConv(LLVMContext &Context, CallingConv::ID CC,
+                                    EVT VT) const override {
+    // 128-bit single-element vector types are passed like other vectors,
+    // not like their element type.
+    if (VT.isVector() && VT.getSizeInBits() == 128 &&
+        VT.getVectorNumElements() == 1)
+      return MVT::v16i8;
+    return TargetLowering::getRegisterTypeForCallingConv(Context, CC, VT);
   }
+  bool isCheapToSpeculateCtlz(Type *) const override { return true; }
+  bool isCheapToSpeculateCttz(Type *) const override { return true; }
+  bool preferZeroCompareBranch() const override { return true; }
   bool isMaskAndCmp0FoldingBeneficial(const Instruction &AndI) const override {
     ConstantInt* Mask = dyn_cast<ConstantInt>(AndI.getOperand(1));
     return Mask && Mask->getValue().isIntN(16);
@@ -447,7 +480,17 @@ public:
     // LD, and having the full constant in memory enables reg/mem opcodes.
     return VT != MVT::f64;
   }
-  bool hasInlineStackProbe(MachineFunction &MF) const override;
+  MachineBasicBlock *emitEHSjLjSetJmp(MachineInstr &MI,
+                                      MachineBasicBlock *MBB) const;
+
+  MachineBasicBlock *emitEHSjLjLongJmp(MachineInstr &MI,
+                                       MachineBasicBlock *MBB) const;
+
+  bool hasInlineStackProbe(const MachineFunction &MF) const override;
+  AtomicExpansionKind shouldCastAtomicLoadInIR(LoadInst *LI) const override;
+  AtomicExpansionKind shouldCastAtomicStoreInIR(StoreInst *SI) const override;
+  AtomicExpansionKind
+  shouldExpandAtomicRMWInIR(AtomicRMWInst *RMW) const override;
   bool isLegalICmpImmediate(int64_t Imm) const override;
   bool isLegalAddImmediate(int64_t Imm) const override;
   bool isLegalAddressingMode(const DataLayout &DL, const AddrMode &AM, Type *Ty,
@@ -455,7 +498,7 @@ public:
                              Instruction *I = nullptr) const override;
   bool allowsMisalignedMemoryAccesses(EVT VT, unsigned AS, Align Alignment,
                                       MachineMemOperand::Flags Flags,
-                                      bool *Fast) const override;
+                                      unsigned *Fast) const override;
   bool
   findOptimalMemOpLowering(std::vector<EVT> &MemOps, unsigned Limit,
                            const MemOp &Op, unsigned DstAS, unsigned SrcAS,
@@ -474,6 +517,8 @@ public:
 
   bool shouldConsiderGEPOffsetSplit() const override { return true; }
 
+  bool shouldExpandCmpUsingSelects(EVT VT) const override { return true; }
+
   const char *getTargetNodeName(unsigned Opcode) const override;
   std::pair<unsigned, const TargetRegisterClass *>
   getRegForInlineAsmConstraint(const TargetRegisterInfo *TRI,
@@ -483,39 +528,39 @@ public:
   TargetLowering::ConstraintWeight
     getSingleConstraintMatchWeight(AsmOperandInfo &info,
                                    const char *constraint) const override;
-  void LowerAsmOperandForConstraint(SDValue Op,
-                                    std::string &Constraint,
+  void LowerAsmOperandForConstraint(SDValue Op, StringRef Constraint,
                                     std::vector<SDValue> &Ops,
                                     SelectionDAG &DAG) const override;
 
-  unsigned getInlineAsmMemConstraint(StringRef ConstraintCode) const override {
+  InlineAsm::ConstraintCode
+  getInlineAsmMemConstraint(StringRef ConstraintCode) const override {
     if (ConstraintCode.size() == 1) {
       switch(ConstraintCode[0]) {
       default:
         break;
       case 'o':
-        return InlineAsm::Constraint_o;
+        return InlineAsm::ConstraintCode::o;
       case 'Q':
-        return InlineAsm::Constraint_Q;
+        return InlineAsm::ConstraintCode::Q;
       case 'R':
-        return InlineAsm::Constraint_R;
+        return InlineAsm::ConstraintCode::R;
       case 'S':
-        return InlineAsm::Constraint_S;
+        return InlineAsm::ConstraintCode::S;
       case 'T':
-        return InlineAsm::Constraint_T;
+        return InlineAsm::ConstraintCode::T;
       }
     } else if (ConstraintCode.size() == 2 && ConstraintCode[0] == 'Z') {
       switch (ConstraintCode[1]) {
       default:
         break;
       case 'Q':
-        return InlineAsm::Constraint_ZQ;
+        return InlineAsm::ConstraintCode::ZQ;
       case 'R':
-        return InlineAsm::Constraint_ZR;
+        return InlineAsm::ConstraintCode::ZR;
       case 'S':
-        return InlineAsm::Constraint_ZS;
+        return InlineAsm::ConstraintCode::ZS;
       case 'T':
-        return InlineAsm::Constraint_ZT;
+        return InlineAsm::ConstraintCode::ZT;
       }
     }
     return TargetLowering::getInlineAsmMemConstraint(ConstraintCode);
@@ -527,21 +572,15 @@ public:
   /// If a physical register, this returns the register that receives the
   /// exception address on entry to an EH pad.
   Register
-  getExceptionPointerRegister(const Constant *PersonalityFn) const override {
-    return SystemZ::R6D;
-  }
+  getExceptionPointerRegister(const Constant *PersonalityFn) const override;
 
   /// If a physical register, this returns the register that receives the
   /// exception typeid on entry to a landing pad.
   Register
-  getExceptionSelectorRegister(const Constant *PersonalityFn) const override {
-    return SystemZ::R7D;
-  }
+  getExceptionSelectorRegister(const Constant *PersonalityFn) const override;
 
   /// Override to support customized stack guard loading.
-  bool useLoadStackGuardNode() const override {
-    return true;
-  }
+  bool useLoadStackGuardNode(const Module &M) const override { return true; }
   void insertSSPDeclarations(Module &M) const override {
   }
 
@@ -556,15 +595,14 @@ public:
   const MCPhysReg *getScratchRegisters(CallingConv::ID CC) const override;
   bool allowTruncateForTailCall(Type *, Type *) const override;
   bool mayBeEmittedAsTailCall(const CallInst *CI) const override;
-  bool splitValueIntoRegisterParts(SelectionDAG &DAG, const SDLoc &DL,
-                                   SDValue Val, SDValue *Parts,
-                                   unsigned NumParts, MVT PartVT,
-                                   Optional<CallingConv::ID> CC) const override;
-  SDValue
-  joinRegisterPartsIntoValue(SelectionDAG &DAG, const SDLoc &DL,
-                             const SDValue *Parts, unsigned NumParts,
-                             MVT PartVT, EVT ValueVT,
-                             Optional<CallingConv::ID> CC) const override;
+  bool splitValueIntoRegisterParts(
+      SelectionDAG & DAG, const SDLoc &DL, SDValue Val, SDValue *Parts,
+      unsigned NumParts, MVT PartVT, std::optional<CallingConv::ID> CC)
+      const override;
+  SDValue joinRegisterPartsIntoValue(
+      SelectionDAG & DAG, const SDLoc &DL, const SDValue *Parts,
+      unsigned NumParts, MVT PartVT, EVT ValueVT,
+      std::optional<CallingConv::ID> CC) const override;
   SDValue LowerFormalArguments(SDValue Chain, CallingConv::ID CallConv,
                                bool isVarArg,
                                const SmallVectorImpl<ISD::InputArg> &Ins,
@@ -582,7 +620,8 @@ public:
   bool CanLowerReturn(CallingConv::ID CallConv, MachineFunction &MF,
                       bool isVarArg,
                       const SmallVectorImpl<ISD::OutputArg> &Outs,
-                      LLVMContext &Context) const override;
+                      LLVMContext &Context,
+                      const Type *RetTy) const override;
   SDValue LowerReturn(SDValue Chain, CallingConv::ID CallConv, bool IsVarArg,
                       const SmallVectorImpl<ISD::OutputArg> &Outs,
                       const SmallVectorImpl<SDValue> &OutVals, const SDLoc &DL,
@@ -603,6 +642,10 @@ public:
                                            const SelectionDAG &DAG,
                                            unsigned Depth) const override;
 
+  bool isGuaranteedNotToBeUndefOrPoisonForTargetNode(
+      SDValue Op, const APInt &DemandedElts, const SelectionDAG &DAG,
+      bool PoisonOnly, unsigned Depth) const override;
+
   ISD::NodeType getExtendForAtomicOps() const override {
     return ISD::ANY_EXTEND;
   }
@@ -614,7 +657,7 @@ public:
     return true;
   }
 
-  unsigned getStackProbeSize(MachineFunction &MF) const;
+  unsigned getStackProbeSize(const MachineFunction &MF) const;
 
 private:
   const SystemZSubtarget &Subtarget;
@@ -655,18 +698,19 @@ private:
   SDValue lowerDYNAMIC_STACKALLOC_ELF(SDValue Op, SelectionDAG &DAG) const;
   SDValue lowerDYNAMIC_STACKALLOC_XPLINK(SDValue Op, SelectionDAG &DAG) const;
   SDValue lowerGET_DYNAMIC_AREA_OFFSET(SDValue Op, SelectionDAG &DAG) const;
+  SDValue lowerMULH(SDValue Op, SelectionDAG &DAG, unsigned Opcode) const;
   SDValue lowerSMUL_LOHI(SDValue Op, SelectionDAG &DAG) const;
   SDValue lowerUMUL_LOHI(SDValue Op, SelectionDAG &DAG) const;
   SDValue lowerSDIVREM(SDValue Op, SelectionDAG &DAG) const;
   SDValue lowerUDIVREM(SDValue Op, SelectionDAG &DAG) const;
   SDValue lowerXALUO(SDValue Op, SelectionDAG &DAG) const;
-  SDValue lowerADDSUBCARRY(SDValue Op, SelectionDAG &DAG) const;
+  SDValue lowerUADDSUBO_CARRY(SDValue Op, SelectionDAG &DAG) const;
   SDValue lowerBITCAST(SDValue Op, SelectionDAG &DAG) const;
   SDValue lowerOR(SDValue Op, SelectionDAG &DAG) const;
   SDValue lowerCTPOP(SDValue Op, SelectionDAG &DAG) const;
+  SDValue lowerVECREDUCE_ADD(SDValue Op, SelectionDAG &DAG) const;
   SDValue lowerATOMIC_FENCE(SDValue Op, SelectionDAG &DAG) const;
-  SDValue lowerATOMIC_LOAD(SDValue Op, SelectionDAG &DAG) const;
-  SDValue lowerATOMIC_STORE(SDValue Op, SelectionDAG &DAG) const;
+  SDValue lowerATOMIC_LDST_I128(SDValue Op, SelectionDAG &DAG) const;
   SDValue lowerATOMIC_LOAD_OP(SDValue Op, SelectionDAG &DAG,
                               unsigned Opcode) const;
   SDValue lowerATOMIC_LOAD_SUB(SDValue Op, SelectionDAG &DAG) const;
@@ -688,6 +732,8 @@ private:
   SDValue lowerZERO_EXTEND_VECTOR_INREG(SDValue Op, SelectionDAG &DAG) const;
   SDValue lowerShift(SDValue Op, SelectionDAG &DAG, unsigned ByScalar) const;
   SDValue lowerIS_FPCLASS(SDValue Op, SelectionDAG &DAG) const;
+  SDValue lowerGET_ROUNDING(SDValue Op, SelectionDAG &DAG) const;
+  SDValue lowerREADCYCLECOUNTER(SDValue Op, SelectionDAG &DAG) const;
 
   bool canTreatAsByteVector(EVT VT) const;
   SDValue combineExtract(const SDLoc &DL, EVT ElemVT, EVT VecVT, SDValue OrigOp,
@@ -727,23 +773,26 @@ private:
                                   MachineBasicBlock *Target) const;
 
   // Implement EmitInstrWithCustomInserter for individual operation types.
+  MachineBasicBlock *emitAdjCallStack(MachineInstr &MI,
+                                      MachineBasicBlock *BB) const;
   MachineBasicBlock *emitSelect(MachineInstr &MI, MachineBasicBlock *BB) const;
   MachineBasicBlock *emitCondStore(MachineInstr &MI, MachineBasicBlock *BB,
                                    unsigned StoreOpcode, unsigned STOCOpcode,
                                    bool Invert) const;
+  MachineBasicBlock *emitICmp128Hi(MachineInstr &MI, MachineBasicBlock *BB,
+                                   bool Unsigned) const;
   MachineBasicBlock *emitPair128(MachineInstr &MI,
                                  MachineBasicBlock *MBB) const;
   MachineBasicBlock *emitExt128(MachineInstr &MI, MachineBasicBlock *MBB,
                                 bool ClearEven) const;
   MachineBasicBlock *emitAtomicLoadBinary(MachineInstr &MI,
                                           MachineBasicBlock *BB,
-                                          unsigned BinOpcode, unsigned BitSize,
+                                          unsigned BinOpcode,
                                           bool Invert = false) const;
   MachineBasicBlock *emitAtomicLoadMinMax(MachineInstr &MI,
                                           MachineBasicBlock *MBB,
                                           unsigned CompareOpcode,
-                                          unsigned KeepOldMask,
-                                          unsigned BitSize) const;
+                                          unsigned KeepOldMask) const;
   MachineBasicBlock *emitAtomicCmpSwapW(MachineInstr &MI,
                                         MachineBasicBlock *BB) const;
   MachineBasicBlock *emitMemMemWrapper(MachineInstr &MI, MachineBasicBlock *BB,
@@ -765,6 +814,14 @@ private:
   MachineMemOperand::Flags
   getTargetMMOFlags(const Instruction &I) const override;
   const TargetRegisterClass *getRepRegClassFor(MVT VT) const override;
+
+  bool isFullyInternal(const Function *Fn) const;
+  void verifyNarrowIntegerArgs_Call(const SmallVectorImpl<ISD::OutputArg> &Outs,
+                                    const Function *F, SDValue Callee) const;
+  void verifyNarrowIntegerArgs_Ret(const SmallVectorImpl<ISD::OutputArg> &Outs,
+                                   const Function *F) const;
+  bool verifyNarrowIntegerArgs(const SmallVectorImpl<ISD::OutputArg> &Outs,
+                               bool IsInternal) const;
 };
 
 struct SystemZVectorConstantInfo {

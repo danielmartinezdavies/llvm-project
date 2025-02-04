@@ -241,10 +241,29 @@ struct A1 {
 };
 
 struct A2 {
-  template <typename Ty> // expected-note {{non-deducible template parameter 'Ty'}}
+  template <typename Ty>
   B() noexcept(false); // expected-error {{deduction guide must be declared in the same scope as template 'PR49735::B'}} \
-                       // expected-error {{deduction guide template contains a template parameter that cannot be deduced}} \
                        // expected-error {{deduction guide declaration without trailing return type}}
 };
+
+}
+
+namespace GH57495 {
+template <typename T> struct vector{};
+
+void f() {
+  GH57495::vector.d; // expected-error {{cannot use dot operator on a type}}
+}
+}
+
+namespace GH107887 {
+
+namespace a {
+template <class> struct pair; // expected-note 3{{declared here}}
+}
+template <class T2> pair() -> pair<T2>;   // expected-error 2{{no template named 'pair'}} \
+                                          // expected-error {{deduction guide must be declared in the same scope}} \
+                                          // expected-error {{cannot be deduced}} \
+                                          // expected-note {{non-deducible template parameter 'T2'}}
 
 }

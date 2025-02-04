@@ -21,10 +21,6 @@ template <typename T>
 static void printOneElement(InFlightDiagnostic &os, T value) {
   os << llvm::formatv("{0}", value).str();
 }
-template <>
-void printOneElement<int8_t>(InFlightDiagnostic &os, int8_t value) {
-  os << llvm::formatv("{0}", static_cast<int64_t>(value)).str();
-}
 
 namespace {
 struct TestElementsAttrInterface
@@ -38,35 +34,9 @@ struct TestElementsAttrInterface
   void runOnOperation() override {
     getOperation().walk([&](Operation *op) {
       for (NamedAttribute attr : op->getAttrs()) {
-        auto elementsAttr = attr.getValue().dyn_cast<ElementsAttr>();
+        auto elementsAttr = dyn_cast<ElementsAttr>(attr.getValue());
         if (!elementsAttr)
           continue;
-        if (auto concreteAttr =
-                attr.getValue().dyn_cast<DenseArrayBaseAttr>()) {
-          llvm::TypeSwitch<DenseArrayBaseAttr>(concreteAttr)
-              .Case([&](DenseBoolArrayAttr attr) {
-                testElementsAttrIteration<bool>(op, attr, "bool");
-              })
-              .Case([&](DenseI8ArrayAttr attr) {
-                testElementsAttrIteration<int8_t>(op, attr, "int8_t");
-              })
-              .Case([&](DenseI16ArrayAttr attr) {
-                testElementsAttrIteration<int16_t>(op, attr, "int16_t");
-              })
-              .Case([&](DenseI32ArrayAttr attr) {
-                testElementsAttrIteration<int32_t>(op, attr, "int32_t");
-              })
-              .Case([&](DenseI64ArrayAttr attr) {
-                testElementsAttrIteration<int64_t>(op, attr, "int64_t");
-              })
-              .Case([&](DenseF32ArrayAttr attr) {
-                testElementsAttrIteration<float>(op, attr, "float");
-              })
-              .Case([&](DenseF64ArrayAttr attr) {
-                testElementsAttrIteration<double>(op, attr, "double");
-              });
-          continue;
-        }
         testElementsAttrIteration<int64_t>(op, elementsAttr, "int64_t");
         testElementsAttrIteration<uint64_t>(op, elementsAttr, "uint64_t");
         testElementsAttrIteration<APInt>(op, elementsAttr, "APInt");
@@ -80,6 +50,11 @@ struct TestElementsAttrInterface
                                  StringRef type) {
     InFlightDiagnostic diag = op->emitError()
                               << "Test iterating `" << type << "`: ";
+
+    if (!isa<mlir::IntegerType>(attr.getElementType())) {
+      diag << "expected element type to be an integer type";
+      return;
+    }
 
     auto values = attr.tryGetValues<T>();
     if (!values) {

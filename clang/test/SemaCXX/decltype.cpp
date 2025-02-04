@@ -101,6 +101,77 @@ namespace D5789 {
   template<class T> void foo(decltype(T(LP1{ .p1 = g1, .p1.x[1] = 'x' }))) {}
 }
 
+namespace GH58674 {
+  struct Foo {
+    float value_;
+    struct nested {
+      float value_;
+    };
+  };
+
+  template <typename T>
+  struct TemplateFoo {
+    float value_;
+  };
+
+  float bar;
+
+  template <typename T>
+  struct Animal{};
+
+  template <typename T>
+  class Cat : Animal<T> {
+    using okay = decltype(Foo::value_);
+    using also_okay = decltype(bar);
+    using okay2 = decltype(Foo::nested::value_);
+    using okay3 = decltype(TemplateFoo<T>::value_);
+  public:
+    void meow() {
+      using okay = decltype(Foo::value_);
+      using also_okay = decltype(bar);
+      using okay2 = decltype(Foo::nested::value_);
+      using okay3 = decltype(TemplateFoo<T>::value_);
+    }
+  };
+
+  void baz() {
+      Cat<void>{}.meow();
+  }
+}
+
+namespace GH97646 {
+  template<bool B>
+  void f() {
+    decltype(B) x = false;
+    !x;
+  }
+}
+
+namespace GH99873 {
+struct B {
+  int x;
+};
+
+template<typename T>
+struct A {
+  template<typename U>
+  constexpr int f() const {
+    return 1;
+  }
+
+  template<>
+  constexpr int f<int>() const {
+    return decltype(B::x)();
+  }
+};
+
+// This shouldn't crash.
+static_assert(A<int>().f<int>() == 0, "");
+// The result should not be dependent.
+static_assert(A<int>().f<int>() != 0, ""); // expected-error {{static assertion failed due to requirement 'GH99873::A<int>().f<int>() != 0'}}
+                                           // expected-note@-1 {{expression evaluates to '0 != 0'}}
+}
+
 template<typename>
 class conditional {
 };

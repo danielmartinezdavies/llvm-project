@@ -14,121 +14,20 @@
 #define LINALG_OPS
 
 include "mlir/Dialect/Linalg/IR/LinalgBase.td"
+include "mlir/Dialect/Linalg/IR/LinalgInterfaces.td"
 include "mlir/Interfaces/ControlFlowInterfaces.td"
+include "mlir/Interfaces/DestinationStyleOpInterface.td"
 include "mlir/Interfaces/InferTypeOpInterface.td"
 include "mlir/Interfaces/LoopLikeInterface.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
+include "mlir/Interfaces/TilingInterface.td"
 include "mlir/Interfaces/ViewLikeInterface.td"
 
 // Base class for Linalg dialect ops that do not correspond to library calls.
 class Linalg_Op<string mnemonic, list<Trait> traits = []> :
     Op<Linalg_Dialect, mnemonic, traits>;
 
-def Linalg_InitTensorOp : Linalg_Op<"init_tensor",
-    [NoSideEffect,
-     DeclareOpInterfaceMethods<ReifyRankedShapedTypeOpInterface>]> {
-  let summary = "operation to define a tensor of particular shape";
-
-  let description = [{
-    `linalg.init_tensor` is an operation that defines a tensor of a particular
-    shape. The shape could be dynamic or static. The contents of the tensor are
-    unspecified and the only purpose of the op result is to materialize the
-    specified shape in IR and make it available to other transformations.
-
-    Note: This op can be lowered to a `bufferization.alloc_tensor`, at which
-    point it turns into an explicit buffer allocation.
-  }];
-
-  let arguments =
-    (ins Variadic<Index>:$sizes, I64ArrayAttr:$static_sizes);
-
-  let results = (outs AnyTensor:$result);
-
-  let assemblyFormat = [{
-    custom<DynamicIndexList>($sizes, $static_sizes,
-                               "ShapedType::kDynamicSize")
-    attr-dict `:` type($result)
-  }];
-
-  let extraClassDeclaration = [{
-    static StringRef getStaticSizesAttrStrName() {
-      return "static_sizes";
-    }
-
-    RankedTensorType getType() {
-      return getResult().getType().cast<RankedTensorType>(); }
-
-    // Infer the shape of the result tensor given the static shapes
-    // and element type of the result tensor.
-    static Type inferResultType(ArrayRef<int64_t> staticSizes, Type elementType,
-                                Attribute encoding = {});
-
-    // Return true if the size of the tensor is dynamic at `idx`
-    bool isDynamicSize(unsigned idx) {
-      APInt v = *(getStaticSizes().getAsValueRange<IntegerAttr>().begin() + idx);
-      return ShapedType::isDynamic(v.getSExtValue());
-    }
-
-    // Assert that the size of the result tensor is static at `idx`
-    // and return the shape.
-    int64_t getStaticSize(unsigned idx) {
-      assert(!isDynamicSize(idx) && "expected static size");
-      APInt v = *(getStaticSizes().
-          template getAsValueRange<IntegerAttr>().begin() + idx);
-        return v.getSExtValue();
-    }
-
-    // Return the argument position that contains the dynamic size of
-    // the tensor at dimension `idx`. Asserts that the shape is
-    // dynamic at that `idx`.
-    unsigned getIndexOfDynamicSize(unsigned idx) {
-      assert(isDynamicSize(idx) && "expected dynamic size");
-      return std::count_if(
-          getStaticSizes().getValue().begin(),
-          getStaticSizes().getValue().begin() + idx,
-          [&](Attribute attr) {
-            return ShapedType::isDynamic(attr.cast<IntegerAttr>().getInt());
-          });
-    }
-
-    // Return both static and dynamic sizes as a list of `OpFoldResult`.
-    SmallVector<OpFoldResult> getMixedSizes();
-
-    // Return the Value of the dynamic size of the tensor at dimension
-    // `idx`. Asserts that the shape is dynamic at that `idx.
-    Value getDynamicSize(unsigned idx) {
-      return getOperand(getIndexOfDynamicSize(idx));
-    }
-  }];
-
-  let builders = [
-    OpBuilder<(ins "ValueRange":$shape,
-                  "ArrayRef<int64_t>":$staticShape, "Type":$elementType),
-    [{
-      build($_builder, $_state,
-            InitTensorOp::inferResultType(staticShape, elementType),
-            shape, $_builder.getI64ArrayAttr(staticShape));
-    }]>,
-    OpBuilder<(ins "ValueRange":$shape, "Type":$elementType),
-    [{
-      SmallVector<int64_t, 4> staticShape(
-        shape.size(), ShapedType::kDynamicSize);
-      build($_builder, $_state, shape, staticShape, elementType);
-    }]>,
-    OpBuilder<(ins "ArrayRef<int64_t>":$staticShape, "Type":$elementType),
-    [{
-      build($_builder, $_state, ValueRange{}, staticShape, elementType);
-    }]>,
-    OpBuilder<(ins "ArrayRef<OpFoldResult>":$sizes, "Type":$elementType,
-      CArg<"ArrayRef<NamedAttribute>", "{}">:$attrs)>
-  ];
-
-  let hasCanonicalizer = 1;
-  let hasCustomAssemblyFormat = 1;
-  let hasVerifier = 1;
-}
-
-def Linalg_YieldOp : Linalg_Op<"yield", [NoSideEffect, ReturnLike, Terminator]>,
+def Linalg_YieldOp : Linalg_Op<"yield", [Pure, ReturnLike, Terminator]>,
     Arguments<(ins Variadic<AnyType>:$values)> {
   let summary = "Linalg yield operation";
   let description = [{
@@ -147,7 +46,7 @@ def Linalg_YieldOp : Linalg_Op<"yield", [NoSideEffect, ReturnLike, Terminator]>,
   let hasVerifier = 1;
 }
 
-def Linalg_IndexOp : Linalg_Op<"index", [NoSideEffect]>,
+def Linalg_IndexOp : Linalg_Op<"index", [Pure]>,
     Arguments<(ins ConfinedAttr<I64Attr, [IntMinValue<0>]>:$dim)>,
     Results<(outs Index:$result)> {
   let summary = "linalg index operation";
@@ -188,6 +87,319 @@ def Linalg_IndexOp : Linalg_Op<"index", [NoSideEffect]>,
   }];
 
   let assemblyFormat = [{ $dim attr-dict `:` type($result) }];
+  let hasVerifier = 1;
+}
+
+def Linalg_SoftmaxOp : Linalg_Op<"softmax",
+    [DestinationStyleOpInterface,
+     PredOpTrait<"input and output have same element type", TCopVTEtIsSameAs<0, 1>>,
+     DeclareOpInterfaceMethods<ReifyRankedShapedTypeOpInterface>,
+     DeclareOpInterfaceMethods<AggregatedOpInterface, ["decomposeOperation"]>,
+     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>,
+     DeclareOpInterfaceMethods<TilingInterface,
+      ["getIterationDomain",
+       "getLoopIteratorTypes",
+       "getResultTilePosition",
+       "getTiledImplementation"]>]> {
+  let summary = "Softmax operator";
+  let description = [{
+    linalg.softmax computes a numerically stable version of softmax.
+
+    For a given input tensor and a specified dimension `d`, compute:
+      1. the max `m` along that dimension `d`
+      2. f(x) = exp(x - m)
+      3. sum f(x) along dimension d to get l(x).
+      4. compute the final result f(x) / l(x).
+
+    This is an aggregate linalg operation that further reduces to a small DAG of
+    structured operations.
+
+    Warning: Regarding the tiling capabilities, the implementation doesn't
+    check that the provided dimensions make sense. This is the responsability
+    of the transformation calling the tiling to ensure that the provided
+    sizes for each dimension make sense with respect to the semantic of
+    softmax.
+  }];
+
+  let arguments = (ins AnyShaped:$input,
+                       AnyShaped:$output,
+                       I64Attr:$dimension
+  );
+
+  let results = (outs Variadic<AnyRankedTensor>:$result);
+  let hasFolder = 1;
+  let assemblyFormat = [{
+    attr-dict
+    `dimension` `(` $dimension `)`
+    `ins` `(` $input `:` type($input) `)`
+    `outs` `(` $output `:` type($output) `)`
+    (`->` type($result)^)?
+  }];
+
+  let extraClassDeclaration = [{
+    ShapedType getInputOperandType() {
+      return cast<ShapedType>(getInput().getType());
+    }
+    ShapedType getOutputOperandType() {
+      return cast<ShapedType>(getOutput().getType());
+    }
+    int64_t getInputOperandRank() {
+      return getInputOperandType().getRank();
+    }
+    int64_t getOutputOperandRank() {
+      return getOutputOperandType().getRank();
+    }
+    MutableOperandRange getDpsInitsMutable() { return getOutputMutable(); }
+  }];
+  let hasVerifier = 1;
+}
+
+def Linalg_WinogradFilterTransformOp : Linalg_Op<"winograd_filter_transform",
+    [AllElementTypesMatch<["filter", "output"]>, DestinationStyleOpInterface,
+     DeclareOpInterfaceMethods<TilingInterface,
+      ["getIterationDomain",
+       "getLoopIteratorTypes",
+       "getResultTilePosition",
+       "getTiledImplementation"]>]> {
+  let summary = "Winograd filter transform operator";
+  let description = [{
+    Winograd Conv2D algorithm will convert linalg Conv2D operator into batched
+    matrix multiply. Before the matrix multiply, it will convert filter and
+    input into a format suitable for batched matrix multiply. After the matrix
+    multiply, it will convert output to the final result tensor.
+
+    The algorithm F(m x m, r x r) is
+
+    Y = A^T x [(G x g x G^T) @ (B^T x d x B)] x A
+
+    The size of output Y is m x m. The size of filter g is r x r. The size of
+    input d is (m + r - 1) x (m + r - 1). A^T, A, G^T, G, B^T, and B are
+    transformation matrices.
+
+    This operator is defined to represent the high level concept of filter
+    transformation (G x g x G^T) in the Winograd Conv2D algorithm.
+  }];
+
+  let arguments = (ins TensorRankOf<[AnyType], [4]>:$filter,
+                       TensorRankOf<[AnyType], [4]>:$output,
+                       I64Attr:$m,
+                       I64Attr:$r
+  );
+
+  let results = (outs TensorRankOf<[AnyType], [4]>:$result);
+  let assemblyFormat = [{
+    attr-dict
+    `m` `(` $m `)`
+    `r` `(` $r `)`
+    `ins` `(` $filter `:` type($filter) `)`
+    `outs` `(` $output `:` type($output) `)`
+    `->` type($result)
+  }];
+  let extraClassDeclaration = [{
+    ShapedType getFilterOperandType() {
+      return cast<ShapedType>(getFilter().getType());
+    }
+    ShapedType getOutputOperandType() {
+      return cast<ShapedType>(getOutput().getType());
+    }
+    int64_t getFilterOperandRank() {
+      return getFilterOperandType().getRank();
+    }
+    int64_t getOutputOperandRank() {
+      return getOutputOperandType().getRank();
+    }
+    int64_t getFilterFDim() {
+      return 0;
+    }
+    int64_t getFilterHDim() {
+      return 1;
+    }
+    int64_t getFilterWDim() {
+      return 2;
+    }
+    int64_t getFilterCDim() {
+      return 3;
+    }
+    MutableOperandRange getDpsInitsMutable() { return getOutputMutable(); }
+  }];
+  let hasVerifier = 1;
+}
+
+def Linalg_WinogradInputTransformOp : Linalg_Op<"winograd_input_transform",
+    [AllElementTypesMatch<["input", "output"]>, DestinationStyleOpInterface,
+     DeclareOpInterfaceMethods<TilingInterface,
+      ["getIterationDomain",
+       "getLoopIteratorTypes",
+       "getResultTilePosition",
+       "getTiledImplementation"]>]> {
+  let summary = "Winograd input transform operator";
+  let description = [{
+    Winograd Conv2D algorithm will convert linalg Conv2D operator into batched
+    matrix multiply. Before the matrix multiply, it will convert filter and
+    input into a format suitable for batched matrix multiply. After the matrix
+    multiply, it will convert output to the final result tensor.
+
+    The algorithm F(m x m, r x r) is
+
+    Y = A^T x [(G x g x G^T) @ (B^T x d x B)] x A
+
+    The size of output Y is m x m. The size of filter g is r x r. The size of
+    input d is (m + r - 1) x (m + r - 1). A^T, A, G^T, G, B^T, and B are
+    transformation matrices.
+
+    This operator is defined to represent the high level concept of input
+    transformation (B^T x d x B) in the Winograd Conv2D algorithm.
+  }];
+
+  let arguments = (ins TensorRankOf<[AnyType], [4]>:$input,
+                       TensorRankOf<[AnyType], [6]>:$output,
+                       I64Attr:$m,
+                       I64Attr:$r
+  );
+
+  let results = (outs TensorRankOf<[AnyType], [6]>:$result);
+  let assemblyFormat = [{
+    attr-dict
+    `m` `(` $m `)`
+    `r` `(` $r `)`
+    `ins` `(` $input `:` type($input) `)`
+    `outs` `(` $output `:` type($output) `)`
+    `->` type($result)
+  }];
+  let extraClassDeclaration = [{
+    ShapedType getInputOperandType() {
+      return cast<ShapedType>(getInput().getType());
+    }
+    ShapedType getOutputOperandType() {
+      return cast<ShapedType>(getOutput().getType());
+    }
+    int64_t getInputOperandRank() {
+      return getInputOperandType().getRank();
+    }
+    int64_t getOutputOperandRank() {
+      return getOutputOperandType().getRank();
+    }
+    int64_t getInputNDim() {
+      return 0;
+    }
+    int64_t getInputHDim() {
+      return 1;
+    }
+    int64_t getInputWDim() {
+      return 2;
+    }
+    int64_t getInputCDim() {
+      return 3;
+    }
+    int64_t getOutputAlphaHDim() {
+      return 0;
+    }
+    int64_t getOutputAlphaWDim() {
+      return 1;
+    }
+    int64_t getOutputTileHDim() {
+      return 2;
+    }
+    int64_t getOutputTileWDim() {
+      return 3;
+    }
+    int64_t getOutputNDim() {
+      return 4;
+    }
+    int64_t getOutputCDim() {
+      return 5;
+    }
+    MutableOperandRange getDpsInitsMutable() { return getOutputMutable(); }
+  }];
+  let hasVerifier = 1;
+}
+
+def Linalg_WinogradOutputTransformOp : Linalg_Op<"winograd_output_transform",
+    [AllElementTypesMatch<["value", "output"]>, DestinationStyleOpInterface,
+     DeclareOpInterfaceMethods<TilingInterface,
+      ["getIterationDomain",
+       "getLoopIteratorTypes",
+       "getResultTilePosition",
+       "getTiledImplementation"]>]> {
+  let summary = "Winograd output transform operator";
+  let description = [{
+    Winograd Conv2D algorithm will convert linalg Conv2D operator into batched
+    matrix multiply. Before the matrix multiply, it will convert filter and
+    input into a format suitable for batched matrix multiply. After the matrix
+    multiply, it will convert output to the final result tensor.
+
+    The algorithm F(m x m, r x r) is
+
+    Y = A^T x [(G x g x G^T) @ (B^T x d x B)] x A
+
+    The size of output Y is m x m. The size of filter g is r x r. The size of
+    input d is (m + r - 1) x (m + r - 1). A^T, A, G^T, G, B^T, and B are
+    transformation matrices.
+
+    This operator is defined to represent the high level concept of output
+    transformation (A^T x y x A) in the Winograd Conv2D algorithm.
+  }];
+
+  let arguments = (ins TensorRankOf<[AnyType], [6]>:$value,
+                       TensorRankOf<[AnyType], [4]>:$output,
+                       I64Attr:$m,
+                       I64Attr:$r
+  );
+
+  let results = (outs TensorRankOf<[AnyType], [4]>:$result);
+  let assemblyFormat = [{
+    attr-dict
+    `m` `(` $m `)`
+    `r` `(` $r `)`
+    `ins` `(` $value `:` type($value) `)`
+    `outs` `(` $output `:` type($output) `)`
+    `->` type($result)
+  }];
+  let extraClassDeclaration = [{
+    ShapedType getValueOperandType() {
+      return cast<ShapedType>(getValue().getType());
+    }
+    ShapedType getOutputOperandType() {
+      return cast<ShapedType>(getOutput().getType());
+    }
+    int64_t getValueOperandRank() {
+      return getValueOperandType().getRank();
+    }
+    int64_t getOutputOperandRank() {
+      return getOutputOperandType().getRank();
+    }
+    int64_t getValueAlphaHDim() {
+      return 0;
+    }
+    int64_t getValueAlphaWDim() {
+      return 1;
+    }
+    int64_t getValueTileHDim() {
+      return 2;
+    }
+    int64_t getValueTileWDim() {
+      return 3;
+    }
+    int64_t getValueNDim() {
+      return 4;
+    }
+    int64_t getValueFDim() {
+      return 5;
+    }
+    int64_t getOutputNDim() {
+      return 0;
+    }
+    int64_t getOutputHDim() {
+      return 1;
+    }
+    int64_t getOutputWDim() {
+      return 2;
+    }
+    int64_t getOutputFDim() {
+      return 3;
+    }
+    MutableOperandRange getDpsInitsMutable() { return getOutputMutable(); }
+  }];
   let hasVerifier = 1;
 }
 

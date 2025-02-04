@@ -18,7 +18,6 @@
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Statistic.h"
-#include "llvm/ADT/Triple.h"
 #include "llvm/MC/MCCodeEmitter.h"
 #include "llvm/MC/MCContext.h"
 #include "llvm/MC/MCExpr.h"
@@ -30,10 +29,10 @@
 #include "llvm/MC/MCSubtargetInfo.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/Compiler.h"
+#include "llvm/Support/EndianStream.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/MathExtras.h"
-#include "llvm/Support/raw_ostream.h"
-#include <algorithm>
+#include "llvm/TargetParser/Triple.h"
 #include <cassert>
 #include <cstdint>
 #include <cstdlib>
@@ -61,11 +60,11 @@ public:
   ~ARMMCCodeEmitter() override = default;
 
   bool isThumb(const MCSubtargetInfo &STI) const {
-    return STI.getFeatureBits()[ARM::ModeThumb];
+    return STI.hasFeature(ARM::ModeThumb);
   }
 
   bool isThumb2(const MCSubtargetInfo &STI) const {
-    return isThumb(STI) && STI.getFeatureBits()[ARM::FeatureThumb2];
+    return isThumb(STI) && STI.hasFeature(ARM::FeatureThumb2);
   }
 
   bool isTargetMachO(const MCSubtargetInfo &STI) const {
@@ -87,12 +86,13 @@ public:
                              SmallVectorImpl<MCFixup> &Fixups,
                              const MCSubtargetInfo &STI) const;
 
-  /// getHiLo16ImmOpValue - Return the encoding for the hi / low 16-bit of
-  /// the specified operand. This is used for operands with :lower16: and
-  /// :upper16: prefixes.
-  uint32_t getHiLo16ImmOpValue(const MCInst &MI, unsigned OpIdx,
-                               SmallVectorImpl<MCFixup> &Fixups,
-                               const MCSubtargetInfo &STI) const;
+  /// getHiLoImmOpValue - Return the encoding for either the hi / low 16-bit, or
+  /// high/middle-high/middle-low/low 8 bits of the specified operand. This is
+  /// used for operands with :lower16:, :upper16: :lower0_7:, :lower8_15:,
+  /// :higher0_7:, and :higher8_15: prefixes.
+  uint32_t getHiLoImmOpValue(const MCInst &MI, unsigned OpIdx,
+                             SmallVectorImpl<MCFixup> &Fixups,
+                             const MCSubtargetInfo &STI) const;
 
   bool EncodeAddrModeOpValues(const MCInst &MI, unsigned OpIdx,
                               unsigned &Reg, unsigned &Imm,
@@ -435,19 +435,7 @@ public:
                               SmallVectorImpl<MCFixup> &Fixups,
                               const MCSubtargetInfo &STI) const;
 
-  void EmitByte(unsigned char C, raw_ostream &OS) const {
-    OS << (char)C;
-  }
-
-  void EmitConstant(uint64_t Val, unsigned Size, raw_ostream &OS) const {
-    // Output the constant in little endian byte order.
-    for (unsigned i = 0; i != Size; ++i) {
-      unsigned Shift = IsLittleEndian ? i * 8 : (Size - 1 - i) * 8;
-      EmitByte((Val >> Shift) & 0xff, OS);
-    }
-  }
-
-  void encodeInstruction(const MCInst &MI, raw_ostream &OS,
+  void encodeInstruction(const MCInst &MI, SmallVectorImpl<char> &CB,
                          SmallVectorImpl<MCFixup> &Fixups,
                          const MCSubtargetInfo &STI) const override;
 
@@ -553,7 +541,7 @@ getMachineOpValue(const MCInst &MI, const MCOperand &MO,
                   SmallVectorImpl<MCFixup> &Fixups,
                   const MCSubtargetInfo &STI) const {
   if (MO.isReg()) {
-    unsigned Reg = MO.getReg();
+    MCRegister Reg = MO.getReg();
     unsigned RegNo = CTX.getRegisterInfo()->getEncodingValue(Reg);
 
     // In NEON, Q registers are encoded as 2x their register number,
@@ -562,10 +550,10 @@ getMachineOpValue(const MCInst &MI, const MCOperand &MO,
     // the encodings all refer to Q-registers by their literal
     // register number.
 
-    if (STI.getFeatureBits()[ARM::HasMVEIntegerOps])
+    if (STI.hasFeature(ARM::HasMVEIntegerOps))
       return RegNo;
 
-    switch (Reg) {
+    switch (Reg.id()) {
     default:
       return RegNo;
     case ARM::Q0:  case ARM::Q1:  case ARM::Q2:  case ARM::Q3:
@@ -721,7 +709,7 @@ static bool HasConditionalBranch(const MCInst &MI) {
       const MCOperand &MCOp1 = MI.getOperand(i);
       const MCOperand &MCOp2 = MI.getOperand(i + 1);
       if (MCOp1.isImm() && MCOp2.isReg() &&
-          (MCOp2.getReg() == 0 || MCOp2.getReg() == ARM::CPSR)) {
+          (!MCOp2.getReg() || MCOp2.getReg() == ARM::CPSR)) {
         if (ARMCC::CondCodes(MCOp1.getImm()) != ARMCC::AL)
           return true;
       }
@@ -1189,18 +1177,18 @@ getT2AddrModeImm0_1020s4OpValue(const MCInst &MI, unsigned OpIdx,
   return (Reg << 8) | Imm8;
 }
 
-uint32_t
-ARMMCCodeEmitter::getHiLo16ImmOpValue(const MCInst &MI, unsigned OpIdx,
-                                      SmallVectorImpl<MCFixup> &Fixups,
-                                      const MCSubtargetInfo &STI) const {
+uint32_t ARMMCCodeEmitter::getHiLoImmOpValue(const MCInst &MI, unsigned OpIdx,
+                                             SmallVectorImpl<MCFixup> &Fixups,
+                                             const MCSubtargetInfo &STI) const {
   // {20-16} = imm{15-12}
   // {11-0}  = imm{11-0}
   const MCOperand &MO = MI.getOperand(OpIdx);
   if (MO.isImm())
-    // Hi / lo 16 bits already extracted during earlier passes.
+    // Hi / lo bits already extracted during earlier passes.
     return static_cast<unsigned>(MO.getImm());
 
-  // Handle :upper16: and :lower16: assembly prefixes.
+  // Handle :upper16:, :lower16:, :upper8_15:, :upper0_7:, :lower8_15:
+  // :lower0_7: assembly prefixes.
   const MCExpr *E = MO.getExpr();
   MCFixupKind Kind;
   if (E->getKind() == MCExpr::Target) {
@@ -1217,6 +1205,16 @@ ARMMCCodeEmitter::getHiLo16ImmOpValue(const MCInst &MI, unsigned OpIdx,
         return (int32_t(Value) & 0xffff0000) >> 16;
       case ARMMCExpr::VK_ARM_LO16:
         return (int32_t(Value) & 0x0000ffff);
+
+      case ARMMCExpr::VK_ARM_HI_8_15:
+        return (int32_t(Value) & 0xff000000) >> 24;
+      case ARMMCExpr::VK_ARM_HI_0_7:
+        return (int32_t(Value) & 0x00ff0000) >> 16;
+      case ARMMCExpr::VK_ARM_LO_8_15:
+        return (int32_t(Value) & 0x0000ff00) >> 8;
+      case ARMMCExpr::VK_ARM_LO_0_7:
+        return (int32_t(Value) & 0x000000ff);
+
       default: llvm_unreachable("Unsupported ARMFixup");
       }
     }
@@ -1231,18 +1229,39 @@ ARMMCCodeEmitter::getHiLo16ImmOpValue(const MCInst &MI, unsigned OpIdx,
       Kind = MCFixupKind(isThumb(STI) ? ARM::fixup_t2_movw_lo16
                                       : ARM::fixup_arm_movw_lo16);
       break;
+    case ARMMCExpr::VK_ARM_HI_8_15:
+      if (!isThumb(STI))
+        llvm_unreachable(":upper_8_15: not supported in Arm state");
+      Kind = MCFixupKind(ARM::fixup_arm_thumb_upper_8_15);
+      break;
+    case ARMMCExpr::VK_ARM_HI_0_7:
+      if (!isThumb(STI))
+        llvm_unreachable(":upper_0_7: not supported in Arm state");
+      Kind = MCFixupKind(ARM::fixup_arm_thumb_upper_0_7);
+      break;
+    case ARMMCExpr::VK_ARM_LO_8_15:
+      if (!isThumb(STI))
+        llvm_unreachable(":lower_8_15: not supported in Arm state");
+      Kind = MCFixupKind(ARM::fixup_arm_thumb_lower_8_15);
+      break;
+    case ARMMCExpr::VK_ARM_LO_0_7:
+      if (!isThumb(STI))
+        llvm_unreachable(":lower_0_7: not supported in Arm state");
+      Kind = MCFixupKind(ARM::fixup_arm_thumb_lower_0_7);
+      break;
     }
 
     Fixups.push_back(MCFixup::create(0, E, Kind, MI.getLoc()));
     return 0;
   }
-  // If the expression doesn't have :upper16: or :lower16: on it,
-  // it's just a plain immediate expression, previously those evaluated to
-  // the lower 16 bits of the expression regardless of whether
-  // we have a movt or a movw, but that led to misleadingly results.
-  // This is disallowed in the AsmParser in validateInstruction()
-  // so this should never happen.
-  llvm_unreachable("expression without :upper16: or :lower16:");
+  // If the expression doesn't have :upper16:, :lower16: on it, it's just a
+  // plain immediate expression, previously those evaluated to the lower 16 bits
+  // of the expression regardless of whether we have a movt or a movw, but that
+  // led to misleadingly results.  This is disallowed in the AsmParser in
+  // validateInstruction() so this should never happen.  The same holds for
+  // thumb1 :upper8_15:, :upper0_7:, lower8_15: or :lower0_7: with movs or adds.
+  llvm_unreachable("expression without :upper16:, :lower16:, :upper8_15:,"
+                   ":upper0_7:, lower8_15: or :lower0_7:");
 }
 
 uint32_t ARMMCCodeEmitter::
@@ -1290,7 +1309,7 @@ getAddrMode2OffsetOpValue(const MCInst &MI, unsigned OpIdx,
   const MCOperand &MO1 = MI.getOperand(OpIdx+1);
   unsigned Imm = MO1.getImm();
   bool isAdd = ARM_AM::getAM2Op(Imm) == ARM_AM::add;
-  bool isReg = MO.getReg() != 0;
+  bool isReg = MO.getReg().isValid();
   uint32_t Binary = ARM_AM::getAM2Offset(Imm);
   // if reg +/- reg, Rm will be non-zero. Otherwise, we have reg +/- imm12
   if (isReg) {
@@ -1326,7 +1345,7 @@ getAddrMode3OffsetOpValue(const MCInst &MI, unsigned OpIdx,
   const MCOperand &MO1 = MI.getOperand(OpIdx+1);
   unsigned Imm = MO1.getImm();
   bool isAdd = ARM_AM::getAM3Op(Imm) == ARM_AM::add;
-  bool isImm = MO.getReg() == 0;
+  bool isImm = !MO.getReg().isValid();
   uint32_t Imm8 = ARM_AM::getAM3Offset(Imm);
   // if reg +/- reg, Rm will be non-zero. Otherwise, we have reg +/- imm8
   if (!isImm)
@@ -1362,7 +1381,7 @@ getAddrMode3OpValue(const MCInst &MI, unsigned OpIdx,
   unsigned Rn = CTX.getRegisterInfo()->getEncodingValue(MO.getReg());
   unsigned Imm = MO2.getImm();
   bool isAdd = ARM_AM::getAM3Op(Imm) == ARM_AM::add;
-  bool isImm = MO1.getReg() == 0;
+  bool isImm = !MO1.getReg().isValid();
   uint32_t Imm8 = ARM_AM::getAM3Offset(Imm);
   // if reg +/- reg, Rm will be non-zero. Otherwise, we have reg +/- imm8
   if (!isImm)
@@ -1516,7 +1535,7 @@ getSORegRegOpValue(const MCInst &MI, unsigned OpIdx,
 
   // Encode the shift opcode.
   unsigned SBits = 0;
-  unsigned Rs = MO1.getReg();
+  MCRegister Rs = MO1.getReg();
   if (Rs) {
     // Set shift operand (bit[7:4]).
     // LSL - 0001
@@ -1640,9 +1659,9 @@ getT2AddrModeImm8OffsetOpValue(const MCInst &MI, unsigned OpNum,
 
   // FIXME: Needs fixup support.
   unsigned Value = 0;
-  int32_t tmp = (int32_t)MO1.getImm();
-  if (tmp < 0)
-    tmp = abs(tmp);
+  auto tmp = static_cast<uint32_t>(MO1.getImm());
+  if (static_cast<int32_t>(tmp) < 0)
+    tmp = -tmp;
   else
     Value |= 256; // Set the ADD bit
   Value |= tmp & 255;
@@ -1700,8 +1719,8 @@ getBitfieldInvertedMaskOpValue(const MCInst &MI, unsigned Op,
   // msb of the mask.
   const MCOperand &MO = MI.getOperand(Op);
   uint32_t v = ~MO.getImm();
-  uint32_t lsb = countTrailingZeros(v);
-  uint32_t msb = (32 - countLeadingZeros (v)) - 1;
+  uint32_t lsb = llvm::countr_zero(v);
+  uint32_t msb = llvm::Log2_32(v);
   assert(v != 0 && lsb < 32 && msb < 32 && "Illegal bitfield mask!");
   return lsb | (msb << 5);
 }
@@ -1716,21 +1735,34 @@ getRegisterListOpValue(const MCInst &MI, unsigned Op,
   //
   // LDM/STM:
   //   {15-0}  = Bitfield of GPRs.
-  unsigned Reg = MI.getOperand(Op).getReg();
+  MCRegister Reg = MI.getOperand(Op).getReg();
   bool SPRRegs = ARMMCRegisterClasses[ARM::SPRRegClassID].contains(Reg);
   bool DPRRegs = ARMMCRegisterClasses[ARM::DPRRegClassID].contains(Reg);
 
   unsigned Binary = 0;
 
-  if (SPRRegs || DPRRegs) {
+  if (SPRRegs || DPRRegs || Reg == ARM::VPR) {
     // VLDM/VSTM/VSCCLRM
     unsigned RegNo = CTX.getRegisterInfo()->getEncodingValue(Reg);
     unsigned NumRegs = (MI.getNumOperands() - Op) & 0xff;
     Binary |= (RegNo & 0x1f) << 8;
 
-    // Ignore VPR
-    if (MI.getOpcode() == ARM::VSCCLRMD || MI.getOpcode() == ARM::VSCCLRMS)
+    if (MI.getOpcode() == ARM::VSCCLRMD)
+      // Ignore VPR
       --NumRegs;
+    else if (MI.getOpcode() == ARM::VSCCLRMS) {
+      // The register list can contain both S registers and D registers, with D
+      // registers counting as two registers. VPR doesn't count towards the
+      // number of registers.
+      NumRegs = 0;
+      for (unsigned I = Op, E = MI.getNumOperands(); I < E; ++I) {
+        Reg = MI.getOperand(I).getReg();
+        if (ARMMCRegisterClasses[ARM::SPRRegClassID].contains(Reg))
+          NumRegs += 1;
+        else if (ARMMCRegisterClasses[ARM::DPRRegClassID].contains(Reg))
+          NumRegs += 2;
+      }
+    }
     if (SPRRegs)
       Binary |= NumRegs;
     else
@@ -1830,7 +1862,8 @@ getAddrMode6OffsetOpValue(const MCInst &MI, unsigned Op,
                           SmallVectorImpl<MCFixup> &Fixups,
                           const MCSubtargetInfo &STI) const {
   const MCOperand &MO = MI.getOperand(Op);
-  if (MO.getReg() == 0) return 0x0D;
+  if (!MO.getReg())
+    return 0x0D;
   return CTX.getRegisterInfo()->getEncodingValue(MO.getReg());
 }
 
@@ -1862,10 +1895,10 @@ getShiftRight64Imm(const MCInst &MI, unsigned Op,
   return 64 - MI.getOperand(Op).getImm();
 }
 
-void ARMMCCodeEmitter::
-encodeInstruction(const MCInst &MI, raw_ostream &OS,
-                  SmallVectorImpl<MCFixup> &Fixups,
-                  const MCSubtargetInfo &STI) const {
+void ARMMCCodeEmitter::encodeInstruction(const MCInst &MI,
+                                         SmallVectorImpl<char> &CB,
+                                         SmallVectorImpl<MCFixup> &Fixups,
+                                         const MCSubtargetInfo &STI) const {
   // Pseudo instructions don't get encoded.
   const MCInstrDesc &Desc = MCII.get(MI.getOpcode());
   uint64_t TSFlags = Desc.TSFlags;
@@ -1878,14 +1911,19 @@ encodeInstruction(const MCInst &MI, raw_ostream &OS,
   else
     llvm_unreachable("Unexpected instruction size!");
 
+  auto Endian =
+      IsLittleEndian ? llvm::endianness::little : llvm::endianness::big;
   uint32_t Binary = getBinaryCodeForInstr(MI, Fixups, STI);
-  // Thumb 32-bit wide instructions need to emit the high order halfword
-  // first.
-  if (isThumb(STI) && Size == 4) {
-    EmitConstant(Binary >> 16, 2, OS);
-    EmitConstant(Binary & 0xffff, 2, OS);
-  } else
-    EmitConstant(Binary, Size, OS);
+  if (Size == 2) {
+    support::endian::write<uint16_t>(CB, Binary, Endian);
+  } else if (isThumb(STI)) {
+    // Thumb 32-bit wide instructions need to emit the high order halfword
+    // first.
+    support::endian::write<uint16_t>(CB, Binary >> 16, Endian);
+    support::endian::write<uint16_t>(CB, Binary & 0xffff, Endian);
+  } else {
+    support::endian::write<uint32_t>(CB, Binary, Endian);
+  }
   ++MCNumEmitted;  // Keep track of the # of mi's emitted.
 }
 
@@ -1988,7 +2026,7 @@ getPowerTwoOpValue(const MCInst &MI, unsigned OpIdx,
                    const MCSubtargetInfo &STI) const {
   const MCOperand &MO = MI.getOperand(OpIdx);
   assert(MO.isImm() && "Unexpected operand type!");
-  return countTrailingZeros((uint64_t)MO.getImm());
+  return llvm::countr_zero((uint64_t)MO.getImm());
 }
 
 template <unsigned start>

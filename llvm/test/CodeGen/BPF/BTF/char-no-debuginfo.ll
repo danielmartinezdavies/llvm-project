@@ -1,5 +1,5 @@
-; RUN: llc -march=bpfel -filetype=asm -o - %s | FileCheck -check-prefixes=CHECK %s
-; RUN: llc -march=bpfeb -filetype=asm -o - %s | FileCheck -check-prefixes=CHECK %s
+; RUN: llc -mtriple=bpfel -filetype=asm -o - %s | FileCheck -check-prefixes=CHECK %s
+; RUN: llc -mtriple=bpfeb -filetype=asm -o - %s | FileCheck -check-prefixes=CHECK %s
 
 ; Source code:
 ;   int g __attribute__((section("maps"))) = 5;
@@ -11,7 +11,7 @@
 
 ; Function Attrs: norecurse nounwind readonly
 define dso_local i32 @test() local_unnamed_addr #0 {
-  %1 = load i32, i32* @g, align 4, !tbaa !2
+  %1 = load i32, ptr @g, align 4, !tbaa !2
   ret i32 %1
 }
 

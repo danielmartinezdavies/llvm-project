@@ -172,6 +172,9 @@ public:
   friend class SectionWriter;                                                  \
   friend class IHexSectionWriterBase;                                          \
   friend class IHexSectionWriter;                                              \
+  friend class SRECSectionWriter;                                              \
+  friend class SRECSectionWriterBase;                                          \
+  friend class SRECSizeCalculator;                                             \
   template <class ELFT> friend class ELFSectionWriter;                         \
   template <class ELFT> friend class ELFSectionSizer;
 
@@ -357,6 +360,8 @@ public:
 
 class BinaryWriter : public Writer {
 private:
+  const uint8_t GapFill;
+  const uint64_t PadTo;
   std::unique_ptr<BinarySectionWriter> SecWriter;
 
   uint64_t TotalSize = 0;
@@ -365,26 +370,140 @@ public:
   ~BinaryWriter() {}
   Error finalize() override;
   Error write() override;
-  BinaryWriter(Object &Obj, raw_ostream &Out) : Writer(Obj, Out) {}
+  BinaryWriter(Object &Obj, raw_ostream &Out, const CommonConfig &Config)
+      : Writer(Obj, Out), GapFill(Config.GapFill), PadTo(Config.PadTo) {}
 };
 
-class IHexWriter : public Writer {
-  struct SectionCompare {
-    bool operator()(const SectionBase *Lhs, const SectionBase *Rhs) const;
-  };
+// A base class for writing ascii hex formats such as srec and ihex.
+class ASCIIHexWriter : public Writer {
+public:
+  ASCIIHexWriter(Object &Obj, raw_ostream &OS, StringRef OutputFile)
+      : Writer(Obj, OS), OutputFileName(OutputFile) {}
+  Error finalize() override;
 
-  std::set<const SectionBase *, SectionCompare> Sections;
+protected:
+  StringRef OutputFileName;
   size_t TotalSize = 0;
+  std::vector<const SectionBase *> Sections;
 
-  Error checkSection(const SectionBase &Sec);
+  Error checkSection(const SectionBase &S) const;
+  virtual Expected<size_t>
+  getTotalSize(WritableMemoryBuffer &EmptyBuffer) const = 0;
+};
+
+class IHexWriter : public ASCIIHexWriter {
+public:
+  Error write() override;
+  IHexWriter(Object &Obj, raw_ostream &Out, StringRef OutputFile)
+      : ASCIIHexWriter(Obj, Out, OutputFile) {}
+
+private:
   uint64_t writeEntryPointRecord(uint8_t *Buf);
   uint64_t writeEndOfFileRecord(uint8_t *Buf);
+  Expected<size_t>
+  getTotalSize(WritableMemoryBuffer &EmptyBuffer) const override;
+};
 
+class SRECWriter : public ASCIIHexWriter {
 public:
-  ~IHexWriter() {}
-  Error finalize() override;
+  SRECWriter(Object &Obj, raw_ostream &OS, StringRef OutputFile)
+      : ASCIIHexWriter(Obj, OS, OutputFile) {}
   Error write() override;
-  IHexWriter(Object &Obj, raw_ostream &Out) : Writer(Obj, Out) {}
+
+private:
+  size_t writeHeader(uint8_t *Buf);
+  size_t writeTerminator(uint8_t *Buf, uint8_t Type);
+  Expected<size_t>
+  getTotalSize(WritableMemoryBuffer &EmptyBuffer) const override;
+};
+
+using SRecLineData = SmallVector<char, 64>;
+struct SRecord {
+  uint8_t Type;
+  uint32_t Address;
+  ArrayRef<uint8_t> Data;
+  SRecLineData toString() const;
+  uint8_t getCount() const;
+  // Get address size in characters.
+  uint8_t getAddressSize() const;
+  uint8_t getChecksum() const;
+  size_t getSize() const;
+  static SRecord getHeader(StringRef FileName);
+  static uint8_t getType(uint32_t Address);
+
+  enum Type : uint8_t {
+    // Vendor specific text comment.
+    S0 = 0,
+    // Data that starts at a 16 bit address.
+    S1 = 1,
+    // Data that starts at a 24 bit address.
+    S2 = 2,
+    // Data that starts at a 32 bit address.
+    S3 = 3,
+    // Reserved.
+    S4 = 4,
+    // 16 bit count of S1/S2/S3 records (optional).
+    S5 = 5,
+    // 32 bit count of S1/S2/S3 records (optional).
+    S6 = 6,
+    // Terminates a series of S3 records.
+    S7 = 7,
+    // Terminates a series of S2 records.
+    S8 = 8,
+    // Terminates a series of S1 records.
+    S9 = 9
+  };
+};
+
+class SRECSectionWriterBase : public BinarySectionWriter {
+public:
+  explicit SRECSectionWriterBase(WritableMemoryBuffer &Buf,
+                                 uint64_t StartOffset)
+      : BinarySectionWriter(Buf), Offset(StartOffset), HeaderSize(StartOffset) {
+  }
+
+  using BinarySectionWriter::visit;
+
+  void writeRecords(uint32_t Entry);
+  uint64_t getBufferOffset() const { return Offset; }
+  Error visit(const Section &S) override;
+  Error visit(const OwnedDataSection &S) override;
+  Error visit(const StringTableSection &S) override;
+  Error visit(const DynamicRelocationSection &S) override;
+  uint8_t getType() const { return Type; };
+
+protected:
+  // Offset in the output buffer.
+  uint64_t Offset;
+  // Sections start after the header.
+  uint64_t HeaderSize;
+  // Type of records to write.
+  uint8_t Type = SRecord::S1;
+  std::vector<SRecord> Records;
+
+  void writeSection(const SectionBase &S, ArrayRef<uint8_t> Data);
+  virtual void writeRecord(SRecord &Record, uint64_t Off) = 0;
+};
+
+// An SRECSectionWriterBase that visits sections but does not write anything.
+// This class is only used to calculate the size of the output file.
+class SRECSizeCalculator : public SRECSectionWriterBase {
+public:
+  SRECSizeCalculator(WritableMemoryBuffer &EmptyBuffer, uint64_t Offset)
+      : SRECSectionWriterBase(EmptyBuffer, Offset) {}
+
+protected:
+  void writeRecord(SRecord &Record, uint64_t Off) override {}
+};
+
+class SRECSectionWriter : public SRECSectionWriterBase {
+public:
+  SRECSectionWriter(WritableMemoryBuffer &Buf, uint64_t Offset)
+      : SRECSectionWriterBase(Buf, Offset) {}
+  Error visit(const StringTableSection &Sec) override;
+
+protected:
+  void writeRecord(SRecord &Record, uint64_t Off) override;
 };
 
 class SectionBase {
@@ -430,8 +549,11 @@ public:
   virtual void
   replaceSectionReferences(const DenseMap<SectionBase *, SectionBase *> &);
   virtual bool hasContents() const { return false; }
+  virtual ArrayRef<uint8_t> getContents() const { return {}; }
   // Notify the section that it is subject to removal.
   virtual void onRemove();
+
+  virtual void restoreSymTabLink(SymbolTableSection &) {}
 };
 
 class Segment {
@@ -483,6 +605,7 @@ class Section : public SectionBase {
 
   ArrayRef<uint8_t> Contents;
   SectionBase *LinkSection = nullptr;
+  bool HasSymTabLink = false;
 
 public:
   explicit Section(ArrayRef<uint8_t> Data) : Contents(Data) {}
@@ -497,6 +620,9 @@ public:
   bool hasContents() const override {
     return Type != ELF::SHT_NOBITS && Type != ELF::SHT_NULL;
   }
+  ArrayRef<uint8_t> getContents() const override { return Contents; }
+
+  void restoreSymTabLink(SymbolTableSection &SymTab) override;
 };
 
 class OwnedDataSection : public SectionBase {
@@ -531,11 +657,13 @@ public:
   Error accept(SectionVisitor &Sec) const override;
   Error accept(MutableSectionVisitor &Visitor) override;
   bool hasContents() const override { return true; }
+  ArrayRef<uint8_t> getContents() const override { return Data; }
 };
 
 class CompressedSection : public SectionBase {
   MAKE_SEC_WRITER_FRIEND
 
+  uint32_t ChType = 0;
   DebugCompressionType CompressionType;
   uint64_t DecompressedSize;
   uint64_t DecompressedAlign;
@@ -543,12 +671,13 @@ class CompressedSection : public SectionBase {
 
 public:
   CompressedSection(const SectionBase &Sec,
-                    DebugCompressionType CompressionType);
-  CompressedSection(ArrayRef<uint8_t> CompressedData, uint64_t DecompressedSize,
-                    uint64_t DecompressedAlign);
+    DebugCompressionType CompressionType, bool Is64Bits);
+  CompressedSection(ArrayRef<uint8_t> CompressedData, uint32_t ChType,
+                    uint64_t DecompressedSize, uint64_t DecompressedAlign);
 
   uint64_t getDecompressedSize() const { return DecompressedSize; }
   uint64_t getDecompressedAlign() const { return DecompressedAlign; }
+  uint64_t getChType() const { return ChType; }
 
   Error accept(SectionVisitor &Visitor) const override;
   Error accept(MutableSectionVisitor &Visitor) override;
@@ -562,8 +691,9 @@ class DecompressedSection : public SectionBase {
   MAKE_SEC_WRITER_FRIEND
 
 public:
+  uint32_t ChType;
   explicit DecompressedSection(const CompressedSection &Sec)
-      : SectionBase(Sec) {
+      : SectionBase(Sec), ChType(Sec.getChType()) {
     Size = Sec.getDecompressedSize();
     Align = Sec.getDecompressedAlign();
     Flags = OriginalFlags = (Flags & ~ELF::SHF_COMPRESSED);
@@ -688,6 +818,7 @@ protected:
   std::vector<std::unique_ptr<Symbol>> Symbols;
   StringTableSection *SymbolNames = nullptr;
   SectionIndexSection *SectionIndexTable = nullptr;
+  bool IndicesChanged = false;
 
   using SymPtr = std::unique_ptr<Symbol>;
 
@@ -700,6 +831,7 @@ public:
   void prepareForLayout();
   // An 'empty' symbol table still contains a null symbol.
   bool empty() const { return Symbols.size() == 1; }
+  bool indicesChanged() const { return IndicesChanged; }
   void setShndxTable(SectionIndexSection *ShndxTable) {
     SectionIndexTable = ShndxTable;
   }
@@ -753,7 +885,8 @@ public:
   StringRef getNamePrefix() const;
 
   static bool classof(const SectionBase *S) {
-    return S->OriginalType == ELF::SHT_REL || S->OriginalType == ELF::SHT_RELA;
+    return is_contained({ELF::SHT_REL, ELF::SHT_RELA, ELF::SHT_CREL},
+                        S->OriginalType);
   }
 };
 
@@ -782,7 +915,7 @@ class RelocationSection
 
 public:
   RelocationSection(const Object &O) : Obj(O) {}
-  void addRelocation(Relocation Rel) { Relocations.push_back(Rel); }
+  void addRelocation(const Relocation &Rel) { Relocations.push_back(Rel); }
   Error accept(SectionVisitor &Visitor) const override;
   Error accept(MutableSectionVisitor &Visitor) override;
   Error removeSectionReferences(
@@ -797,7 +930,7 @@ public:
   static bool classof(const SectionBase *S) {
     if (S->OriginalFlags & ELF::SHF_ALLOC)
       return false;
-    return S->OriginalType == ELF::SHT_REL || S->OriginalType == ELF::SHT_RELA;
+    return RelocationSectionBase::classof(S);
   }
 };
 
@@ -812,6 +945,9 @@ class GroupSection : public SectionBase {
   SmallVector<SectionBase *, 3> GroupMembers;
 
 public:
+  template <class T>
+  using ConstRange = iterator_range<
+      pointee_iterator<typename llvm::SmallVector<T *, 3>::const_iterator>>;
   // TODO: Contents is present in several classes of the hierarchy.
   // This needs to be refactored to avoid duplication.
   ArrayRef<uint8_t> Contents;
@@ -834,6 +970,10 @@ public:
   void replaceSectionReferences(
       const DenseMap<SectionBase *, SectionBase *> &FromTo) override;
   void onRemove() override;
+
+  ConstRange<SectionBase> members() const {
+    return make_pointee_range(GroupMembers);
+  }
 
   static bool classof(const SectionBase *S) {
     return S->OriginalType == ELF::SHT_GROUP;
@@ -954,7 +1094,7 @@ private:
   const ELFFile<ELFT> &ElfFile;
   Object &Obj;
   size_t EhdrOffset = 0;
-  Optional<StringRef> ExtractPartition;
+  std::optional<StringRef> ExtractPartition;
 
   void setParentSegment(Segment &Child);
   Error readProgramHeaders(const ELFFile<ELFT> &HeadersFile);
@@ -967,7 +1107,7 @@ private:
 
 public:
   ELFBuilder(const ELFObjectFile<ELFT> &ElfObj, Object &Obj,
-             Optional<StringRef> ExtractPartition);
+             std::optional<StringRef> ExtractPartition);
 
   Error build(bool EnsureSymtab);
 };
@@ -1006,11 +1146,11 @@ public:
 
 class ELFReader : public Reader {
   Binary *Bin;
-  Optional<StringRef> ExtractPartition;
+  std::optional<StringRef> ExtractPartition;
 
 public:
   Expected<std::unique_ptr<Object>> create(bool EnsureSymtab) const override;
-  explicit ELFReader(Binary *B, Optional<StringRef> ExtractPartition)
+  explicit ELFReader(Binary *B, std::optional<StringRef> ExtractPartition)
       : Bin(B), ExtractPartition(ExtractPartition) {}
 };
 
@@ -1028,6 +1168,8 @@ private:
     return Sec.Flags & ELF::SHF_ALLOC;
   };
 
+  Error updateSectionData(SecPtr &Sec, ArrayRef<uint8_t> Data);
+
 public:
   template <class T>
   using ConstRange = iterator_range<pointee_iterator<
@@ -1042,6 +1184,7 @@ public:
   Segment ElfHdrSegment;
   Segment ProgramHdrSegment;
 
+  bool Is64Bits;
   uint8_t OSABI;
   uint8_t ABIVersion;
   uint64_t Entry;
@@ -1069,6 +1212,7 @@ public:
 
   const auto &getUpdatedSections() const { return UpdatedSections; }
   Error updateSection(StringRef Name, ArrayRef<uint8_t> Data);
+  Error updateSectionData(SectionBase &S, ArrayRef<uint8_t> Data);
 
   SectionBase *findSection(StringRef Name) {
     auto SecIt =
@@ -1081,6 +1225,7 @@ public:
 
   Error removeSections(bool AllowBrokenLinks,
                        std::function<bool(const SectionBase &)> ToRemove);
+  Error compressOrDecompressSections(const CommonConfig &Config);
   Error replaceSections(const DenseMap<SectionBase *, SectionBase *> &FromTo);
   Error removeSymbols(function_ref<bool(const Symbol &)> ToRemove);
   template <class T, class... Ts> T &addSection(Ts &&...Args) {

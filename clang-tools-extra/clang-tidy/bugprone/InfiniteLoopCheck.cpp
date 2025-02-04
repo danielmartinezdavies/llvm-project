@@ -11,12 +11,17 @@
 #include "clang/AST/ASTContext.h"
 #include "clang/ASTMatchers/ASTMatchFinder.h"
 #include "clang/Analysis/Analyses/ExprMutationAnalyzer.h"
+#include "clang/Analysis/CallGraph.h"
+#include "llvm/ADT/SCCIterator.h"
 
 using namespace clang::ast_matchers;
+using clang::ast_matchers::internal::Matcher;
 using clang::tidy::utils::hasPtrOrReferenceInFunc;
 
 namespace clang {
-namespace ast_matchers {
+namespace tidy::bugprone {
+
+namespace {
 /// matches a Decl if it has a  "no return" attribute of any kind
 AST_MATCHER(Decl, declHasNoReturnAttr) {
   return Node.hasAttr<NoReturnAttr>() || Node.hasAttr<CXX11NoReturnAttr>() ||
@@ -27,24 +32,21 @@ AST_MATCHER(Decl, declHasNoReturnAttr) {
 AST_MATCHER(FunctionType, typeHasNoReturnAttr) {
   return Node.getNoReturnAttr();
 }
-} // namespace ast_matchers
-namespace tidy {
-namespace bugprone {
+} // namespace
 
-static internal::Matcher<Stmt>
-loopEndingStmt(internal::Matcher<Stmt> Internal) {
-  internal::Matcher<QualType> isNoReturnFunType =
+static Matcher<Stmt> loopEndingStmt(Matcher<Stmt> Internal) {
+  Matcher<QualType> IsNoReturnFunType =
       ignoringParens(functionType(typeHasNoReturnAttr()));
-  internal::Matcher<Decl> isNoReturnDecl =
-      anyOf(declHasNoReturnAttr(), functionDecl(hasType(isNoReturnFunType)),
-            varDecl(hasType(blockPointerType(pointee(isNoReturnFunType)))));
+  Matcher<Decl> IsNoReturnDecl =
+      anyOf(declHasNoReturnAttr(), functionDecl(hasType(IsNoReturnFunType)),
+            varDecl(hasType(blockPointerType(pointee(IsNoReturnFunType)))));
 
   return stmt(anyOf(
       mapAnyOf(breakStmt, returnStmt, gotoStmt, cxxThrowExpr).with(Internal),
       callExpr(Internal,
                callee(mapAnyOf(functionDecl, /* block callee */ varDecl)
-                          .with(isNoReturnDecl))),
-      objcMessageExpr(Internal, callee(isNoReturnDecl))));
+                          .with(IsNoReturnDecl))),
+      objcMessageExpr(Internal, callee(IsNoReturnDecl))));
 }
 
 /// Return whether `Var` was changed in `LoopStmt`.
@@ -166,6 +168,110 @@ static bool isKnownToHaveValue(const Expr &Cond, const ASTContext &Ctx,
   return false;
 }
 
+/// populates the set `Callees` with all function (and objc method) declarations
+/// called in `StmtNode` if all visited call sites have resolved call targets.
+///
+/// \return true iff all `CallExprs` visited have callees; false otherwise
+///         indicating there is an unresolved indirect call.
+static bool populateCallees(const Stmt *StmtNode,
+                            llvm::SmallSet<const Decl *, 16> &Callees) {
+  if (const auto *Call = dyn_cast<CallExpr>(StmtNode)) {
+    const Decl *Callee = Call->getDirectCallee();
+
+    if (!Callee)
+      return false; // unresolved call
+    Callees.insert(Callee->getCanonicalDecl());
+  }
+  if (const auto *Call = dyn_cast<ObjCMessageExpr>(StmtNode)) {
+    const Decl *Callee = Call->getMethodDecl();
+
+    if (!Callee)
+      return false; // unresolved call
+    Callees.insert(Callee->getCanonicalDecl());
+  }
+  for (const Stmt *Child : StmtNode->children())
+    if (Child && !populateCallees(Child, Callees))
+      return false;
+  return true;
+}
+
+/// returns true iff `SCC` contains `Func` and its' function set overlaps with
+/// `Callees`
+static bool overlap(ArrayRef<CallGraphNode *> SCC,
+                    const llvm::SmallSet<const Decl *, 16> &Callees,
+                    const Decl *Func) {
+  bool ContainsFunc = false, Overlap = false;
+
+  for (const CallGraphNode *GNode : SCC) {
+    const Decl *CanDecl = GNode->getDecl()->getCanonicalDecl();
+
+    ContainsFunc = ContainsFunc || (CanDecl == Func);
+    Overlap = Overlap || Callees.contains(CanDecl);
+    if (ContainsFunc && Overlap)
+      return true;
+  }
+  return false;
+}
+
+/// returns true iff `Cond` involves at least one static local variable.
+static bool hasStaticLocalVariable(const Stmt *Cond) {
+  if (const auto *DRE = dyn_cast<DeclRefExpr>(Cond))
+    if (const auto *VD = dyn_cast<VarDecl>(DRE->getDecl()))
+      if (VD->isStaticLocal())
+        return true;
+  for (const Stmt *Child : Cond->children())
+    if (Child && hasStaticLocalVariable(Child))
+      return true;
+  return false;
+}
+
+/// Tests if the loop condition `Cond` involves static local variables and
+/// the enclosing function `Func` is recursive.
+///
+///  \code
+///    void f() {
+///       static int i = 10;
+///       i--;
+///       while (i >= 0) f();
+///    }
+///  \endcode
+///  The example above is NOT an infinite loop.
+static bool hasRecursionOverStaticLoopCondVariables(const Expr *Cond,
+                                                    const Stmt *LoopStmt,
+                                                    const Decl *Func,
+                                                    const ASTContext *Ctx) {
+  if (!hasStaticLocalVariable(Cond))
+    return false;
+
+  llvm::SmallSet<const Decl *, 16> CalleesInLoop;
+
+  if (!populateCallees(LoopStmt, CalleesInLoop)) {
+    // If there are unresolved indirect calls, we assume there could
+    // be recursion so to avoid false alarm.
+    return true;
+  }
+  if (CalleesInLoop.empty())
+    return false;
+
+  TranslationUnitDecl *TUDecl = Ctx->getTranslationUnitDecl();
+  CallGraph CG;
+
+  CG.addToCallGraph(TUDecl);
+  // For each `SCC` containing `Func`, if functions in the `SCC`
+  // overlap with `CalleesInLoop`, there is a recursive call in `LoopStmt`.
+  for (llvm::scc_iterator<CallGraph *> SCCI = llvm::scc_begin(&CG),
+                                       SCCE = llvm::scc_end(&CG);
+       SCCI != SCCE; ++SCCI) {
+    if (!SCCI.hasCycle()) // We only care about cycles, not standalone nodes.
+      continue;
+    // `SCC`s are mutually disjoint, so there will be no redundancy in
+    // comparing `SCC` with the callee set one by one.
+    if (overlap(*SCCI, CalleesInLoop, Func->getCanonicalDecl()))
+      return true;
+  }
+  return false;
+}
+
 void InfiniteLoopCheck::registerMatchers(MatchFinder *Finder) {
   const auto LoopCondition = allOf(
       hasCondition(
@@ -197,10 +303,13 @@ void InfiniteLoopCheck::check(const MatchFinder::MatchResult &Result) {
     }
   }
 
-  if (ExprMutationAnalyzer::isUnevaluated(LoopStmt, *LoopStmt, *Result.Context))
+  if (ExprMutationAnalyzer::isUnevaluated(LoopStmt, *Result.Context))
     return;
 
   if (isAtLeastOneCondVarChanged(Func, LoopStmt, Cond, Result.Context))
+    return;
+  if (hasRecursionOverStaticLoopCondVariables(Cond, LoopStmt, Func,
+                                              Result.Context))
     return;
 
   std::string CondVarNames = getCondVarNames(Cond);
@@ -219,6 +328,5 @@ void InfiniteLoopCheck::check(const MatchFinder::MatchResult &Result) {
   }
 }
 
-} // namespace bugprone
-} // namespace tidy
+} // namespace tidy::bugprone
 } // namespace clang

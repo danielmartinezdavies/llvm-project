@@ -12,9 +12,7 @@
 
 using namespace clang::ast_matchers;
 
-namespace clang {
-namespace tidy {
-namespace altera {
+namespace clang::tidy::altera {
 
 void IdDependentBackwardBranchCheck::registerMatchers(MatchFinder *Finder) {
   // Prototype to identify all variables which hold a thread-variant ID.
@@ -33,12 +31,12 @@ void IdDependentBackwardBranchCheck::registerMatchers(MatchFinder *Finder) {
               stmt(
                   anyOf(declStmt(hasDescendant(varDecl(hasInitializer(ThreadID))
                                                    .bind("tid_dep_var"))),
-                        binaryOperator(allOf(
+                        binaryOperator(
                             isAssignmentOperator(), hasRHS(ThreadID),
                             hasLHS(anyOf(
                                 declRefExpr(to(varDecl().bind("tid_dep_var"))),
                                 memberExpr(member(
-                                    fieldDecl().bind("tid_dep_field")))))))))
+                                    fieldDecl().bind("tid_dep_field"))))))))
                   .bind("straight_assignment"))),
       this);
 
@@ -80,16 +78,22 @@ void IdDependentBackwardBranchCheck::registerMatchers(MatchFinder *Finder) {
 
 IdDependentBackwardBranchCheck::IdDependencyRecord *
 IdDependentBackwardBranchCheck::hasIdDepVar(const Expr *Expression) {
+  if (!Expression)
+    return nullptr;
+
   if (const auto *Declaration = dyn_cast<DeclRefExpr>(Expression)) {
     // It is a DeclRefExpr, so check if it's an ID-dependent variable.
-    const auto *CheckVariable = dyn_cast<VarDecl>(Declaration->getDecl());
+    const auto *CheckVariable =
+        dyn_cast_if_present<VarDecl>(Declaration->getDecl());
+    if (!CheckVariable)
+      return nullptr;
     auto FoundVariable = IdDepVarsMap.find(CheckVariable);
     if (FoundVariable == IdDepVarsMap.end())
       return nullptr;
     return &(FoundVariable->second);
   }
   for (const auto *Child : Expression->children())
-    if (const auto *ChildExpression = dyn_cast<Expr>(Child))
+    if (const auto *ChildExpression = dyn_cast_if_present<Expr>(Child))
       if (IdDependencyRecord *Result = hasIdDepVar(ChildExpression))
         return Result;
   return nullptr;
@@ -97,16 +101,21 @@ IdDependentBackwardBranchCheck::hasIdDepVar(const Expr *Expression) {
 
 IdDependentBackwardBranchCheck::IdDependencyRecord *
 IdDependentBackwardBranchCheck::hasIdDepField(const Expr *Expression) {
+  if (!Expression)
+    return nullptr;
+
   if (const auto *MemberExpression = dyn_cast<MemberExpr>(Expression)) {
     const auto *CheckField =
-        dyn_cast<FieldDecl>(MemberExpression->getMemberDecl());
+        dyn_cast_if_present<FieldDecl>(MemberExpression->getMemberDecl());
+    if (!CheckField)
+      return nullptr;
     auto FoundField = IdDepFieldsMap.find(CheckField);
     if (FoundField == IdDepFieldsMap.end())
       return nullptr;
     return &(FoundField->second);
   }
   for (const auto *Child : Expression->children())
-    if (const auto *ChildExpression = dyn_cast<Expr>(Child))
+    if (const auto *ChildExpression = dyn_cast_if_present<Expr>(Child))
       if (IdDependencyRecord *Result = hasIdDepField(ChildExpression))
         return Result;
   return nullptr;
@@ -243,22 +252,19 @@ void IdDependentBackwardBranchCheck::check(
     IdDependencyRecord *IdDepVar = hasIdDepVar(CondExpr);
     IdDependencyRecord *IdDepField = hasIdDepField(CondExpr);
     if (IdDepVar) {
-      // Change one of these to a Note
-      diag(IdDepVar->Location, IdDepVar->Message, DiagnosticIDs::Note);
       diag(CondExpr->getBeginLoc(),
            "backward branch (%select{do|while|for}0 loop) is ID-dependent due "
            "to variable reference to %1 and may cause performance degradation")
           << Type << IdDepVar->VariableDeclaration;
+      diag(IdDepVar->Location, IdDepVar->Message, DiagnosticIDs::Note);
     } else if (IdDepField) {
-      diag(IdDepField->Location, IdDepField->Message, DiagnosticIDs::Note);
       diag(CondExpr->getBeginLoc(),
            "backward branch (%select{do|while|for}0 loop) is ID-dependent due "
            "to member reference to %1 and may cause performance degradation")
           << Type << IdDepField->FieldDeclaration;
+      diag(IdDepField->Location, IdDepField->Message, DiagnosticIDs::Note);
     }
   }
 }
 
-} // namespace altera
-} // namespace tidy
-} // namespace clang
+} // namespace clang::tidy::altera

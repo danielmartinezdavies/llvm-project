@@ -1,13 +1,13 @@
-; RUN: opt %loadPolly \
+; RUN: opt %loadNPMPolly \
 ; RUN: -polly-pattern-matching-based-opts=true \
-; RUN: -polly-optree -polly-delicm -polly-simplify \
-; RUN: -polly-opt-isl -polly-tc-opt=true -debug -disable-output < %s 2>&1 \
+; RUN: '-passes=polly-optree,polly-delicm,polly-simplify,polly-opt-isl' \
+; RUN: -polly-tc-opt=true -debug -disable-output < %s 2>&1 \
 ; RUN: | FileCheck %s
 ; REQUIRES: asserts
 
 ; Check that the pattern matching detects the matrix multiplication pattern
 ; after a full run of -polly-optree and -polly-delicm, where the write access
-; is not through the original memory access, but trough a PHI node that was
+; is not through the original memory access, but through a PHI node that was
 ; delicmed. This test covers the polybench 2mm and 3mm cases.
 ;
 ; This test case generates the following schedule, which contains filters:
@@ -47,7 +47,7 @@ target datalayout = "e-m:e-i64:64-f80:128-n8:16:32:64-S128"
 target triple = "x86_64-unknown-linux-gnu"
 
 ; Function Attrs: norecurse nounwind uwtable
-define void @kernel_2mm(i32 %ni, i32 %nj, i32 %nk, i32 %nl, double %alpha, double %beta, [1800 x double]* nocapture %tmp, [2200 x double]* nocapture readonly %A, [1800 x double]* nocapture readonly %B, [2400 x double]* nocapture readnone %C, [2400 x double]* nocapture readnone %D) local_unnamed_addr #0 {
+define void @kernel_2mm(i32 %ni, i32 %nj, i32 %nk, i32 %nl, double %alpha, double %beta, ptr nocapture %tmp, ptr nocapture readonly %A, ptr nocapture readonly %B, ptr nocapture readnone %C, ptr nocapture readnone %D) local_unnamed_addr #0 {
 entry:
   br label %entry.split
 
@@ -60,21 +60,21 @@ for.body:                                         ; preds = %for.inc25, %entry.s
 
 for.body3:                                        ; preds = %for.inc22, %for.body
   %indvars.iv46 = phi i64 [ 0, %for.body ], [ %indvars.iv.next47, %for.inc22 ]
-  %arrayidx5 = getelementptr inbounds [1800 x double], [1800 x double]* %tmp, i64 %indvars.iv50, i64 %indvars.iv46
-  store double 0.000000e+00, double* %arrayidx5, align 8, !tbaa !2
+  %arrayidx5 = getelementptr inbounds [1800 x double], ptr %tmp, i64 %indvars.iv50, i64 %indvars.iv46
+  store double 0.000000e+00, ptr %arrayidx5, align 8, !tbaa !2
   br label %for.body8
 
 for.body8:                                        ; preds = %for.body8, %for.body3
   %0 = phi double [ 0.000000e+00, %for.body3 ], [ %add, %for.body8 ]
   %indvars.iv = phi i64 [ 0, %for.body3 ], [ %indvars.iv.next, %for.body8 ]
-  %arrayidx12 = getelementptr inbounds [2200 x double], [2200 x double]* %A, i64 %indvars.iv50, i64 %indvars.iv
-  %1 = load double, double* %arrayidx12, align 8, !tbaa !2
+  %arrayidx12 = getelementptr inbounds [2200 x double], ptr %A, i64 %indvars.iv50, i64 %indvars.iv
+  %1 = load double, ptr %arrayidx12, align 8, !tbaa !2
   %mul = fmul double %1, %alpha
-  %arrayidx16 = getelementptr inbounds [1800 x double], [1800 x double]* %B, i64 %indvars.iv, i64 %indvars.iv46
-  %2 = load double, double* %arrayidx16, align 8, !tbaa !2
+  %arrayidx16 = getelementptr inbounds [1800 x double], ptr %B, i64 %indvars.iv, i64 %indvars.iv46
+  %2 = load double, ptr %arrayidx16, align 8, !tbaa !2
   %mul17 = fmul double %mul, %2
   %add = fadd double %0, %mul17
-  store double %add, double* %arrayidx5, align 8, !tbaa !2
+  store double %add, ptr %arrayidx5, align 8, !tbaa !2
   %indvars.iv.next = add nuw nsw i64 %indvars.iv, 1
   %exitcond = icmp eq i64 %indvars.iv.next, 2200
   br i1 %exitcond, label %for.inc22, label %for.body8

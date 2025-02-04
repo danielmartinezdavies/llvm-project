@@ -16,10 +16,13 @@
 
 include "mlir/IR/SymbolInterfaces.td"
 include "flang/Optimizer/Dialect/FIRTypes.td"
+include "flang/Optimizer/Dialect/FIRAttr.td"
+include "mlir/IR/BuiltinAttributes.td"
 
 def fircg_Dialect : Dialect {
   let name = "fircg";
   let cppNamespace = "::fir::cg";
+  let usePropertiesForAttributes = 1;
 }
 
 // Base class for FIR CG operations.
@@ -45,6 +48,9 @@ def fircg_XEmboxOp : fircg_Op<"ext_embox", [AttrSizedOperandSegments]> {
        - substring: A substring operator (offset, length) for CHARACTER.
        - LEN type parameters: A vector of runtime LEN type parameters that
          describe an correspond to the elemental derived type.
+       - sourceBox: A box to read information from such as CFI type,
+         type descriptor or element size to populate the new descriptor.
+       - allocator_idx: specify special allocator to use.
 
     The memref and shape arguments are mandatory. The rest are optional.
   }];
@@ -56,32 +62,45 @@ def fircg_XEmboxOp : fircg_Op<"ext_embox", [AttrSizedOperandSegments]> {
     Variadic<AnyIntegerType>:$slice,
     Variadic<AnyCoordinateType>:$subcomponent,
     Variadic<AnyIntegerType>:$substr,
-    Variadic<AnyIntegerType>:$lenParams
+    Variadic<AnyIntegerType>:$lenParams,
+    Optional<fir_ClassType>:$sourceBox,
+    OptionalAttr<I32Attr>:$allocator_idx
   );
-  let results = (outs fir_BoxType);
+  let results = (outs BoxOrClassType);
 
   let assemblyFormat = [{
     $memref (`(`$shape^`)`)? (`origin` $shift^)? (`[`$slice^`]`)?
       (`path` $subcomponent^)? (`substr` $substr^)? (`typeparams` $lenParams^)?
-      attr-dict `:` functional-type(operands, results)
+      (`source_box` $sourceBox^)? attr-dict `:` functional-type(operands, results)
   }];
 
   let extraClassDeclaration = [{
     // The rank of the entity being emboxed
-    unsigned getRank() { return shape().size(); }
+    unsigned getRank() { return getShape().size(); }
 
     // The rank of the result. A slice op can reduce the rank.
     unsigned getOutRank();
 
     // The shape operands are mandatory and always start at 1.
-    unsigned shapeOffset() { return 1; }
-    unsigned shiftOffset() { return shapeOffset() + shape().size(); }
-    unsigned sliceOffset() { return shiftOffset() + shift().size(); }
-    unsigned subcomponentOffset() { return sliceOffset() + slice().size(); }
-    unsigned substrOffset() {
-      return subcomponentOffset() + subcomponent().size();
+    unsigned getShapeOperandIndex() { return 1; }
+    unsigned getShiftOperandIndex() {
+      return getShapeOperandIndex() + getShape().size();
     }
-    unsigned lenParamOffset() { return substrOffset() + substr().size(); }
+    unsigned getSliceOperandIndex() {
+      return getShiftOperandIndex() + getShift().size();
+    }
+    unsigned getSubcomponentOperandIndex() {
+      return getSliceOperandIndex() + getSlice().size();
+    }
+    unsigned getSubstrOperandIndex() {
+      return getSubcomponentOperandIndex() + getSubcomponent().size();
+    }
+    unsigned getLenParamOperandIndex() {
+      return getSubstrOperandIndex() + getSubstr().size();
+    }
+    unsigned getSourceBoxOperandIndex() {
+      return getLenParamOperandIndex() + getLenParams().size();
+    }
   }];
 }
 
@@ -107,14 +126,14 @@ def fircg_XReboxOp : fircg_Op<"ext_rebox", [AttrSizedOperandSegments]> {
   }];
 
   let arguments = (ins
-    fir_BoxType:$box,
+    BoxOrClassType:$box,
     Variadic<AnyIntegerType>:$shape,
     Variadic<AnyIntegerType>:$shift,
     Variadic<AnyIntegerType>:$slice,
     Variadic<AnyCoordinateType>:$subcomponent,
     Variadic<AnyIntegerType>:$substr
   );
-  let results = (outs fir_BoxType);
+  let results = (outs BoxOrClassType);
 
   let assemblyFormat = [{
     $box (`(`$shape^`)`)? (`origin` $shift^)? (`[`$slice^`]`)?
@@ -128,12 +147,18 @@ def fircg_XReboxOp : fircg_Op<"ext_rebox", [AttrSizedOperandSegments]> {
     // The rank of the result box
     unsigned getOutRank();
 
-    unsigned shapeOffset() { return 1; }
-    unsigned shiftOffset() { return shapeOffset() + shape().size(); }
-    unsigned sliceOffset() { return shiftOffset() + shift().size(); }
-    unsigned subcomponentOffset() { return sliceOffset() + slice().size(); }
-    unsigned substrOffset() {
-      return subcomponentOffset() + subcomponent().size();
+    unsigned getShapeOperandIndex() { return 1; }
+    unsigned getShiftOperandIndex() {
+      return getShapeOperandIndex() + getShape().size();
+    }
+    unsigned getSliceOperandIndex() {
+      return getShiftOperandIndex() + getShift().size();
+    }
+    unsigned getSubcomponentOperandIndex() {
+      return getSliceOperandIndex() + getSlice().size();
+    }
+    unsigned getSubstrOperandIndex() {
+      return getSubcomponentOperandIndex() + getSubcomponent().size();
     }
   }];
 }
@@ -186,14 +211,56 @@ def fircg_XArrayCoorOp : fircg_Op<"ext_array_coor", [AttrSizedOperandSegments]> 
     unsigned getRank();
 
     // Shape is optional, but if it exists, it will be at offset 1.
-    unsigned shapeOffset() { return 1; }
-    unsigned shiftOffset() { return shapeOffset() + shape().size(); }
-    unsigned sliceOffset() { return shiftOffset() + shift().size(); }
-    unsigned subcomponentOffset() { return sliceOffset() + slice().size(); }
-    unsigned indicesOffset() {
-      return subcomponentOffset() + subcomponent().size();
+    unsigned getShapeOperandIndex() { return 1; }
+    unsigned getShiftOperandIndex() {
+      return getShapeOperandIndex() + getShape().size();
     }
-    unsigned lenParamsOffset() { return indicesOffset() + indices().size(); }
+    unsigned getSliceOperandIndex() {
+      return getShiftOperandIndex() + getShift().size();
+    }
+    unsigned getSubcomponentOperandIndex() {
+      return getSliceOperandIndex() + getSlice().size();
+    }
+    unsigned getIndicesOperandIndex() {
+      return getSubcomponentOperandIndex() + getSubcomponent().size();
+    }
+    unsigned getLenParamsOperandIndex() {
+    return getIndicesOperandIndex() + getIndices().size();
+    }
+  }];
+}
+
+// Extended Declare operation.
+def fircg_XDeclareOp : fircg_Op<"ext_declare", [AttrSizedOperandSegments]> {
+  let summary = "for internal conversion only";
+
+  let description = [{
+    Prior to lowering to LLVM IR dialect, a DeclareOp will
+    be converted to an extended DeclareOp.
+  }];
+
+  let arguments = (ins
+    AnyRefOrBox:$memref,
+    Variadic<AnyIntegerType>:$shape,
+    Variadic<AnyIntegerType>:$shift,
+    Variadic<AnyIntegerType>:$typeparams,
+    Optional<fir_DummyScopeType>:$dummy_scope,
+    Builtin_StringAttr:$uniq_name
+  );
+  let results = (outs AnyRefOrBox);
+
+  let assemblyFormat = [{
+    $memref (`(` $shape^ `)`)? (`origin` $shift^)? (`typeparams` $typeparams^)?
+    (`dummy_scope` $dummy_scope^)?
+    attr-dict `:` functional-type(operands, results)
+  }];
+
+  let extraClassDeclaration = [{
+    // Shape is optional, but if it exists, it will be at offset 1.
+    unsigned getShapeOperandIndex() { return 1; }
+    unsigned getShiftOperandIndex() {
+      return getShapeOperandIndex() + getShape().size();
+    }
   }];
 }
 

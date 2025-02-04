@@ -202,9 +202,9 @@ TEST(FileSpecTest, GuessPathStyle) {
             FileSpec::GuessPathStyle(R"(\\net\foo.txt)"));
   EXPECT_EQ(FileSpec::Style::windows, FileSpec::GuessPathStyle(R"(Z:\)"));
   EXPECT_EQ(FileSpec::Style::windows, FileSpec::GuessPathStyle(R"(Z:/)"));
-  EXPECT_EQ(llvm::None, FileSpec::GuessPathStyle("foo.txt"));
-  EXPECT_EQ(llvm::None, FileSpec::GuessPathStyle("foo/bar.txt"));
-  EXPECT_EQ(llvm::None, FileSpec::GuessPathStyle("Z:"));
+  EXPECT_EQ(std::nullopt, FileSpec::GuessPathStyle("foo.txt"));
+  EXPECT_EQ(std::nullopt, FileSpec::GuessPathStyle("foo/bar.txt"));
+  EXPECT_EQ(std::nullopt, FileSpec::GuessPathStyle("Z:"));
 }
 
 TEST(FileSpecTest, GetPath) {
@@ -424,34 +424,6 @@ TEST(FileSpecTest, Match) {
 
 }
 
-TEST(FileSpecTest, Yaml) {
-  std::string buffer;
-  llvm::raw_string_ostream os(buffer);
-
-  // Serialize.
-  FileSpec fs_windows("F:\\bar", FileSpec::Style::windows);
-  llvm::yaml::Output yout(os);
-  yout << fs_windows;
-  os.flush();
-
-  // Deserialize.
-  FileSpec deserialized;
-  llvm::yaml::Input yin(buffer);
-  yin >> deserialized;
-
-  EXPECT_EQ(deserialized.GetPathStyle(), fs_windows.GetPathStyle());
-  EXPECT_EQ(deserialized.GetFilename(), fs_windows.GetFilename());
-  EXPECT_EQ(deserialized.GetDirectory(), fs_windows.GetDirectory());
-  EXPECT_EQ(deserialized, fs_windows);
-}
-
-TEST(FileSpecTest, OperatorBool) {
-  EXPECT_FALSE(FileSpec());
-  EXPECT_FALSE(FileSpec(""));
-  EXPECT_TRUE(FileSpec("/foo/bar"));
-}
-
-
 TEST(FileSpecTest, TestAbsoluteCaching) {
   // Test that if we modify a path that we recalculate if a path is relative
   // or absolute correctly. The test below calls set accessors and functions
@@ -475,4 +447,90 @@ TEST(FileSpecTest, TestAbsoluteCaching) {
   EXPECT_FALSE(file.IsAbsolute());
   file.PrependPathComponent("/tmp");
   EXPECT_TRUE(file.IsAbsolute());
+}
+
+TEST(FileSpecTest, TestFileNameExtensions) {
+  FileSpec dylib = PosixSpec("/tmp/foo.dylib");
+  FileSpec exe = PosixSpec("/tmp/foo");
+  FileSpec dSYM = PosixSpec("/tmp/foo.dSYM/");
+  FileSpec just_dot = PosixSpec("/tmp/bar.");
+
+  EXPECT_TRUE(dylib.GetFileNameExtension() == ".dylib");
+  EXPECT_TRUE(exe.GetFileNameExtension() == llvm::StringRef());
+  EXPECT_TRUE(dSYM.GetFileNameExtension() == ".dSYM");
+  EXPECT_TRUE(just_dot.GetFileNameExtension() == ".");
+
+  FileSpec dll = WindowsSpec("C:\\tmp\\foo.dll");
+  FileSpec win_noext = WindowsSpec("C:\\tmp\\foo");
+
+  EXPECT_TRUE(dll.GetFileNameExtension() == ".dll");
+  EXPECT_TRUE(win_noext.GetFileNameExtension() == llvm::StringRef());
+}
+
+TEST(FileSpecTest, TestFileNameStrippingExtension) {
+  FileSpec dylib = PosixSpec("/tmp/foo.dylib");
+  FileSpec exe = PosixSpec("/tmp/foo");
+  FileSpec just_dot = PosixSpec("/tmp/bar.");
+
+  EXPECT_TRUE(dylib.GetFileNameStrippingExtension() == "foo");
+  EXPECT_TRUE(exe.GetFileNameStrippingExtension() == "foo");
+  EXPECT_TRUE(just_dot.GetFileNameStrippingExtension() == "bar");
+
+  FileSpec dll = WindowsSpec("C:\\tmp\\foo.dll");
+  FileSpec win_noext = WindowsSpec("C:\\tmp\\foo");
+
+  EXPECT_TRUE(dll.GetFileNameStrippingExtension() == "foo");
+  EXPECT_TRUE(win_noext.GetFileNameStrippingExtension() == "foo");
+}
+
+TEST(FileSpecTest, TestIsSourceImplementationFile) {
+  FileSpec c_src = PosixSpec("/tmp/foo.c");
+  FileSpec txt_file = PosixSpec("/tmp/foo.txt");
+  FileSpec executable = PosixSpec("/tmp/foo");
+  FileSpec just_dot = PosixSpec("/tmp/bar.");
+
+  EXPECT_TRUE(c_src.IsSourceImplementationFile());
+  EXPECT_FALSE(txt_file.IsSourceImplementationFile());
+  EXPECT_FALSE(executable.IsSourceImplementationFile());
+  EXPECT_FALSE(just_dot.IsSourceImplementationFile());
+
+  FileSpec cpp_src = WindowsSpec("C:\\tmp\\foo.cpp");
+  FileSpec dll = WindowsSpec("C:\\tmp\\foo.dll");
+  FileSpec win_noext = WindowsSpec("C:\\tmp\\foo");
+  FileSpec exe = WindowsSpec("C:\\tmp\\foo.exe");
+
+  EXPECT_TRUE(cpp_src.IsSourceImplementationFile());
+  EXPECT_FALSE(dll.IsSourceImplementationFile());
+  EXPECT_FALSE(win_noext.IsSourceImplementationFile());
+  EXPECT_FALSE(exe.IsSourceImplementationFile());
+}
+
+TEST(FileSpecTest, TestGetComponents) {
+  std::pair<llvm::StringRef, std::vector<llvm::StringRef>> PosixTests[] = {
+      {"/", {}},
+      {"/foo", {"foo"}},
+      {"/foo/", {"foo"}},
+      {"/foo/bar", {"foo", "bar"}},
+      {"/llvm-project/lldb/unittests/Utility/FileSpecTest.cpp",
+       {"llvm-project", "lldb", "unittests", "Utility", "FileSpecTest.cpp"}},
+  };
+
+  for (const auto &pair : PosixTests) {
+    FileSpec file_spec = PosixSpec(pair.first);
+    EXPECT_EQ(file_spec.GetComponents(), pair.second);
+  }
+
+  std::pair<llvm::StringRef, std::vector<llvm::StringRef>> WindowsTests[] = {
+      {"C:\\", {"C:"}},
+      {"C:\\Windows\\", {"C:", "Windows"}},
+      {"C:\\Windows\\System32", {"C:", "Windows", "System32"}},
+      {"C:\\llvm-project\\lldb\\unittests\\Utility\\FileSpecTest.cpp",
+       {"C:", "llvm-project", "lldb", "unittests", "Utility",
+        "FileSpecTest.cpp"}},
+  };
+
+  for (const auto &pair : WindowsTests) {
+    FileSpec file_spec = WindowsSpec(pair.first);
+    EXPECT_EQ(file_spec.GetComponents(), pair.second);
+  }
 }

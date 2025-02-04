@@ -29,6 +29,13 @@ namespace Fortran::parser {
 struct Keyword;
 }
 
+namespace Fortran::evaluate { // avoid including all of Evaluate/tools.h
+template <typename T>
+std::optional<bool> AreEquivalentInInterface(const Expr<T> &, const Expr<T> &);
+extern template std::optional<bool> AreEquivalentInInterface<SomeInteger>(
+    const Expr<SomeInteger> &, const Expr<SomeInteger> &);
+} // namespace Fortran::evaluate
+
 namespace Fortran::semantics {
 
 class Scope;
@@ -110,6 +117,11 @@ public:
     return category_ == that.category_ && expr_ == that.expr_;
   }
   bool operator!=(const ParamValue &that) const { return !(*this == that); }
+  bool IsEquivalentInInterface(const ParamValue &that) const {
+    return (category_ == that.category_ &&
+        expr_.has_value() == that.expr_.has_value() &&
+        (!expr_ || evaluate::AreEquivalentInInterface(*expr_, *that.expr_)));
+  }
   std::string AsFortran() const;
 
 private:
@@ -249,6 +261,8 @@ llvm::raw_ostream &operator<<(llvm::raw_ostream &, const ArraySpec &);
 // The name may not match the symbol's name in case of a USE rename.
 class DerivedTypeSpec {
 public:
+  enum class Category { DerivedType, IntrinsicVector, PairVector, QuadVector };
+
   using RawParameter = std::pair<const parser::Keyword *, ParamValue>;
   using RawParameters = std::vector<RawParameter>;
   using ParameterMapType = std::map<SourceName, ParamValue>;
@@ -257,23 +271,26 @@ public:
   DerivedTypeSpec(DerivedTypeSpec &&);
 
   const SourceName &name() const { return name_; }
+  const Symbol &originalTypeSymbol() const { return originalTypeSymbol_; }
   const Symbol &typeSymbol() const { return typeSymbol_; }
   const Scope *scope() const { return scope_; }
+  // Return scope_ if it is set, or the typeSymbol_ scope otherwise.
+  const Scope *GetScope() const;
   void set_scope(const Scope &);
   void ReplaceScope(const Scope &);
-  RawParameters &rawParameters() { return rawParameters_; }
+  const RawParameters &rawParameters() const { return rawParameters_; }
   const ParameterMapType &parameters() const { return parameters_; }
 
   bool MightBeParameterized() const;
   bool IsForwardReferenced() const;
-  bool HasDefaultInitialization(bool ignoreAllocatable = false) const;
+  bool HasDefaultInitialization(
+      bool ignoreAllocatable = false, bool ignorePointer = true) const;
   bool HasDestruction() const;
-  bool HasFinalization() const;
 
   // The "raw" type parameter list is a simple transcription from the
   // parameter list in the parse tree, built by calling AddRawParamValue().
   // It can be used with forward-referenced derived types.
-  void AddRawParamValue(const std::optional<parser::Keyword> &, ParamValue &&);
+  void AddRawParamValue(const parser::Keyword *, ParamValue &&);
   // Checks the raw parameter list against the definition of a derived type.
   // Converts the raw parameter list to a map, naming each actual parameter.
   void CookParameters(evaluate::FoldingContext &);
@@ -302,21 +319,32 @@ public:
   }
   // For TYPE IS & CLASS IS: kind type parameters must be
   // explicit and equal, len type parameters are ignored.
-  bool Match(const DerivedTypeSpec &) const;
+  bool MatchesOrExtends(const DerivedTypeSpec &) const;
   std::string AsFortran() const;
+  std::string VectorTypeAsFortran() const;
+
+  Category category() const { return category_; }
+  void set_category(Category category) { category_ = category; }
+  bool IsVectorType() const {
+    return category_ == Category::IntrinsicVector ||
+        category_ == Category::PairVector || category_ == Category::QuadVector;
+  }
 
 private:
   SourceName name_;
-  const Symbol &typeSymbol_;
+  const Symbol &originalTypeSymbol_;
+  const Symbol &typeSymbol_; // == originalTypeSymbol_.GetUltimate()
   const Scope *scope_{nullptr}; // same as typeSymbol_.scope() unless PDT
   bool cooked_{false};
   bool evaluated_{false};
   bool instantiated_{false};
   RawParameters rawParameters_;
   ParameterMapType parameters_;
+  Category category_{Category::DerivedType};
   bool RawEquals(const DerivedTypeSpec &that) const {
-    return &typeSymbol_ == &that.typeSymbol_ && cooked_ == that.cooked_ &&
-        rawParameters_ == that.rawParameters_;
+    return &typeSymbol_ == &that.typeSymbol_ &&
+        &originalTypeSymbol_ == &that.originalTypeSymbol_ &&
+        cooked_ == that.cooked_ && rawParameters_ == that.rawParameters_;
   }
   friend llvm::raw_ostream &operator<<(
       llvm::raw_ostream &, const DerivedTypeSpec &);
@@ -389,21 +417,6 @@ private:
       typeSpec_;
 };
 llvm::raw_ostream &operator<<(llvm::raw_ostream &, const DeclTypeSpec &);
-
-// This represents a proc-interface in the declaration of a procedure or
-// procedure component. It comprises a symbol that represents the specific
-// interface or a decl-type-spec that represents the function return type.
-class ProcInterface {
-public:
-  const Symbol *symbol() const { return symbol_; }
-  const DeclTypeSpec *type() const { return type_; }
-  void set_symbol(const Symbol &symbol);
-  void set_type(const DeclTypeSpec &type);
-
-private:
-  const Symbol *symbol_{nullptr};
-  const DeclTypeSpec *type_{nullptr};
-};
 
 // Define some member functions here in the header so that they can be used by
 // lib/Evaluate without link-time dependency on Semantics.

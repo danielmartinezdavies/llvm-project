@@ -30,19 +30,17 @@ macro(FindPython3)
       Python3_LIBRARIES
       Python3_INCLUDE_DIRS
       Python3_EXECUTABLE
-      Python3_RPATH
-      SWIG_EXECUTABLE)
+      Python3_RPATH)
   endif()
 endmacro()
 
-if(Python3_LIBRARIES AND Python3_INCLUDE_DIRS AND Python3_EXECUTABLE AND SWIG_EXECUTABLE)
+if(Python3_LIBRARIES AND Python3_INCLUDE_DIRS AND Python3_EXECUTABLE AND LLDB_ENABLE_SWIG)
   set(PYTHONANDSWIG_FOUND TRUE)
 else()
-  find_package(SWIG 3.0)
-  if (SWIG_FOUND)
-      FindPython3()
+  if (LLDB_ENABLE_SWIG)
+    FindPython3()
   else()
-    message(STATUS "SWIG 3 or later is required for Python support in LLDB but could not be found")
+    message(STATUS "SWIG 4 or later is required for Python support in LLDB but could not be found")
   endif()
 
   get_property(MULTI_CONFIG GLOBAL PROPERTY GENERATOR_IS_MULTI_CONFIG)
@@ -64,5 +62,11 @@ else()
                                       Python3_LIBRARIES
                                       Python3_INCLUDE_DIRS
                                       Python3_EXECUTABLE
-                                      SWIG_EXECUTABLE)
+                                      LLDB_ENABLE_SWIG)
+endif()
+
+set(LLDB_RECOMMENDED_PYTHON "3.8")
+if(PYTHONANDSWIG_FOUND AND "${Python3_VERSION}" VERSION_LESS "${LLDB_RECOMMENDED_PYTHON}")
+  message(WARNING "Using Python ${Python3_VERSION}. ${LLDB_RECOMMENDED_PYTHON} "
+                  "is recommended and will be required from LLDB 21.")
 endif()

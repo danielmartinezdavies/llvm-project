@@ -15,19 +15,21 @@
 #ifndef MLIR_DIALECT_AFFINE_ANALYSIS_AFFINEANALYSIS_H
 #define MLIR_DIALECT_AFFINE_ANALYSIS_AFFINEANALYSIS_H
 
-#include "mlir/Dialect/Arithmetic/IR/Arithmetic.h"
+#include "mlir/Analysis/Presburger/IntegerRelation.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/IR/Value.h"
-#include "llvm/ADT/Optional.h"
 #include "llvm/ADT/SmallVector.h"
+#include <optional>
 
 namespace mlir {
+class Operation;
 
+namespace affine {
 class AffineApplyOp;
 class AffineForOp;
 class AffineValueMap;
 class FlatAffineRelation;
 class FlatAffineValueConstraints;
-class Operation;
 
 /// A description of a (parallelizable) reduction in an affine loop.
 struct LoopReduction {
@@ -114,7 +116,7 @@ struct MemRefAccess {
   ///
   /// Returns failure for yet unimplemented/unsupported cases (see docs of
   /// mlir::getIndexSet and mlir::getRelationFromMap for these cases).
-  LogicalResult getAccessRelation(FlatAffineRelation &accessRel) const;
+  LogicalResult getAccessRelation(presburger::IntegerRelation &accessRel) const;
 
   /// Populates 'accessMap' with composition of AffineApplyOps reachable from
   /// 'indices'.
@@ -140,10 +142,10 @@ struct DependenceComponent {
   // The AffineForOp Operation associated with this dependence component.
   Operation *op = nullptr;
   // The lower bound of the dependence distance.
-  Optional<int64_t> lb;
+  std::optional<int64_t> lb;
   // The upper bound of the dependence distance (inclusive).
-  Optional<int64_t> ub;
-  DependenceComponent() : lb(llvm::None), ub(llvm::None) {}
+  std::optional<int64_t> ub;
+  DependenceComponent() : lb(std::nullopt), ub(std::nullopt) {}
 };
 
 /// Checks whether two accesses to the same memref access the same element.
@@ -167,8 +169,9 @@ struct DependenceResult {
 
 DependenceResult checkMemrefAccessDependence(
     const MemRefAccess &srcAccess, const MemRefAccess &dstAccess,
-    unsigned loopDepth, FlatAffineValueConstraints *dependenceConstraints,
-    SmallVector<DependenceComponent, 2> *dependenceComponents,
+    unsigned loopDepth,
+    FlatAffineValueConstraints *dependenceConstraints = nullptr,
+    SmallVector<DependenceComponent, 2> *dependenceComponents = nullptr,
     bool allowRAR = false);
 
 /// Utility function that returns true if the provided DependenceResult
@@ -190,6 +193,7 @@ void getDependenceComponents(
     AffineForOp forOp, unsigned maxLoopDepth,
     std::vector<SmallVector<DependenceComponent, 2>> *depCompsVec);
 
+} // namespace affine
 } // namespace mlir
 
 #endif // MLIR_DIALECT_AFFINE_ANALYSIS_AFFINEANALYSIS_H

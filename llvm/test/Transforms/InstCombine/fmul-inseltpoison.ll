@@ -5,12 +5,12 @@
 ; poison
 
 ; Don't crash when attempting to cast a constant FMul to an instruction.
-define void @test8(i32* %inout, i1 %c1) {
+define void @test8(ptr %inout, i1 %c1) {
 ; CHECK-LABEL: @test8(
 ; CHECK-NEXT:  entry:
 ; CHECK-NEXT:    br label [[FOR_COND:%.*]]
 ; CHECK:       for.cond:
-; CHECK-NEXT:    [[LOCAL_VAR_7_0:%.*]] = phi <4 x float> [ <float -0.000000e+00, float -0.000000e+00, float -0.000000e+00, float -0.000000e+00>, [[ENTRY:%.*]] ], [ [[TMP0:%.*]], [[FOR_BODY:%.*]] ]
+; CHECK-NEXT:    [[LOCAL_VAR_7_0:%.*]] = phi <4 x float> [ splat (float -0.000000e+00), [[ENTRY:%.*]] ], [ [[TMP0:%.*]], [[FOR_BODY:%.*]] ]
 ; CHECK-NEXT:    br i1 [[C1:%.*]], label [[FOR_BODY]], label [[FOR_END:%.*]]
 ; CHECK:       for.body:
 ; CHECK-NEXT:    [[TMP0]] = insertelement <4 x float> [[LOCAL_VAR_7_0]], float 0.000000e+00, i64 2
@@ -19,7 +19,7 @@ define void @test8(i32* %inout, i1 %c1) {
 ; CHECK-NEXT:    ret void
 ;
 entry:
-  %0 = load i32, i32* %inout, align 4
+  %0 = load i32, ptr %inout, align 4
   %conv = uitofp i32 %0 to float
   %vecinit = insertelement <4 x float> <float 0.000000e+00, float 0.000000e+00, float 0.000000e+00, float poison>, float %conv, i32 3
   %sub = fsub <4 x float> <float -0.000000e+00, float -0.000000e+00, float -0.000000e+00, float -0.000000e+00>, %vecinit

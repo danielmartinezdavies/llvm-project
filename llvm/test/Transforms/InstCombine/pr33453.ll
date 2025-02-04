@@ -6,10 +6,14 @@
 
 define float @patatino() {
 ; CHECK-LABEL: @patatino(
-; CHECK-NEXT:    [[FMUL:%.*]] = fmul float uitofp (i1 icmp eq (i16* getelementptr inbounds (i16, i16* @g2, i64 1), i16* @g1) to float), uitofp (i1 icmp eq (i16* getelementptr inbounds (i16, i16* @g2, i64 1), i16* @g1) to float)
+; CHECK-NEXT:    [[CMP:%.*]] = icmp eq ptr getelementptr inbounds nuw (i8, ptr @g2, i64 2), @g1
+; CHECK-NEXT:    [[FMUL:%.*]] = uitofp i1 [[CMP]] to float
 ; CHECK-NEXT:    ret float [[FMUL]]
 ;
-  %fmul = fmul float uitofp (i1 icmp eq (i16* getelementptr inbounds (i16, i16* @g2, i64 1), i16* @g1) to float), uitofp (i1 icmp eq (i16* getelementptr inbounds (i16, i16* @g2, i64 1), i16* @g1) to float)
+  %cmp = icmp eq ptr getelementptr inbounds (i16, ptr @g2, i64 1), @g1
+  %uitofp1 = uitofp i1 %cmp to float
+  %uitofp2 = uitofp i1 %cmp to float
+  %fmul = fmul float %uitofp1, %uitofp2
   %call = call float @fabsf(float %fmul)
   ret float %call
 }

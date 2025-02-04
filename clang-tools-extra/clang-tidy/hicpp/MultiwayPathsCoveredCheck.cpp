@@ -13,9 +13,7 @@
 
 using namespace clang::ast_matchers;
 
-namespace clang {
-namespace tidy {
-namespace hicpp {
+namespace clang::tidy::hicpp {
 
 void MultiwayPathsCoveredCheck::storeOptions(
     ClangTidyOptions::OptionMap &Opts) {
@@ -97,8 +95,8 @@ void MultiwayPathsCoveredCheck::check(const MatchFinder::MatchResult &Result) {
     return;
   }
   const auto *Switch = Result.Nodes.getNodeAs<SwitchStmt>("switch");
-  std::size_t SwitchCaseCount;
-  bool SwitchHasDefault;
+  std::size_t SwitchCaseCount = 0;
+  bool SwitchHasDefault = false;
   std::tie(SwitchCaseCount, SwitchHasDefault) = countCaseLabels(Switch);
 
   // Checks the sanity of 'switch' statements that actually do define
@@ -162,7 +160,7 @@ void MultiwayPathsCoveredCheck::handleSwitchWithoutDefault(
     }
     if (const auto *BitfieldDecl =
             Result.Nodes.getNodeAs<FieldDecl>("bitfield")) {
-      return twoPow(BitfieldDecl->getBitWidthValue(*Result.Context));
+      return twoPow(BitfieldDecl->getBitWidthValue());
     }
 
     return static_cast<std::size_t>(0);
@@ -174,6 +172,4 @@ void MultiwayPathsCoveredCheck::handleSwitchWithoutDefault(
          CaseCount == 1 ? "switch with only one case; use an if statement"
                         : "potential uncovered code path; add a default label");
 }
-} // namespace hicpp
-} // namespace tidy
-} // namespace clang
+} // namespace clang::tidy::hicpp

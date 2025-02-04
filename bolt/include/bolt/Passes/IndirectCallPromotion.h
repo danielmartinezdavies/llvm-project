@@ -104,7 +104,7 @@ class IndirectCallPromotion : public BinaryFunctionPass {
   struct Location {
     MCSymbol *Sym{nullptr};
     uint64_t Addr{0};
-    bool isValid() const { return Sym || (!Sym && Addr != 0); }
+    bool isValid() const { return Sym || Addr != 0; }
     Location() {}
     explicit Location(MCSymbol *Sym) : Sym(Sym) {}
     explicit Location(uint64_t Addr) : Addr(Addr) {}
@@ -217,7 +217,11 @@ public:
   bool shouldPrint(const BinaryFunction &BF) const override {
     return BinaryFunctionPass::shouldPrint(BF) && Modified.count(&BF) > 0;
   }
-  void runOnFunctions(BinaryContext &BC) override;
+  bool shouldOptimize(const BinaryFunction &BF) const override {
+    return BF.isSimple() && !BF.isIgnored() && BF.hasProfile() &&
+           !BF.hasUnknownControlFlow();
+  }
+  Error runOnFunctions(BinaryContext &BC) override;
 };
 
 } // namespace bolt

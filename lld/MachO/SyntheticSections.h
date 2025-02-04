@@ -19,9 +19,9 @@
 
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/Hashing.h"
-#include "llvm/ADT/Optional.h"
+#include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/SetVector.h"
-#include "llvm/MC/StringTableBuilder.h"
+#include "llvm/BinaryFormat/MachO.h"
 #include "llvm/Support/MathExtras.h"
 #include "llvm/Support/raw_ostream.h"
 
@@ -163,7 +163,7 @@ public:
 
   void addEntry(const InputSection *isec, uint64_t offset) {
     if (config->isPic)
-      locations.push_back({isec, offset});
+      locations.emplace_back(isec, offset);
   }
 
 private:
@@ -175,7 +175,7 @@ struct BindingEntry {
   int64_t addend;
   Location target;
   BindingEntry(int64_t addend, Location target)
-      : addend(addend), target(std::move(target)) {}
+      : addend(addend), target(target) {}
 };
 
 template <class Sym>
@@ -270,6 +270,12 @@ private:
 // order that the weak bindings may overwrite the non-lazy bindings if an
 // appropriate symbol is found at runtime. However, the bound addresses will
 // still be written (non-lazily) into the LazyPointerSection.
+//
+// Symbols are always bound eagerly when chained fixups are used. In that case,
+// StubsSection contains indirect jumps to addresses stored in the GotSection.
+// The GOT directly contains the fixup entries, which will be replaced by the
+// address of the target symbols on load. LazyPointerSection and
+// StubHelperSection are not used.
 
 class StubsSection final : public SyntheticSection {
 public:
@@ -304,10 +310,23 @@ public:
   bool isNeeded() const override;
   void writeTo(uint8_t *buf) const override;
 
-  void setup();
+  void setUp();
 
   DylibSymbol *stubBinder = nullptr;
   Defined *dyldPrivate = nullptr;
+};
+
+class ObjCSelRefsHelper {
+public:
+  static void initialize();
+  static void cleanup();
+
+  static ConcatInputSection *getSelRef(StringRef methname);
+  static ConcatInputSection *makeSelRef(StringRef methname);
+
+private:
+  static llvm::DenseMap<llvm::CachedHashStringRef, ConcatInputSection *>
+      methnameToSelref;
 };
 
 // Objective-C stubs are hoisted objc_msgSend calls per selector called in the
@@ -324,14 +343,15 @@ public:
   bool isNeeded() const override { return !symbols.empty(); }
   void finalize() override { isec->isFinal = true; }
   void writeTo(uint8_t *buf) const override;
-  void setup();
+  void setUp();
 
   static constexpr llvm::StringLiteral symbolPrefix = "_objc_msgSend$";
+  static bool isObjCStubSymbol(Symbol *sym);
+  static StringRef getMethname(Symbol *sym);
 
 private:
   std::vector<Defined *> symbols;
-  std::vector<uint32_t> offsets;
-  int objcMsgSendGotIndex = 0;
+  Symbol *objcMsgSend = nullptr;
 };
 
 // Note that this section may also be targeted by non-lazy bindings. In
@@ -342,6 +362,9 @@ public:
   uint64_t getSize() const override;
   bool isNeeded() const override;
   void writeTo(uint8_t *buf) const override;
+  uint64_t getVA(uint32_t index) const {
+    return addr + (index << target->p2WordSize);
+  }
 };
 
 class LazyBindingSection final : public LinkEditSection {
@@ -380,8 +403,9 @@ private:
   size_t size = 0;
 };
 
-// Stores 'data in code' entries that describe the locations of
-// data regions inside code sections.
+// Stores 'data in code' entries that describe the locations of data regions
+// inside code sections. This is used by llvm-objdump to distinguish jump tables
+// and stop them from being disassembled as instructions.
 class DataInCodeSection final : public LinkEditSection {
 public:
   DataInCodeSection();
@@ -423,6 +447,7 @@ private:
   // match its behavior here since some tools depend on it.
   // Consequently, the empty string will be at index 1, not zero.
   std::vector<StringRef> strings{" "};
+  llvm::DenseMap<llvm::CachedHashStringRef, uint32_t> stringMap;
   size_t size = 2;
 };
 
@@ -461,6 +486,7 @@ private:
   void emitEndSourceStab();
   void emitObjectFileStab(ObjFile *);
   void emitEndFunStab(Defined *);
+  Defined *getFuncBodySym(Defined *);
   void emitStabs();
 
 protected:
@@ -524,18 +550,6 @@ public:
   void writeHashes(uint8_t *buf) const;
 };
 
-class BitcodeBundleSection final : public SyntheticSection {
-public:
-  BitcodeBundleSection();
-  uint64_t getSize() const override { return xarSize; }
-  void finalize() override;
-  void writeTo(uint8_t *buf) const override;
-
-private:
-  llvm::SmallString<261> xarPath;
-  uint64_t xarSize;
-};
-
 class CStringSection : public SyntheticSection {
 public:
   CStringSection(const char *name);
@@ -581,7 +595,7 @@ public:
   using UInt128 = std::pair<uint64_t, uint64_t>;
   // I don't think the standard guarantees the size of a pair, so let's make
   // sure it's exact -- that way we can construct it via `mmap`.
-  static_assert(sizeof(UInt128) == 16, "");
+  static_assert(sizeof(UInt128) == 16);
 
   WordLiteralSection();
   void addInput(WordLiteralInputSection *);
@@ -647,6 +661,185 @@ private:
   std::vector<const InputFile *> files; // files with image info
 };
 
+// This section stores 32-bit __TEXT segment offsets of initializer functions.
+//
+// The compiler stores pointers to initializers in __mod_init_func. These need
+// to be fixed up at load time, which takes time and dirties memory. By
+// synthesizing InitOffsetsSection from them, this data can live in the
+// read-only __TEXT segment instead. This section is used by default when
+// chained fixups are enabled.
+//
+// There is no similar counterpart to __mod_term_func, as that section is
+// deprecated, and static destructors are instead handled by registering them
+// via __cxa_atexit from an autogenerated initializer function (see D121736).
+class InitOffsetsSection final : public SyntheticSection {
+public:
+  InitOffsetsSection();
+  bool isNeeded() const override { return !sections.empty(); }
+  uint64_t getSize() const override;
+  void writeTo(uint8_t *buf) const override;
+  void setUp();
+
+  void addInput(ConcatInputSection *isec) { sections.push_back(isec); }
+  const std::vector<ConcatInputSection *> &inputs() const { return sections; }
+
+private:
+  std::vector<ConcatInputSection *> sections;
+};
+
+// This SyntheticSection is for the __objc_methlist section, which contains
+// relative method lists if the -objc_relative_method_lists option is enabled.
+class ObjCMethListSection final : public SyntheticSection {
+public:
+  ObjCMethListSection();
+
+  static bool isMethodList(const ConcatInputSection *isec);
+  void addInput(ConcatInputSection *isec) { inputs.push_back(isec); }
+  std::vector<ConcatInputSection *> getInputs() { return inputs; }
+
+  void setUp();
+  void finalize() override;
+  bool isNeeded() const override { return !inputs.empty(); }
+  uint64_t getSize() const override { return sectionSize; }
+  void writeTo(uint8_t *bufStart) const override;
+
+private:
+  void readMethodListHeader(const uint8_t *buf, uint32_t &structSizeAndFlags,
+                            uint32_t &structCount) const;
+  void writeMethodListHeader(uint8_t *buf, uint32_t structSizeAndFlags,
+                             uint32_t structCount) const;
+  uint32_t computeRelativeMethodListSize(uint32_t absoluteMethodListSize) const;
+  void writeRelativeOffsetForIsec(const ConcatInputSection *isec, uint8_t *buf,
+                                  uint32_t &inSecOff, uint32_t &outSecOff,
+                                  bool useSelRef) const;
+  uint32_t writeRelativeMethodList(const ConcatInputSection *isec,
+                                   uint8_t *buf) const;
+
+  static constexpr uint32_t methodListHeaderSize =
+      /*structSizeAndFlags*/ sizeof(uint32_t) +
+      /*structCount*/ sizeof(uint32_t);
+  // Relative method lists are supported only for 3-pointer method lists
+  static constexpr uint32_t pointersPerStruct = 3;
+  // The runtime identifies relative method lists via this magic value
+  static constexpr uint32_t relMethodHeaderFlag = 0x80000000;
+  // In the method list header, the first 2 bytes are the size of struct
+  static constexpr uint32_t structSizeMask = 0x0000FFFF;
+  // In the method list header, the last 2 bytes are the flags for the struct
+  static constexpr uint32_t structFlagsMask = 0xFFFF0000;
+  // Relative method lists have 4 byte alignment as all data in the InputSection
+  // is 4 byte
+  static constexpr uint32_t relativeOffsetSize = sizeof(uint32_t);
+
+  // The output size of the __objc_methlist section, computed during finalize()
+  uint32_t sectionSize = 0;
+  std::vector<ConcatInputSection *> inputs;
+};
+
+// Chained fixups are a replacement for classic dyld opcodes. In this format,
+// most of the metadata necessary for binding symbols and rebasing addresses is
+// stored directly in the memory location that will have the fixup applied.
+//
+// The fixups form singly linked lists; each one covering a single page in
+// memory. The __LINKEDIT,__chainfixups section stores the page offset of the
+// first fixup of each page; the rest can be found by walking the chain using
+// the offset that is embedded in each entry.
+//
+// This setup allows pages to be relocated lazily at page-in time and without
+// being dirtied. The kernel can discard and load them again as needed. This
+// technique, called page-in linking, was introduced in macOS 13.
+//
+// The benefits of this format are:
+//  - smaller __LINKEDIT segment, as most of the fixup information is stored in
+//    the data segment
+//  - faster startup, since not all relocations need to be done upfront
+//  - slightly lower memory usage, as fewer pages are dirtied
+//
+// Userspace x86_64 and arm64 binaries have two types of fixup entries:
+//   - Rebase entries contain an absolute address, to which the object's load
+//     address will be added to get the final value. This is used for loading
+//     the address of a symbol defined in the same binary.
+//   - Binding entries are mostly used for symbols imported from other dylibs,
+//     but for weakly bound and interposable symbols as well. They are looked up
+//     by a (symbol name, library) pair stored in __chainfixups. This import
+//     entry also encodes whether the import is weak (i.e. if the symbol is
+//     missing, it should be set to null instead of producing a load error).
+//     The fixup encodes an ordinal associated with the import, and an optional
+//     addend.
+//
+// The entries are tightly packed 64-bit bitfields. One of the bits specifies
+// which kind of fixup to interpret them as.
+//
+// LLD generates the fixup data in 5 stages:
+//   1. While scanning relocations, we make a note of each location that needs
+//      a fixup by calling addRebase() or addBinding(). During this, we assign
+//      a unique ordinal for each (symbol name, library, addend) import tuple.
+//   2. After addresses have been assigned to all sections, and thus the memory
+//      layout of the linked image is final; finalizeContents() is called. Here,
+//      the page offsets of the chain start entries are calculated.
+//   3. ChainedFixupsSection::writeTo() writes the page start offsets and the
+//      imports table to the output file.
+//   4. Each section's fixup entries are encoded and written to disk in
+//      ConcatInputSection::writeTo(), but without writing the offsets that form
+//      the chain.
+//   5. Finally, each page's (which might correspond to multiple sections)
+//      fixups are linked together in Writer::buildFixupChains().
+class ChainedFixupsSection final : public LinkEditSection {
+public:
+  ChainedFixupsSection();
+  void finalizeContents() override;
+  uint64_t getRawSize() const override { return size; }
+  bool isNeeded() const override;
+  void writeTo(uint8_t *buf) const override;
+
+  void addRebase(const InputSection *isec, uint64_t offset) {
+    locations.emplace_back(isec, offset);
+  }
+  void addBinding(const Symbol *dysym, const InputSection *isec,
+                  uint64_t offset, int64_t addend = 0);
+
+  void setHasNonWeakDefinition() { hasNonWeakDef = true; }
+
+  // Returns an (ordinal, inline addend) tuple used by dyld_chained_ptr_64_bind.
+  std::pair<uint32_t, uint8_t> getBinding(const Symbol *sym,
+                                          int64_t addend) const;
+
+  const std::vector<Location> &getLocations() const { return locations; }
+
+  bool hasWeakBinding() const { return hasWeakBind; }
+  bool hasNonWeakDefinition() const { return hasNonWeakDef; }
+
+private:
+  // Location::offset initially stores the offset within an InputSection, but
+  // contains output segment offsets after finalizeContents().
+  std::vector<Location> locations;
+  // (target symbol, addend) => import ordinal
+  llvm::MapVector<std::pair<const Symbol *, int64_t>, uint32_t> bindings;
+
+  struct SegmentInfo {
+    SegmentInfo(const OutputSegment *oseg) : oseg(oseg) {}
+
+    const OutputSegment *oseg;
+    // (page index, fixup starts offset)
+    llvm::SmallVector<std::pair<uint16_t, uint16_t>> pageStarts;
+
+    size_t getSize() const;
+    size_t writeTo(uint8_t *buf) const;
+  };
+  llvm::SmallVector<SegmentInfo, 4> fixupSegments;
+
+  size_t symtabSize = 0;
+  size_t size = 0;
+
+  bool needsAddend = false;
+  bool needsLargeAddend = false;
+  bool hasWeakBind = false;
+  bool hasNonWeakDef = false;
+  llvm::MachO::ChainedImportFormat importFormat;
+};
+
+void writeChainedRebase(uint8_t *buf, uint64_t targetVA);
+void writeChainedFixup(uint8_t *buf, const Symbol *sym, int64_t addend);
+
 struct InStruct {
   const uint8_t *bufferStart = nullptr;
   MachHeaderSection *header = nullptr;
@@ -664,10 +857,12 @@ struct InStruct {
   StubsSection *stubs = nullptr;
   StubHelperSection *stubHelper = nullptr;
   ObjCStubsSection *objcStubs = nullptr;
-  ConcatInputSection *objcSelrefs = nullptr;
   UnwindInfoSection *unwindInfo = nullptr;
   ObjCImageInfoSection *objCImageInfo = nullptr;
   ConcatInputSection *imageLoaderCache = nullptr;
+  InitOffsetsSection *initOffsets = nullptr;
+  ObjCMethListSection *objcMethList = nullptr;
+  ChainedFixupsSection *chainedFixups = nullptr;
 };
 
 extern InStruct in;

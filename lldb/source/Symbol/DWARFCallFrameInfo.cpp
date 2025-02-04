@@ -22,6 +22,7 @@
 #include "lldb/Utility/Timer.h"
 #include <cstring>
 #include <list>
+#include <optional>
 
 using namespace lldb;
 using namespace lldb_private;
@@ -32,7 +33,7 @@ using namespace lldb_private::dwarf;
 // Used for calls when the value type is specified by a DWARF EH Frame pointer
 // encoding.
 static uint64_t
-GetGNUEHPointer(const DataExtractor &DE, offset_t *offset_ptr,
+GetGNUEHPointer(const DataExtractor &DE, lldb::offset_t *offset_ptr,
                 uint32_t eh_ptr_enc, addr_t pc_rel_addr, addr_t text_addr,
                 addr_t data_addr) //, BSDRelocs *data_relocs) const
 {
@@ -167,7 +168,7 @@ bool DWARFCallFrameInfo::GetUnwindPlan(const AddressRange &range,
       module_sp->GetObjectFile() != &m_objfile)
     return false;
 
-  if (llvm::Optional<FDEEntryMap::Entry> entry = GetFirstFDEEntryInRange(range))
+  if (std::optional<FDEEntryMap::Entry> entry = GetFirstFDEEntryInRange(range))
     return FDEToUnwindPlan(entry->data, addr, unwind_plan);
   return false;
 }
@@ -194,10 +195,10 @@ bool DWARFCallFrameInfo::GetAddressRange(Address addr, AddressRange &range) {
   return true;
 }
 
-llvm::Optional<DWARFCallFrameInfo::FDEEntryMap::Entry>
+std::optional<DWARFCallFrameInfo::FDEEntryMap::Entry>
 DWARFCallFrameInfo::GetFirstFDEEntryInRange(const AddressRange &range) {
   if (!m_section_sp || m_section_sp->IsEncrypted())
-    return llvm::None;
+    return std::nullopt;
 
   GetFDEIndex();
 
@@ -208,7 +209,7 @@ DWARFCallFrameInfo::GetFirstFDEEntryInRange(const AddressRange &range) {
                  FDEEntryMap::Range(start_file_addr, range.GetByteSize())))
     return *fde;
 
-  return llvm::None;
+  return std::nullopt;
 }
 
 void DWARFCallFrameInfo::GetFunctionAddressAndSizeVector(
@@ -422,8 +423,7 @@ void DWARFCallFrameInfo::GetFDEIndex() {
   if (m_fde_index_initialized) // if two threads hit the locker
     return;
 
-  LLDB_SCOPED_TIMERF("%s - %s", LLVM_PRETTY_FUNCTION,
-                     m_objfile.GetFileSpec().GetFilename().AsCString(""));
+  LLDB_SCOPED_TIMERF("%s", m_objfile.GetFileSpec().GetFilename().AsCString(""));
 
   bool clear_address_zeroth_bit = false;
   if (ArchSpec arch = m_objfile.GetArchitecture()) {
@@ -588,7 +588,7 @@ bool DWARFCallFrameInfo::FDEToUnwindPlan(dw_offset_t dwarf_offset,
   if (cie->augmentation[0] == 'z') {
     uint32_t aug_data_len = (uint32_t)m_cfi_data.GetULEB128(&offset);
     if (aug_data_len != 0 && cie->lsda_addr_encoding != DW_EH_PE_omit) {
-      offset_t saved_offset = offset;
+      lldb::offset_t saved_offset = offset;
       lsda_data_file_address =
           GetGNUEHPointer(m_cfi_data, &offset, cie->lsda_addr_encoding,
                           pc_rel_addr, text_addr, data_addr);
@@ -633,7 +633,7 @@ bool DWARFCallFrameInfo::FDEToUnwindPlan(dw_offset_t dwarf_offset,
 
   std::vector<UnwindPlan::RowSP> stack;
 
-  UnwindPlan::Row::RegisterLocation reg_location;
+  UnwindPlan::Row::AbstractRegisterLocation reg_location;
   while (m_cfi_data.ValidOffset(offset) && offset < end_offset) {
     uint8_t inst = m_cfi_data.GetU8(&offset);
     uint8_t primary_opcode = inst & 0xC0;
@@ -673,6 +673,11 @@ bool DWARFCallFrameInfo::FDEToUnwindPlan(dw_offset_t dwarf_offset,
               unwind_plan.GetRowAtIndex(0)->GetRegisterInfo(reg_num,
                                                             reg_location))
             row->SetRegisterInfo(reg_num, reg_location);
+          else {
+            // If the register was not set in the first row, remove the
+            // register info to keep the unmodified value from the caller.
+            row->RemoveRegisterInfo(reg_num);
+          }
           break;
         }
         }
@@ -772,12 +777,12 @@ bool DWARFCallFrameInfo::FDEToUnwindPlan(dw_offset_t dwarf_offset,
           // useful for compilers that move epilogue code into the body of a
           // function.)
           if (stack.empty()) {
-            LLDB_LOGF(log,
-                      "DWARFCallFrameInfo::%s(dwarf_offset: %" PRIx32
-                      ", startaddr: %" PRIx64
-                      " encountered DW_CFA_restore_state but state stack "
-                      "is empty. Corrupt unwind info?",
-                      __FUNCTION__, dwarf_offset, startaddr.GetFileAddress());
+            LLDB_LOG(log,
+                     "DWARFCallFrameInfo::{0}(dwarf_offset: "
+                     "{1:x16}, startaddr: [{2:x16}] encountered "
+                     "DW_CFA_restore_state but state stack "
+                     "is empty. Corrupt unwind info?",
+                     __FUNCTION__, dwarf_offset, startaddr.GetFileAddress());
             break;
           }
           lldb::addr_t offset = row->GetOffset();
@@ -817,7 +822,7 @@ bool DWARFCallFrameInfo::HandleCommonDwarfOpcode(uint8_t primary_opcode,
                                                  int32_t data_align,
                                                  lldb::offset_t &offset,
                                                  UnwindPlan::Row &row) {
-  UnwindPlan::Row::RegisterLocation reg_location;
+  UnwindPlan::Row::AbstractRegisterLocation reg_location;
 
   if (primary_opcode) {
     switch (primary_opcode) {
@@ -847,7 +852,7 @@ bool DWARFCallFrameInfo::HandleCommonDwarfOpcode(uint8_t primary_opcode,
       // except for the encoding and size of the register argument.
       uint32_t reg_num = (uint32_t)m_cfi_data.GetULEB128(&offset);
       int32_t op_offset = (int32_t)m_cfi_data.GetULEB128(&offset) * data_align;
-      UnwindPlan::Row::RegisterLocation reg_location;
+      UnwindPlan::Row::AbstractRegisterLocation reg_location;
       reg_location.SetAtCFAPlusOffset(op_offset);
       row.SetRegisterInfo(reg_num, reg_location);
       return true;
@@ -859,7 +864,7 @@ bool DWARFCallFrameInfo::HandleCommonDwarfOpcode(uint8_t primary_opcode,
       // number. The required action is to set the rule for the specified
       // register to undefined.
       uint32_t reg_num = (uint32_t)m_cfi_data.GetULEB128(&offset);
-      UnwindPlan::Row::RegisterLocation reg_location;
+      UnwindPlan::Row::AbstractRegisterLocation reg_location;
       reg_location.SetUndefined();
       row.SetRegisterInfo(reg_num, reg_location);
       return true;
@@ -871,7 +876,7 @@ bool DWARFCallFrameInfo::HandleCommonDwarfOpcode(uint8_t primary_opcode,
       // number. The required action is to set the rule for the specified
       // register to same value.
       uint32_t reg_num = (uint32_t)m_cfi_data.GetULEB128(&offset);
-      UnwindPlan::Row::RegisterLocation reg_location;
+      UnwindPlan::Row::AbstractRegisterLocation reg_location;
       reg_location.SetSame();
       row.SetRegisterInfo(reg_num, reg_location);
       return true;
@@ -884,7 +889,7 @@ bool DWARFCallFrameInfo::HandleCommonDwarfOpcode(uint8_t primary_opcode,
       // second register.
       uint32_t reg_num = (uint32_t)m_cfi_data.GetULEB128(&offset);
       uint32_t other_reg_num = (uint32_t)m_cfi_data.GetULEB128(&offset);
-      UnwindPlan::Row::RegisterLocation reg_location;
+      UnwindPlan::Row::AbstractRegisterLocation reg_location;
       reg_location.SetInRegister(other_reg_num);
       row.SetRegisterInfo(reg_num, reg_location);
       return true;
@@ -945,7 +950,7 @@ bool DWARFCallFrameInfo::HandleCommonDwarfOpcode(uint8_t primary_opcode,
       uint32_t block_len = (uint32_t)m_cfi_data.GetULEB128(&offset);
       const uint8_t *block_data =
           static_cast<const uint8_t *>(m_cfi_data.GetData(&offset, block_len));
-      UnwindPlan::Row::RegisterLocation reg_location;
+      UnwindPlan::Row::AbstractRegisterLocation reg_location;
       reg_location.SetAtDWARFExpression(block_data, block_len);
       row.SetRegisterInfo(reg_num, reg_location);
       return true;
@@ -959,7 +964,7 @@ bool DWARFCallFrameInfo::HandleCommonDwarfOpcode(uint8_t primary_opcode,
       // signed and factored.
       uint32_t reg_num = (uint32_t)m_cfi_data.GetULEB128(&offset);
       int32_t op_offset = (int32_t)m_cfi_data.GetSLEB128(&offset) * data_align;
-      UnwindPlan::Row::RegisterLocation reg_location;
+      UnwindPlan::Row::AbstractRegisterLocation reg_location;
       reg_location.SetAtCFAPlusOffset(op_offset);
       row.SetRegisterInfo(reg_num, reg_location);
       return true;

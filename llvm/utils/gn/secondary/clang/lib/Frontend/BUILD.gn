@@ -3,6 +3,7 @@ static_library("Frontend") {
   configs += [ "//llvm/utils/gn/build:clang_code" ]
   deps = [
     "//clang/include/clang/Config",
+    "//clang/lib/APINotes",
     "//clang/lib/AST",
     "//clang/lib/Basic",
     "//clang/lib/Driver",
@@ -16,6 +17,7 @@ static_library("Frontend") {
     "//llvm/lib/Option",
     "//llvm/lib/ProfileData",
     "//llvm/lib/Support",
+    "//llvm/lib/TargetParser",
   ]
   sources = [
     "ASTConsumers.cpp",

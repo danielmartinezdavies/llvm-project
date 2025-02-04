@@ -10,15 +10,16 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "../PassDetail.h"
 #include "mlir/Conversion/TosaToLinalg/TosaToLinalg.h"
-#include "mlir/Dialect/Arithmetic/IR/Arithmetic.h"
+
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/Index/IR/IndexDialect.h"
 #include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Dialect/Tosa/IR/TosaOps.h"
-#include "mlir/Dialect/Tosa/Transforms/PassDetail.h"
 #include "mlir/Dialect/Tosa/Transforms/Passes.h"
 #include "mlir/Dialect/Tosa/Utils/QuantUtils.h"
 #include "mlir/IR/PatternMatch.h"
@@ -27,15 +28,20 @@
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "mlir/Transforms/Passes.h"
 
+namespace mlir {
+#define GEN_PASS_DEF_TOSATOLINALG
+#include "mlir/Conversion/Passes.h.inc"
+} // namespace mlir
+
 using namespace mlir;
 
 namespace {
-struct TosaToLinalg : public TosaToLinalgBase<TosaToLinalg> {
+struct TosaToLinalg : public impl::TosaToLinalgBase<TosaToLinalg> {
 public:
   void getDependentDialects(DialectRegistry &registry) const override {
     registry
-        .insert<arith::ArithmeticDialect, linalg::LinalgDialect,
-                math::MathDialect, tensor::TensorDialect, scf::SCFDialect>();
+        .insert<arith::ArithDialect, linalg::LinalgDialect, math::MathDialect,
+                index::IndexDialect, tensor::TensorDialect, scf::SCFDialect>();
   }
 
   void runOnOperation() override {
@@ -49,13 +55,20 @@ public:
     target.addLegalOp<tosa::ApplyScaleOp>();
     target.addLegalOp<tosa::IfOp>();
     target.addLegalOp<tosa::ConstOp>();
+    target.addLegalOp<tosa::ConstShapeOp>();
     target.addLegalOp<tosa::WhileOp>();
+    target.addLegalOp<tosa::ConcatOp>();
     target.addLegalOp<tosa::SliceOp>();
+    target.addLegalOp<tosa::ReshapeOp>();
+    target.addLegalOp<tosa::PadOp>();
 
     target.markUnknownOpDynamicallyLegal([](Operation *) { return true; });
 
+    TypeConverter converter;
+    tosa::populateTosaTypeConversion(converter);
+
     FunctionOpInterface func = getOperation();
-    mlir::tosa::populateTosaToLinalgConversionPatterns(&patterns);
+    mlir::tosa::populateTosaToLinalgConversionPatterns(converter, &patterns);
     if (failed(applyFullConversion(func, target, std::move(patterns))))
       signalPassFailure();
   }
@@ -66,18 +79,48 @@ std::unique_ptr<Pass> mlir::tosa::createTosaToLinalg() {
   return std::make_unique<TosaToLinalg>();
 }
 
-void mlir::tosa::addTosaToLinalgPasses(OpPassManager &pm,
-                                       bool disableTosaDecompositions) {
+void mlir::tosa::addTosaToLinalgPasses(
+    OpPassManager &pm, const TosaToLinalgOptions &options,
+    const TosaToLinalgNamedOptions &tosaToLinalgNamedOptions,
+    std::optional<tosa::TosaValidationOptions> validationOptions) {
   // Optional decompositions are designed to benefit linalg.
-  if (!disableTosaDecompositions)
+  if (!options.disableTosaDecompositions)
     pm.addNestedPass<func::FuncOp>(tosa::createTosaOptionalDecompositions());
   pm.addNestedPass<func::FuncOp>(createCanonicalizerPass());
 
+  pm.addNestedPass<func::FuncOp>(tosa::createTosaInferShapesPass());
   pm.addNestedPass<func::FuncOp>(tosa::createTosaMakeBroadcastablePass());
-  pm.addNestedPass<func::FuncOp>(tosa::createTosaToLinalgNamed());
+  pm.addNestedPass<func::FuncOp>(
+      tosa::createTosaToLinalgNamed(tosaToLinalgNamedOptions));
   pm.addNestedPass<func::FuncOp>(createCanonicalizerPass());
   // TODO: Remove pass that operates on const tensor and enable optionality
-  pm.addNestedPass<func::FuncOp>(tosa::createTosaLayerwiseConstantFoldPass());
+  pm.addNestedPass<func::FuncOp>(tosa::createTosaLayerwiseConstantFoldPass(
+      {options.aggressiveReduceConstant}));
   pm.addNestedPass<func::FuncOp>(tosa::createTosaMakeBroadcastablePass());
+  if (validationOptions)
+    pm.addPass(tosa::createTosaValidation(*validationOptions));
   pm.addNestedPass<func::FuncOp>(tosa::createTosaToLinalg());
+}
+
+//===----------------------------------------------------------------------===//
+// Pipeline registration.
+//===----------------------------------------------------------------------===//
+
+void mlir::tosa::registerTosaToLinalgPipelines() {
+  PassPipelineRegistration<>(
+      "tosa-to-linalg-pipeline",
+      "The default pipeline for converting TOSA operators to the equivalent "
+      "operations using the tensor operations in LinAlg as well as LinAlg "
+      "named operations.",
+      [](OpPassManager &pm) {
+        TosaToLinalgOptions tosaToLinalgOptions;
+        TosaToLinalgNamedOptions tosaToLinalgNamedOptions;
+        TosaValidationOptions validationOptions;
+        validationOptions.profile = {"none"};
+        validationOptions.StrictOperationSpecAlignment = true;
+        validationOptions.level = tosa::TosaLevelEnum::EightK;
+        tosa::addTosaToLinalgPasses(pm, tosaToLinalgOptions,
+                                    tosaToLinalgNamedOptions,
+                                    validationOptions);
+      });
 }

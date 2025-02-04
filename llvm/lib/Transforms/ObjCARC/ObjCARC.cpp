@@ -13,38 +13,17 @@
 //===----------------------------------------------------------------------===//
 
 #include "ObjCARC.h"
-#include "llvm-c/Initialization.h"
 #include "llvm/Analysis/ObjCARCUtil.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Instructions.h"
-#include "llvm/InitializePasses.h"
 #include "llvm/Transforms/Utils/BasicBlockUtils.h"
-
-namespace llvm {
-  class PassRegistry;
-}
 
 using namespace llvm;
 using namespace llvm::objcarc;
 
-/// initializeObjCARCOptsPasses - Initialize all passes linked into the
-/// ObjCARCOpts library.
-void llvm::initializeObjCARCOpts(PassRegistry &Registry) {
-  initializeObjCARCAAWrapperPassPass(Registry);
-  initializeObjCARCAPElimPass(Registry);
-  initializeObjCARCExpandPass(Registry);
-  initializeObjCARCContractLegacyPassPass(Registry);
-  initializeObjCARCOptLegacyPassPass(Registry);
-  initializePAEvalPass(Registry);
-}
-
-void LLVMInitializeObjCARCOpts(LLVMPassRegistryRef R) {
-  initializeObjCARCOpts(*unwrap(R));
-}
-
 CallInst *objcarc::createCallInstWithColors(
     FunctionCallee Func, ArrayRef<Value *> Args, const Twine &NameStr,
-    Instruction *InsertBefore,
+    BasicBlock::iterator InsertBefore,
     const DenseMap<BasicBlock *, ColorVector> &BlockColors) {
   FunctionType *FTy = Func.getFunctionType();
   Value *Callee = Func.getCallee();
@@ -53,9 +32,9 @@ CallInst *objcarc::createCallInstWithColors(
   if (!BlockColors.empty()) {
     const ColorVector &CV = BlockColors.find(InsertBefore->getParent())->second;
     assert(CV.size() == 1 && "non-unique color for block!");
-    Instruction *EHPad = CV.front()->getFirstNonPHI();
+    BasicBlock::iterator EHPad = CV.front()->getFirstNonPHIIt();
     if (EHPad->isEHPad())
-      OpBundles.emplace_back("funclet", EHPad);
+      OpBundles.emplace_back("funclet", &*EHPad);
   }
 
   return CallInst::Create(FTy, Callee, Args, OpBundles, NameStr, InsertBefore);
@@ -85,23 +64,23 @@ BundledRetainClaimRVs::insertAfterInvokes(Function &F, DominatorTree *DT) {
 
     // We don't have to call insertRVCallWithColors since DestBB is the normal
     // destination of the invoke.
-    insertRVCall(&*DestBB->getFirstInsertionPt(), I);
+    insertRVCall(DestBB->getFirstInsertionPt(), I);
     Changed = true;
   }
 
   return std::make_pair(Changed, CFGChanged);
 }
 
-CallInst *BundledRetainClaimRVs::insertRVCall(Instruction *InsertPt,
+CallInst *BundledRetainClaimRVs::insertRVCall(BasicBlock::iterator InsertPt,
                                               CallBase *AnnotatedCall) {
   DenseMap<BasicBlock *, ColorVector> BlockColors;
   return insertRVCallWithColors(InsertPt, AnnotatedCall, BlockColors);
 }
 
 CallInst *BundledRetainClaimRVs::insertRVCallWithColors(
-    Instruction *InsertPt, CallBase *AnnotatedCall,
+    BasicBlock::iterator InsertPt, CallBase *AnnotatedCall,
     const DenseMap<BasicBlock *, ColorVector> &BlockColors) {
-  IRBuilder<> Builder(InsertPt);
+  IRBuilder<> Builder(InsertPt->getParent(), InsertPt);
   Function *Func = *objcarc::getAttachedARCFunction(AnnotatedCall);
   assert(Func && "operand isn't a Function");
   Type *ParamTy = Func->getArg(0)->getType();

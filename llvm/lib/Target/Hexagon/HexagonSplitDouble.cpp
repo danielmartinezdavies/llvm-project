@@ -71,8 +71,8 @@ namespace {
     }
 
     void getAnalysisUsage(AnalysisUsage &AU) const override {
-      AU.addRequired<MachineLoopInfo>();
-      AU.addPreserved<MachineLoopInfo>();
+      AU.addRequired<MachineLoopInfoWrapperPass>();
+      AU.addPreserved<MachineLoopInfoWrapperPass>();
       MachineFunctionPass::getAnalysisUsage(AU);
     }
 
@@ -253,8 +253,7 @@ void HexagonSplitDoubleRegs::partitionRegisters(UUSetMap &P2Rs) {
       MachineInstr *UseI = Op.getParent();
       if (isFixedInstr(UseI))
         continue;
-      for (unsigned i = 0, n = UseI->getNumOperands(); i < n; ++i) {
-        MachineOperand &MO = UseI->getOperand(i);
+      for (MachineOperand &MO : UseI->operands()) {
         // Skip non-registers or registers with subregisters.
         if (&MO == &Op || !MO.isReg() || MO.getSubReg())
           continue;
@@ -265,7 +264,7 @@ void HexagonSplitDoubleRegs::partitionRegisters(UUSetMap &P2Rs) {
         }
         if (MRI->getRegClass(T) != DoubleRC)
           continue;
-        unsigned u = Register::virtReg2Index(T);
+        unsigned u = T.virtRegIndex();
         if (FixedRegs[u])
           continue;
         LLVM_DEBUG(dbgs() << ' ' << printReg(T, TRI));
@@ -1150,7 +1149,7 @@ bool HexagonSplitDoubleRegs::splitPartition(const USet &Part) {
   }
 
   MISet Erase;
-  for (auto MI : SplitIns) {
+  for (auto *MI : SplitIns) {
     if (isFixedInstr(MI)) {
       collapseRegPairs(MI, PairMap);
     } else {
@@ -1169,11 +1168,11 @@ bool HexagonSplitDoubleRegs::splitPartition(const USet &Part) {
     for (auto U = MRI->use_nodbg_begin(DR), W = MRI->use_nodbg_end();
          U != W; ++U)
       Uses.insert(U->getParent());
-    for (auto M : Uses)
+    for (auto *M : Uses)
       replaceSubregUses(M, PairMap);
   }
 
-  for (auto MI : Erase) {
+  for (auto *MI : Erase) {
     MachineBasicBlock *B = MI->getParent();
     B->erase(MI);
   }
@@ -1192,7 +1191,7 @@ bool HexagonSplitDoubleRegs::runOnMachineFunction(MachineFunction &MF) {
   TRI = ST.getRegisterInfo();
   TII = ST.getInstrInfo();
   MRI = &MF.getRegInfo();
-  MLI = &getAnalysis<MachineLoopInfo>();
+  MLI = &getAnalysis<MachineLoopInfoWrapperPass>().getLI();
 
   UUSetMap P2Rs;
   LoopRegMap IRM;

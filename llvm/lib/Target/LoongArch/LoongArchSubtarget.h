@@ -31,20 +31,27 @@ class StringRef;
 
 class LoongArchSubtarget : public LoongArchGenSubtargetInfo {
   virtual void anchor();
-  bool HasLA64 = false;
-  bool HasBasicF = false;
-  bool HasBasicD = false;
-  bool HasExtLSX = false;
-  bool HasExtLASX = false;
-  bool HasExtLVZ = false;
-  bool HasExtLBT = false;
+
+#define GET_SUBTARGETINFO_MACRO(ATTRIBUTE, DEFAULT, GETTER)                    \
+  bool ATTRIBUTE = DEFAULT;
+#include "LoongArchGenSubtargetInfo.inc"
+
   unsigned GRLen = 32;
+  // TODO: The default value is empirical and conservative. Override the
+  // default in initializeProperties once we support optimizing for more
+  // uarches.
+  uint8_t MaxInterleaveFactor = 2;
   MVT GRLenVT = MVT::i32;
   LoongArchABI::ABI TargetABI = LoongArchABI::ABI_Unknown;
   LoongArchFrameLowering FrameLowering;
   LoongArchInstrInfo InstrInfo;
   LoongArchRegisterInfo RegInfo;
   LoongArchTargetLowering TLInfo;
+  SelectionDAGTargetInfo TSInfo;
+
+  Align PrefFunctionAlignment;
+  Align PrefLoopAlignment;
+  unsigned MaxBytesForAlignment;
 
   /// Initializes using the passed in CPU and feature strings so that we can
   /// use initializer lists for subtarget initialization.
@@ -53,6 +60,9 @@ class LoongArchSubtarget : public LoongArchGenSubtargetInfo {
                                                       StringRef TuneCPU,
                                                       StringRef FS,
                                                       StringRef ABIName);
+
+  /// Initialize properties based on the selected processor family.
+  void initializeProperties(StringRef TuneCPU);
 
 public:
   // Initializes the data members to match that of the specified triple.
@@ -73,16 +83,29 @@ public:
   const LoongArchTargetLowering *getTargetLowering() const override {
     return &TLInfo;
   }
+  const SelectionDAGTargetInfo *getSelectionDAGInfo() const override {
+    return &TSInfo;
+  }
+
+#define GET_SUBTARGETINFO_MACRO(ATTRIBUTE, DEFAULT, GETTER)                    \
+  bool GETTER() const { return ATTRIBUTE; }
+#include "LoongArchGenSubtargetInfo.inc"
+
   bool is64Bit() const { return HasLA64; }
-  bool hasBasicF() const { return HasBasicF; }
-  bool hasBasicD() const { return HasBasicD; }
-  bool hasExtLSX() const { return HasExtLSX; }
-  bool hasExtLASX() const { return HasExtLASX; }
-  bool hasExtLVZ() const { return HasExtLVZ; }
-  bool hasExtLBT() const { return HasExtLBT; }
   MVT getGRLenVT() const { return GRLenVT; }
   unsigned getGRLen() const { return GRLen; }
   LoongArchABI::ABI getTargetABI() const { return TargetABI; }
+  bool isSoftFPABI() const {
+    return TargetABI == LoongArchABI::ABI_LP64S ||
+           TargetABI == LoongArchABI::ABI_ILP32S;
+  }
+  bool isXRaySupported() const override { return is64Bit(); }
+  Align getPrefFunctionAlignment() const { return PrefFunctionAlignment; }
+  Align getPrefLoopAlignment() const { return PrefLoopAlignment; }
+  unsigned getMaxBytesForAlignment() const { return MaxBytesForAlignment; }
+  unsigned getMaxInterleaveFactor() const { return MaxInterleaveFactor; }
+  bool enableMachineScheduler() const override { return true; }
+  bool useAA() const override;
 };
 } // end namespace llvm
 

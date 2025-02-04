@@ -21,11 +21,6 @@ class FunctionPass;
 class Pass;
 
 //===----------------------------------------------------------------------===//
-// createMetaRenamerPass - Rename everything with metasyntatic names.
-//
-ModulePass *createMetaRenamerPass();
-
-//===----------------------------------------------------------------------===//
 //
 // LowerInvoke - This pass removes invoke instructions, converting them to call
 // instructions.
@@ -35,18 +30,20 @@ extern char &LowerInvokePassID;
 
 //===----------------------------------------------------------------------===//
 //
-// InstructionNamer - Give any unnamed non-void instructions "tmp" names.
-//
-FunctionPass *createInstructionNamerPass();
-extern char &InstructionNamerID;
-
-//===----------------------------------------------------------------------===//
-//
 // LowerSwitch - This pass converts SwitchInst instructions into a sequence of
 // chained binary branch instructions.
 //
 FunctionPass *createLowerSwitchPass();
 extern char &LowerSwitchID;
+
+//===----------------------------------------------------------------------===//
+//
+// EntryExitInstrumenter pass - Instrument function entry/exit with calls to
+// mcount(), @__cyg_profile_func_{enter,exit} and the like. There are two
+// variants, intended to run pre- and post-inlining, respectively. Only the
+// post-inlining variant is used with the legacy pass manager.
+//
+FunctionPass *createPostInlineEntryExitInstrumenterPass();
 
 //===----------------------------------------------------------------------===//
 //
@@ -72,11 +69,6 @@ extern char &LCSSAID;
 
 //===----------------------------------------------------------------------===//
 //
-// AddDiscriminators - Add DWARF path discriminators to the IR.
-FunctionPass *createAddDiscriminatorsPass();
-
-//===----------------------------------------------------------------------===//
-//
 // PromoteMemoryToRegister - This pass is used to promote memory references to
 // be register references. A simple example of the transformation performed by
 // this pass is:
@@ -91,6 +83,14 @@ FunctionPass *createPromoteMemoryToRegisterPass();
 
 //===----------------------------------------------------------------------===//
 //
+// RegToMemWrapperPass - This pass is used to demote registers to memory
+// references. In basically undoes the PromoteMemoryToRegister pass to make cfg
+// hacking easier.
+//
+FunctionPass *createRegToMemWrapperPass();
+
+//===----------------------------------------------------------------------===//
+//
 // LoopSimplify - Insert Pre-header blocks into the CFG for every function in
 // the module.  This pass updates dominator information, loop information, and
 // does not add critical edges to the CFG.
@@ -99,17 +99,6 @@ FunctionPass *createPromoteMemoryToRegisterPass();
 //
 Pass *createLoopSimplifyPass();
 extern char &LoopSimplifyID;
-
-/// This function returns a new pass that downgrades the debug info in the
-/// module to line tables only.
-ModulePass *createStripNonLineTableDebugLegacyPass();
-
-//===----------------------------------------------------------------------===//
-//
-// InjectTLIMappingsLegacy - populates the VFABI attribute with the
-// scalar-to-vector mappings from the TargetLibraryInfo.
-//
-FunctionPass *createInjectTLIMappingsLegacyPass();
 
 //===----------------------------------------------------------------------===//
 //
@@ -125,13 +114,6 @@ FunctionPass *createUnifyLoopExitsPass();
 // into a natural loop.
 //
 FunctionPass *createFixIrreduciblePass();
-
-//===----------------------------------------------------------------------===//
-//
-// AssumeSimplify - remove redundant assumes and merge assumes in the same
-// BasicBlock when possible.
-//
-FunctionPass *createAssumeSimplifyPass();
 
 //===----------------------------------------------------------------------===//
 //

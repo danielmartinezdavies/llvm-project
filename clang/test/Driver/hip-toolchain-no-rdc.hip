@@ -1,12 +1,10 @@
-// REQUIRES: x86-registered-target
-// REQUIRES: amdgpu-registered-target
-
+// RUN: rm -rf %t && mkdir %t
 // RUN: %clang -### --target=x86_64-linux-gnu -fno-gpu-rdc \
 // RUN:   -x hip --cuda-gpu-arch=gfx803 --cuda-gpu-arch=gfx900 \
 // RUN:   --hip-device-lib=lib1.bc --hip-device-lib=lib2.bc \
 // RUN:   --hip-device-lib-path=%S/Inputs/hip_multiple_inputs/lib1 \
 // RUN:   --hip-device-lib-path=%S/Inputs/hip_multiple_inputs/lib2 \
-// RUN:   -fuse-ld=lld -nogpuinc \
+// RUN:   -fuse-ld=lld -B%S/Inputs/lld -nogpuinc \
 // RUN:   %S/Inputs/hip_multiple_inputs/a.cu \
 // RUN:   %S/Inputs/hip_multiple_inputs/b.hip \
 // RUN: 2>&1 | FileCheck -check-prefixes=CHECK,LINK %s
@@ -16,7 +14,7 @@
 // RUN:   --hip-device-lib=lib1.bc --hip-device-lib=lib2.bc \
 // RUN:   --hip-device-lib-path=%S/Inputs/hip_multiple_inputs/lib1 \
 // RUN:   --hip-device-lib-path=%S/Inputs/hip_multiple_inputs/lib2 \
-// RUN:   -fuse-ld=lld -nogpuinc -c \
+// RUN:   -fuse-ld=lld -B%S/Inputs/lld -nogpuinc -c \
 // RUN:   %S/Inputs/hip_multiple_inputs/a.cu \
 // RUN:   %S/Inputs/hip_multiple_inputs/b.hip \
 // RUN: 2>&1 | FileCheck -check-prefixes=CHECK %s
@@ -26,18 +24,22 @@
 // RUN:   --hip-device-lib=lib1.bc --hip-device-lib=lib2.bc \
 // RUN:   --hip-device-lib-path=%S/Inputs/hip_multiple_inputs/lib1 \
 // RUN:   --hip-device-lib-path=%S/Inputs/hip_multiple_inputs/lib2 \
-// RUN:   -fuse-ld=lld -nogpuinc --offload-new-driver -c \
+// RUN:   -fuse-ld=lld -B%S/Inputs/lld -nogpuinc --offload-new-driver -c \
 // RUN:   %S/Inputs/hip_multiple_inputs/a.cu \
 // RUN:   %S/Inputs/hip_multiple_inputs/b.hip \
 // RUN: 2>&1 | FileCheck -check-prefixes=CHECK %s
 
-// RUN: touch %T/a.o
-// RUN: touch %T/b.o
+// RUN: touch %t/a.o %t/b.o
 // RUN: %clang -### --target=x86_64-linux-gnu \
 // RUN:   --hip-link --cuda-gpu-arch=gfx803 --cuda-gpu-arch=gfx900 \
-// RUN:   -fuse-ld=lld -nogpuinc \
-// RUN:   %T/a.o %T/b.o \
+// RUN:   -fuse-ld=lld -B%S/Inputs/lld -nogpuinc \
+// RUN:   %t/a.o %t/b.o \
 // RUN: 2>&1 | FileCheck -check-prefixes=LKONLY %s
+
+// RUN: %clang -### --target=x86_64-linux-gnu \
+// RUN:   --offload-arch=amdgcnspirv --offload-arch=gfx900 \
+// RUN:   %s -nogpuinc -nogpulib \
+// RUN: 2>&1 | FileCheck -check-prefixes=AMDGCNSPIRV %s
 
 //
 // Compile device code in a.cu to code object for gfx803.
@@ -47,8 +49,8 @@
 // CHECK-SAME: "-aux-triple" "x86_64-unknown-linux-gnu"
 // CHECK-SAME: "-emit-obj"
 // CHECK-SAME: {{.*}} "-main-file-name" "a.cu"
-// CHECK-SAME: "-fcuda-is-device" "-mllvm" "-amdgpu-internalize-symbols"
-// CHECK-SAME: "-fcuda-allow-variadic-functions" "-fvisibility" "hidden"
+// CHECK-SAME: "-fcuda-is-device" "-fno-threadsafe-statics" "-mllvm" "-amdgpu-internalize-symbols"
+// CHECK-SAME: "-fcuda-allow-variadic-functions" "-fvisibility=hidden"
 // CHECK-SAME: "-fapply-global-visibility-to-externs"
 // CHECK-SAME: "{{.*}}lib1.bc" "{{.*}}lib2.bc"
 // CHECK-SAME: "-target-cpu" "gfx803"
@@ -59,7 +61,7 @@
 // CHECK-NOT: {{".*opt"}}
 // CHECK-NOT: {{".*llc"}}
 
-// CHECK: [[LLD: ".*lld.*"]] "-flavor" "gnu" "--no-undefined" "-shared"
+// CHECK: [[LLD: ".*lld.*"]] "-flavor" "gnu" "-m" "elf64_amdgpu" "--no-undefined" "-shared"
 // CHECK-SAME: "-o" "[[IMG_DEV_A_803:.*out]]" [[OBJ_DEV_A_803]]
 
 //
@@ -70,8 +72,8 @@
 // CHECK-SAME: "-aux-triple" "x86_64-unknown-linux-gnu"
 // CHECK-SAME: "-emit-obj"
 // CHECK-SAME: {{.*}} "-main-file-name" "a.cu"
-// CHECK-SAME: "-fcuda-is-device" "-mllvm" "-amdgpu-internalize-symbols"
-// CHECK-SAME: "-fcuda-allow-variadic-functions" "-fvisibility" "hidden"
+// CHECK-SAME: "-fcuda-is-device" "-fno-threadsafe-statics" "-mllvm" "-amdgpu-internalize-symbols"
+// CHECK-SAME: "-fcuda-allow-variadic-functions" "-fvisibility=hidden"
 // CHECK-SAME: "-fapply-global-visibility-to-externs"
 // CHECK-SAME: "{{.*}}lib1.bc" "{{.*}}lib2.bc"
 // CHECK-SAME: "-target-cpu" "gfx900"
@@ -82,7 +84,7 @@
 // CHECK-NOT: {{".*opt"}}
 // CHECK-NOT: {{".*llc"}}
 
-// CHECK: [[LLD]] "-flavor" "gnu" "--no-undefined" "-shared"
+// CHECK: [[LLD]] "-flavor" "gnu" "-m" "elf64_amdgpu" "--no-undefined" "-shared"
 // CHECK-SAME: "-o" "[[IMG_DEV_A_900:.*out]]" [[OBJ_DEV_A_900]]
 
 //
@@ -110,8 +112,8 @@
 // CHECK-SAME: "-aux-triple" "x86_64-unknown-linux-gnu"
 // CHECK-SAME: "-emit-obj"
 // CHECK-SAME: {{.*}} "-main-file-name" "b.hip"
-// CHECK-SAME: "-fcuda-is-device" "-mllvm" "-amdgpu-internalize-symbols"
-// CHECK-SAME: "-fcuda-allow-variadic-functions" "-fvisibility" "hidden"
+// CHECK-SAME: "-fcuda-is-device" "-fno-threadsafe-statics" "-mllvm" "-amdgpu-internalize-symbols"
+// CHECK-SAME: "-fcuda-allow-variadic-functions" "-fvisibility=hidden"
 // CHECK-SAME: "-fapply-global-visibility-to-externs"
 // CHECK-SAME: "{{.*}}lib1.bc" "{{.*}}lib2.bc"
 // CHECK-SAME: "-target-cpu" "gfx803"
@@ -122,7 +124,7 @@
 // CHECK-NOT: {{".*opt"}}
 // CHECK-NOT: {{".*llc"}}
 
-// CHECK: [[LLD]] "-flavor" "gnu" "--no-undefined" "-shared"
+// CHECK: [[LLD]] "-flavor" "gnu" "-m" "elf64_amdgpu" "--no-undefined" "-shared"
 // CHECK-SAME: "-o" "[[IMG_DEV_B_803:.*out]]" [[OBJ_DEV_B_803]]
 
 //
@@ -133,8 +135,8 @@
 // CHECK-SAME: "-aux-triple" "x86_64-unknown-linux-gnu"
 // CHECK-SAME: "-emit-obj"
 // CHECK-SAME: {{.*}} "-main-file-name" "b.hip"
-// CHECK-SAME: "-fcuda-is-device" "-mllvm" "-amdgpu-internalize-symbols"
-// CHECK-SAME: "-fcuda-allow-variadic-functions" "-fvisibility" "hidden"
+// CHECK-SAME: "-fcuda-is-device" "-fno-threadsafe-statics" "-mllvm" "-amdgpu-internalize-symbols"
+// CHECK-SAME: "-fcuda-allow-variadic-functions" "-fvisibility=hidden"
 // CHECK-SAME: "-fapply-global-visibility-to-externs"
 // CHECK-SAME: "{{.*}}lib1.bc" "{{.*}}lib2.bc"
 // CHECK-SAME: "-target-cpu" "gfx900"
@@ -145,7 +147,7 @@
 // CHECK-NOT: {{".*opt"}}
 // CHECK-NOT: {{".*llc"}}
 
-// CHECK: [[LLD]] "-flavor" "gnu" "--no-undefined" "-shared"
+// CHECK: [[LLD]] "-flavor" "gnu" "-m" "elf64_amdgpu" "--no-undefined" "-shared"
 // CHECK-SAME: "-o" "[[IMG_DEV_B_900:.*out]]" [[OBJ_DEV_B_900]]
 
 //
@@ -180,3 +182,16 @@
 // LKONLY-NOT: {{".*/llc"}}
 // LKONLY: [[LD:".*ld.*"]] {{.*}} "{{.*/a.o}}" "{{.*/b.o}}"
 // LKONLY-NOT: "-T" "{{.*}}.lk"
+
+//
+// Check mixed AMDGCNSPIRV and concrete GPU arch.
+//
+
+// AMDGCNSPIRV: "-cc1" "-triple" "spirv64-amd-amdhsa" {{.*}}"-emit-obj" {{.*}} "-o" "[[AMDGCNSPV_OBJ:.*o]]"
+// AMDGCNSPIRV: {{".*llvm-link.*"}} "-o" "[[AMDGCNSPV_TMP:.*out]]" "[[AMDGCNSPV_OBJ]]"
+// AMDGCNSPIRV: {{".*llvm-spirv.*"}} "--spirv-max-version=1.6" "--spirv-ext=+all" {{.*}} "[[AMDGCNSPV_TMP]]" {{.*}}"-o" "[[AMDGCNSPV_CO:.*out]]"
+// AMDGCNSPIRV: "-cc1" "-triple" "amdgcn-amd-amdhsa" {{.*}}"-emit-obj" {{.*}}"-target-cpu" "gfx900"{{.*}} "-o" "[[GFX900_OBJ:.*o]]"
+// AMDGCNSPIRV: {{".*lld.*"}} {{.*}}"-plugin-opt=mcpu=gfx900" {{.*}} "-o" "[[GFX900_CO:.*out]]" {{.*}}"[[GFX900_OBJ]]"
+// AMDGCNSPIRV: {{".*clang-offload-bundler.*"}} "-type=o"
+// AMDGCNSPIRV-SAME: "-targets={{.*}}hipv4-spirv64-amd-amdhsa--amdgcnspirv,hipv4-amdgcn-amd-amdhsa--gfx900"
+// AMDGCNSPIRV-SAME: "-input=[[AMDGCNSPV_CO]]" "-input=[[GFX900_CO]]"

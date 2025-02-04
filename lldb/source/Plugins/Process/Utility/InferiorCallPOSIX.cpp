@@ -9,8 +9,6 @@
 #include "InferiorCallPOSIX.h"
 #include "lldb/Core/Address.h"
 #include "lldb/Core/Module.h"
-#include "lldb/Core/StreamFile.h"
-#include "lldb/Core/ValueObject.h"
 #include "lldb/Expression/DiagnosticManager.h"
 #include "lldb/Host/Config.h"
 #include "lldb/Symbol/SymbolContext.h"
@@ -20,6 +18,7 @@
 #include "lldb/Target/Process.h"
 #include "lldb/Target/Target.h"
 #include "lldb/Target/ThreadPlanCallFunction.h"
+#include "lldb/ValueObject/ValueObject.h"
 
 #if LLDB_ENABLE_POSIX
 #include <sys/mman.h>
@@ -88,9 +87,11 @@ bool lldb_private::InferiorCallMmap(Process *process, addr_t &allocated_addr,
           llvm::consumeError(type_system_or_err.takeError());
           return false;
         }
+        auto ts = *type_system_or_err;
+        if (!ts)
+          return false;
         CompilerType void_ptr_type =
-            type_system_or_err->GetBasicTypeFromAST(eBasicTypeVoid)
-                .GetPointerType();
+            ts->GetBasicTypeFromAST(eBasicTypeVoid).GetPointerType();
         const ArchSpec arch = process->GetTarget().GetArchitecture();
         MmapArgList args =
             process->GetTarget().GetPlatform()->GetMmapArgumentList(

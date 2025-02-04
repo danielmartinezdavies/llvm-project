@@ -34,6 +34,7 @@
 #include <cassert>
 #include <cstddef>
 #include <forward_list>
+#include <optional>
 
 namespace polly {
 using llvm::AnalysisInfoMixin;
@@ -51,7 +52,6 @@ using llvm::LoadInst;
 using llvm::make_range;
 using llvm::MapVector;
 using llvm::MemIntrinsic;
-using llvm::Optional;
 using llvm::PassInfoMixin;
 using llvm::PHINode;
 using llvm::RegionNode;
@@ -470,6 +470,8 @@ public:
     RT_BOR,  ///< Bitwise Or
     RT_BXOR, ///< Bitwise XOr
     RT_BAND, ///< Bitwise And
+
+    RT_BOTTOM, ///< Pseudo type for the data flow analysis
   };
 
   using SubscriptsTy = SmallVector<const SCEV *, 4>;
@@ -509,7 +511,7 @@ private:
   /// Here not all iterations access the same memory location, but iterations
   /// for which j = 0 holds do. After lifting the equality check in ScopBuilder,
   /// subsequent transformations do not only need check if a statement is
-  /// reduction like, but they also need to verify that that the reduction
+  /// reduction like, but they also need to verify that the reduction
   /// property is only exploited for statement instances that load from and
   /// store to the same data location. Doing so at dependence analysis time
   /// could allow us to handle the above example.
@@ -1139,6 +1141,7 @@ class ScopStmt final {
   friend class ScopBuilder;
 
 public:
+  using MemoryAccessVec = llvm::SmallVector<MemoryAccess *, 8>;
   /// Create the ScopStmt from a BasicBlock.
   ScopStmt(Scop &parent, BasicBlock &bb, StringRef Name, Loop *SurroundingLoop,
            std::vector<Instruction *> Instructions);
@@ -1206,7 +1209,6 @@ private:
   /// The memory accesses of this statement.
   ///
   /// The only side effects of a statement are its memory accesses.
-  using MemoryAccessVec = llvm::SmallVector<MemoryAccess *, 8>;
   MemoryAccessVec MemAccs;
 
   /// Mapping from instructions to (scalar) memory accesses.
@@ -1492,7 +1494,7 @@ public:
   /// @param Access  The access to add.
   /// @param Prepend If true, will add @p Access before all other instructions
   ///                (instead of appending it).
-  void addAccess(MemoryAccess *Access, bool Preprend = false);
+  void addAccess(MemoryAccess *Access, bool Prepend = false);
 
   /// Remove a MemoryAccess from this statement.
   ///
@@ -1662,7 +1664,7 @@ private:
   Region &R;
 
   /// The name of the SCoP (identical to the regions name)
-  Optional<std::string> name;
+  std::optional<std::string> name;
 
   // Access functions of the SCoP.
   //
@@ -1683,9 +1685,6 @@ private:
 
   /// Number of copy statements.
   unsigned CopyStmtsNum = 0;
-
-  /// Flag to indicate if the Scop is to be skipped.
-  bool SkipScop = false;
 
   using StmtSet = std::list<ScopStmt>;
 
@@ -2143,12 +2142,6 @@ public:
 
   /// Check if the SCoP has been optimized by the scheduler.
   bool isOptimized() const { return IsOptimized; }
-
-  /// Mark the SCoP to be skipped by ScopPass passes.
-  void markAsToBeSkipped() { SkipScop = true; }
-
-  /// Check if the SCoP is to be skipped by ScopPass passes.
-  bool isToBeSkipped() const { return SkipScop; }
 
   /// Return the ID of the Scop
   int getID() const { return ID; }

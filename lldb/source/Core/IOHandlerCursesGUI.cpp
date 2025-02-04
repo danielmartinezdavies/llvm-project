@@ -25,14 +25,13 @@
 #include <string>
 
 #include "lldb/Core/Debugger.h"
-#include "lldb/Core/StreamFile.h"
-#include "lldb/Core/ValueObjectUpdater.h"
 #include "lldb/Host/File.h"
 #include "lldb/Utility/AnsiTerminal.h"
 #include "lldb/Utility/Predicate.h"
 #include "lldb/Utility/Status.h"
 #include "lldb/Utility/StreamString.h"
 #include "lldb/Utility/StringList.h"
+#include "lldb/ValueObject/ValueObjectUpdater.h"
 #include "lldb/lldb-forward.h"
 
 #include "lldb/Interpreter/CommandCompletions.h"
@@ -43,8 +42,6 @@
 #include "lldb/Breakpoint/BreakpointLocation.h"
 #include "lldb/Core/Module.h"
 #include "lldb/Core/PluginManager.h"
-#include "lldb/Core/ValueObject.h"
-#include "lldb/Core/ValueObjectRegister.h"
 #include "lldb/Symbol/Block.h"
 #include "lldb/Symbol/CompileUnit.h"
 #include "lldb/Symbol/Function.h"
@@ -57,6 +54,8 @@
 #include "lldb/Target/Target.h"
 #include "lldb/Target/Thread.h"
 #include "lldb/Utility/State.h"
+#include "lldb/ValueObject/ValueObject.h"
+#include "lldb/ValueObject/ValueObjectRegister.h"
 #endif
 
 #include "llvm/ADT/StringRef.h"
@@ -75,6 +74,7 @@
 #include <cstdio>
 #include <cstring>
 #include <functional>
+#include <optional>
 #include <type_traits>
 
 using namespace lldb;
@@ -3112,11 +3112,11 @@ public:
   static constexpr const char *kLoadDependentFilesExecOnly = "Executable only";
 
   std::vector<std::string> GetLoadDependentFilesChoices() {
-    std::vector<std::string> load_depentents_options;
-    load_depentents_options.push_back(kLoadDependentFilesExecOnly);
-    load_depentents_options.push_back(kLoadDependentFilesYes);
-    load_depentents_options.push_back(kLoadDependentFilesNo);
-    return load_depentents_options;
+    std::vector<std::string> load_dependents_options;
+    load_dependents_options.push_back(kLoadDependentFilesExecOnly);
+    load_dependents_options.push_back(kLoadDependentFilesYes);
+    load_dependents_options.push_back(kLoadDependentFilesNo);
+    return load_dependents_options;
   }
 
   LoadDependentFiles GetLoadDependentFiles() {
@@ -3178,13 +3178,13 @@ public:
         m_debugger.GetListener(), llvm::StringRef(), &core_file_spec, false));
 
     if (!process_sp) {
-      SetError("Unable to find process plug-in for core file!");
+      SetError("Unknown core file format!");
       return;
     }
 
     Status status = process_sp->LoadCore();
     if (status.Fail()) {
-      SetError("Can't find plug-in for core file!");
+      SetError("Unknown core file format!");
       return;
     }
   }
@@ -3820,7 +3820,7 @@ protected:
 
 // This is a searcher delegate wrapper around CommandCompletions common
 // callbacks. The callbacks are only given the match string. The completion_mask
-// can be a combination of CommonCompletionTypes.
+// can be a combination of lldb::CompletionType.
 class CommonCompletionSearcherDelegate : public SearcherDelegate {
 public:
   typedef std::function<void(const std::string &)> CallbackType;
@@ -3839,7 +3839,7 @@ public:
   void UpdateMatches(const std::string &text) override {
     CompletionResult result;
     CompletionRequest request(text.c_str(), text.size(), result);
-    CommandCompletions::InvokeCommonCompletionCallbacks(
+    lldb_private::CommandCompletions::InvokeCommonCompletionCallbacks(
         m_debugger.GetCommandInterpreter(), m_completion_mask, request,
         nullptr);
     result.GetMatches(m_matches);
@@ -3851,7 +3851,7 @@ public:
 
 protected:
   Debugger &m_debugger;
-  // A compound mask from CommonCompletionTypes.
+  // A compound mask from lldb::CompletionType.
   uint32_t m_completion_mask;
   // A callback to execute once the user selects a match. The match is passed to
   // the callback as a string.
@@ -4519,9 +4519,9 @@ struct Row {
       calculated_children = true;
       ValueObjectSP valobj = value.GetSP();
       if (valobj) {
-        const size_t num_children = valobj->GetNumChildren();
+        const uint32_t num_children = valobj->GetNumChildrenIgnoringErrors();
         for (size_t i = 0; i < num_children; ++i) {
-          children.push_back(Row(valobj->GetChildAtIndex(i, true), this));
+          children.push_back(Row(valobj->GetChildAtIndex(i), this));
         }
       }
     }
@@ -4614,30 +4614,48 @@ public:
 
 typedef std::shared_ptr<TreeDelegate> TreeDelegateSP;
 
-class TreeItem {
-public:
-  TreeItem(TreeItem *parent, TreeDelegate &delegate, bool might_have_children)
-      : m_parent(parent), m_delegate(delegate), m_children(),
-        m_might_have_children(might_have_children) {
-    if (m_parent == nullptr)
-      m_is_expanded = m_delegate.TreeDelegateExpandRootByDefault();
+struct TreeItemData {
+  TreeItemData(TreeItem *parent, TreeDelegate &delegate,
+               bool might_have_children, bool is_expanded)
+      : m_parent(parent), m_delegate(&delegate),
+        m_might_have_children(might_have_children), m_is_expanded(is_expanded) {
   }
 
-  TreeItem &operator=(const TreeItem &rhs) {
+protected:
+  TreeItem *m_parent;
+  TreeDelegate *m_delegate;
+  void *m_user_data = nullptr;
+  uint64_t m_identifier = 0;
+  std::string m_text;
+  int m_row_idx = -1; // Zero based visible row index, -1 if not visible or for
+                      // the root item
+  bool m_might_have_children;
+  bool m_is_expanded = false;
+};
+
+class TreeItem : public TreeItemData {
+public:
+  TreeItem(TreeItem *parent, TreeDelegate &delegate, bool might_have_children)
+      : TreeItemData(parent, delegate, might_have_children,
+                     parent == nullptr
+                         ? delegate.TreeDelegateExpandRootByDefault()
+                         : false),
+        m_children() {}
+
+  TreeItem(const TreeItem &) = delete;
+  TreeItem &operator=(const TreeItem &rhs) = delete;
+
+  TreeItem &operator=(TreeItem &&rhs) {
     if (this != &rhs) {
-      m_parent = rhs.m_parent;
-      m_delegate = rhs.m_delegate;
-      m_user_data = rhs.m_user_data;
-      m_identifier = rhs.m_identifier;
-      m_row_idx = rhs.m_row_idx;
-      m_children = rhs.m_children;
-      m_might_have_children = rhs.m_might_have_children;
-      m_is_expanded = rhs.m_is_expanded;
+      TreeItemData::operator=(std::move(rhs));
+      AdoptChildren(rhs.m_children);
     }
     return *this;
   }
 
-  TreeItem(const TreeItem &) = default;
+  TreeItem(TreeItem &&rhs) : TreeItemData(std::move(rhs)) {
+    AdoptChildren(rhs.m_children);
+  }
 
   size_t GetDepth() const {
     if (m_parent)
@@ -4649,18 +4667,28 @@ public:
 
   void ClearChildren() { m_children.clear(); }
 
-  void Resize(size_t n, const TreeItem &t) { m_children.resize(n, t); }
+  void Resize(size_t n, TreeDelegate &delegate, bool might_have_children) {
+    if (m_children.size() >= n) {
+      m_children.erase(m_children.begin() + n, m_children.end());
+      return;
+    }
+    m_children.reserve(n);
+    std::generate_n(std::back_inserter(m_children), n - m_children.size(),
+                    [&, parent = this]() {
+                      return TreeItem(parent, delegate, might_have_children);
+                    });
+  }
 
   TreeItem &operator[](size_t i) { return m_children[i]; }
 
   void SetRowIndex(int row_idx) { m_row_idx = row_idx; }
 
   size_t GetNumChildren() {
-    m_delegate.TreeDelegateGenerateChildren(*this);
+    m_delegate->TreeDelegateGenerateChildren(*this);
     return m_children.size();
   }
 
-  void ItemWasSelected() { m_delegate.TreeDelegateItemSelected(*this); }
+  void ItemWasSelected() { m_delegate->TreeDelegateItemSelected(*this); }
 
   void CalculateRowIndexes(int &row_idx) {
     SetRowIndex(row_idx);
@@ -4727,7 +4755,7 @@ public:
       if (highlight)
         window.AttributeOn(A_REVERSE);
 
-      m_delegate.TreeDelegateDrawTreeItem(*this, window);
+      m_delegate->TreeDelegateDrawTreeItem(*this, window);
 
       if (highlight)
         window.AttributeOff(A_REVERSE);
@@ -4811,16 +4839,13 @@ public:
   void SetMightHaveChildren(bool b) { m_might_have_children = b; }
 
 protected:
-  TreeItem *m_parent;
-  TreeDelegate &m_delegate;
-  void *m_user_data = nullptr;
-  uint64_t m_identifier = 0;
-  std::string m_text;
-  int m_row_idx = -1; // Zero based visible row index, -1 if not visible or for
-                      // the root item
+  void AdoptChildren(std::vector<TreeItem> &children) {
+    m_children = std::move(children);
+    for (auto &child : m_children)
+      child.m_parent = this;
+  }
+
   std::vector<TreeItem> m_children;
-  bool m_might_have_children;
-  bool m_is_expanded = false;
 };
 
 class TreeWindowDelegate : public WindowDelegate {
@@ -5117,9 +5142,8 @@ public:
           m_stop_id = process_sp->GetStopID();
           m_tid = thread_sp->GetID();
 
-          TreeItem t(&item, *m_frame_delegate_sp, false);
           size_t num_frames = thread_sp->GetStackFrameCount();
-          item.Resize(num_frames, t);
+          item.Resize(num_frames, *m_frame_delegate_sp, false);
           for (size_t i = 0; i < num_frames; ++i) {
             item[i].SetUserData(thread_sp.get());
             item[i].SetIdentifier(i);
@@ -5219,12 +5243,11 @@ public:
               std::make_shared<ThreadTreeDelegate>(m_debugger);
         }
 
-        TreeItem t(&item, *m_thread_delegate_sp, false);
         ThreadList &threads = process_sp->GetThreadList();
         std::lock_guard<std::recursive_mutex> guard(threads.GetMutex());
         ThreadSP selected_thread = threads.GetSelectedThread();
         size_t num_threads = threads.GetSize();
-        item.Resize(num_threads, t);
+        item.Resize(num_threads, *m_thread_delegate_sp, false);
         for (size_t i = 0; i < num_threads; ++i) {
           ThreadSP thread = threads.GetThreadAtIndex(i);
           item[i].SetIdentifier(thread->GetID());
@@ -5258,7 +5281,8 @@ public:
     for (size_t i = 0; i < num_threads; ++i) {
       ThreadSP thread = threads.GetThreadAtIndex(i);
       if (selected_thread->GetID() == thread->GetID()) {
-        selected_item = &root[i][thread->GetSelectedFrameIndex()];
+        selected_item =
+            &root[i][thread->GetSelectedFrameIndex(SelectMostRelevantFrame)];
         selection_index = selected_item->GetRowIndex();
         return;
       }
@@ -5403,9 +5427,8 @@ public:
 
     if (!m_string_delegate_sp)
       m_string_delegate_sp = std::make_shared<TextTreeDelegate>();
-    TreeItem details_tree_item(&item, *m_string_delegate_sp, false);
 
-    item.Resize(details.GetSize(), details_tree_item);
+    item.Resize(details.GetSize(), *m_string_delegate_sp, false);
     for (size_t i = 0; i < details.GetSize(); i++) {
       item[i].SetText(details.GetStringAtIndex(i));
     }
@@ -5447,10 +5470,9 @@ public:
     if (!m_breakpoint_location_delegate_sp)
       m_breakpoint_location_delegate_sp =
           std::make_shared<BreakpointLocationTreeDelegate>(m_debugger);
-    TreeItem breakpoint_location_tree_item(
-        &item, *m_breakpoint_location_delegate_sp, true);
 
-    item.Resize(breakpoint->GetNumLocations(), breakpoint_location_tree_item);
+    item.Resize(breakpoint->GetNumLocations(),
+                *m_breakpoint_location_delegate_sp, true);
     for (size_t i = 0; i < breakpoint->GetNumLocations(); i++) {
       item[i].SetIdentifier(i);
       item[i].SetUserData(breakpoint.get());
@@ -5494,9 +5516,8 @@ public:
     if (!m_breakpoint_delegate_sp)
       m_breakpoint_delegate_sp =
           std::make_shared<BreakpointTreeDelegate>(m_debugger);
-    TreeItem breakpoint_tree_item(&item, *m_breakpoint_delegate_sp, true);
 
-    item.Resize(breakpoints.GetSize(), breakpoint_tree_item);
+    item.Resize(breakpoints.GetSize(), *m_breakpoint_delegate_sp, true);
     for (size_t i = 0; i < breakpoints.GetSize(); i++) {
       item[i].SetIdentifier(i);
     }
@@ -5908,7 +5929,7 @@ public:
       if (m_frame_block != frame_block) {
         m_frame_block = frame_block;
 
-        VariableList *locals = frame->GetVariableList(true);
+        VariableList *locals = frame->GetVariableList(true, nullptr);
         if (locals) {
           const DynamicValueType use_dynamic = eDynamicDontRunTarget;
           for (const VariableSP &local_sp : *locals) {
@@ -6410,7 +6431,8 @@ public:
         if (process && process->IsAlive() &&
             StateIsStoppedState(process->GetState(), true)) {
           Thread *thread = exe_ctx.GetThreadPtr();
-          uint32_t frame_idx = thread->GetSelectedFrameIndex();
+          uint32_t frame_idx =
+              thread->GetSelectedFrameIndex(SelectMostRelevantFrame);
           exe_ctx.GetThreadRef().StepOut(frame_idx);
         }
       }
@@ -6826,7 +6848,7 @@ public:
       if (process_alive) {
         thread = exe_ctx.GetThreadPtr();
         if (thread) {
-          frame_sp = thread->GetSelectedFrame();
+          frame_sp = thread->GetSelectedFrame(SelectMostRelevantFrame);
           auto tid = thread->GetID();
           thread_changed = tid != m_tid;
           m_tid = tid;
@@ -6872,7 +6894,8 @@ public:
           if (context_changed)
             m_selected_line = m_pc_line;
 
-          if (m_file_sp && m_file_sp->GetFileSpec() == m_sc.line_entry.file) {
+          if (m_file_sp && m_file_sp->GetSupportFile()->GetSpecOnly() ==
+                               m_sc.line_entry.GetFile()) {
             // Same file, nothing to do, we should either have the lines or
             // not (source file missing)
             if (m_selected_line >= static_cast<size_t>(m_first_visible_line)) {
@@ -6888,7 +6911,7 @@ public:
             // File changed, set selected line to the line with the PC
             m_selected_line = m_pc_line;
             m_file_sp =
-                m_debugger.GetSourceManager().GetFile(m_sc.line_entry.file);
+                m_debugger.GetSourceManager().GetFile(m_sc.line_entry.file_sp);
             if (m_file_sp) {
               const size_t num_lines = m_file_sp->GetNumLines();
               m_line_width = 1;
@@ -6978,7 +7001,8 @@ public:
             LineEntry bp_loc_line_entry;
             if (bp_loc_sp->GetAddress().CalculateSymbolContextLineEntry(
                     bp_loc_line_entry)) {
-              if (m_file_sp->GetFileSpec() == bp_loc_line_entry.file) {
+              if (m_file_sp->GetSupportFile()->GetSpecOnly() ==
+                  bp_loc_line_entry.GetFile()) {
                 bp_lines.insert(bp_loc_line_entry.line);
               }
             }
@@ -7024,13 +7048,13 @@ public:
 
           StreamString lineStream;
 
-          llvm::Optional<size_t> column;
+          std::optional<size_t> column;
           if (is_pc_line && m_sc.line_entry.IsValid() && m_sc.line_entry.column)
             column = m_sc.line_entry.column - 1;
           m_file_sp->DisplaySourceLines(curr_line + 1, column, 0, 0,
                                         &lineStream);
           StringRef line = lineStream.GetString();
-          if (line.endswith("\n"))
+          if (line.ends_with("\n"))
             line = line.drop_back();
           bool wasWritten = window.OutputColoredStringTruncated(
               1, line, m_first_visible_column, is_pc_line);
@@ -7309,7 +7333,7 @@ public:
         if (exe_ctx.HasProcessScope() && exe_ctx.GetProcessRef().IsAlive()) {
           BreakpointSP bp_sp = exe_ctx.GetTargetRef().CreateBreakpoint(
               nullptr, // Don't limit the breakpoint to certain modules
-              m_file_sp->GetFileSpec(), // Source file
+              m_file_sp->GetSupportFile()->GetSpecOnly(), // Source file
               m_selected_line +
                   1, // Source line number (m_selected_line is zero based)
               0,     // Unspecified column.
@@ -7373,7 +7397,8 @@ public:
         if (exe_ctx.HasThreadScope() &&
             StateIsStoppedState(exe_ctx.GetProcessRef().GetState(), true)) {
           Thread *thread = exe_ctx.GetThreadPtr();
-          uint32_t frame_idx = thread->GetSelectedFrameIndex();
+          uint32_t frame_idx =
+              thread->GetSelectedFrameIndex(SelectMostRelevantFrame);
           exe_ctx.GetThreadRef().StepOut(frame_idx);
         }
       }
@@ -7412,7 +7437,8 @@ public:
           m_debugger.GetCommandInterpreter().GetExecutionContext();
       if (exe_ctx.HasThreadScope()) {
         Thread *thread = exe_ctx.GetThreadPtr();
-        uint32_t frame_idx = thread->GetSelectedFrameIndex();
+        uint32_t frame_idx =
+            thread->GetSelectedFrameIndex(SelectMostRelevantFrame);
         if (frame_idx == UINT32_MAX)
           frame_idx = 0;
         if (c == 'u' && frame_idx + 1 < thread->GetStackFrameCount())
@@ -7420,7 +7446,7 @@ public:
         else if (c == 'd' && frame_idx > 0)
           --frame_idx;
         if (thread->SetSelectedFrameByIndex(frame_idx, true))
-          exe_ctx.SetFrameSP(thread->GetSelectedFrame());
+          exe_ctx.SetFrameSP(thread->GetSelectedFrame(SelectMostRelevantFrame));
       }
     }
       return eKeyHandled;
@@ -7453,7 +7479,8 @@ public:
           LineEntry bp_loc_line_entry;
           if (bp_loc_sp->GetAddress().CalculateSymbolContextLineEntry(
                   bp_loc_line_entry)) {
-            if (m_file_sp->GetFileSpec() == bp_loc_line_entry.file &&
+            if (m_file_sp->GetSupportFile()->GetSpecOnly() ==
+                    bp_loc_line_entry.GetFile() &&
                 m_selected_line + 1 == bp_loc_line_entry.line) {
               bool removed =
                   exe_ctx.GetTargetRef().RemoveBreakpointByID(bp_sp->GetID());
@@ -7467,7 +7494,7 @@ public:
       // No breakpoint found on the location, add it.
       BreakpointSP bp_sp = exe_ctx.GetTargetRef().CreateBreakpoint(
           nullptr, // Don't limit the breakpoint to certain modules
-          m_file_sp->GetFileSpec(), // Source file
+          m_file_sp->GetSupportFile()->GetSpecOnly(), // Source file
           m_selected_line +
               1, // Source line number (m_selected_line is zero based)
           0,     // No column specified.

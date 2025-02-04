@@ -22,12 +22,14 @@ namespace llvm {
 namespace MIPatternMatch {
 
 template <typename Reg, typename Pattern>
-bool mi_match(Reg R, const MachineRegisterInfo &MRI, Pattern &&P) {
+[[nodiscard]] bool mi_match(Reg R, const MachineRegisterInfo &MRI,
+                            Pattern &&P) {
   return P.match(MRI, R);
 }
 
 template <typename Pattern>
-bool mi_match(MachineInstr &MI, const MachineRegisterInfo &MRI, Pattern &&P) {
+[[nodiscard]] bool mi_match(MachineInstr &MI, const MachineRegisterInfo &MRI,
+                            Pattern &&P) {
   return P.match(MRI, &MI);
 }
 
@@ -61,17 +63,18 @@ inline OneNonDBGUse_match<SubPat> m_OneNonDBGUse(const SubPat &SP) {
 }
 
 template <typename ConstT>
-inline Optional<ConstT> matchConstant(Register, const MachineRegisterInfo &);
+inline std::optional<ConstT> matchConstant(Register,
+                                           const MachineRegisterInfo &);
 
 template <>
-inline Optional<APInt> matchConstant(Register Reg,
-                                     const MachineRegisterInfo &MRI) {
+inline std::optional<APInt> matchConstant(Register Reg,
+                                          const MachineRegisterInfo &MRI) {
   return getIConstantVRegVal(Reg, MRI);
 }
 
 template <>
-inline Optional<int64_t> matchConstant(Register Reg,
-                                       const MachineRegisterInfo &MRI) {
+inline std::optional<int64_t> matchConstant(Register Reg,
+                                            const MachineRegisterInfo &MRI) {
   return getIConstantVRegSExtVal(Reg, MRI);
 }
 
@@ -95,18 +98,18 @@ inline ConstantMatch<int64_t> m_ICst(int64_t &Cst) {
 }
 
 template <typename ConstT>
-inline Optional<ConstT> matchConstantSplat(Register,
-                                           const MachineRegisterInfo &);
+inline std::optional<ConstT> matchConstantSplat(Register,
+                                                const MachineRegisterInfo &);
 
 template <>
-inline Optional<APInt> matchConstantSplat(Register Reg,
-                                          const MachineRegisterInfo &MRI) {
+inline std::optional<APInt> matchConstantSplat(Register Reg,
+                                               const MachineRegisterInfo &MRI) {
   return getIConstantSplatVal(Reg, MRI);
 }
 
 template <>
-inline Optional<int64_t> matchConstantSplat(Register Reg,
-                                            const MachineRegisterInfo &MRI) {
+inline std::optional<int64_t>
+matchConstantSplat(Register Reg, const MachineRegisterInfo &MRI) {
   return getIConstantSplatSExtVal(Reg, MRI);
 }
 
@@ -137,34 +140,35 @@ inline ICstOrSplatMatch<int64_t> m_ICstOrSplat(int64_t &Cst) {
 }
 
 struct GCstAndRegMatch {
-  Optional<ValueAndVReg> &ValReg;
-  GCstAndRegMatch(Optional<ValueAndVReg> &ValReg) : ValReg(ValReg) {}
+  std::optional<ValueAndVReg> &ValReg;
+  GCstAndRegMatch(std::optional<ValueAndVReg> &ValReg) : ValReg(ValReg) {}
   bool match(const MachineRegisterInfo &MRI, Register Reg) {
     ValReg = getIConstantVRegValWithLookThrough(Reg, MRI);
     return ValReg ? true : false;
   }
 };
 
-inline GCstAndRegMatch m_GCst(Optional<ValueAndVReg> &ValReg) {
+inline GCstAndRegMatch m_GCst(std::optional<ValueAndVReg> &ValReg) {
   return GCstAndRegMatch(ValReg);
 }
 
 struct GFCstAndRegMatch {
-  Optional<FPValueAndVReg> &FPValReg;
-  GFCstAndRegMatch(Optional<FPValueAndVReg> &FPValReg) : FPValReg(FPValReg) {}
+  std::optional<FPValueAndVReg> &FPValReg;
+  GFCstAndRegMatch(std::optional<FPValueAndVReg> &FPValReg)
+      : FPValReg(FPValReg) {}
   bool match(const MachineRegisterInfo &MRI, Register Reg) {
     FPValReg = getFConstantVRegValWithLookThrough(Reg, MRI);
     return FPValReg ? true : false;
   }
 };
 
-inline GFCstAndRegMatch m_GFCst(Optional<FPValueAndVReg> &FPValReg) {
+inline GFCstAndRegMatch m_GFCst(std::optional<FPValueAndVReg> &FPValReg) {
   return GFCstAndRegMatch(FPValReg);
 }
 
 struct GFCstOrSplatGFCstMatch {
-  Optional<FPValueAndVReg> &FPValReg;
-  GFCstOrSplatGFCstMatch(Optional<FPValueAndVReg> &FPValReg)
+  std::optional<FPValueAndVReg> &FPValReg;
+  GFCstOrSplatGFCstMatch(std::optional<FPValueAndVReg> &FPValReg)
       : FPValReg(FPValReg) {}
   bool match(const MachineRegisterInfo &MRI, Register Reg) {
     return (FPValReg = getFConstantSplat(Reg, MRI)) ||
@@ -173,7 +177,7 @@ struct GFCstOrSplatGFCstMatch {
 };
 
 inline GFCstOrSplatGFCstMatch
-m_GFCstOrSplat(Optional<FPValueAndVReg> &FPValReg) {
+m_GFCstOrSplat(std::optional<FPValueAndVReg> &FPValReg) {
   return GFCstOrSplatGFCstMatch(FPValReg);
 }
 
@@ -236,6 +240,20 @@ inline SpecificConstantMatch m_AllOnesInt() {
   return SpecificConstantMatch(-1);
 }
 ///}
+
+/// Matcher for a specific register.
+struct SpecificRegisterMatch {
+  Register RequestedReg;
+  SpecificRegisterMatch(Register RequestedReg) : RequestedReg(RequestedReg) {}
+  bool match(const MachineRegisterInfo &MRI, Register Reg) {
+    return Reg == RequestedReg;
+  }
+};
+
+/// Matches a register only if it is equal to \p RequestedReg.
+inline SpecificRegisterMatch m_SpecificReg(Register RequestedReg) {
+  return SpecificRegisterMatch(RequestedReg);
+}
 
 // TODO: Rework this for different kinds of MachineOperand.
 // Currently assumes the Src for a match is a register.
@@ -320,7 +338,7 @@ template <> struct bind_helper<MachineInstr *> {
 };
 
 template <> struct bind_helper<LLT> {
-  static bool bind(const MachineRegisterInfo &MRI, LLT Ty, Register Reg) {
+  static bool bind(const MachineRegisterInfo &MRI, LLT &Ty, Register Reg) {
     Ty = MRI.getType(Reg);
     if (Ty.isValid())
       return true;
@@ -350,9 +368,50 @@ template <typename Class> struct bind_ty {
 
 inline bind_ty<Register> m_Reg(Register &R) { return R; }
 inline bind_ty<MachineInstr *> m_MInstr(MachineInstr *&MI) { return MI; }
-inline bind_ty<LLT> m_Type(LLT Ty) { return Ty; }
+inline bind_ty<LLT> m_Type(LLT &Ty) { return Ty; }
 inline bind_ty<CmpInst::Predicate> m_Pred(CmpInst::Predicate &P) { return P; }
 inline operand_type_match m_Pred() { return operand_type_match(); }
+
+template <typename BindTy> struct deferred_helper {
+  static bool match(const MachineRegisterInfo &MRI, BindTy &VR, BindTy &V) {
+    return VR == V;
+  }
+};
+
+template <> struct deferred_helper<LLT> {
+  static bool match(const MachineRegisterInfo &MRI, LLT VT, Register R) {
+    return VT == MRI.getType(R);
+  }
+};
+
+template <typename Class> struct deferred_ty {
+  Class &VR;
+
+  deferred_ty(Class &V) : VR(V) {}
+
+  template <typename ITy> bool match(const MachineRegisterInfo &MRI, ITy &&V) {
+    return deferred_helper<Class>::match(MRI, VR, V);
+  }
+};
+
+/// Similar to m_SpecificReg/Type, but the specific value to match originated
+/// from an earlier sub-pattern in the same mi_match expression. For example,
+/// we cannot match `(add X, X)` with `m_GAdd(m_Reg(X), m_SpecificReg(X))`
+/// because `X` is not initialized at the time it's passed to `m_SpecificReg`.
+/// Instead, we can use `m_GAdd(m_Reg(x), m_DeferredReg(X))`.
+inline deferred_ty<Register> m_DeferredReg(Register &R) { return R; }
+inline deferred_ty<LLT> m_DeferredType(LLT &Ty) { return Ty; }
+
+struct ImplicitDefMatch {
+  bool match(const MachineRegisterInfo &MRI, Register Reg) {
+    MachineInstr *TmpMI;
+    if (mi_match(Reg, MRI, m_MInstr(TmpMI)))
+      return TmpMI->getOpcode() == TargetOpcode::G_IMPLICIT_DEF;
+    return false;
+  }
+};
+
+inline ImplicitDefMatch m_GImplicitDef() { return ImplicitDefMatch(); }
 
 // Helper for matching G_FCONSTANT
 inline bind_ty<const ConstantFP *> m_GFCst(const ConstantFP *&C) { return C; }
@@ -372,8 +431,13 @@ struct BinaryOp_match {
       if (TmpMI->getOpcode() == Opcode && TmpMI->getNumOperands() == 3) {
         return (L.match(MRI, TmpMI->getOperand(1).getReg()) &&
                 R.match(MRI, TmpMI->getOperand(2).getReg())) ||
-               (Commutable && (R.match(MRI, TmpMI->getOperand(1).getReg()) &&
-                               L.match(MRI, TmpMI->getOperand(2).getReg())));
+               // NOTE: When trying the alternative operand ordering
+               // with a commutative operation, it is imperative to always run
+               // the LHS sub-pattern  (i.e. `L`) before the RHS sub-pattern
+               // (i.e. `R`). Otherwsie, m_DeferredReg/Type will not work as
+               // expected.
+               (Commutable && (L.match(MRI, TmpMI->getOperand(2).getReg()) &&
+                               R.match(MRI, TmpMI->getOperand(1).getReg())));
       }
     }
     return false;
@@ -397,8 +461,13 @@ struct BinaryOpc_match {
           TmpMI->getNumOperands() == 3) {
         return (L.match(MRI, TmpMI->getOperand(1).getReg()) &&
                 R.match(MRI, TmpMI->getOperand(2).getReg())) ||
-               (Commutable && (R.match(MRI, TmpMI->getOperand(1).getReg()) &&
-                               L.match(MRI, TmpMI->getOperand(2).getReg())));
+               // NOTE: When trying the alternative operand ordering
+               // with a commutative operation, it is imperative to always run
+               // the LHS sub-pattern  (i.e. `L`) before the RHS sub-pattern
+               // (i.e. `R`). Otherwsie, m_DeferredReg/Type will not work as
+               // expected.
+               (Commutable && (L.match(MRI, TmpMI->getOperand(2).getReg()) &&
+                               R.match(MRI, TmpMI->getOperand(1).getReg())));
       }
     }
     return false;
@@ -421,6 +490,19 @@ template <typename LHS, typename RHS>
 inline BinaryOp_match<LHS, RHS, TargetOpcode::G_ADD, true>
 m_GAdd(const LHS &L, const RHS &R) {
   return BinaryOp_match<LHS, RHS, TargetOpcode::G_ADD, true>(L, R);
+}
+
+template <typename LHS, typename RHS>
+inline BinaryOp_match<LHS, RHS, TargetOpcode::G_BUILD_VECTOR, false>
+m_GBuildVector(const LHS &L, const RHS &R) {
+  return BinaryOp_match<LHS, RHS, TargetOpcode::G_BUILD_VECTOR, false>(L, R);
+}
+
+template <typename LHS, typename RHS>
+inline BinaryOp_match<LHS, RHS, TargetOpcode::G_BUILD_VECTOR_TRUNC, false>
+m_GBuildVectorTrunc(const LHS &L, const RHS &R) {
+  return BinaryOp_match<LHS, RHS, TargetOpcode::G_BUILD_VECTOR_TRUNC, false>(L,
+                                                                             R);
 }
 
 template <typename LHS, typename RHS>
@@ -496,15 +578,27 @@ m_GAShr(const LHS &L, const RHS &R) {
 }
 
 template <typename LHS, typename RHS>
-inline BinaryOp_match<LHS, RHS, TargetOpcode::G_SMAX, false>
+inline BinaryOp_match<LHS, RHS, TargetOpcode::G_SMAX, true>
 m_GSMax(const LHS &L, const RHS &R) {
-  return BinaryOp_match<LHS, RHS, TargetOpcode::G_SMAX, false>(L, R);
+  return BinaryOp_match<LHS, RHS, TargetOpcode::G_SMAX, true>(L, R);
 }
 
 template <typename LHS, typename RHS>
-inline BinaryOp_match<LHS, RHS, TargetOpcode::G_SMIN, false>
+inline BinaryOp_match<LHS, RHS, TargetOpcode::G_SMIN, true>
 m_GSMin(const LHS &L, const RHS &R) {
-  return BinaryOp_match<LHS, RHS, TargetOpcode::G_SMIN, false>(L, R);
+  return BinaryOp_match<LHS, RHS, TargetOpcode::G_SMIN, true>(L, R);
+}
+
+template <typename LHS, typename RHS>
+inline BinaryOp_match<LHS, RHS, TargetOpcode::G_UMAX, true>
+m_GUMax(const LHS &L, const RHS &R) {
+  return BinaryOp_match<LHS, RHS, TargetOpcode::G_UMAX, true>(L, R);
+}
+
+template <typename LHS, typename RHS>
+inline BinaryOp_match<LHS, RHS, TargetOpcode::G_UMIN, true>
+m_GUMin(const LHS &L, const RHS &R) {
+  return BinaryOp_match<LHS, RHS, TargetOpcode::G_UMIN, true>(L, R);
 }
 
 // Helper for unary instructions (G_[ZSA]EXT/G_TRUNC) etc
@@ -596,7 +690,8 @@ inline UnaryOp_match<SrcTy, TargetOpcode::G_FSQRT> m_GFSqrt(const SrcTy &Src) {
 
 // General helper for generic MI compares, i.e. G_ICMP and G_FCMP
 // TODO: Allow checking a specific predicate.
-template <typename Pred_P, typename LHS_P, typename RHS_P, unsigned Opcode>
+template <typename Pred_P, typename LHS_P, typename RHS_P, unsigned Opcode,
+          bool Commutable = false>
 struct CompareOp_match {
   Pred_P P;
   LHS_P L;
@@ -615,9 +710,18 @@ struct CompareOp_match {
         static_cast<CmpInst::Predicate>(TmpMI->getOperand(1).getPredicate());
     if (!P.match(MRI, TmpPred))
       return false;
-
-    return L.match(MRI, TmpMI->getOperand(2).getReg()) &&
-           R.match(MRI, TmpMI->getOperand(3).getReg());
+    Register LHS = TmpMI->getOperand(2).getReg();
+    Register RHS = TmpMI->getOperand(3).getReg();
+    if (L.match(MRI, LHS) && R.match(MRI, RHS))
+      return true;
+    // NOTE: When trying the alternative operand ordering
+    // with a commutative operation, it is imperative to always run
+    // the LHS sub-pattern  (i.e. `L`) before the RHS sub-pattern
+    // (i.e. `R`). Otherwsie, m_DeferredReg/Type will not work as expected.
+    if (Commutable && L.match(MRI, RHS) && R.match(MRI, LHS) &&
+        P.match(MRI, CmpInst::getSwappedPredicate(TmpPred)))
+      return true;
+    return false;
   }
 };
 
@@ -631,6 +735,36 @@ template <typename Pred, typename LHS, typename RHS>
 inline CompareOp_match<Pred, LHS, RHS, TargetOpcode::G_FCMP>
 m_GFCmp(const Pred &P, const LHS &L, const RHS &R) {
   return CompareOp_match<Pred, LHS, RHS, TargetOpcode::G_FCMP>(P, L, R);
+}
+
+/// G_ICMP matcher that also matches commuted compares.
+/// E.g.
+///
+/// m_c_GICmp(m_Pred(...), m_GAdd(...), m_GSub(...))
+///
+/// Could match both of:
+///
+/// icmp ugt (add x, y) (sub a, b)
+/// icmp ult (sub a, b) (add x, y)
+template <typename Pred, typename LHS, typename RHS>
+inline CompareOp_match<Pred, LHS, RHS, TargetOpcode::G_ICMP, true>
+m_c_GICmp(const Pred &P, const LHS &L, const RHS &R) {
+  return CompareOp_match<Pred, LHS, RHS, TargetOpcode::G_ICMP, true>(P, L, R);
+}
+
+/// G_FCMP matcher that also matches commuted compares.
+/// E.g.
+///
+/// m_c_GFCmp(m_Pred(...), m_FAdd(...), m_GFMul(...))
+///
+/// Could match both of:
+///
+/// fcmp ogt (fadd x, y) (fmul a, b)
+/// fcmp olt (fmul a, b) (fadd x, y)
+template <typename Pred, typename LHS, typename RHS>
+inline CompareOp_match<Pred, LHS, RHS, TargetOpcode::G_FCMP, true>
+m_c_GFCmp(const Pred &P, const LHS &L, const RHS &R) {
+  return CompareOp_match<Pred, LHS, RHS, TargetOpcode::G_FCMP, true>(P, L, R);
 }
 
 // Helper for checking if a Reg is of specific type.

@@ -96,11 +96,11 @@ namespace {
     void getAnalysisUsage(AnalysisUsage &AU) const override {
       AU.setPreservesCFG();
       AU.addRequired<AAResultsWrapperPass>();
-      AU.addRequired<MachineBranchProbabilityInfo>();
-      AU.addRequired<MachineDominatorTree>();
-      AU.addRequired<MachineLoopInfo>();
-      AU.addPreserved<MachineDominatorTree>();
-      AU.addPreserved<MachineLoopInfo>();
+      AU.addRequired<MachineBranchProbabilityInfoWrapperPass>();
+      AU.addRequired<MachineDominatorTreeWrapperPass>();
+      AU.addRequired<MachineLoopInfoWrapperPass>();
+      AU.addPreserved<MachineDominatorTreeWrapperPass>();
+      AU.addPreserved<MachineLoopInfoWrapperPass>();
       MachineFunctionPass::getAnalysisUsage(AU);
     }
 
@@ -124,9 +124,9 @@ char HexagonPacketizer::ID = 0;
 
 INITIALIZE_PASS_BEGIN(HexagonPacketizer, "hexagon-packetizer",
                       "Hexagon Packetizer", false, false)
-INITIALIZE_PASS_DEPENDENCY(MachineDominatorTree)
-INITIALIZE_PASS_DEPENDENCY(MachineBranchProbabilityInfo)
-INITIALIZE_PASS_DEPENDENCY(MachineLoopInfo)
+INITIALIZE_PASS_DEPENDENCY(MachineDominatorTreeWrapperPass)
+INITIALIZE_PASS_DEPENDENCY(MachineBranchProbabilityInfoWrapperPass)
+INITIALIZE_PASS_DEPENDENCY(MachineLoopInfoWrapperPass)
 INITIALIZE_PASS_DEPENDENCY(AAResultsWrapperPass)
 INITIALIZE_PASS_END(HexagonPacketizer, "hexagon-packetizer",
                     "Hexagon Packetizer", false, false)
@@ -211,9 +211,10 @@ bool HexagonPacketizer::runOnMachineFunction(MachineFunction &MF) {
   auto &HST = MF.getSubtarget<HexagonSubtarget>();
   HII = HST.getInstrInfo();
   HRI = HST.getRegisterInfo();
-  auto &MLI = getAnalysis<MachineLoopInfo>();
+  auto &MLI = getAnalysis<MachineLoopInfoWrapperPass>().getLI();
   auto *AA = &getAnalysis<AAResultsWrapperPass>().getAAResults();
-  auto *MBPI = &getAnalysis<MachineBranchProbabilityInfo>();
+  auto *MBPI =
+      &getAnalysis<MachineBranchProbabilityInfoWrapperPass>().getMBPI();
 
   if (EnableGenAllInsnClass)
     HII->genAllInsnTimingClasses(MF);
@@ -383,7 +384,7 @@ bool HexagonPacketizerList::promoteToDotCur(MachineInstr &MI,
 
 void HexagonPacketizerList::cleanUpDotCur() {
   MachineInstr *MI = nullptr;
-  for (auto BI : CurrentPacketMIs) {
+  for (auto *BI : CurrentPacketMIs) {
     LLVM_DEBUG(dbgs() << "Cleanup packet has "; BI->dump(););
     if (HII->isDotCurInst(*BI)) {
       MI = BI;
@@ -440,7 +441,7 @@ bool HexagonPacketizerList::canPromoteToDotCur(const MachineInstr &MI,
 
   // Check for existing uses of a vector register within the packet which
   // would be affected by converting a vector load into .cur formt.
-  for (auto BI : CurrentPacketMIs) {
+  for (auto *BI : CurrentPacketMIs) {
     LLVM_DEBUG(dbgs() << "packet has "; BI->dump(););
     if (BI->readsRegister(DepReg, MF.getSubtarget().getRegisterInfo()))
       return false;
@@ -668,7 +669,7 @@ bool HexagonPacketizerList::canPromoteToNewValueStore(const MachineInstr &MI,
 
   // New-value stores are of class NV (slot 0), dual stores require class ST
   // in slot 0 (PRM 5.5).
-  for (auto I : CurrentPacketMIs) {
+  for (auto *I : CurrentPacketMIs) {
     SUnit *PacketSU = MIToSUnit.find(I)->second;
     if (PacketSU->getInstr()->mayStore())
       return false;
@@ -754,7 +755,7 @@ bool HexagonPacketizerList::canPromoteToNewValueStore(const MachineInstr &MI,
 
   unsigned StartCheck = 0;
 
-  for (auto I : CurrentPacketMIs) {
+  for (auto *I : CurrentPacketMIs) {
     SUnit *TempSU = MIToSUnit.find(I)->second;
     MachineInstr &TempMI = *TempSU->getInstr();
 
@@ -920,7 +921,7 @@ bool HexagonPacketizerList::restrictingDepExistInPacket(MachineInstr &MI,
                                                         unsigned DepReg) {
   SUnit *PacketSUDep = MIToSUnit.find(&MI)->second;
 
-  for (auto I : CurrentPacketMIs) {
+  for (auto *I : CurrentPacketMIs) {
     // We only care for dependencies to predicated instructions
     if (!HII->isPredicated(*I))
       continue;
@@ -990,7 +991,7 @@ bool HexagonPacketizerList::arePredicatesComplements(MachineInstr &MI1,
   // Analyze relationships between all existing members of the packet.
   // Look for Anti dependecy on the same predicate reg as used in the
   // candidate.
-  for (auto I : CurrentPacketMIs) {
+  for (auto *I : CurrentPacketMIs) {
     // Scheduling Unit for current insn in the packet.
     SUnit *PacketSU = MIToSUnit.find(I)->second;
 
@@ -1180,7 +1181,7 @@ void HexagonPacketizerList::unpacketizeSoloInstrs(MachineFunction &MF) {
       bool InsertBeforeBundle;
       if (MI.isInlineAsm())
         InsertBeforeBundle = !hasWriteToReadDep(MI, *BundleIt, HRI);
-      else if (MI.isDebugValue())
+      else if (MI.isDebugInstr())
         InsertBeforeBundle = true;
       else
         continue;
@@ -1318,7 +1319,7 @@ bool HexagonPacketizerList::hasDualStoreDependence(const MachineInstr &I,
   return (StoreJ && HII->isDeallocRet(I)) || (StoreI && HII->isDeallocRet(J));
 }
 
-// SUI is the current instruction that is out side of the current packet.
+// SUI is the current instruction that is outside of the current packet.
 // SUJ is the current instruction inside the current packet against which that
 // SUI will be packetized.
 bool HexagonPacketizerList::isLegalToPacketizeTogether(SUnit *SUI, SUnit *SUJ) {
@@ -1690,7 +1691,7 @@ bool HexagonPacketizerList::foundLSInPacket() {
   bool FoundLoad = false;
   bool FoundStore = false;
 
-  for (auto MJ : CurrentPacketMIs) {
+  for (auto *MJ : CurrentPacketMIs) {
     unsigned Opc = MJ->getOpcode();
     if (Opc == Hexagon::S2_allocframe || Opc == Hexagon::L2_deallocframe)
       continue;
@@ -1915,7 +1916,7 @@ unsigned int HexagonPacketizerList::calcStall(const MachineInstr &I) {
   // }
   // Here I2 and I3 has 0 cycle latency, but I1 and I2 has 2.
 
-  for (auto J : CurrentPacketMIs) {
+  for (auto *J : CurrentPacketMIs) {
     SUnit *SUJ = MIToSUnit[J];
     for (auto &Pred : SUI->Preds)
       if (Pred.getSUnit() == SUJ)
@@ -1926,7 +1927,7 @@ unsigned int HexagonPacketizerList::calcStall(const MachineInstr &I) {
 
   // Check if the latency is greater than one between this instruction and any
   // instruction in the previous packet.
-  for (auto J : OldPacketMIs) {
+  for (auto *J : OldPacketMIs) {
     SUnit *SUJ = MIToSUnit[J];
     for (auto &Pred : SUI->Preds)
       if (Pred.getSUnit() == SUJ && Pred.getLatency() > 1)

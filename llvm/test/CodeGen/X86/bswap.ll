@@ -166,10 +166,10 @@ define i64 @not_bswap() {
 ; CHECK64-LABEL: not_bswap:
 ; CHECK64:       # %bb.0:
 ; CHECK64-NEXT:    movzwl var16(%rip), %eax
-; CHECK64-NEXT:    movq %rax, %rcx
-; CHECK64-NEXT:    shrq $8, %rcx
-; CHECK64-NEXT:    shlq $8, %rax
-; CHECK64-NEXT:    orq %rcx, %rax
+; CHECK64-NEXT:    movl %eax, %ecx
+; CHECK64-NEXT:    shrl $8, %ecx
+; CHECK64-NEXT:    shll $8, %eax
+; CHECK64-NEXT:    orl %ecx, %eax
 ; CHECK64-NEXT:    retq
   %init = load i16, ptr @var16
   %big = zext i16 %init to i64
@@ -197,7 +197,7 @@ define i64 @not_useful_bswap() {
 ; CHECK64-LABEL: not_useful_bswap:
 ; CHECK64:       # %bb.0:
 ; CHECK64-NEXT:    movzbl var8(%rip), %eax
-; CHECK64-NEXT:    shlq $8, %rax
+; CHECK64-NEXT:    shll $8, %eax
 ; CHECK64-NEXT:    retq
   %init = load i8, ptr @var8
   %big = zext i8 %init to i64
@@ -225,8 +225,8 @@ define i64 @finally_useful_bswap() {
 ; CHECK64-LABEL: finally_useful_bswap:
 ; CHECK64:       # %bb.0:
 ; CHECK64-NEXT:    movzwl var16(%rip), %eax
-; CHECK64-NEXT:    bswapq %rax
-; CHECK64-NEXT:    shrq $48, %rax
+; CHECK64-NEXT:    bswapl %eax
+; CHECK64-NEXT:    shrl $16, %eax
 ; CHECK64-NEXT:    retq
   %init = load i16, ptr @var16
   %big = zext i16 %init to i64
@@ -355,13 +355,13 @@ define i528 @large_promotion(i528 %A) nounwind {
 ; CHECK64-NEXT:    movq %rdi, %rax
 ; CHECK64-NEXT:    movq {{[0-9]+}}(%rsp), %rbx
 ; CHECK64-NEXT:    movq {{[0-9]+}}(%rsp), %r11
-; CHECK64-NEXT:    movq {{[0-9]+}}(%rsp), %rdi
 ; CHECK64-NEXT:    movq {{[0-9]+}}(%rsp), %r10
-; CHECK64-NEXT:    bswapq %r10
+; CHECK64-NEXT:    movq {{[0-9]+}}(%rsp), %rdi
 ; CHECK64-NEXT:    bswapq %rdi
-; CHECK64-NEXT:    shrdq $48, %rdi, %r10
+; CHECK64-NEXT:    bswapq %r10
+; CHECK64-NEXT:    shrdq $48, %r10, %rdi
 ; CHECK64-NEXT:    bswapq %r11
-; CHECK64-NEXT:    shrdq $48, %r11, %rdi
+; CHECK64-NEXT:    shrdq $48, %r11, %r10
 ; CHECK64-NEXT:    bswapq %rbx
 ; CHECK64-NEXT:    shrdq $48, %rbx, %r11
 ; CHECK64-NEXT:    bswapq %r9
@@ -381,8 +381,8 @@ define i528 @large_promotion(i528 %A) nounwind {
 ; CHECK64-NEXT:    movq %r9, 32(%rax)
 ; CHECK64-NEXT:    movq %rbx, 24(%rax)
 ; CHECK64-NEXT:    movq %r11, 16(%rax)
-; CHECK64-NEXT:    movq %rdi, 8(%rax)
-; CHECK64-NEXT:    movq %r10, (%rax)
+; CHECK64-NEXT:    movq %r10, 8(%rax)
+; CHECK64-NEXT:    movq %rdi, (%rax)
 ; CHECK64-NEXT:    movw %si, 64(%rax)
 ; CHECK64-NEXT:    popq %rbx
 ; CHECK64-NEXT:    retq

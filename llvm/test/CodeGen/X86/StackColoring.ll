@@ -82,9 +82,9 @@ bb3:
 }
 
 ;CHECK-LABEL: myCall_w4:
-;YESCOLOR: subq  $120, %rsp
-;NOFIRSTUSE: subq  $200, %rsp
-;NOCOLOR: subq  $408, %rsp
+;YESCOLOR: subq  $112, %rsp
+;NOFIRSTUSE: subq  $208, %rsp
+;NOCOLOR: subq  $400, %rsp
 
 define i32 @myCall_w4(i32 %in) {
 entry:
@@ -135,7 +135,7 @@ entry:
   %t3 = call i32 @foo(i32 %in, ptr %a3)
   %t4 = call i32 @foo(i32 %in, ptr %a3)
   call void @llvm.lifetime.end.p0(i64 -1, ptr %a3)
-  br i1 undef, label %bb2, label %bb3
+  br i1 poison, label %bb2, label %bb3
 bb2:
   call void @llvm.lifetime.start.p0(i64 -1, ptr %a4)
   %t11 = call i32 @foo(i32 %in, ptr %a4)

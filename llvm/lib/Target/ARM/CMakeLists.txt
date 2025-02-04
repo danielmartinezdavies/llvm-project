@@ -62,6 +62,7 @@ add_llvm_target(ARMCodeGen
   MVETailPredication.cpp
   MVEVPTBlockPass.cpp
   MVETPAndVPTOptimisationsPass.cpp
+  ARMLatencyMutations.cpp
   Thumb1FrameLowering.cpp
   Thumb1InstrInfo.cpp
   ThumbRegisterInfo.cpp
@@ -72,20 +73,22 @@ add_llvm_target(ARMCodeGen
   LINK_COMPONENTS
   ARMDesc
   ARMInfo
+  ARMUtils
   Analysis
   AsmPrinter
+  CFGuard
   CodeGen
+  CodeGenTypes
   Core
+  GlobalISel
   IPO
   MC
   Scalar
   SelectionDAG
   Support
   Target
-  GlobalISel
-  ARMUtils
+  TargetParser
   TransformUtils
-  CFGuard
 
   ADD_TO_COMPONENT
   ARM

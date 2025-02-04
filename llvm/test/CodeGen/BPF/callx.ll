@@ -1,9 +1,9 @@
-; RUN: llc < %s -march=bpfel | FileCheck %s
+; RUN: llc < %s -mtriple=bpfel | FileCheck %s
 ; source:
 ;   int test(int (*f)(void)) { return f(); }
 
 ; Function Attrs: nounwind
-define dso_local i32 @test(i32 ()* nocapture %f) local_unnamed_addr #0 {
+define dso_local i32 @test(ptr nocapture %f) local_unnamed_addr #0 {
 entry:
   %call = tail call i32 %f() #1
 ; CHECK: callx r{{[0-9]+}}

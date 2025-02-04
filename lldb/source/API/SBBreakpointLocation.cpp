@@ -18,7 +18,6 @@
 #include "lldb/Breakpoint/Breakpoint.h"
 #include "lldb/Breakpoint/BreakpointLocation.h"
 #include "lldb/Core/Debugger.h"
-#include "lldb/Core/StreamFile.h"
 #include "lldb/Core/StructuredDataImpl.h"
 #include "lldb/Interpreter/CommandInterpreter.h"
 #include "lldb/Interpreter/ScriptInterpreter.h"
@@ -27,6 +26,8 @@
 #include "lldb/Utility/Stream.h"
 #include "lldb/lldb-defines.h"
 #include "lldb/lldb-types.h"
+
+#include "SBBreakpointOptionCommon.h"
 
 using namespace lldb;
 using namespace lldb_private;
@@ -167,12 +168,12 @@ const char *SBBreakpointLocation::GetCondition() {
   LLDB_INSTRUMENT_VA(this);
 
   BreakpointLocationSP loc_sp = GetSP();
-  if (loc_sp) {
-    std::lock_guard<std::recursive_mutex> guard(
-        loc_sp->GetTarget().GetAPIMutex());
-    return loc_sp->GetConditionText();
-  }
-  return nullptr;
+  if (!loc_sp)
+    return nullptr;
+
+  std::lock_guard<std::recursive_mutex> guard(
+      loc_sp->GetTarget().GetAPIMutex());
+  return ConstString(loc_sp->GetConditionText()).GetCString();
 }
 
 void SBBreakpointLocation::SetAutoContinue(bool auto_continue) {
@@ -196,6 +197,21 @@ bool SBBreakpointLocation::GetAutoContinue() {
     return loc_sp->IsAutoContinue();
   }
   return false;
+}
+
+void SBBreakpointLocation::SetCallback(SBBreakpointHitCallback callback,
+                                       void *baton) {
+  LLDB_INSTRUMENT_VA(this, callback, baton);
+
+  BreakpointLocationSP loc_sp = GetSP();
+
+  if (loc_sp) {
+    std::lock_guard<std::recursive_mutex> guard(
+        loc_sp->GetTarget().GetAPIMutex());
+    BatonSP baton_sp(new SBBreakpointCallbackBaton(callback, baton));
+    loc_sp->SetCallback(SBBreakpointCallbackBaton::PrivateBreakpointHitCallback,
+                        baton_sp, false);
+  }
 }
 
 void SBBreakpointLocation::SetScriptCallbackFunction(
@@ -223,9 +239,9 @@ SBError SBBreakpointLocation::SetScriptCallbackFunction(
                                                callback_function_name,
                                                extra_args.m_impl_up
                                                    ->GetObjectSP());
-      sb_error.SetError(error);
+    sb_error.SetError(std::move(error));
     } else
-      sb_error.SetErrorString("invalid breakpoint");
+      sb_error = Status::FromErrorString("invalid breakpoint");
 
     return sb_error;
 }
@@ -246,10 +262,11 @@ SBBreakpointLocation::SetScriptCallbackBody(const char *callback_body_text) {
             .GetTarget()
             .GetDebugger()
             .GetScriptInterpreter()
-            ->SetBreakpointCommandCallback(bp_options, callback_body_text);
-    sb_error.SetError(error);
+            ->SetBreakpointCommandCallback(bp_options, callback_body_text,
+                                           /*is_callback=*/false);
+    sb_error.SetError(std::move(error));
   } else
-    sb_error.SetErrorString("invalid breakpoint");
+    sb_error = Status::FromErrorString("invalid breakpoint");
 
   return sb_error;
 }
@@ -285,7 +302,7 @@ bool SBBreakpointLocation::GetCommandLineCommands(SBStringList &commands) {
   return has_commands;
 }
 
-void SBBreakpointLocation::SetThreadID(tid_t thread_id) {
+void SBBreakpointLocation::SetThreadID(lldb::tid_t thread_id) {
   LLDB_INSTRUMENT_VA(this, thread_id);
 
   BreakpointLocationSP loc_sp = GetSP();
@@ -296,10 +313,10 @@ void SBBreakpointLocation::SetThreadID(tid_t thread_id) {
   }
 }
 
-tid_t SBBreakpointLocation::GetThreadID() {
+lldb::tid_t SBBreakpointLocation::GetThreadID() {
   LLDB_INSTRUMENT_VA(this);
 
-  tid_t tid = LLDB_INVALID_THREAD_ID;
+  lldb::tid_t tid = LLDB_INVALID_THREAD_ID;
   BreakpointLocationSP loc_sp = GetSP();
   if (loc_sp) {
     std::lock_guard<std::recursive_mutex> guard(
@@ -348,12 +365,12 @@ const char *SBBreakpointLocation::GetThreadName() const {
   LLDB_INSTRUMENT_VA(this);
 
   BreakpointLocationSP loc_sp = GetSP();
-  if (loc_sp) {
-    std::lock_guard<std::recursive_mutex> guard(
-        loc_sp->GetTarget().GetAPIMutex());
-    return loc_sp->GetThreadName();
-  }
-  return nullptr;
+  if (!loc_sp)
+    return nullptr;
+
+  std::lock_guard<std::recursive_mutex> guard(
+      loc_sp->GetTarget().GetAPIMutex());
+  return ConstString(loc_sp->GetThreadName()).GetCString();
 }
 
 void SBBreakpointLocation::SetQueueName(const char *queue_name) {
@@ -371,12 +388,12 @@ const char *SBBreakpointLocation::GetQueueName() const {
   LLDB_INSTRUMENT_VA(this);
 
   BreakpointLocationSP loc_sp = GetSP();
-  if (loc_sp) {
-    std::lock_guard<std::recursive_mutex> guard(
-        loc_sp->GetTarget().GetAPIMutex());
-    return loc_sp->GetQueueName();
-  }
-  return nullptr;
+  if (!loc_sp)
+    return nullptr;
+
+  std::lock_guard<std::recursive_mutex> guard(
+      loc_sp->GetTarget().GetAPIMutex());
+  return ConstString(loc_sp->GetQueueName()).GetCString();
 }
 
 bool SBBreakpointLocation::IsResolved() {

@@ -1,5 +1,5 @@
-; RUN: llc -march=bpfel -filetype=asm -o - %s | FileCheck -check-prefixes=CHECK %s
-; RUN: llc -march=bpfeb -filetype=asm -o - %s | FileCheck -check-prefixes=CHECK %s
+; RUN: llc -mtriple=bpfel -filetype=asm -o - %s | FileCheck -check-prefixes=CHECK %s
+; RUN: llc -mtriple=bpfeb -filetype=asm -o - %s | FileCheck -check-prefixes=CHECK %s
 ;
 ; Source code:
 ;   char g __attribute__((weak)) = 2;
@@ -13,7 +13,7 @@
 ; Function Attrs: norecurse nounwind readonly
 define dso_local i32 @test() local_unnamed_addr #0 !dbg !11 {
 entry:
-  %0 = load i8, i8* @g, align 1, !dbg !15, !tbaa !16
+  %0 = load i8, ptr @g, align 1, !dbg !15, !tbaa !16
   %conv = sext i8 %0 to i32, !dbg !15
   ret i32 %conv, !dbg !19
 }

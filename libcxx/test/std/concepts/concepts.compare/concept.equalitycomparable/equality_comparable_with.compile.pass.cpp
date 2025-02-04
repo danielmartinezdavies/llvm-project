@@ -14,15 +14,12 @@
 #include <concepts>
 
 #include <array>
+#include <cstddef>
 #include <deque>
 #include <forward_list>
 #include <list>
 #include <map>
-#include <memory>
 #include <optional>
-#include <set>
-#include <unordered_map>
-#include <unordered_set>
 #include <vector>
 
 #include "test_macros.h"
@@ -1120,5 +1117,3 @@ static_assert(
 static_assert(
     !check_equality_comparable_with<one_way_ne, explicit_operators>());
 } // namespace types_fit_for_purpose
-
-int main(int, char**) { return 0; }

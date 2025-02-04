@@ -32,8 +32,10 @@ or end of a markup element should rarely if ever appear incidentally in logging
 text. It's specifically intended not to require sanitizing plain text, such as
 the HTML/XML requirement to replace ``<`` with ``&lt;`` and the like.
 
-:manpage:`llvm-symbolizer(1)` includes a symbolizing filter via its ``--filter``
-option.
+:doc:`llvm-symbolizer <CommandGuide/llvm-symbolizer>` includes a symbolizing
+filter via its ``--filter-markup`` option. Also, LLVM utilites emit stack
+traces as markup when the ``LLVM_ENABLE_SYMBOLIZER_MARKUP`` environment
+variable is set.
 
 Scope and assumptions
 =====================
@@ -143,6 +145,11 @@ what they contain is specified for each element type.
 No markup elements or ANSI SGR control sequences are interpreted inside the
 contents of a field.
 
+Implementations must ignore markup fields after those expected; this allows
+adding new fields to backwards-compatibly extend elements. Implementations need
+not ignore them silently, but the element should behave otherwise as if the
+fields were removed.
+
 In the descriptions of each element type, ``printf``-style placeholders indicate
 field contents:
 
@@ -205,7 +212,7 @@ human-readable symbolic form.
     {{{data:0x12345678}}}
     {{{data:0xffffffff9abcdef0}}}
 
-``{{{bt:%u:%p}}}``, ``{{{bt:%u:%p:ra}}}``, ``{{{bt:%u:%p:pc}}}`` [#not_yet_implemented]_
+``{{{bt:%u:%p}}}``, ``{{{bt:%u:%p:ra}}}``, ``{{{bt:%u:%p:pc}}}``
 
   This represents one frame in a backtrace. It usually appears on a line by
   itself (surrounded only by whitespace), in a sequence of such lines with
@@ -431,4 +438,4 @@ over the raw logging stream, accumulating context and massaging text as it goes.
 .. rubric:: Footnotes
 
 .. [#not_yet_implemented] This markup element is not yet implemented in
-  :manpage:`llvm-symbolizer(1)`.
+  :doc:`llvm-symbolizer <CommandGuide/llvm-symbolizer>`.

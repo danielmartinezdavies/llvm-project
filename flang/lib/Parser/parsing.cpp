@@ -7,10 +7,10 @@
 //===----------------------------------------------------------------------===//
 
 #include "flang/Parser/parsing.h"
-#include "preprocessor.h"
 #include "prescan.h"
 #include "type-parsers.h"
 #include "flang/Parser/message.h"
+#include "flang/Parser/preprocessor.h"
 #include "flang/Parser/provenance.h"
 #include "flang/Parser/source.h"
 #include "llvm/Support/raw_ostream.h"
@@ -32,7 +32,7 @@ const SourceFile *Parsing::Prescan(const std::string &path, Options options) {
 
   std::string buf;
   llvm::raw_string_ostream fileError{buf};
-  const SourceFile *sourceFile;
+  const SourceFile *sourceFile{nullptr};
   if (path == "-") {
     sourceFile = allSources.ReadStandardInput(fileError);
   } else if (options.isModuleFile) {
@@ -42,9 +42,9 @@ const SourceFile *Parsing::Prescan(const std::string &path, Options options) {
     sourceFile =
         allSources.Open(path, fileError, "."s /*prepend to search path*/);
   }
-  if (!fileError.str().empty()) {
+  if (!buf.empty()) {
     ProvenanceRange range{allSources.AddCompilerInsertion(path)};
-    messages_.Say(range, "%s"_err_en_US, fileError.str());
+    messages_.Say(range, "%s"_err_en_US, buf);
     return sourceFile;
   }
   CHECK(sourceFile);
@@ -60,22 +60,24 @@ const SourceFile *Parsing::Prescan(const std::string &path, Options options) {
     }
   }
 
-  Preprocessor preprocessor{allSources};
   if (!options.predefinitions.empty()) {
-    preprocessor.DefineStandardMacros();
+    preprocessor_.DefineStandardMacros();
     for (const auto &predef : options.predefinitions) {
       if (predef.second) {
-        preprocessor.Define(predef.first, *predef.second);
+        preprocessor_.Define(predef.first, *predef.second);
       } else {
-        preprocessor.Undefine(predef.first);
+        preprocessor_.Undefine(predef.first);
       }
     }
   }
   currentCooked_ = &allCooked_.NewCookedSource();
   Prescanner prescanner{
-      messages_, *currentCooked_, preprocessor, options.features};
+      messages_, *currentCooked_, preprocessor_, options.features};
   prescanner.set_fixedForm(options.isFixedForm)
       .set_fixedFormColumnLimit(options.fixedFormColumns)
+      .set_preprocessingOnly(options.prescanAndReformat)
+      .set_expandIncludeLines(!options.prescanAndReformat ||
+          options.expandIncludeLinesInPreprocessedOutput)
       .AddCompilerDirectiveSentinel("dir$");
   if (options.features.IsEnabled(LanguageFeature::OpenACC)) {
     prescanner.AddCompilerDirectiveSentinel("$acc");
@@ -83,6 +85,11 @@ const SourceFile *Parsing::Prescan(const std::string &path, Options options) {
   if (options.features.IsEnabled(LanguageFeature::OpenMP)) {
     prescanner.AddCompilerDirectiveSentinel("$omp");
     prescanner.AddCompilerDirectiveSentinel("$"); // OMP conditional line
+  }
+  if (options.features.IsEnabled(LanguageFeature::CUDA)) {
+    prescanner.AddCompilerDirectiveSentinel("$cuf");
+    prescanner.AddCompilerDirectiveSentinel("@cuf");
+    preprocessor_.Define("_CUDA", "1");
   }
   ProvenanceRange range{allSources.AddIncludedFile(
       *sourceFile, ProvenanceRange{}, options.isModuleFile)};
@@ -102,9 +109,13 @@ const SourceFile *Parsing::Prescan(const std::string &path, Options options) {
   return sourceFile;
 }
 
+void Parsing::EmitPreprocessorMacros(llvm::raw_ostream &out) const {
+  preprocessor_.PrintMacros(out);
+}
+
 void Parsing::EmitPreprocessedSource(
     llvm::raw_ostream &out, bool lineDirectives) const {
-  const SourceFile *sourceFile{nullptr};
+  const std::string *sourcePath{nullptr};
   int sourceLine{0};
   int column{1};
   bool inDirective{false};
@@ -148,8 +159,9 @@ void Parsing::EmitPreprocessedSource(
         // which signifies a comment (directive) in both source forms.
         inDirective = true;
       }
-      if (inDirective && directive.size() < directiveNameLength &&
-          IsLetter(ch)) {
+      bool inDirectiveSentinel{
+          inDirective && directive.size() < directiveNameLength};
+      if (inDirectiveSentinel && IsLetter(ch)) {
         directive += getOriginalChar(ch);
       }
 
@@ -157,8 +169,8 @@ void Parsing::EmitPreprocessedSource(
               ? allSources.GetSourcePosition(provenance->start())
               : std::nullopt};
       if (lineDirectives && column == 1 && position) {
-        if (&position->file != sourceFile) {
-          out << "#line \"" << position->file.path() << "\" " << position->line
+        if (&*position->path != sourcePath) {
+          out << "#line \"" << *position->path << "\" " << position->line
               << '\n';
         } else if (position->line != sourceLine) {
           if (sourceLine < position->line &&
@@ -173,7 +185,7 @@ void Parsing::EmitPreprocessedSource(
             out << "#line " << position->line << '\n';
           }
         }
-        sourceFile = &position->file;
+        sourcePath = &*position->path;
         sourceLine = position->line;
       }
       if (column > 72) {
@@ -200,7 +212,8 @@ void Parsing::EmitPreprocessedSource(
           out << ' ';
         }
       }
-      if (!inContinuation && position && position->column <= 72 && ch != ' ') {
+      if (!inContinuation && !inDirectiveSentinel && position &&
+          position->column <= 72 && ch != ' ') {
         // Preserve original indentation
         for (; column < position->column; ++column) {
           out << ' ';

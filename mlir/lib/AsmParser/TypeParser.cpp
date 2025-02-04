@@ -12,9 +12,18 @@
 
 #include "Parser.h"
 #include "mlir/IR/AffineMap.h"
+#include "mlir/IR/BuiltinAttributeInterfaces.h"
+#include "mlir/IR/BuiltinTypeInterfaces.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/OpDefinition.h"
 #include "mlir/IR/TensorEncoding.h"
+#include "mlir/IR/Types.h"
+#include "mlir/Support/LLVM.h"
+#include "llvm/ADT/STLExtras.h"
+#include <cassert>
+#include <cstdint>
+#include <limits>
+#include <optional>
 
 using namespace mlir;
 using namespace mlir::detail;
@@ -30,8 +39,20 @@ OptionalParseResult Parser::parseOptionalType(Type &type) {
   case Token::kw_tuple:
   case Token::kw_vector:
   case Token::inttype:
+  case Token::kw_f4E2M1FN:
+  case Token::kw_f6E2M3FN:
+  case Token::kw_f6E3M2FN:
+  case Token::kw_f8E5M2:
+  case Token::kw_f8E4M3:
+  case Token::kw_f8E4M3FN:
+  case Token::kw_f8E5M2FNUZ:
+  case Token::kw_f8E4M3FNUZ:
+  case Token::kw_f8E4M3B11FNUZ:
+  case Token::kw_f8E3M4:
+  case Token::kw_f8E8M0FNU:
   case Token::kw_bf16:
   case Token::kw_f16:
+  case Token::kw_tf32:
   case Token::kw_f32:
   case Token::kw_f64:
   case Token::kw_f80:
@@ -42,7 +63,7 @@ OptionalParseResult Parser::parseOptionalType(Type &type) {
     return failure(!(type = parseType()));
 
   default:
-    return llvm::None;
+    return std::nullopt;
   }
 }
 
@@ -123,7 +144,7 @@ Type Parser::parseComplexType() {
   if (!elementType ||
       parseToken(Token::greater, "expected '>' in complex type"))
     return nullptr;
-  if (!elementType.isa<FloatType>() && !elementType.isa<IntegerType>())
+  if (!isa<FloatType>(elementType) && !isa<IntegerType>(elementType))
     return emitError(elementTypeLoc, "invalid element type for complex"),
            nullptr;
 
@@ -144,35 +165,6 @@ Type Parser::parseFunctionType() {
     return nullptr;
 
   return builder.getFunctionType(arguments, results);
-}
-
-/// Parse the offset and strides from a strided layout specification.
-///
-///   strided-layout ::= `offset:` dimension `,` `strides: ` stride-list
-///
-ParseResult Parser::parseStridedLayout(int64_t &offset,
-                                       SmallVectorImpl<int64_t> &strides) {
-  // Parse offset.
-  consumeToken(Token::kw_offset);
-  if (parseToken(Token::colon, "expected colon after `offset` keyword"))
-    return failure();
-
-  auto maybeOffset = getToken().getUnsignedIntegerValue();
-  bool question = getToken().is(Token::question);
-  if (!maybeOffset && !question)
-    return emitWrongTokenError("invalid offset");
-  offset = maybeOffset ? static_cast<int64_t>(*maybeOffset)
-                       : MemRefType::getDynamicStrideOrOffset();
-  consumeToken();
-
-  // Parse stride list.
-  if (parseToken(Token::comma, "expected comma after offset value") ||
-      parseToken(Token::kw_strides,
-                 "expected `strides` keyword after offset specification") ||
-      parseToken(Token::colon, "expected colon after `strides` keyword") ||
-      parseStrideList(strides))
-    return failure();
-  return success();
 }
 
 /// Parse a memref type.
@@ -225,29 +217,18 @@ Type Parser::parseMemRefType() {
   Attribute memorySpace;
 
   auto parseElt = [&]() -> ParseResult {
-    // Check for AffineMap as offset/strides.
-    if (getToken().is(Token::kw_offset)) {
-      int64_t offset;
-      SmallVector<int64_t, 4> strides;
-      if (failed(parseStridedLayout(offset, strides)))
-        return failure();
-      // Construct strided affine map.
-      AffineMap map = makeStridedLinearLayoutMap(strides, offset, getContext());
-      layout = AffineMapAttr::get(map);
-    } else {
-      // Either it is MemRefLayoutAttrInterface or memory space attribute.
-      Attribute attr = parseAttribute();
-      if (!attr)
-        return failure();
+    // Either it is MemRefLayoutAttrInterface or memory space attribute.
+    Attribute attr = parseAttribute();
+    if (!attr)
+      return failure();
 
-      if (attr.isa<MemRefLayoutAttrInterface>()) {
-        layout = attr.cast<MemRefLayoutAttrInterface>();
-      } else if (memorySpace) {
-        return emitError("multiple memory spaces specified in memref type");
-      } else {
-        memorySpace = attr;
-        return success();
-      }
+    if (isa<MemRefLayoutAttrInterface>(attr)) {
+      layout = cast<MemRefLayoutAttrInterface>(attr);
+    } else if (memorySpace) {
+      return emitError("multiple memory spaces specified in memref type");
+    } else {
+      memorySpace = attr;
+      return success();
     }
 
     if (isUnranked)
@@ -311,14 +292,14 @@ Type Parser::parseNonFunctionType() {
     auto width = getToken().getIntTypeBitwidth();
     if (!width.has_value())
       return (emitError("invalid integer width"), nullptr);
-    if (width.value() > IntegerType::kMaxWidth) {
+    if (*width > IntegerType::kMaxWidth) {
       emitError(getToken().getLoc(), "integer bitwidth is limited to ")
           << IntegerType::kMaxWidth << " bits";
       return nullptr;
     }
 
     IntegerType::SignednessSemantics signSemantics = IntegerType::Signless;
-    if (Optional<bool> signedness = getToken().getIntTypeSignedness())
+    if (std::optional<bool> signedness = getToken().getIntTypeSignedness())
       signSemantics = *signedness ? IntegerType::Signed : IntegerType::Unsigned;
 
     consumeToken(Token::inttype);
@@ -326,24 +307,60 @@ Type Parser::parseNonFunctionType() {
   }
 
   // float-type
+  case Token::kw_f4E2M1FN:
+    consumeToken(Token::kw_f4E2M1FN);
+    return builder.getType<Float4E2M1FNType>();
+  case Token::kw_f6E2M3FN:
+    consumeToken(Token::kw_f6E2M3FN);
+    return builder.getType<Float6E2M3FNType>();
+  case Token::kw_f6E3M2FN:
+    consumeToken(Token::kw_f6E3M2FN);
+    return builder.getType<Float6E3M2FNType>();
+  case Token::kw_f8E5M2:
+    consumeToken(Token::kw_f8E5M2);
+    return builder.getType<Float8E5M2Type>();
+  case Token::kw_f8E4M3:
+    consumeToken(Token::kw_f8E4M3);
+    return builder.getType<Float8E4M3Type>();
+  case Token::kw_f8E4M3FN:
+    consumeToken(Token::kw_f8E4M3FN);
+    return builder.getType<Float8E4M3FNType>();
+  case Token::kw_f8E5M2FNUZ:
+    consumeToken(Token::kw_f8E5M2FNUZ);
+    return builder.getType<Float8E5M2FNUZType>();
+  case Token::kw_f8E4M3FNUZ:
+    consumeToken(Token::kw_f8E4M3FNUZ);
+    return builder.getType<Float8E4M3FNUZType>();
+  case Token::kw_f8E4M3B11FNUZ:
+    consumeToken(Token::kw_f8E4M3B11FNUZ);
+    return builder.getType<Float8E4M3B11FNUZType>();
+  case Token::kw_f8E3M4:
+    consumeToken(Token::kw_f8E3M4);
+    return builder.getType<Float8E3M4Type>();
+  case Token::kw_f8E8M0FNU:
+    consumeToken(Token::kw_f8E8M0FNU);
+    return builder.getType<Float8E8M0FNUType>();
   case Token::kw_bf16:
     consumeToken(Token::kw_bf16);
-    return builder.getBF16Type();
+    return builder.getType<BFloat16Type>();
   case Token::kw_f16:
     consumeToken(Token::kw_f16);
-    return builder.getF16Type();
+    return builder.getType<Float16Type>();
+  case Token::kw_tf32:
+    consumeToken(Token::kw_tf32);
+    return builder.getType<FloatTF32Type>();
   case Token::kw_f32:
     consumeToken(Token::kw_f32);
-    return builder.getF32Type();
+    return builder.getType<Float32Type>();
   case Token::kw_f64:
     consumeToken(Token::kw_f64);
-    return builder.getF64Type();
+    return builder.getType<Float64Type>();
   case Token::kw_f80:
     consumeToken(Token::kw_f80);
-    return builder.getF80Type();
+    return builder.getType<Float80Type>();
   case Token::kw_f128:
     consumeToken(Token::kw_f128);
-    return builder.getF128Type();
+    return builder.getType<Float128Type>();
 
   // index-type
   case Token::kw_index:
@@ -401,11 +418,15 @@ Type Parser::parseTensorType() {
   // Parse an optional encoding attribute.
   Attribute encoding;
   if (consumeIf(Token::comma)) {
-    encoding = parseAttribute();
-    if (auto v = encoding.dyn_cast_or_null<VerifiableTensorEncoding>()) {
-      if (failed(v.verifyEncoding(dimensions, elementType,
-                                  [&] { return emitError(); })))
+    auto parseResult = parseOptionalAttribute(encoding);
+    if (parseResult.has_value()) {
+      if (failed(parseResult.value()))
         return nullptr;
+      if (auto v = dyn_cast_or_null<VerifiableTensorEncoding>(encoding)) {
+        if (failed(v.verifyEncoding(dimensions, elementType,
+                                    [&] { return emitError(); })))
+          return nullptr;
+      }
     }
   }
 
@@ -453,82 +474,62 @@ Type Parser::parseTupleType() {
 /// static-dim-list ::= decimal-literal (`x` decimal-literal)*
 ///
 VectorType Parser::parseVectorType() {
+  SMLoc loc = getToken().getLoc();
   consumeToken(Token::kw_vector);
 
   if (parseToken(Token::less, "expected '<' in vector type"))
     return nullptr;
 
+  // Parse the dimensions.
   SmallVector<int64_t, 4> dimensions;
-  unsigned numScalableDims;
-  if (parseVectorDimensionList(dimensions, numScalableDims))
+  SmallVector<bool, 4> scalableDims;
+  if (parseVectorDimensionList(dimensions, scalableDims))
     return nullptr;
-  if (any_of(dimensions, [](int64_t i) { return i <= 0; }))
-    return emitError(getToken().getLoc(),
-                     "vector types must have positive constant sizes"),
-           nullptr;
 
   // Parse the element type.
-  auto typeLoc = getToken().getLoc();
   auto elementType = parseType();
   if (!elementType || parseToken(Token::greater, "expected '>' in vector type"))
     return nullptr;
 
-  if (!VectorType::isValidElementType(elementType))
-    return emitError(typeLoc, "vector elements must be int/index/float type"),
-           nullptr;
-
-  return VectorType::get(dimensions, elementType, numScalableDims);
+  return getChecked<VectorType>(loc, dimensions, elementType, scalableDims);
 }
 
-/// Parse a dimension list in a vector type. This populates the dimension list,
-/// and returns the number of scalable dimensions in `numScalableDims`.
+/// Parse a dimension list in a vector type. This populates the dimension list.
+/// For i-th dimension, `scalableDims[i]` contains either:
+///   * `false` for a non-scalable dimension (e.g. `4`),
+///   * `true` for a scalable dimension (e.g. `[4]`).
 ///
-/// vector-dim-list := (static-dim-list `x`)? (`[` static-dim-list `]` `x`)?
-/// static-dim-list ::= decimal-literal (`x` decimal-literal)*
+/// vector-dim-list := (static-dim-list `x`)?
+/// static-dim-list ::= static-dim (`x` static-dim)*
+/// static-dim ::= (decimal-literal | `[` decimal-literal `]`)
 ///
 ParseResult
 Parser::parseVectorDimensionList(SmallVectorImpl<int64_t> &dimensions,
-                                 unsigned &numScalableDims) {
-  numScalableDims = 0;
+                                 SmallVectorImpl<bool> &scalableDims) {
   // If there is a set of fixed-length dimensions, consume it
-  while (getToken().is(Token::integer)) {
+  while (getToken().is(Token::integer) || getToken().is(Token::l_square)) {
     int64_t value;
+    bool scalable = consumeIf(Token::l_square);
     if (parseIntegerInDimensionList(value))
       return failure();
     dimensions.push_back(value);
+    if (scalable) {
+      if (!consumeIf(Token::r_square))
+        return emitWrongTokenError("missing ']' closing scalable dimension");
+    }
+    scalableDims.push_back(scalable);
     // Make sure we have an 'x' or something like 'xbf32'.
     if (parseXInDimensionList())
       return failure();
-  }
-  // If there is a set of scalable dimensions, consume it
-  if (consumeIf(Token::l_square)) {
-    while (getToken().is(Token::integer)) {
-      int64_t value;
-      if (parseIntegerInDimensionList(value))
-        return failure();
-      dimensions.push_back(value);
-      numScalableDims++;
-      // Check if we have reached the end of the scalable dimension list
-      if (consumeIf(Token::r_square)) {
-        // Make sure we have something like 'xbf32'.
-        return parseXInDimensionList();
-      }
-      // Make sure we have an 'x'
-      if (parseXInDimensionList())
-        return failure();
-    }
-    // If we make it here, we've finished parsing the dimension list
-    // without finding ']' closing the set of scalable dimensions
-    return emitWrongTokenError(
-        "missing ']' closing set of scalable dimensions");
   }
 
   return success();
 }
 
 /// Parse a dimension list of a tensor or memref type.  This populates the
-/// dimension list, using -1 for the `?` dimensions if `allowDynamic` is set and
-/// errors out on `?` otherwise. Parsing the trailing `x` is configurable.
+/// dimension list, using ShapedType::kDynamic for the `?` dimensions if
+/// `allowDynamic` is set and errors out on `?` otherwise. Parsing the trailing
+/// `x` is configurable.
 ///
 ///   dimension-list ::= eps | dimension (`x` dimension)*
 ///   dimension-list-with-trailing-x ::= (dimension `x`)*
@@ -546,7 +547,7 @@ Parser::parseDimensionListRanked(SmallVectorImpl<int64_t> &dimensions,
     if (consumeIf(Token::question)) {
       if (!allowDynamic)
         return emitError(loc, "expected static shape");
-      dimensions.push_back(-1);
+      dimensions.push_back(ShapedType::kDynamic);
     } else {
       int64_t value;
       if (failed(parseIntegerInDimensionList(value)))
@@ -591,7 +592,7 @@ ParseResult Parser::parseIntegerInDimensionList(int64_t &value) {
     consumeToken();
   } else {
     // Make sure this integer value is in bound and valid.
-    Optional<uint64_t> dimension = getToken().getUInt64IntegerValue();
+    std::optional<uint64_t> dimension = getToken().getUInt64IntegerValue();
     if (!dimension ||
         *dimension > (uint64_t)std::numeric_limits<int64_t>::max())
       return emitError("invalid dimension");
@@ -616,35 +617,4 @@ ParseResult Parser::parseXInDimensionList() {
   consumeToken(Token::bare_identifier);
 
   return success();
-}
-
-// Parse a comma-separated list of dimensions, possibly empty:
-//   stride-list ::= `[` (dimension (`,` dimension)*)? `]`
-ParseResult Parser::parseStrideList(SmallVectorImpl<int64_t> &dimensions) {
-  return parseCommaSeparatedList(
-      Delimiter::Square,
-      [&]() -> ParseResult {
-        if (consumeIf(Token::question)) {
-          dimensions.push_back(MemRefType::getDynamicStrideOrOffset());
-        } else {
-          // This must be an integer value.
-          int64_t val;
-          if (getToken().getSpelling().getAsInteger(10, val))
-            return emitError("invalid integer value: ")
-                   << getToken().getSpelling();
-          // Make sure it is not the one value for `?`.
-          if (ShapedType::isDynamic(val))
-            return emitError("invalid integer value: ")
-                   << getToken().getSpelling()
-                   << ", use `?` to specify a dynamic dimension";
-
-          if (val == 0)
-            return emitError("invalid memref stride");
-
-          dimensions.push_back(val);
-          consumeToken(Token::integer);
-        }
-        return success();
-      },
-      " in stride list");
 }

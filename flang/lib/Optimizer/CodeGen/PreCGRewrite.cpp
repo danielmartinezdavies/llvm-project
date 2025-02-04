@@ -10,16 +10,23 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "CGOps.h"
-#include "PassDetail.h"
 #include "flang/Optimizer/CodeGen/CodeGen.h"
+
+#include "flang/Optimizer/Builder/Todo.h" // remove when TODO's are done
+#include "flang/Optimizer/CodeGen/CGOps.h"
 #include "flang/Optimizer/Dialect/FIRDialect.h"
 #include "flang/Optimizer/Dialect/FIROps.h"
 #include "flang/Optimizer/Dialect/FIRType.h"
-#include "flang/Optimizer/Support/FIRContext.h"
+#include "flang/Optimizer/Dialect/Support/FIRContext.h"
+#include "mlir/IR/Iterators.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/Support/Debug.h"
+
+namespace fir {
+#define GEN_PASS_DEF_CODEGENREWRITE
+#include "flang/Optimizer/CodeGen/CGPasses.h.inc"
+} // namespace fir
 
 //===----------------------------------------------------------------------===//
 // Codegen rewrite: rewriting of subgraphs of ops
@@ -73,20 +80,22 @@ class EmboxConversion : public mlir::OpRewritePattern<fir::EmboxOp> {
 public:
   using OpRewritePattern::OpRewritePattern;
 
-  mlir::LogicalResult
+  llvm::LogicalResult
   matchAndRewrite(fir::EmboxOp embox,
                   mlir::PatternRewriter &rewriter) const override {
     // If the embox does not include a shape, then do not convert it
     if (auto shapeVal = embox.getShape())
       return rewriteDynamicShape(embox, rewriter, shapeVal);
-    if (auto boxTy = embox.getType().dyn_cast<fir::BoxType>())
-      if (auto seqTy = boxTy.getEleTy().dyn_cast<fir::SequenceType>())
+    if (mlir::isa<fir::ClassType>(embox.getType()))
+      TODO(embox.getLoc(), "embox conversion for fir.class type");
+    if (auto boxTy = mlir::dyn_cast<fir::BoxType>(embox.getType()))
+      if (auto seqTy = mlir::dyn_cast<fir::SequenceType>(boxTy.getEleTy()))
         if (!seqTy.hasDynamicExtents())
           return rewriteStaticShape(embox, rewriter, seqTy);
     return mlir::failure();
   }
 
-  mlir::LogicalResult rewriteStaticShape(fir::EmboxOp embox,
+  llvm::LogicalResult rewriteStaticShape(fir::EmboxOp embox,
                                          mlir::PatternRewriter &rewriter,
                                          fir::SequenceType seqTy) const {
     auto loc = embox.getLoc();
@@ -98,14 +107,15 @@ public:
       shapeOpers.push_back(extVal);
     }
     auto xbox = rewriter.create<fir::cg::XEmboxOp>(
-        loc, embox.getType(), embox.getMemref(), shapeOpers, llvm::None,
-        llvm::None, llvm::None, llvm::None, embox.getTypeparams());
+        loc, embox.getType(), embox.getMemref(), shapeOpers, std::nullopt,
+        std::nullopt, std::nullopt, std::nullopt, embox.getTypeparams(),
+        embox.getSourceBox(), embox.getAllocatorIdxAttr());
     LLVM_DEBUG(llvm::dbgs() << "rewriting " << embox << " to " << xbox << '\n');
     rewriter.replaceOp(embox, xbox.getOperation()->getResults());
     return mlir::success();
   }
 
-  mlir::LogicalResult rewriteDynamicShape(fir::EmboxOp embox,
+  llvm::LogicalResult rewriteDynamicShape(fir::EmboxOp embox,
                                           mlir::PatternRewriter &rewriter,
                                           mlir::Value shapeVal) const {
     auto loc = embox.getLoc();
@@ -134,7 +144,8 @@ public:
       }
     auto xbox = rewriter.create<fir::cg::XEmboxOp>(
         loc, embox.getType(), embox.getMemref(), shapeOpers, shiftOpers,
-        sliceOpers, subcompOpers, substrOpers, embox.getTypeparams());
+        sliceOpers, subcompOpers, substrOpers, embox.getTypeparams(),
+        embox.getSourceBox(), embox.getAllocatorIdxAttr());
     LLVM_DEBUG(llvm::dbgs() << "rewriting " << embox << " to " << xbox << '\n');
     rewriter.replaceOp(embox, xbox.getOperation()->getResults());
     return mlir::success();
@@ -157,7 +168,7 @@ class ReboxConversion : public mlir::OpRewritePattern<fir::ReboxOp> {
 public:
   using OpRewritePattern::OpRewritePattern;
 
-  mlir::LogicalResult
+  llvm::LogicalResult
   matchAndRewrite(fir::ReboxOp rebox,
                   mlir::PatternRewriter &rewriter) const override {
     auto loc = rebox.getLoc();
@@ -216,7 +227,7 @@ class ArrayCoorConversion : public mlir::OpRewritePattern<fir::ArrayCoorOp> {
 public:
   using OpRewritePattern::OpRewritePattern;
 
-  mlir::LogicalResult
+  llvm::LogicalResult
   matchAndRewrite(fir::ArrayCoorOp arrCoor,
                   mlir::PatternRewriter &rewriter) const override {
     auto loc = arrCoor.getLoc();
@@ -258,89 +269,121 @@ public:
   }
 };
 
-class CodeGenRewrite : public fir::CodeGenRewriteBase<CodeGenRewrite> {
+class DeclareOpConversion : public mlir::OpRewritePattern<fir::DeclareOp> {
+  bool preserveDeclare;
+
 public:
-  void runOn(mlir::Operation *op, mlir::Region &region) {
+  using OpRewritePattern::OpRewritePattern;
+  DeclareOpConversion(mlir::MLIRContext *ctx, bool preserveDecl)
+      : OpRewritePattern(ctx), preserveDeclare(preserveDecl) {}
+
+  llvm::LogicalResult
+  matchAndRewrite(fir::DeclareOp declareOp,
+                  mlir::PatternRewriter &rewriter) const override {
+    if (!preserveDeclare) {
+      rewriter.replaceOp(declareOp, declareOp.getMemref());
+      return mlir::success();
+    }
+    auto loc = declareOp.getLoc();
+    llvm::SmallVector<mlir::Value> shapeOpers;
+    llvm::SmallVector<mlir::Value> shiftOpers;
+    if (auto shapeVal = declareOp.getShape()) {
+      if (auto shapeOp = mlir::dyn_cast<fir::ShapeOp>(shapeVal.getDefiningOp()))
+        populateShape(shapeOpers, shapeOp);
+      else if (auto shiftOp =
+                   mlir::dyn_cast<fir::ShapeShiftOp>(shapeVal.getDefiningOp()))
+        populateShapeAndShift(shapeOpers, shiftOpers, shiftOp);
+      else if (auto shiftOp =
+                   mlir::dyn_cast<fir::ShiftOp>(shapeVal.getDefiningOp()))
+        populateShift(shiftOpers, shiftOp);
+      else
+        return mlir::failure();
+    }
+    // FIXME: Add FortranAttrs and CudaAttrs
+    auto xDeclOp = rewriter.create<fir::cg::XDeclareOp>(
+        loc, declareOp.getType(), declareOp.getMemref(), shapeOpers, shiftOpers,
+        declareOp.getTypeparams(), declareOp.getDummyScope(),
+        declareOp.getUniqName());
+    LLVM_DEBUG(llvm::dbgs()
+               << "rewriting " << declareOp << " to " << xDeclOp << '\n');
+    rewriter.replaceOp(declareOp, xDeclOp.getOperation()->getResults());
+    return mlir::success();
+  }
+};
+
+class DummyScopeOpConversion
+    : public mlir::OpRewritePattern<fir::DummyScopeOp> {
+public:
+  using OpRewritePattern::OpRewritePattern;
+
+  llvm::LogicalResult
+  matchAndRewrite(fir::DummyScopeOp dummyScopeOp,
+                  mlir::PatternRewriter &rewriter) const override {
+    rewriter.replaceOpWithNewOp<fir::UndefOp>(dummyScopeOp,
+                                              dummyScopeOp.getType());
+    return mlir::success();
+  }
+};
+
+/// Simple DCE to erase fir.shape/shift/slice/unused shape operands after this
+/// pass (fir.shape and like have no codegen).
+/// mlir::RegionDCE is expensive and requires running
+/// mlir::eraseUnreachableBlocks. It does things that are not needed here, like
+/// removing unused block arguments. fir.shape/shift/slice cannot be block
+/// arguments.
+/// This helper does a naive backward walk of the IR. It is not even guaranteed
+/// to walk blocks according to backward dominance, but that is good enough for
+/// what is done here, fir.shape/shift/slice have no usages anymore. The
+/// backward walk allows getting rid of most of the unused operands, it is not a
+/// problem to leave some in the weird cases.
+static void simpleDCE(mlir::RewriterBase &rewriter, mlir::Operation *op) {
+  op->walk<mlir::WalkOrder::PostOrder, mlir::ReverseIterator>(
+      [&](mlir::Operation *subOp) {
+        if (mlir::isOpTriviallyDead(subOp))
+          rewriter.eraseOp(subOp);
+      });
+}
+
+class CodeGenRewrite : public fir::impl::CodeGenRewriteBase<CodeGenRewrite> {
+public:
+  using CodeGenRewriteBase<CodeGenRewrite>::CodeGenRewriteBase;
+
+  void runOnOperation() override final {
+    mlir::ModuleOp mod = getOperation();
+
     auto &context = getContext();
-    mlir::OpBuilder rewriter(&context);
     mlir::ConversionTarget target(context);
-    target.addLegalDialect<mlir::arith::ArithmeticDialect, fir::FIROpsDialect,
+    target.addLegalDialect<mlir::arith::ArithDialect, fir::FIROpsDialect,
                            fir::FIRCodeGenDialect, mlir::func::FuncDialect>();
     target.addIllegalOp<fir::ArrayCoorOp>();
     target.addIllegalOp<fir::ReboxOp>();
+    target.addIllegalOp<fir::DeclareOp>();
+    target.addIllegalOp<fir::DummyScopeOp>();
     target.addDynamicallyLegalOp<fir::EmboxOp>([](fir::EmboxOp embox) {
-      return !(embox.getShape() || embox.getType()
-                                       .cast<fir::BoxType>()
-                                       .getEleTy()
-                                       .isa<fir::SequenceType>());
+      return !(embox.getShape() ||
+               mlir::isa<fir::SequenceType>(
+                   mlir::cast<fir::BaseBoxType>(embox.getType()).getEleTy()));
     });
     mlir::RewritePatternSet patterns(&context);
-    patterns.insert<EmboxConversion, ArrayCoorConversion, ReboxConversion>(
-        &context);
+    fir::populatePreCGRewritePatterns(patterns, preserveDeclare);
     if (mlir::failed(
-            mlir::applyPartialConversion(op, target, std::move(patterns)))) {
+            mlir::applyPartialConversion(mod, target, std::move(patterns)))) {
       mlir::emitError(mlir::UnknownLoc::get(&context),
                       "error in running the pre-codegen conversions");
       signalPassFailure();
-    }
-    // Erase any residual.
-    simplifyRegion(region);
-  }
-
-  void runOnOperation() override final {
-    // Call runOn on all top level regions that may contain emboxOp/arrayCoorOp.
-    auto mod = getOperation();
-    for (auto func : mod.getOps<mlir::func::FuncOp>())
-      runOn(func, func.getBody());
-    for (auto global : mod.getOps<fir::GlobalOp>())
-      runOn(global, global.getRegion());
-  }
-
-  // Clean up the region.
-  void simplifyRegion(mlir::Region &region) {
-    for (auto &block : region.getBlocks())
-      for (auto &op : block.getOperations()) {
-        for (auto &reg : op.getRegions())
-          simplifyRegion(reg);
-        maybeEraseOp(&op);
-      }
-    doDCE();
-  }
-
-  /// Run a simple DCE cleanup to remove any dead code after the rewrites.
-  void doDCE() {
-    std::vector<mlir::Operation *> workList;
-    workList.swap(opsToErase);
-    while (!workList.empty()) {
-      for (auto *op : workList) {
-        std::vector<mlir::Value> opOperands(op->operand_begin(),
-                                            op->operand_end());
-        LLVM_DEBUG(llvm::dbgs() << "DCE on " << *op << '\n');
-        ++numDCE;
-        op->erase();
-        for (auto opnd : opOperands)
-          maybeEraseOp(opnd.getDefiningOp());
-      }
-      workList.clear();
-      workList.swap(opsToErase);
-    }
-  }
-
-  void maybeEraseOp(mlir::Operation *op) {
-    if (!op)
       return;
-    if (op->hasTrait<mlir::OpTrait::IsTerminator>())
-      return;
-    if (mlir::isOpTriviallyDead(op))
-      opsToErase.push_back(op);
+    }
+    // Erase any residual (fir.shape, fir.slice...).
+    mlir::IRRewriter rewriter(&context);
+    simpleDCE(rewriter, mod.getOperation());
   }
-
-private:
-  std::vector<mlir::Operation *> opsToErase;
 };
 
 } // namespace
 
-std::unique_ptr<mlir::Pass> fir::createFirCodeGenRewritePass() {
-  return std::make_unique<CodeGenRewrite>();
+void fir::populatePreCGRewritePatterns(mlir::RewritePatternSet &patterns,
+                                       bool preserveDeclare) {
+  patterns.insert<EmboxConversion, ArrayCoorConversion, ReboxConversion,
+                  DummyScopeOpConversion>(patterns.getContext());
+  patterns.add<DeclareOpConversion>(patterns.getContext(), preserveDeclare);
 }

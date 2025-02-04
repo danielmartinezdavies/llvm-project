@@ -56,8 +56,6 @@ void testNonPODCopyConstructor() {
 namespace ConstructorVirtualCalls {
   class A {
   public:
-    int *out1, *out2, *out3;
-
     virtual int get() { return 1; }
 
     A(int *out1) {
@@ -218,9 +216,7 @@ namespace PODUninitialized {
     // Make sure that p4.x contains a symbol after copy.
     if (p4.x > 0)
       clang_analyzer_eval(p4.x > 0); // expected-warning{{TRUE}}
-    // FIXME: Element region gets in the way, so these aren't the same symbols
-    // as they should be.
-    clang_analyzer_eval(pp.x == p4.x); // expected-warning{{UNKNOWN}}
+    clang_analyzer_eval(pp.x == p4.x); // expected-warning{{TRUE}}
 
     PODWrapper w;
     w.p.y = 1;

@@ -67,6 +67,9 @@ public:
     return llvm::hash_value(pred.def);
   }
 
+  /// Return the underlying def.
+  const llvm::Record &getDef() const { return *def; }
+
 protected:
   // The TableGen definition of this predicate.
   const llvm::Record *def{nullptr};
@@ -101,7 +104,7 @@ public:
   const llvm::Record *getCombinerDef() const;
 
   // Get the predicates that are combined by this predicate.
-  std::vector<llvm::Record *> getChildren() const;
+  std::vector<const llvm::Record *> getChildren() const;
 };
 
 // A combined predicate that requires all child predicates of 'CPred' type to

@@ -9,15 +9,15 @@ target triple = "wasm32-unknown-unknown"
 @foo = global i32 3, section "mysection", align 4
 @bar = global i32 4, section "mysection", align 4
 
-@__start_mysection = external global i8*
-@__stop_mysection = external global i8*
+@__start_mysection = external global ptr
+@__stop_mysection = external global ptr
 
-define i8** @get_start() {
-  ret i8** @__start_mysection
+define ptr @get_start() {
+  ret ptr @__start_mysection
 }
 
-define i8** @get_end() {
-  ret i8** @__stop_mysection
+define ptr @get_end() {
+  ret ptr @__stop_mysection
 }
 
 define void @_start()  {
@@ -34,12 +34,12 @@ entry:
 ; CHECK-NEXT:           Value:           1024
 ; CHECK-NEXT:         Content:         03000000040000002A0000002B000000
 
-;       ASM: 00000001 <get_start>:
+;       ASM: 0000006e <get_start>:
 ; ASM-EMPTY:
-;  ASM-NEXT:        3:     i32.const 1024
-;  ASM-NEXT:        9:     end
+;  ASM-NEXT:        70:     i32.const 1024
+;  ASM-NEXT:        76:     end
 
-;       ASM: 0000000a <get_end>:
+;       ASM: 00000077 <get_end>:
 ; ASM-EMPTY:
-;  ASM-NEXT:        c:     i32.const 1040
-;  ASM-NEXT:       12:     end
+;  ASM-NEXT:        79:     i32.const 1040
+;  ASM-NEXT:       7f:     end

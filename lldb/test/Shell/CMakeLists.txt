@@ -1,4 +1,5 @@
 add_custom_target(lldb-shell-test-deps)
+set_target_properties(lldb-shell-test-deps PROPERTIES FOLDER "LLDB/Tests")
 add_dependencies(lldb-shell-test-deps lldb-test-depends)
 
 add_lit_testsuites(LLDB-SHELL
@@ -13,6 +14,9 @@ configure_lit_site_cfg(
 configure_file(
   ${CMAKE_CURRENT_SOURCE_DIR}/lit-lldb-init.in
   ${CMAKE_CURRENT_BINARY_DIR}/lit-lldb-init)
+
+file(WRITE ${CMAKE_CURRENT_BINARY_DIR}/lit-lldb-init-quiet
+  "command source -C --silent-run true lit-lldb-init\n")
 
 add_lit_testsuite(check-lldb-shell "Running lldb shell test suite"
   ${CMAKE_CURRENT_BINARY_DIR}

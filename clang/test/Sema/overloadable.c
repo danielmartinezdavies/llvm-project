@@ -1,4 +1,4 @@
-// RUN: %clang_cc1 -fsyntax-only -fdouble-square-bracket-attributes -verify %s -Wincompatible-pointer-types -Wno-strict-prototypes
+// RUN: %clang_cc1 -fsyntax-only -verify %s -Wincompatible-pointer-types -Wno-strict-prototypes
 
 int var __attribute__((overloadable)); // expected-error{{'overloadable' attribute only applies to functions}}
 void bad_attr_target(int) [[clang::overloadable]]; // expected-error{{'overloadable' attribute cannot be applied to types}}
@@ -72,6 +72,16 @@ f1_type __attribute__((overloadable)) f1; // expected-error{{'overloadable' func
 void test() {
   f0();
   f1();
+}
+
+// Validate that the invalid function doesn't stay overloadable. 
+int __attribute__((overloadable)) invalid(); // expected-error{{'overloadable' function 'invalid' must have a prototype}}
+int __attribute__((overloadable)) invalid(int); // expected-error{{redeclaration of 'invalid' must not have the 'overloadable' attribute}}
+                                                // expected-note@-2{{previous unmarked overload of function is here}}
+void use_invalid(void) {
+  invalid(); // expected-error{{too few arguments to function call, expected 1, have 0}}
+             // expected-note@-4{{'invalid' declared here}}
+  invalid(1);
 }
 
 void before_local_1(int) __attribute__((overloadable));

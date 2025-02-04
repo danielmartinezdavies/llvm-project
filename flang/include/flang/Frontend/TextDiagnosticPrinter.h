@@ -51,7 +51,10 @@ public:
   void setPrefix(std::string value) { prefix = std::move(value); }
 
   void HandleDiagnostic(clang::DiagnosticsEngine::Level level,
-      const clang::Diagnostic &info) override;
+                        const clang::Diagnostic &info) override;
+
+  void printLocForRemarks(llvm::raw_svector_ostream &diagMessageStream,
+                          llvm::StringRef &diagMsg);
 };
 
 } // namespace Fortran::frontend

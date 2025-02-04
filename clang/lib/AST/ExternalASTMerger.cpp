@@ -187,10 +187,7 @@ public:
   /// Implements the ASTImporter interface for tracking back a declaration
   /// to its original declaration it came from.
   Decl *GetOriginalDecl(Decl *To) override {
-    auto It = ToOrigin.find(To);
-    if (It != ToOrigin.end())
-      return It->second;
-    return nullptr;
+    return ToOrigin.lookup(To);
   }
 
   /// Whenever a DeclContext is imported, ensure that ExternalASTSource's origin
@@ -279,8 +276,8 @@ bool ExternalASTMerger::HasImporterForOrigin(ASTContext &OriginContext) {
 template <typename CallbackType>
 void ExternalASTMerger::ForEachMatchingDC(const DeclContext *DC,
                                           CallbackType Callback) {
-  if (Origins.count(DC)) {
-    ExternalASTMerger::DCOrigin Origin = Origins[DC];
+  if (auto It = Origins.find(DC); It != Origins.end()) {
+    ExternalASTMerger::DCOrigin Origin = It->second;
     LazyASTImporter &Importer = LazyImporterForOrigin(*this, *Origin.AST);
     Callback(Importer, Importer.GetReverse(), Origin.DC);
   } else {
@@ -474,8 +471,9 @@ static bool importSpecializationsIfNeeded(Decl *D, ASTImporter *Importer) {
   return false;
 }
 
-bool ExternalASTMerger::FindExternalVisibleDeclsByName(const DeclContext *DC,
-                                                       DeclarationName Name) {
+bool ExternalASTMerger::FindExternalVisibleDeclsByName(
+    const DeclContext *DC, DeclarationName Name,
+    const DeclContext *OriginalDC) {
   llvm::SmallVector<NamedDecl *, 1> Decls;
   llvm::SmallVector<Candidate, 4> Candidates;
 
@@ -541,4 +539,3 @@ void ExternalASTMerger::FindExternalLexicalDecls(
     return false;
   });
 }
-

@@ -10,12 +10,12 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "Protocol.h"
-#include "Logging.h"
-#include "mlir/Support/LogicalResult.h"
+#include "mlir/Tools/lsp-server-support/Protocol.h"
+#include "mlir/Tools/lsp-server-support/Logging.h"
 #include "llvm/ADT/Hashing.h"
 #include "llvm/ADT/SmallString.h"
-#include "llvm/ADT/StringSwitch.h"
+#include "llvm/ADT/StringExtras.h"
+#include "llvm/ADT/StringSet.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/Format.h"
 #include "llvm/Support/FormatVariadic.h"
@@ -116,7 +116,16 @@ static std::string percentDecode(StringRef content) {
   return result;
 }
 
-static bool isValidScheme(StringRef scheme) {
+/// Return the set containing the supported URI schemes.
+static StringSet<> &getSupportedSchemes() {
+  static StringSet<> schemes({"file", "test"});
+  return schemes;
+}
+
+/// Returns true if the given scheme is structurally valid, i.e. it does not
+/// contain any invalid scheme characters. This does not check that the scheme
+/// is actually supported.
+static bool isStructurallyValidScheme(StringRef scheme) {
   if (scheme.empty())
     return false;
   if (!llvm::isAlpha(scheme[0]))
@@ -126,7 +135,8 @@ static bool isValidScheme(StringRef scheme) {
   });
 }
 
-static llvm::Expected<std::string> uriFromAbsolutePath(StringRef absolutePath) {
+static llvm::Expected<std::string> uriFromAbsolutePath(StringRef absolutePath,
+                                                       StringRef scheme) {
   std::string body;
   StringRef authority;
   StringRef root = llvm::sys::path::root_name(absolutePath);
@@ -140,13 +150,13 @@ static llvm::Expected<std::string> uriFromAbsolutePath(StringRef absolutePath) {
   }
   body += llvm::sys::path::convert_to_slash(absolutePath);
 
-  std::string uri = "file:";
+  std::string uri = scheme.str() + ":";
   if (authority.empty() && body.empty())
     return uri;
 
   // If authority if empty, we only print body if it starts with "/"; otherwise,
   // the URI is invalid.
-  if (!authority.empty() || StringRef(body).startswith("/")) {
+  if (!authority.empty() || StringRef(body).starts_with("/")) {
     uri.append("//");
     percentEncode(authority, uri);
   }
@@ -156,7 +166,7 @@ static llvm::Expected<std::string> uriFromAbsolutePath(StringRef absolutePath) {
 
 static llvm::Expected<std::string> getAbsolutePath(StringRef authority,
                                                    StringRef body) {
-  if (!body.startswith("/"))
+  if (!body.starts_with("/"))
     return llvm::createStringError(
         llvm::inconvertibleErrorCode(),
         "File scheme: expect body to be an absolute path starting "
@@ -186,7 +196,7 @@ static llvm::Expected<std::string> parseFilePathFromURI(StringRef origUri) {
                                        origUri);
   StringRef schemeStr = uri.substr(0, pos);
   std::string uriScheme = percentDecode(schemeStr);
-  if (!isValidScheme(uriScheme))
+  if (!isStructurallyValidScheme(uriScheme))
     return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                    "Invalid scheme: " + schemeStr +
                                        " (decoded: " + uriScheme + ")");
@@ -204,10 +214,10 @@ static llvm::Expected<std::string> parseFilePathFromURI(StringRef origUri) {
   std::string uriBody = percentDecode(uri);
 
   // Compute the absolute path for this uri.
-  if (uriScheme != "file" && uriScheme != "test") {
-    return llvm::createStringError(
-        llvm::inconvertibleErrorCode(),
-        "mlir-lsp-server only supports 'file' URI scheme for workspace files");
+  if (!getSupportedSchemes().contains(uriScheme)) {
+    return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                   "unsupported URI scheme `" + uriScheme +
+                                       "' for workspace files");
   }
   return getAbsolutePath(uriAuthority, uriBody);
 }
@@ -219,16 +229,24 @@ llvm::Expected<URIForFile> URIForFile::fromURI(StringRef uri) {
   return URIForFile(std::move(*filePath), uri.str());
 }
 
-llvm::Expected<URIForFile> URIForFile::fromFile(StringRef absoluteFilepath) {
-  llvm::Expected<std::string> uri = uriFromAbsolutePath(absoluteFilepath);
+llvm::Expected<URIForFile> URIForFile::fromFile(StringRef absoluteFilepath,
+                                                StringRef scheme) {
+  llvm::Expected<std::string> uri =
+      uriFromAbsolutePath(absoluteFilepath, scheme);
   if (!uri)
     return uri.takeError();
   return fromURI(*uri);
 }
 
+StringRef URIForFile::scheme() const { return uri().split(':').first; }
+
+void URIForFile::registerSupportedScheme(StringRef scheme) {
+  getSupportedSchemes().insert(scheme);
+}
+
 bool mlir::lsp::fromJSON(const llvm::json::Value &value, URIForFile &result,
                          llvm::json::Path path) {
-  if (Optional<StringRef> str = value.getAsString()) {
+  if (std::optional<StringRef> str = value.getAsString()) {
     llvm::Expected<URIForFile> expectedURI = URIForFile::fromURI(*str);
     if (!expectedURI) {
       path.report("unresolvable URI");
@@ -263,7 +281,7 @@ bool mlir::lsp::fromJSON(const llvm::json::Value &value,
   if (const llvm::json::Object *textDocument = o->getObject("textDocument")) {
     if (const llvm::json::Object *documentSymbol =
             textDocument->getObject("documentSymbol")) {
-      if (Optional<bool> hierarchicalSupport =
+      if (std::optional<bool> hierarchicalSupport =
               documentSymbol->getBoolean("hierarchicalDocumentSymbolSupport"))
         result.hierarchicalDocumentSymbol = *hierarchicalSupport;
     }
@@ -276,12 +294,27 @@ bool mlir::lsp::fromJSON(const llvm::json::Value &value,
 }
 
 //===----------------------------------------------------------------------===//
+// ClientInfo
+//===----------------------------------------------------------------------===//
+
+bool mlir::lsp::fromJSON(const llvm::json::Value &value, ClientInfo &result,
+                         llvm::json::Path path) {
+  llvm::json::ObjectMapper o(value, path);
+  if (!o || !o.map("name", result.name))
+    return false;
+
+  // Don't fail if we can't parse version.
+  o.map("version", result.version);
+  return true;
+}
+
+//===----------------------------------------------------------------------===//
 // InitializeParams
 //===----------------------------------------------------------------------===//
 
 bool mlir::lsp::fromJSON(const llvm::json::Value &value, TraceLevel &result,
                          llvm::json::Path path) {
-  if (Optional<StringRef> str = value.getAsString()) {
+  if (std::optional<StringRef> str = value.getAsString()) {
     if (*str == "off") {
       result = TraceLevel::Off;
       return true;
@@ -306,6 +339,8 @@ bool mlir::lsp::fromJSON(const llvm::json::Value &value,
   // We deliberately don't fail if we can't parse individual fields.
   o.map("capabilities", result.capabilities);
   o.map("trace", result.trace);
+  mapOptOrNull(value, "clientInfo", result.clientInfo, path);
+
   return true;
 }
 
@@ -610,6 +645,20 @@ llvm::json::Value mlir::lsp::toJSON(const DiagnosticRelatedInformation &info) {
 // Diagnostic
 //===----------------------------------------------------------------------===//
 
+llvm::json::Value mlir::lsp::toJSON(DiagnosticTag tag) {
+  return static_cast<int>(tag);
+}
+
+bool mlir::lsp::fromJSON(const llvm::json::Value &value, DiagnosticTag &result,
+                         llvm::json::Path path) {
+  if (std::optional<int64_t> i = value.getAsInteger()) {
+    result = (DiagnosticTag)*i;
+    return true;
+  }
+
+  return false;
+}
+
 llvm::json::Value mlir::lsp::toJSON(const Diagnostic &diag) {
   llvm::json::Object result{
       {"range", diag.range},
@@ -622,6 +671,8 @@ llvm::json::Value mlir::lsp::toJSON(const Diagnostic &diag) {
     result["source"] = diag.source;
   if (diag.relatedInformation)
     result["relatedInformation"] = *diag.relatedInformation;
+  if (!diag.tags.empty())
+    result["tags"] = diag.tags;
   return std::move(result);
 }
 
@@ -639,7 +690,8 @@ bool mlir::lsp::fromJSON(const llvm::json::Value &value, Diagnostic &result,
          mapOptOrNull(value, "category", result.category, path) &&
          mapOptOrNull(value, "source", result.source, path) &&
          mapOptOrNull(value, "relatedInformation", result.relatedInformation,
-                      path);
+                      path) &&
+         mapOptOrNull(value, "tags", result.tags, path);
 }
 
 //===----------------------------------------------------------------------===//
@@ -683,7 +735,7 @@ raw_ostream &mlir::lsp::operator<<(raw_ostream &os, const TextEdit &value) {
 
 bool mlir::lsp::fromJSON(const llvm::json::Value &value,
                          CompletionItemKind &result, llvm::json::Path path) {
-  if (Optional<int64_t> intValue = value.getAsInteger()) {
+  if (std::optional<int64_t> intValue = value.getAsInteger()) {
     if (*intValue < static_cast<int>(CompletionItemKind::Text) ||
         *intValue > static_cast<int>(CompletionItemKind::TypeParameter))
       return false;

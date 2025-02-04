@@ -12,7 +12,7 @@
 //===----------------------------------------------------------------------===//
 #include "llvm/Analysis/InlineSizeEstimatorAnalysis.h"
 
-#ifdef LLVM_HAVE_TF_API
+#ifdef LLVM_HAVE_TFLITE
 #include "llvm/Analysis/Utils/TFUtils.h"
 #endif
 #include "llvm/IR/Function.h"
@@ -23,18 +23,18 @@ using namespace llvm;
 
 AnalysisKey InlineSizeEstimatorAnalysis::Key;
 
-#ifdef LLVM_HAVE_TF_API
+#ifdef LLVM_HAVE_TFLITE
 #include "llvm/Analysis/LoopInfo.h"
 #include "llvm/Analysis/TargetLibraryInfo.h"
 #include "llvm/Analysis/TargetTransformInfo.h"
 #include "llvm/IR/BasicBlock.h"
 #include "llvm/IR/Dominators.h"
 #include "llvm/IR/Instructions.h"
-#include "llvm/MC/MCAsmLayout.h"
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/CommandLine.h"
 #include <algorithm>
 #include <deque>
+#include <optional>
 
 cl::opt<std::string> TFIR2NativeModelPath(
     "ml-inliner-ir2native-model", cl::Hidden,
@@ -190,8 +190,7 @@ IRToNativeSizeLearning::getFunctionFeatures(Function &F,
   FF[NamedFeatureIndex::IsLocal] = F.hasLocalLinkage();
   FF[NamedFeatureIndex::IsLinkOnceODR] = F.hasLinkOnceODRLinkage();
   FF[NamedFeatureIndex::IsLinkOnce] = F.hasLinkOnceLinkage();
-  FF[NamedFeatureIndex::Blocks] =
-      std::distance(F.getBasicBlockList().begin(), F.getBasicBlockList().end());
+  FF[NamedFeatureIndex::Blocks] = F.size();
   auto &LI = FAM.getResult<LoopAnalysis>(F);
   FF[NamedFeatureIndex::Loops] = std::distance(LI.begin(), LI.end());
   for (auto &L : LI)
@@ -237,14 +236,14 @@ InlineSizeEstimatorAnalysis::Result
 InlineSizeEstimatorAnalysis::run(const Function &F,
                                  FunctionAnalysisManager &FAM) {
   if (!Evaluator)
-    return None;
+    return std::nullopt;
   auto Features = IRToNativeSizeLearning::getFunctionFeatures(
       const_cast<Function &>(F), FAM);
   int32_t *V = Evaluator->getInput<int32_t>(0);
   Features.fillTensor(V);
   auto ER = Evaluator->evaluate();
   if (!ER)
-    return None;
+    return std::nullopt;
   float Ret = *ER->getTensorValue<float>(0);
   if (Ret < 0.0)
     Ret = 0.0;
@@ -267,7 +266,7 @@ InlineSizeEstimatorAnalysis::~InlineSizeEstimatorAnalysis() = default;
 InlineSizeEstimatorAnalysis::Result
 InlineSizeEstimatorAnalysis::run(const Function &F,
                                  FunctionAnalysisManager &FAM) {
-  return None;
+  return std::nullopt;
 }
 bool InlineSizeEstimatorAnalysis::isEvaluatorRequested() { return false; }
 #endif

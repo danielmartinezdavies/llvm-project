@@ -18,7 +18,6 @@
 #include "clang/Lex/Lexer.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseMap.h"
-#include "llvm/ADT/None.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
@@ -99,8 +98,7 @@ void DiagnosticRenderer::emitDiagnostic(FullSourceLoc Loc,
     emitDiagnosticMessage(Loc, PresumedLoc(), Level, Message, Ranges, D);
   else {
     // Get the ranges into a local array we can hack on.
-    SmallVector<CharSourceRange, 20> MutableRanges(Ranges.begin(),
-                                                   Ranges.end());
+    SmallVector<CharSourceRange, 20> MutableRanges(Ranges);
 
     SmallVector<FixItHint, 8> MergedFixits;
     if (!FixItHints.empty()) {
@@ -148,7 +146,7 @@ void DiagnosticRenderer::emitStoredDiagnostic(StoredDiagnostic &Diag) {
 
 void DiagnosticRenderer::emitBasicNote(StringRef Message) {
   emitDiagnosticMessage(FullSourceLoc(), PresumedLoc(), DiagnosticsEngine::Note,
-                        Message, None, DiagOrStoredDiag());
+                        Message, {}, DiagOrStoredDiag());
 }
 
 /// Prints an include stack when appropriate for a particular
@@ -453,7 +451,7 @@ void DiagnosticRenderer::emitSingleMacroExpansion(
     Message << "expanded from macro '" << MacroName << "'";
 
   emitDiagnostic(SpellingLoc, DiagnosticsEngine::Note, Message.str(),
-                 SpellingRanges, None);
+                 SpellingRanges, {});
 }
 
 /// Check that the macro argument location of Loc starts with ArgumentLoc.
@@ -494,20 +492,18 @@ static bool checkRangesForMacroArgExpansion(FullSourceLoc Loc,
   SmallVector<CharSourceRange, 4> SpellingRanges;
   mapDiagnosticRanges(Loc, Ranges, SpellingRanges);
 
-  /// Count all valid ranges.
-  unsigned ValidCount = 0;
-  for (const auto &Range : Ranges)
-    if (Range.isValid())
-      ValidCount++;
+  // Count all valid ranges.
+  unsigned ValidCount =
+      llvm::count_if(Ranges, [](const auto &R) { return R.isValid(); });
 
   if (ValidCount > SpellingRanges.size())
     return false;
 
-  /// To store the source location of the argument location.
+  // To store the source location of the argument location.
   FullSourceLoc ArgumentLoc;
 
-  /// Set the ArgumentLoc to the beginning location of the expansion of Loc
-  /// so to check if the ranges expands to the same beginning location.
+  // Set the ArgumentLoc to the beginning location of the expansion of Loc
+  // so to check if the ranges expands to the same beginning location.
   if (!Loc.isMacroArgExpansion(&ArgumentLoc))
     return false;
 

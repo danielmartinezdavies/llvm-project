@@ -14,7 +14,6 @@
 #define LLVM_EXECUTIONENGINE_ORC_KALEIDOSCOPEJIT_H
 
 #include "llvm/ADT/StringRef.h"
-#include "llvm/ExecutionEngine/JITSymbol.h"
 #include "llvm/ExecutionEngine/Orc/CompileOnDemandLayer.h"
 #include "llvm/ExecutionEngine/Orc/CompileUtils.h"
 #include "llvm/ExecutionEngine/Orc/Core.h"
@@ -22,9 +21,11 @@
 #include "llvm/ExecutionEngine/Orc/ExecutionUtils.h"
 #include "llvm/ExecutionEngine/Orc/ExecutorProcessControl.h"
 #include "llvm/ExecutionEngine/Orc/IRCompileLayer.h"
+#include "llvm/ExecutionEngine/Orc/IRPartitionLayer.h"
 #include "llvm/ExecutionEngine/Orc/IRTransformLayer.h"
 #include "llvm/ExecutionEngine/Orc/JITTargetMachineBuilder.h"
 #include "llvm/ExecutionEngine/Orc/RTDyldObjectLinkingLayer.h"
+#include "llvm/ExecutionEngine/Orc/Shared/ExecutorSymbolDef.h"
 #include "llvm/ExecutionEngine/SectionMemoryManager.h"
 #include "llvm/IR/DataLayout.h"
 #include "llvm/IR/LLVMContext.h"
@@ -48,6 +49,7 @@ private:
   RTDyldObjectLinkingLayer ObjectLayer;
   IRCompileLayer CompileLayer;
   IRTransformLayer OptimizeLayer;
+  IRPartitionLayer IPLayer;
   CompileOnDemandLayer CODLayer;
 
   JITDylib &MainJD;
@@ -68,8 +70,8 @@ public:
         CompileLayer(*this->ES, ObjectLayer,
                      std::make_unique<ConcurrentIRCompiler>(std::move(JTMB))),
         OptimizeLayer(*this->ES, CompileLayer, optimizeModule),
-        CODLayer(*this->ES, OptimizeLayer,
-                 this->EPCIU->getLazyCallThroughManager(),
+        IPLayer(*this->ES, OptimizeLayer),
+        CODLayer(*this->ES, IPLayer, this->EPCIU->getLazyCallThroughManager(),
                  [this] { return this->EPCIU->createIndirectStubsManager(); }),
         MainJD(this->ES->createBareJITDylib("<main>")) {
     MainJD.addGenerator(
@@ -91,12 +93,12 @@ public:
 
     auto ES = std::make_unique<ExecutionSession>(std::move(*EPC));
 
-    auto EPCIU = EPCIndirectionUtils::Create(ES->getExecutorProcessControl());
+    auto EPCIU = EPCIndirectionUtils::Create(*ES);
     if (!EPCIU)
       return EPCIU.takeError();
 
     (*EPCIU)->createLazyCallThroughManager(
-        *ES, pointerToJITTargetAddress(&handleLazyCallThroughError));
+        *ES, ExecutorAddr::fromPtr(&handleLazyCallThroughError));
 
     if (auto Err = setUpInProcessLCTMReentryViaEPCIU(**EPCIU))
       return std::move(Err);
@@ -123,7 +125,7 @@ public:
     return CODLayer.add(RT, std::move(TSM));
   }
 
-  Expected<JITEvaluatedSymbol> lookup(StringRef Name) {
+  Expected<ExecutorSymbolDef> lookup(StringRef Name) {
     return ES->lookup({&MainJD}, Mangle(Name.str()));
   }
 

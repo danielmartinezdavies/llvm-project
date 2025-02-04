@@ -10,6 +10,7 @@
 #include "AMDGPU.h"
 #include "CommonArgs.h"
 #include "HIPUtility.h"
+#include "SPIRV.h"
 #include "clang/Basic/Cuda.h"
 #include "clang/Basic/TargetID.h"
 #include "clang/Driver/Compilation.h"
@@ -21,7 +22,7 @@
 #include "llvm/Support/Alignment.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Path.h"
-#include "llvm/Support/TargetParser.h"
+#include "llvm/TargetParser/TargetParser.h"
 
 using namespace clang::driver;
 using namespace clang::driver::toolchains;
@@ -34,43 +35,6 @@ using namespace llvm::opt;
 #else
 #define NULL_FILE "/dev/null"
 #endif
-
-static bool shouldSkipSanitizeOption(const ToolChain &TC,
-                                     const llvm::opt::ArgList &DriverArgs,
-                                     StringRef TargetID,
-                                     const llvm::opt::Arg *A) {
-  // For actions without targetID, do nothing.
-  if (TargetID.empty())
-    return false;
-  Option O = A->getOption();
-  if (!O.matches(options::OPT_fsanitize_EQ))
-    return false;
-
-  if (!DriverArgs.hasFlag(options::OPT_fgpu_sanitize,
-                          options::OPT_fno_gpu_sanitize, true))
-    return true;
-
-  auto &Diags = TC.getDriver().getDiags();
-
-  // For simplicity, we only allow -fsanitize=address
-  SanitizerMask K = parseSanitizerValue(A->getValue(), /*AllowGroups=*/false);
-  if (K != SanitizerKind::Address)
-    return true;
-
-  llvm::StringMap<bool> FeatureMap;
-  auto OptionalGpuArch = parseTargetID(TC.getTriple(), TargetID, &FeatureMap);
-
-  assert(OptionalGpuArch && "Invalid Target ID");
-  (void)OptionalGpuArch;
-  auto Loc = FeatureMap.find("xnack");
-  if (Loc == FeatureMap.end() || !Loc->second) {
-    Diags.Report(
-        clang::diag::warn_drv_unsupported_option_for_offload_arch_req_feature)
-        << A->getAsString(DriverArgs) << TargetID << "xnack+";
-    return true;
-  }
-  return false;
-}
 
 void AMDGCN::Linker::constructLlvmLinkCommand(Compilation &C,
                                          const JobAction &JA,
@@ -91,9 +55,7 @@ void AMDGCN::Linker::constructLlvmLinkCommand(Compilation &C,
   // for the extracted archive of bitcode to inputs.
   auto TargetID = Args.getLastArgValue(options::OPT_mcpu_EQ);
   AddStaticDeviceLibsLinking(C, *this, JA, Inputs, Args, LlvmLinkArgs, "amdgcn",
-                             TargetID,
-                             /*IsBitCodeSDL=*/true,
-                             /*PostClangLink=*/false);
+                             TargetID, /*IsBitCodeSDL=*/true);
 
   const char *LlvmLink =
     Args.MakeArgString(getToolChain().GetProgramPath("llvm-link"));
@@ -108,13 +70,20 @@ void AMDGCN::Linker::constructLldCommand(Compilation &C, const JobAction &JA,
                                          const llvm::opt::ArgList &Args) const {
   // Construct lld command.
   // The output from ld.lld is an HSA code object file.
-  ArgStringList LldArgs{"-flavor", "gnu", "--no-undefined", "-shared",
+  ArgStringList LldArgs{"-flavor",
+                        "gnu",
+                        "-m",
+                        "elf64_amdgpu",
+                        "--no-undefined",
+                        "-shared",
                         "-plugin-opt=-amdgpu-internalize-symbols"};
+  if (Args.hasArg(options::OPT_hipstdpar))
+    LldArgs.push_back("-plugin-opt=-amdgpu-enable-hipstdpar");
 
   auto &TC = getToolChain();
   auto &D = TC.getDriver();
   assert(!Inputs.empty() && "Must have at least one input.");
-  bool IsThinLTO = D.getLTOMode(/*IsOffload=*/true) == LTOK_Thin;
+  bool IsThinLTO = D.getOffloadLTOMode() == LTOK_Thin;
   addLTOOptions(TC, Args, LldArgs, Output, Inputs[0], IsThinLTO);
 
   // Extract all the -m options
@@ -147,8 +116,29 @@ void AMDGCN::Linker::constructLldCommand(Compilation &C, const JobAction &JA,
 
   addLinkerCompressDebugSectionsOption(TC, Args, LldArgs);
 
-  for (auto *Arg : Args.filtered(options::OPT_Xoffload_linker))
-    LldArgs.push_back(Arg->getValue(1));
+  // Given that host and device linking happen in separate processes, the device
+  // linker doesn't always have the visibility as to which device symbols are
+  // needed by a program, especially for the device symbol dependencies that are
+  // introduced through the host symbol resolution.
+  // For example: host_A() (A.obj) --> host_B(B.obj) --> device_kernel_B()
+  // (B.obj) In this case, the device linker doesn't know that A.obj actually
+  // depends on the kernel functions in B.obj.  When linking to static device
+  // library, the device linker may drop some of the device global symbols if
+  // they aren't referenced.  As a workaround, we are adding to the
+  // --whole-archive flag such that all global symbols would be linked in.
+  LldArgs.push_back("--whole-archive");
+
+  for (auto *Arg : Args.filtered(options::OPT_Xoffload_linker)) {
+    StringRef ArgVal = Arg->getValue(1);
+    auto SplitArg = ArgVal.split("-mllvm=");
+    if (!SplitArg.second.empty()) {
+      LldArgs.push_back(
+          Args.MakeArgString(Twine("-plugin-opt=") + SplitArg.second));
+    } else {
+      LldArgs.push_back(Args.MakeArgString(ArgVal));
+    }
+    Arg->claim();
+  }
 
   LldArgs.append({"-o", Output.getFilename()});
   for (auto Input : Inputs)
@@ -158,13 +148,39 @@ void AMDGCN::Linker::constructLldCommand(Compilation &C, const JobAction &JA,
   // for the extracted archive of bitcode to inputs.
   auto TargetID = Args.getLastArgValue(options::OPT_mcpu_EQ);
   AddStaticDeviceLibsLinking(C, *this, JA, Inputs, Args, LldArgs, "amdgcn",
-                             TargetID,
-                             /*IsBitCodeSDL=*/true,
-                             /*PostClangLink=*/false);
+                             TargetID, /*IsBitCodeSDL=*/true);
+
+  LldArgs.push_back("--no-whole-archive");
 
   const char *Lld = Args.MakeArgString(getToolChain().GetProgramPath("lld"));
   C.addCommand(std::make_unique<Command>(JA, *this, ResponseFileSupport::None(),
                                          Lld, LldArgs, Inputs, Output));
+}
+
+// For SPIR-V the inputs for the job are device AMDGCN SPIR-V flavoured bitcode
+// and the output is either a compiled SPIR-V binary or bitcode (-emit-llvm). It
+// calls llvm-link and then the llvm-spirv translator. Once the SPIR-V BE will
+// be promoted from experimental, we will switch to using that. TODO: consider
+// if we want to run any targeted optimisations over IR here, over generic
+// SPIR-V.
+void AMDGCN::Linker::constructLinkAndEmitSpirvCommand(
+    Compilation &C, const JobAction &JA, const InputInfoList &Inputs,
+    const InputInfo &Output, const llvm::opt::ArgList &Args) const {
+  assert(!Inputs.empty() && "Must have at least one input.");
+
+  constructLlvmLinkCommand(C, JA, Inputs, Output, Args);
+
+  // Linked BC is now in Output
+
+  // Emit SPIR-V binary.
+  llvm::opt::ArgStringList TrArgs{
+      "--spirv-max-version=1.6",
+      "--spirv-ext=+all",
+      "--spirv-allow-unknown-intrinsics",
+      "--spirv-lower-const-expr",
+      "--spirv-preserve-auxdata",
+      "--spirv-debug-info-version=nonsemantic-shader-200"};
+  SPIRV::constructTranslateCommand(C, *this, JA, Output, Output, TrArgs);
 }
 
 // For amdgcn the inputs of the linker job are device bitcode and output is
@@ -188,6 +204,9 @@ void AMDGCN::Linker::ConstructJob(Compilation &C, const JobAction &JA,
   if (JA.getType() == types::TY_LLVM_BC)
     return constructLlvmLinkCommand(C, JA, Inputs, Output, Args);
 
+  if (getToolChain().getEffectiveTriple().isSPIRV())
+    return constructLinkAndEmitSpirvCommand(C, JA, Inputs, Output, Args);
+
   return constructLldCommand(C, JA, Inputs, Output, Args);
 }
 
@@ -202,7 +221,7 @@ HIPAMDToolChain::HIPAMDToolChain(const Driver &D, const llvm::Triple &Triple,
   if (!Args.hasFlag(options::OPT_fgpu_sanitize, options::OPT_fno_gpu_sanitize,
                     true))
     return;
-  for (auto A : Args.filtered(options::OPT_fsanitize_EQ)) {
+  for (auto *A : Args.filtered(options::OPT_fsanitize_EQ)) {
     SanitizerMask K = parseSanitizerValue(A->getValue(), /*AllowGroups=*/false);
     if (K != SanitizerKind::Address)
       D.getDiags().Report(clang::diag::warn_drv_unsupported_option_for_target)
@@ -218,21 +237,19 @@ void HIPAMDToolChain::addClangTargetOptions(
   assert(DeviceOffloadingKind == Action::OFK_HIP &&
          "Only HIP offloading kinds are supported for GPUs.");
 
-  CC1Args.push_back("-fcuda-is-device");
-
-  if (DriverArgs.hasFlag(options::OPT_fcuda_approx_transcendentals,
-                         options::OPT_fno_cuda_approx_transcendentals, false))
-    CC1Args.push_back("-fcuda-approx-transcendentals");
+  CC1Args.append({"-fcuda-is-device", "-fno-threadsafe-statics"});
 
   if (!DriverArgs.hasFlag(options::OPT_fgpu_rdc, options::OPT_fno_gpu_rdc,
                           false))
     CC1Args.append({"-mllvm", "-amdgpu-internalize-symbols"});
+  if (DriverArgs.hasArgNoClaim(options::OPT_hipstdpar))
+    CC1Args.append({"-mllvm", "-amdgpu-enable-hipstdpar"});
 
   StringRef MaxThreadsPerBlock =
       DriverArgs.getLastArgValue(options::OPT_gpu_max_threads_per_block_EQ);
   if (!MaxThreadsPerBlock.empty()) {
     std::string ArgStr =
-        std::string("--gpu-max-threads-per-block=") + MaxThreadsPerBlock.str();
+        (Twine("--gpu-max-threads-per-block=") + MaxThreadsPerBlock).str();
     CC1Args.push_back(DriverArgs.MakeArgStringRef(ArgStr));
   }
 
@@ -242,11 +259,20 @@ void HIPAMDToolChain::addClangTargetOptions(
   // supported for the foreseeable future.
   if (!DriverArgs.hasArg(options::OPT_fvisibility_EQ,
                          options::OPT_fvisibility_ms_compat)) {
-    CC1Args.append({"-fvisibility", "hidden"});
+    CC1Args.append({"-fvisibility=hidden"});
     CC1Args.push_back("-fapply-global-visibility-to-externs");
   }
 
-  for (auto BCFile : getHIPDeviceLibs(DriverArgs)) {
+  if (getEffectiveTriple().isSPIRV()) {
+    // For SPIR-V we embed the command-line into the generated binary, in order
+    // to retrieve it at JIT time and be able to do target specific compilation
+    // with options that match the user-supplied ones.
+    if (!DriverArgs.hasArg(options::OPT_fembed_bitcode_marker))
+      CC1Args.push_back("-fembed-bitcode=marker");
+    return; // No DeviceLibs for SPIR-V.
+  }
+
+  for (auto BCFile : getDeviceLibs(DriverArgs)) {
     CC1Args.push_back(BCFile.ShouldInternalize ? "-mlink-builtin-bitcode"
                                                : "-mlink-bitcode-file");
     CC1Args.push_back(DriverArgs.MakeArgString(BCFile.Path));
@@ -265,8 +291,7 @@ HIPAMDToolChain::TranslateArgs(const llvm::opt::DerivedArgList &Args,
   const OptTable &Opts = getDriver().getOpts();
 
   for (Arg *A : Args) {
-    if (!shouldSkipArgument(A) &&
-        !shouldSkipSanitizeOption(*this, Args, BoundArch, A))
+    if (!shouldSkipSanitizeOption(*this, Args, BoundArch, A))
       DAL->append(A);
   }
 
@@ -280,11 +305,13 @@ HIPAMDToolChain::TranslateArgs(const llvm::opt::DerivedArgList &Args,
 }
 
 Tool *HIPAMDToolChain::buildLinker() const {
-  assert(getTriple().getArch() == llvm::Triple::amdgcn);
+  assert(getTriple().getArch() == llvm::Triple::amdgcn ||
+         getTriple().getArch() == llvm::Triple::spirv64);
   return new tools::AMDGCN::Linker(*this);
 }
 
 void HIPAMDToolChain::addClangWarningOptions(ArgStringList &CC1Args) const {
+  AMDGPUToolChain::addClangWarningOptions(CC1Args);
   HostTC.addClangWarningOptions(CC1Args);
 }
 
@@ -310,7 +337,7 @@ void HIPAMDToolChain::AddIAMCUIncludeArgs(const ArgList &Args,
 
 void HIPAMDToolChain::AddHIPIncludeArgs(const ArgList &DriverArgs,
                                         ArgStringList &CC1Args) const {
-  RocmInstallation.AddHIPIncludeArgs(DriverArgs, CC1Args);
+  RocmInstallation->AddHIPIncludeArgs(DriverArgs, CC1Args);
 }
 
 SanitizerMask HIPAMDToolChain::getSupportedSanitizers() const {
@@ -332,14 +359,15 @@ VersionTuple HIPAMDToolChain::computeMSVCVersion(const Driver *D,
 }
 
 llvm::SmallVector<ToolChain::BitCodeLibraryInfo, 12>
-HIPAMDToolChain::getHIPDeviceLibs(const llvm::opt::ArgList &DriverArgs) const {
+HIPAMDToolChain::getDeviceLibs(const llvm::opt::ArgList &DriverArgs) const {
   llvm::SmallVector<BitCodeLibraryInfo, 12> BCLibs;
-  if (DriverArgs.hasArg(options::OPT_nogpulib))
+  if (DriverArgs.hasArg(options::OPT_nogpulib) ||
+      getGPUArch(DriverArgs) == "amdgcnspirv")
     return {};
   ArgStringList LibraryPaths;
 
   // Find in --hip-device-lib-path and HIP_LIBRARY_PATH.
-  for (auto Path : RocmInstallation.getRocmDeviceLibPathArg())
+  for (StringRef Path : RocmInstallation->getRocmDeviceLibPathArg())
     LibraryPaths.push_back(DriverArgs.MakeArgString(Path));
 
   addDirectoryList(DriverArgs, LibraryPaths, "", "HIP_DEVICE_LIB_PATH");
@@ -349,48 +377,31 @@ HIPAMDToolChain::getHIPDeviceLibs(const llvm::opt::ArgList &DriverArgs) const {
   if (!BCLibArgs.empty()) {
     llvm::for_each(BCLibArgs, [&](StringRef BCName) {
       StringRef FullName;
-      for (std::string LibraryPath : LibraryPaths) {
+      for (StringRef LibraryPath : LibraryPaths) {
         SmallString<128> Path(LibraryPath);
         llvm::sys::path::append(Path, BCName);
         FullName = Path;
         if (llvm::sys::fs::exists(FullName)) {
-          BCLibs.push_back(FullName);
+          BCLibs.emplace_back(FullName);
           return;
         }
       }
       getDriver().Diag(diag::err_drv_no_such_file) << BCName;
     });
   } else {
-    if (!RocmInstallation.hasDeviceLibrary()) {
+    if (!RocmInstallation->hasDeviceLibrary()) {
       getDriver().Diag(diag::err_drv_no_rocm_device_lib) << 0;
       return {};
     }
     StringRef GpuArch = getGPUArch(DriverArgs);
     assert(!GpuArch.empty() && "Must have an explicit GPU arch.");
 
-    // If --hip-device-lib is not set, add the default bitcode libraries.
-    if (DriverArgs.hasFlag(options::OPT_fgpu_sanitize,
-                           options::OPT_fno_gpu_sanitize, true) &&
-        getSanitizerArgs(DriverArgs).needsAsanRt()) {
-      auto AsanRTL = RocmInstallation.getAsanRTLPath();
-      if (AsanRTL.empty()) {
-        unsigned DiagID = getDriver().getDiags().getCustomDiagID(
-            DiagnosticsEngine::Error,
-            "AMDGPU address sanitizer runtime library (asanrtl) is not found. "
-            "Please install ROCm device library which supports address "
-            "sanitizer");
-        getDriver().Diag(DiagID);
-        return {};
-      } else
-        BCLibs.push_back({AsanRTL.str(), /*ShouldInternalize=*/false});
-    }
-
     // Add the HIP specific bitcode library.
-    BCLibs.push_back(RocmInstallation.getHIPPath());
+    BCLibs.emplace_back(RocmInstallation->getHIPPath());
 
     // Add common device libraries like ocml etc.
     for (auto N : getCommonDeviceLibNames(DriverArgs, GpuArch.str()))
-      BCLibs.push_back(StringRef(N));
+      BCLibs.emplace_back(N);
 
     // Add instrument lib.
     auto InstLib =
@@ -398,7 +409,7 @@ HIPAMDToolChain::getHIPDeviceLibs(const llvm::opt::ArgList &DriverArgs) const {
     if (InstLib.empty())
       return BCLibs;
     if (llvm::sys::fs::exists(InstLib))
-      BCLibs.push_back(InstLib);
+      BCLibs.emplace_back(InstLib);
     else
       getDriver().Diag(diag::err_drv_no_such_file) << InstLib;
   }
@@ -409,8 +420,8 @@ HIPAMDToolChain::getHIPDeviceLibs(const llvm::opt::ArgList &DriverArgs) const {
 void HIPAMDToolChain::checkTargetID(
     const llvm::opt::ArgList &DriverArgs) const {
   auto PTID = getParsedTargetID(DriverArgs);
-  if (PTID.OptionalTargetID && !PTID.OptionalGPUArch) {
+  if (PTID.OptionalTargetID && !PTID.OptionalGPUArch &&
+      PTID.OptionalTargetID != "amdgcnspirv")
     getDriver().Diag(clang::diag::err_drv_bad_target_id)
         << *PTID.OptionalTargetID;
-  }
 }

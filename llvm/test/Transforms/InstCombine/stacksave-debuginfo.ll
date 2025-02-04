@@ -2,24 +2,25 @@
 ; dbg.value intrinsics should not affect peephole combining of stacksave/stackrestore.
 ; PR37713
 ; RUN: opt -passes=instcombine %s -S | FileCheck %s
+; RUN: opt -passes=instcombine %s -S --try-experimental-debuginfo-iterators | FileCheck %s
 
-declare i8* @llvm.stacksave() #0
-declare void @llvm.stackrestore(i8*) #0
+declare ptr @llvm.stacksave() #0
+declare void @llvm.stackrestore(ptr) #0
 
-define i32* @test1(i32 %P) !dbg !6 {
+define ptr @test1(i32 %P) !dbg !6 {
 ; CHECK-LABEL: @test1(
-; CHECK-NEXT:    call void @llvm.dbg.value(metadata i8* undef
-; CHECK-NEXT:    [[TMP1:%.*]] = zext i32 [[P:%.*]] to i64, !dbg !13
-; CHECK-NEXT:    [[A:%.*]] = alloca i32, i64 [[TMP1]], align 4, !dbg !13
-; CHECK-NEXT:    call void @llvm.dbg.value(metadata i32* [[A]]
-; CHECK-NEXT:    ret i32* [[A]], !dbg !14
+; CHECK-NEXT:      #dbg_value(ptr poison, [[META9:![0-9]+]], !DIExpression(), [[META12:![0-9]+]])
+; CHECK-NEXT:    [[TMP1:%.*]] = zext i32 [[P:%.*]] to i64, !dbg [[DBG13:![0-9]+]]
+; CHECK-NEXT:    [[A:%.*]] = alloca i32, i64 [[TMP1]], align 4, !dbg [[DBG13]]
+; CHECK-NEXT:      #dbg_value(ptr [[A]], [[META11:![0-9]+]], !DIExpression(), [[DBG13]])
+; CHECK-NEXT:    ret ptr [[A]], !dbg [[DBG14:![0-9]+]]
 ;
-  %tmp = call i8* @llvm.stacksave(), !dbg !12
-  call void @llvm.dbg.value(metadata i8* %tmp, metadata !9, metadata !DIExpression()), !dbg !12
-  call void @llvm.stackrestore(i8* %tmp), !dbg !13
+  %tmp = call ptr @llvm.stacksave(), !dbg !12
+  call void @llvm.dbg.value(metadata ptr %tmp, metadata !9, metadata !DIExpression()), !dbg !12
+  call void @llvm.stackrestore(ptr %tmp), !dbg !13
   %A = alloca i32, i32 %P, !dbg !14
-  call void @llvm.dbg.value(metadata i32* %A, metadata !11, metadata !DIExpression()), !dbg !14
-  ret i32* %A, !dbg !15
+  call void @llvm.dbg.value(metadata ptr %A, metadata !11, metadata !DIExpression()), !dbg !14
+  ret ptr %A, !dbg !15
 }
 
 declare void @llvm.dbg.value(metadata, metadata, metadata) #1

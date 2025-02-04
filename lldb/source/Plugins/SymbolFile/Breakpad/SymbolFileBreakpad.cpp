@@ -21,6 +21,7 @@
 #include "lldb/Utility/Log.h"
 #include "lldb/Utility/StreamString.h"
 #include "llvm/ADT/StringExtras.h"
+#include <optional>
 
 using namespace lldb;
 using namespace lldb_private;
@@ -215,10 +216,11 @@ CompUnitSP SymbolFileBreakpad::ParseCompileUnitAtIndex(uint32_t index) {
       spec = (*m_files)[record->FileNum];
   }
 
-  auto cu_sp = std::make_shared<CompileUnit>(m_objfile_sp->GetModule(),
-                                             /*user_data*/ nullptr, spec, index,
-                                             eLanguageTypeUnknown,
-                                             /*is_optimized*/ eLazyBoolNo);
+  auto cu_sp = std::make_shared<CompileUnit>(
+      m_objfile_sp->GetModule(),
+      /*user_data*/ nullptr, std::make_shared<SupportFile>(spec), index,
+      eLanguageTypeUnknown,
+      /*is_optimized*/ eLazyBoolNo);
 
   SetCompileUnitAtIndex(index, cu_sp);
   return cu_sp;
@@ -245,15 +247,15 @@ FunctionSP SymbolFileBreakpad::GetOrCreateFunction(CompileUnit &comp_unit) {
 
   if (auto record = FuncRecord::parse(*It)) {
     Mangled func_name;
-    func_name.SetValue(ConstString(record->Name), false);
+    func_name.SetValue(ConstString(record->Name));
     addr_t address = record->Address + base;
     SectionSP section_sp = list->FindSectionContainingFileAddress(address);
     if (section_sp) {
-      AddressRange func_range(
-          section_sp, address - section_sp->GetFileAddress(), record->Size);
+      Address func_addr(section_sp, address - section_sp->GetFileAddress());
       // Use the CU's id because every CU has only one function inside.
-      func_sp = std::make_shared<Function>(&comp_unit, id, 0, func_name,
-                                           nullptr, func_range);
+      func_sp = std::make_shared<Function>(
+          &comp_unit, id, 0, func_name, nullptr, func_addr,
+          AddressRanges{AddressRange(func_addr, record->Size)});
       comp_unit.AddFunction(func_sp);
     }
   }
@@ -277,13 +279,14 @@ bool SymbolFileBreakpad::ParseLineTable(CompileUnit &comp_unit) {
 }
 
 bool SymbolFileBreakpad::ParseSupportFiles(CompileUnit &comp_unit,
-                                           FileSpecList &support_files) {
+                                           SupportFileList &support_files) {
   std::lock_guard<std::recursive_mutex> guard(GetModuleMutex());
   CompUnitData &data = m_cu_data->GetEntryRef(comp_unit.GetID()).data;
   if (!data.support_files)
     ParseLineTableAndSupportFiles(comp_unit, data);
 
-  support_files = std::move(*data.support_files);
+  for (auto &fs : *data.support_files)
+    support_files.Append(fs);
   return true;
 }
 
@@ -294,14 +297,12 @@ size_t SymbolFileBreakpad::ParseBlocksRecursive(Function &func) {
   ParseInlineOriginRecords();
   // A vector of current each level's parent block. For example, when parsing
   // "INLINE 0 ...", the current level is 0 and its parent block is the
-  // funciton block at index 0.
+  // function block at index 0.
   std::vector<Block *> blocks;
-  Block &block = func.GetBlock(false);
-  block.AddRange(Block::Range(0, func.GetAddressRange().GetByteSize()));
-  blocks.push_back(&block);
+  blocks.push_back(&func.GetBlock(false));
 
   size_t blocks_added = 0;
-  addr_t func_base = func.GetAddressRange().GetBaseAddress().GetOffset();
+  addr_t func_base = func.GetAddress().GetOffset();
   CompUnitData &data = m_cu_data->GetEntryRef(comp_unit->GetID()).data;
   LineIterator It(*m_objfile_sp, Record::Func, data.bookmark),
       End(*m_objfile_sp);
@@ -312,7 +313,8 @@ size_t SymbolFileBreakpad::ParseBlocksRecursive(Function &func) {
       if (record->InlineNestLevel == 0 ||
           record->InlineNestLevel <= last_added_nest_level + 1) {
         last_added_nest_level = record->InlineNestLevel;
-        BlockSP block_sp = std::make_shared<Block>(It.GetBookmark().offset);
+        BlockSP block_sp = blocks[record->InlineNestLevel]->CreateChild(
+            It.GetBookmark().offset);
         FileSpec callsite_file;
         if (record->CallSiteFileNum < m_files->size())
           callsite_file = (*m_files)[record->CallSiteFileNum];
@@ -330,7 +332,6 @@ size_t SymbolFileBreakpad::ParseBlocksRecursive(Function &func) {
         }
         block_sp->FinalizeRanges();
 
-        blocks[record->InlineNestLevel]->AddChild(block_sp);
         if (record->InlineNestLevel + 1 >= blocks.size()) {
           blocks.resize(blocks.size() + 1);
         }
@@ -395,7 +396,7 @@ SymbolFileBreakpad::ResolveSymbolContext(const Address &so_addr,
         Block &block = func_sp->GetBlock(true);
         sc.block = block.FindInnermostBlockByOffset(
             so_addr.GetFileAddress() -
-            sc.function->GetAddressRange().GetBaseAddress().GetFileAddress());
+            sc.function->GetAddress().GetFileAddress());
         if (sc.block)
           result |= eSymbolContextBlock;
       }
@@ -447,15 +448,6 @@ void SymbolFileBreakpad::FindFunctions(const RegularExpression &regex,
   // TODO
 }
 
-void SymbolFileBreakpad::FindTypes(
-    ConstString name, const CompilerDeclContext &parent_decl_ctx,
-    uint32_t max_matches, llvm::DenseSet<SymbolFile *> &searched_symbol_files,
-    TypeMap &types) {}
-
-void SymbolFileBreakpad::FindTypes(
-    llvm::ArrayRef<CompilerContext> pattern, LanguageSet languages,
-    llvm::DenseSet<SymbolFile *> &searched_symbol_files, TypeMap &types) {}
-
 void SymbolFileBreakpad::AddSymbols(Symtab &symtab) {
   Log *log = GetLog(LLDBLog::Symbols);
   Module &module = *m_objfile_sp->GetModule();
@@ -469,7 +461,7 @@ void SymbolFileBreakpad::AddSymbols(Symtab &symtab) {
   const SectionList &list = *module.GetSectionList();
   llvm::DenseSet<addr_t> found_symbol_addresses;
   std::vector<Symbol> symbols;
-  auto add_symbol = [&](addr_t address, llvm::Optional<addr_t> size,
+  auto add_symbol = [&](addr_t address, std::optional<addr_t> size,
                         llvm::StringRef name) {
     address += base;
     SectionSP section_sp = list.FindSectionContainingFileAddress(address);
@@ -495,7 +487,7 @@ void SymbolFileBreakpad::AddSymbols(Symtab &symtab) {
 
   for (llvm::StringRef line : lines(Record::Public)) {
     if (auto record = PublicRecord::parse(line))
-      add_symbol(record->Address, llvm::None, record->Name);
+      add_symbol(record->Address, std::nullopt, record->Name);
     else
       LLDB_LOG(log, "Failed to parse: {0}. Skipping record.", line);
   }
@@ -519,7 +511,7 @@ SymbolFileBreakpad::GetParameterStackSize(Symbol &symbol) {
                                  "Parameter size unknown.");
 }
 
-static llvm::Optional<std::pair<llvm::StringRef, llvm::StringRef>>
+static std::optional<std::pair<llvm::StringRef, llvm::StringRef>>
 GetRule(llvm::StringRef &unwind_rules) {
   // Unwind rules are of the form
   //   register1: expression1 register2: expression2 ...
@@ -528,7 +520,7 @@ GetRule(llvm::StringRef &unwind_rules) {
   llvm::StringRef lhs, rest;
   std::tie(lhs, rest) = getToken(unwind_rules);
   if (!lhs.consume_back(":"))
-    return llvm::None;
+    return std::nullopt;
 
   // Seek forward to the next register: expression pair
   llvm::StringRef::size_type pos = rest.find(": ");
@@ -541,7 +533,7 @@ GetRule(llvm::StringRef &unwind_rules) {
   // Go back one token to find the end of the current rule.
   pos = rest.rfind(' ', pos);
   if (pos == llvm::StringRef::npos)
-    return llvm::None;
+    return std::nullopt;
 
   llvm::StringRef rhs = rest.take_front(pos);
   unwind_rules = rest.drop_front(pos);
@@ -620,7 +612,7 @@ bool SymbolFileBreakpad::ParseCFIUnwindRow(llvm::StringRef unwind_rules,
       row.GetCFAValue().SetIsDWARFExpression(saved.data(), saved.size());
     } else if (const RegisterInfo *info =
                    ResolveRegisterOrRA(triple, resolver, lhs)) {
-      UnwindPlan::Row::RegisterLocation loc;
+      UnwindPlan::Row::AbstractRegisterLocation loc;
       loc.SetIsDWARFExpression(saved.data(), saved.size());
       row.SetRegisterInfo(info->kinds[eRegisterKindLLDB], loc);
     } else
@@ -655,7 +647,7 @@ SymbolFileBreakpad::ParseCFIUnwindPlan(const Bookmark &bookmark,
 
   LineIterator It(*m_objfile_sp, Record::StackCFI, bookmark),
       End(*m_objfile_sp);
-  llvm::Optional<StackCFIRecord> init_record = StackCFIRecord::parse(*It);
+  std::optional<StackCFIRecord> init_record = StackCFIRecord::parse(*It);
   assert(init_record && init_record->Size &&
          "Record already parsed successfully in ParseUnwindData!");
 
@@ -674,7 +666,7 @@ SymbolFileBreakpad::ParseCFIUnwindPlan(const Bookmark &bookmark,
     return nullptr;
   plan_sp->AppendRow(row_sp);
   for (++It; It != End; ++It) {
-    llvm::Optional<StackCFIRecord> record = StackCFIRecord::parse(*It);
+    std::optional<StackCFIRecord> record = StackCFIRecord::parse(*It);
     if (!record)
       return nullptr;
     if (record->Size)
@@ -698,7 +690,7 @@ SymbolFileBreakpad::ParseWinUnwindPlan(const Bookmark &bookmark,
     return nullptr;
 
   LineIterator It(*m_objfile_sp, Record::StackWin, bookmark);
-  llvm::Optional<StackWinRecord> record = StackWinRecord::parse(*It);
+  std::optional<StackWinRecord> record = StackWinRecord::parse(*It);
   assert(record && "Record already parsed successfully in ParseUnwindData!");
 
   auto plan_sp = std::make_shared<UnwindPlan>(lldb::eRegisterKindLLDB);
@@ -772,7 +764,7 @@ SymbolFileBreakpad::ParseWinUnwindPlan(const Bookmark &bookmark,
     }
 
     llvm::ArrayRef<uint8_t> saved = SaveAsDWARF(*it->second);
-    UnwindPlan::Row::RegisterLocation loc;
+    UnwindPlan::Row::AbstractRegisterLocation loc;
     loc.SetIsDWARFExpression(saved.data(), saved.size());
     row_sp->SetRegisterInfo(info->kinds[eRegisterKindLLDB], loc);
   }
@@ -848,7 +840,7 @@ void SymbolFileBreakpad::ParseLineTableAndSupportFiles(CompileUnit &cu,
   std::vector<std::unique_ptr<LineSequence>> sequences;
   std::unique_ptr<LineSequence> line_seq_up =
       LineTable::CreateLineSequenceContainer();
-  llvm::Optional<addr_t> next_addr;
+  std::optional<addr_t> next_addr;
   auto finish_sequence = [&]() {
     LineTable::AppendLineEntryToSequence(
         line_seq_up.get(), *next_addr, /*line=*/0, /*column=*/0,
@@ -924,7 +916,7 @@ void SymbolFileBreakpad::ParseUnwindData() {
   m_unwind_data->win.Sort();
 }
 
-uint64_t SymbolFileBreakpad::GetDebugInfoSize() {
+uint64_t SymbolFileBreakpad::GetDebugInfoSize(bool load_all_debug_info) {
   // Breakpad files are all debug info.
   return m_objfile_sp->GetByteSize();
 }

@@ -20,13 +20,12 @@ using namespace llvm;
 MCSectionXCOFF::~MCSectionXCOFF() = default;
 
 void MCSectionXCOFF::printCsectDirective(raw_ostream &OS) const {
-  OS << "\t.csect " << QualName->getName() << "," << Log2_32(getAlignment())
-     << '\n';
+  OS << "\t.csect " << QualName->getName() << "," << Log2(getAlign()) << '\n';
 }
 
 void MCSectionXCOFF::printSwitchToSection(const MCAsmInfo &MAI, const Triple &T,
                                           raw_ostream &OS,
-                                          const MCExpr *Subsection) const {
+                                          uint32_t Subsection) const {
   if (getKind().isText()) {
     if (getMappingClass() != XCOFF::XMC_PR)
       report_fatal_error("Unhandled storage-mapping class for .text csect");
@@ -39,6 +38,16 @@ void MCSectionXCOFF::printSwitchToSection(const MCAsmInfo &MAI, const Triple &T,
     if (getMappingClass() != XCOFF::XMC_RO &&
         getMappingClass() != XCOFF::XMC_TD)
       report_fatal_error("Unhandled storage-mapping class for .rodata csect.");
+    printCsectDirective(OS);
+    return;
+  }
+
+  if (getKind().isReadOnlyWithRel()) {
+    if (getMappingClass() != XCOFF::XMC_RW &&
+        getMappingClass() != XCOFF::XMC_RO &&
+        getMappingClass() != XCOFF::XMC_TD)
+      report_fatal_error(
+          "Unexepected storage-mapping class for ReadOnlyWithRel kind");
     printCsectDirective(OS);
     return;
   }
@@ -73,9 +82,12 @@ void MCSectionXCOFF::printSwitchToSection(const MCAsmInfo &MAI, const Triple &T,
   }
 
   if (isCsect() && getMappingClass() == XCOFF::XMC_TD) {
-    assert((getKind().isBSSExtern() || getKind().isBSSLocal() ||
-            getKind().isReadOnlyWithRel()) &&
-           "Unexepected section kind for toc-data");
+    // Common csect type (uninitialized storage) does not have to print csect
+    // directive for section switching unless it is local.
+    if (getKind().isCommon() && !getKind().isBSSLocal())
+      return;
+
+    assert(getKind().isBSS() && "Unexpected section kind for toc-data");
     printCsectDirective(OS);
     return;
   }
@@ -110,9 +122,9 @@ void MCSectionXCOFF::printSwitchToSection(const MCAsmInfo &MAI, const Triple &T,
 
   // XCOFF debug sections.
   if (getKind().isMetadata() && isDwarfSect()) {
-    OS << "\n\t.dwsect " << format("0x%" PRIx32, getDwarfSubtypeFlags().value())
+    OS << "\n\t.dwsect " << format("0x%" PRIx32, *getDwarfSubtypeFlags())
        << '\n';
-    OS << MAI.getPrivateLabelPrefix() << getName() << ':' << '\n';
+    OS << getName() << ':' << '\n';
     return;
   }
 
@@ -120,12 +132,3 @@ void MCSectionXCOFF::printSwitchToSection(const MCAsmInfo &MAI, const Triple &T,
 }
 
 bool MCSectionXCOFF::useCodeAlign() const { return getKind().isText(); }
-
-bool MCSectionXCOFF::isVirtualSection() const {
-  // DWARF sections are always not virtual.
-  if (isDwarfSect())
-    return false;
-  assert(isCsect() &&
-         "Handling for isVirtualSection not implemented for this section!");
-  return XCOFF::XTY_CM == CsectProp->Type;
-}

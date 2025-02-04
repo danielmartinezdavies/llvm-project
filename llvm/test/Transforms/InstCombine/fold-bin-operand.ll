@@ -6,7 +6,8 @@ define i1 @f(i1 %x) {
 ; CHECK-LABEL: @f(
 ; CHECK-NEXT:    ret i1 false
 ;
-  %b = and i1 %x, icmp eq (i8* inttoptr (i32 1 to i8*), i8* inttoptr (i32 2 to i8*))
+  %c = icmp eq ptr inttoptr (i32 1 to ptr), inttoptr (i32 2 to ptr)
+  %b = and i1 %x, %c
   ret i1 %b
 }
 
@@ -14,7 +15,8 @@ define i1 @f_logical(i1 %x) {
 ; CHECK-LABEL: @f_logical(
 ; CHECK-NEXT:    ret i1 false
 ;
-  %b = select i1 %x, i1 icmp eq (i8* inttoptr (i32 1 to i8*), i8* inttoptr (i32 2 to i8*)), i1 false
+  %c = icmp eq ptr inttoptr (i32 1 to ptr), inttoptr (i32 2 to ptr)
+  %b = select i1 %x, i1 %c, i1 false
   ret i1 %b
 }
 
@@ -22,15 +24,17 @@ define i32 @g(i32 %x) {
 ; CHECK-LABEL: @g(
 ; CHECK-NEXT:    ret i32 [[X:%.*]]
 ;
-  %b = add i32 %x, zext (i1 icmp eq (i8* inttoptr (i32 1000000 to i8*), i8* inttoptr (i32 2000000 to i8*)) to i32)
+  %c = icmp eq ptr inttoptr (i32 1 to ptr), inttoptr (i32 2 to ptr)
+  %ext = zext i1 %c to i32
+  %b = add i32 %x, %ext
   ret i32 %b
 }
 
 define i32 @h(i1 %A, i32 %B) {
 ; CHECK-LABEL: @h(
 ; CHECK-NEXT:  EntryBlock:
-; CHECK-NEXT:    [[B_OP:%.*]] = add i32 [[B:%.*]], 2
-; CHECK-NEXT:    [[OP:%.*]] = select i1 [[A:%.*]], i32 3, i32 [[B_OP]]
+; CHECK-NEXT:    [[TMP0:%.*]] = add i32 [[B:%.*]], 2
+; CHECK-NEXT:    [[OP:%.*]] = select i1 [[A:%.*]], i32 3, i32 [[TMP0]]
 ; CHECK-NEXT:    ret i32 [[OP]]
 ;
 EntryBlock:
@@ -43,7 +47,7 @@ define <4 x float> @h1(i1 %A, <4 x i32> %B) {
 ; CHECK-LABEL: @h1(
 ; CHECK-NEXT:  EntryBlock:
 ; CHECK-NEXT:    [[TMP0:%.*]] = bitcast <4 x i32> [[B:%.*]] to <4 x float>
-; CHECK-NEXT:    [[BC:%.*]] = select i1 [[A:%.*]], <4 x float> <float 0x36A0000000000000, float 0x36A0000000000000, float 0x36A0000000000000, float 0x36A0000000000000>, <4 x float> [[TMP0]]
+; CHECK-NEXT:    [[BC:%.*]] = select i1 [[A:%.*]], <4 x float> splat (float 0x36A0000000000000), <4 x float> [[TMP0]]
 ; CHECK-NEXT:    ret <4 x float> [[BC]]
 ;
 EntryBlock:

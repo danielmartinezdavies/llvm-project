@@ -13,6 +13,7 @@
 
 using namespace mlir;
 using namespace mlir::tblgen;
+using llvm::SourceMgr;
 
 //===----------------------------------------------------------------------===//
 // FormatToken
@@ -26,14 +27,14 @@ SMLoc FormatToken::getLoc() const {
 // FormatLexer
 //===----------------------------------------------------------------------===//
 
-FormatLexer::FormatLexer(llvm::SourceMgr &mgr, SMLoc loc)
+FormatLexer::FormatLexer(SourceMgr &mgr, SMLoc loc)
     : mgr(mgr), loc(loc),
       curBuffer(mgr.getMemoryBuffer(mgr.getMainFileID())->getBuffer()),
       curPtr(curBuffer.begin()) {}
 
 FormatToken FormatLexer::emitError(SMLoc loc, const Twine &msg) {
-  mgr.PrintMessage(loc, llvm::SourceMgr::DK_Error, msg);
-  llvm::SrcMgr.PrintMessage(this->loc, llvm::SourceMgr::DK_Note,
+  mgr.PrintMessage(loc, SourceMgr::DK_Error, msg);
+  llvm::SrcMgr.PrintMessage(this->loc, SourceMgr::DK_Note,
                             "in custom assembly format for this operation");
   return formToken(FormatToken::error, loc.getPointer());
 }
@@ -44,10 +45,10 @@ FormatToken FormatLexer::emitError(const char *loc, const Twine &msg) {
 
 FormatToken FormatLexer::emitErrorAndNote(SMLoc loc, const Twine &msg,
                                           const Twine &note) {
-  mgr.PrintMessage(loc, llvm::SourceMgr::DK_Error, msg);
-  llvm::SrcMgr.PrintMessage(this->loc, llvm::SourceMgr::DK_Note,
+  mgr.PrintMessage(loc, SourceMgr::DK_Error, msg);
+  llvm::SrcMgr.PrintMessage(this->loc, SourceMgr::DK_Note,
                             "in custom assembly format for this operation");
-  mgr.PrintMessage(loc, llvm::SourceMgr::DK_Note, note);
+  mgr.PrintMessage(loc, SourceMgr::DK_Note, note);
   return formToken(FormatToken::error, loc.getPointer());
 }
 
@@ -177,6 +178,7 @@ FormatToken FormatLexer::lexIdentifier(const char *tokStart) {
       StringSwitch<FormatToken::Kind>(str)
           .Case("attr-dict", FormatToken::kw_attr_dict)
           .Case("attr-dict-with-keyword", FormatToken::kw_attr_dict_w_keyword)
+          .Case("prop-dict", FormatToken::kw_prop_dict)
           .Case("custom", FormatToken::kw_custom)
           .Case("functional-type", FormatToken::kw_functional_type)
           .Case("oilist", FormatToken::kw_oilist)
@@ -307,6 +309,10 @@ FailureOr<FormatElement *> FormatParser::parseDirective(Context ctx) {
 
   if (tok.is(FormatToken::kw_custom))
     return parseCustomDirective(loc, ctx);
+  if (tok.is(FormatToken::kw_ref))
+    return parseRefDirective(loc, ctx);
+  if (tok.is(FormatToken::kw_qualified))
+    return parseQualifiedDirective(loc, ctx);
   return parseDirectiveImpl(loc, tok.getKind(), ctx);
 }
 
@@ -320,36 +326,43 @@ FailureOr<FormatElement *> FormatParser::parseOptionalGroup(Context ctx) {
 
   // Parse the child elements for this optional group.
   std::vector<FormatElement *> thenElements, elseElements;
-  Optional<unsigned> anchorIndex;
-  do {
-    FailureOr<FormatElement *> element = parseElement(TopLevelContext);
-    if (failed(element))
-      return failure();
-    // Check for an anchor.
-    if (curToken.is(FormatToken::caret)) {
-      if (anchorIndex)
-        return emitError(curToken.getLoc(), "only one element can be marked as "
-                                            "the anchor of an optional group");
-      anchorIndex = thenElements.size();
-      consumeToken();
-    }
-    thenElements.push_back(*element);
-  } while (!curToken.is(FormatToken::r_paren));
-  consumeToken();
-
-  // Parse the `else` elements of this optional group.
-  if (curToken.is(FormatToken::colon)) {
-    consumeToken();
-    if (failed(
-            parseToken(FormatToken::l_paren,
-                       "expected '(' to start else branch of optional group")))
-      return failure();
+  FormatElement *anchor = nullptr;
+  auto parseChildElements =
+      [this, &anchor](std::vector<FormatElement *> &elements) -> LogicalResult {
     do {
       FailureOr<FormatElement *> element = parseElement(TopLevelContext);
       if (failed(element))
         return failure();
-      elseElements.push_back(*element);
+      // Check for an anchor.
+      if (curToken.is(FormatToken::caret)) {
+        if (anchor) {
+          return emitError(curToken.getLoc(),
+                           "only one element can be marked as the anchor of an "
+                           "optional group");
+        }
+        anchor = *element;
+        consumeToken();
+      }
+      elements.push_back(*element);
     } while (!curToken.is(FormatToken::r_paren));
+    return success();
+  };
+
+  // Parse the 'then' elements. If the anchor was found in this group, then the
+  // optional is not inverted.
+  if (failed(parseChildElements(thenElements)))
+    return failure();
+  consumeToken();
+  bool inverted = !anchor;
+
+  // Parse the `else` elements of this optional group.
+  if (curToken.is(FormatToken::colon)) {
+    consumeToken();
+    if (failed(parseToken(
+            FormatToken::l_paren,
+            "expected '(' to start else branch of optional group")) ||
+        failed(parseChildElements(elseElements)))
+      return failure();
     consumeToken();
   }
   if (failed(parseToken(FormatToken::question,
@@ -357,28 +370,31 @@ FailureOr<FormatElement *> FormatParser::parseOptionalGroup(Context ctx) {
     return failure();
 
   // The optional group is required to have an anchor.
-  if (!anchorIndex)
+  if (!anchor)
     return emitError(loc, "optional group has no anchor element");
 
   // Verify the child elements.
-  if (failed(verifyOptionalGroupElements(loc, thenElements, anchorIndex)) ||
-      failed(verifyOptionalGroupElements(loc, elseElements, llvm::None)))
+  if (failed(verifyOptionalGroupElements(loc, thenElements, anchor)) ||
+      failed(verifyOptionalGroupElements(loc, elseElements, nullptr)))
     return failure();
 
   // Get the first parsable element. It must be an element that can be
   // optionally-parsed.
-  auto parseBegin = llvm::find_if_not(thenElements, [](FormatElement *element) {
+  auto isWhitespace = [](FormatElement *element) {
     return isa<WhitespaceElement>(element);
-  });
-  if (!isa<LiteralElement, VariableElement>(*parseBegin)) {
-    return emitError(loc, "first parsable element of an optional group must be "
-                          "a literal or variable");
-  }
+  };
+  auto thenParseBegin = llvm::find_if_not(thenElements, isWhitespace);
+  auto elseParseBegin = llvm::find_if_not(elseElements, isWhitespace);
+  unsigned thenParseStart = std::distance(thenElements.begin(), thenParseBegin);
+  unsigned elseParseStart = std::distance(elseElements.begin(), elseParseBegin);
 
-  unsigned parseStart = std::distance(thenElements.begin(), parseBegin);
+  if (!isa<LiteralElement, VariableElement, CustomDirective>(*thenParseBegin)) {
+    return emitError(loc, "first parsable element of an optional group must be "
+                          "a literal, variable, or custom directive");
+  }
   return create<OptionalElement>(std::move(thenElements),
-                                 std::move(elseElements), *anchorIndex,
-                                 parseStart);
+                                 std::move(elseElements), thenParseStart,
+                                 elseParseStart, anchor, inverted);
 }
 
 FailureOr<FormatElement *> FormatParser::parseCustomDirective(SMLoc loc,
@@ -419,6 +435,38 @@ FailureOr<FormatElement *> FormatParser::parseCustomDirective(SMLoc loc,
   return create<CustomDirective>(nameTok->getSpelling(), std::move(arguments));
 }
 
+FailureOr<FormatElement *> FormatParser::parseRefDirective(SMLoc loc,
+                                                           Context context) {
+  if (context != CustomDirectiveContext)
+    return emitError(loc, "'ref' is only valid within a `custom` directive");
+
+  FailureOr<FormatElement *> arg;
+  if (failed(parseToken(FormatToken::l_paren,
+                        "expected '(' before argument list")) ||
+      failed(arg = parseElement(RefDirectiveContext)) ||
+      failed(
+          parseToken(FormatToken::r_paren, "expected ')' after argument list")))
+    return failure();
+
+  return create<RefDirective>(*arg);
+}
+
+FailureOr<FormatElement *> FormatParser::parseQualifiedDirective(SMLoc loc,
+                                                                 Context ctx) {
+  if (failed(parseToken(FormatToken::l_paren,
+                        "expected '(' before argument list")))
+    return failure();
+  FailureOr<FormatElement *> var = parseElement(ctx);
+  if (failed(var))
+    return var;
+  if (failed(markQualified(loc, *var)))
+    return failure();
+  if (failed(
+          parseToken(FormatToken::r_paren, "expected ')' after argument list")))
+    return failure();
+  return var;
+}
+
 //===----------------------------------------------------------------------===//
 // Utility Functions
 //===----------------------------------------------------------------------===//
@@ -434,6 +482,11 @@ bool mlir::tblgen::shouldEmitSpaceBefore(StringRef value,
 
 bool mlir::tblgen::canFormatStringAsKeyword(
     StringRef value, function_ref<void(Twine)> emitError) {
+  if (value.empty()) {
+    if (emitError)
+      emitError("keywords cannot be empty");
+    return false;
+  }
   if (!isalpha(value.front()) && value.front() != '_') {
     if (emitError)
       emitError("valid keyword starts with a letter or '_'");
@@ -472,6 +525,8 @@ bool mlir::tblgen::isValidLiteral(StringRef value,
   }
   // Check the punctuation that are larger than a single character.
   if (value == "->")
+    return true;
+  if (value == "...")
     return true;
 
   // Otherwise, this must be an identifier.

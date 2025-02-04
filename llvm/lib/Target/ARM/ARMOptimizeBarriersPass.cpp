@@ -9,7 +9,6 @@
 
 #include "ARM.h"
 #include "ARMInstrInfo.h"
-#include "ARMMachineFunctionInfo.h"
 #include "llvm/ADT/Statistic.h"
 #include "llvm/CodeGen/MachineFunctionPass.h"
 using namespace llvm;
@@ -89,7 +88,7 @@ bool ARMOptimizeBarriersPass::runOnMachineFunction(MachineFunction &MF) {
   }
   bool Changed = false;
   // Remove the tagged DMB
-  for (auto MI : ToRemove) {
+  for (auto *MI : ToRemove) {
     MI->eraseFromParent();
     ++NumDMBsRemoved;
     Changed = true;

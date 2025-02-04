@@ -15,7 +15,7 @@ framework module FW_Private { umbrella header "FW_Private.h" }
 [{
   "file": "DIR/tu.m",
   "directory": "DIR",
-  "command": "clang -fmodules -fmodules-cache-path=DIR/cache -iframework DIR/frameworks -c DIR/tu.m -o DIR/tu.o"
+  "command": "clang -fmodules -fmodules-cache-path=DIR/cache -F DIR/frameworks -c DIR/tu.m -o DIR/tu.o"
 }]
 //--- tu.m
 @import FW.Private;
@@ -26,35 +26,45 @@ framework module FW_Private { umbrella header "FW_Private.h" }
 // CHECK:      {
 // CHECK-NEXT:   "modules": [
 // CHECK-NEXT:     {
-// CHECK-NEXT:       "clang-module-deps": [],
+// CHECK:            "clang-module-deps": [],
 // CHECK-NEXT:       "clang-modulemap-file": "[[PREFIX]]/frameworks/FW.framework/Modules/module.modulemap",
 // CHECK-NEXT:       "command-line": [
 // CHECK:            ],
 // CHECK-NEXT:       "context-hash": "{{.*}}",
-// CHECK-NEXT:       "file-deps": [
-// CHECK-NEXT:         "[[PREFIX]]/frameworks/FW.framework/Headers/FW.h",
+// CHECK:            "file-deps": [
 // CHECK-NEXT:         "[[PREFIX]]/frameworks/FW.framework/Modules/module.modulemap",
-// CHECK-NEXT:         "[[PREFIX]]/frameworks/FW.framework/Modules/module.private.modulemap"
+// CHECK-NEXT:         "[[PREFIX]]/frameworks/FW.framework/Headers/FW.h"
+// CHECK-NEXT:       ],
+// CHECK-NEXT:       "link-libraries": [
+// CHECK-NEXT:         {
+// CHECK-NEXT:           "isFramework": true,
+// CHECK-NEXT:           "link-name": "FW"
+// CHECK-NEXT:         }
 // CHECK-NEXT:       ],
 // CHECK-NEXT:       "name": "FW"
-// CHECK-NEXT:     },
-// CHECK-NEXT:     {
-// CHECK-NEXT:       "clang-module-deps": [],
+// CHECK:          },
+// CHECK:          {
+// CHECK:            "clang-module-deps": [],
 // CHECK-NEXT:       "clang-modulemap-file": "[[PREFIX]]/frameworks/FW.framework/Modules/module.private.modulemap",
 // CHECK-NEXT:       "command-line": [
 // CHECK:            ],
 // CHECK-NEXT:       "context-hash": "{{.*}}",
-// CHECK-NEXT:       "file-deps": [
-// CHECK-NEXT:         "[[PREFIX]]/frameworks/FW.framework/Modules/module.modulemap",
+// CHECK:            "file-deps": [
 // CHECK-NEXT:         "[[PREFIX]]/frameworks/FW.framework/Modules/module.private.modulemap",
 // CHECK-NEXT:         "[[PREFIX]]/frameworks/FW.framework/PrivateHeaders/FW_Private.h"
 // CHECK-NEXT:       ],
+// CHECK-NEXT:       "link-libraries": [
+// CHECK-NEXT:         {
+// CHECK-NEXT:           "isFramework": true,
+// CHECK-NEXT:           "link-name": "FW"
+// CHECK-NEXT:         }
+// CHECK-NEXT:       ],
 // CHECK-NEXT:       "name": "FW_Private"
-// CHECK-NEXT:     }
-// CHECK-NEXT:   ],
+// CHECK:           }
+// CHECK:        ],
 // CHECK-NEXT:   "translation-units": [
 // CHECK-NEXT:     {
-// CHECK-NEXT:       "clang-context-hash": "{{.*}}",
+// CHECK:            "clang-context-hash": "{{.*}}",
 // CHECK-NEXT:       "clang-module-deps": [
 // CHECK-NEXT:         {
 // CHECK-NEXT:           "context-hash": "{{.*}}",
@@ -66,16 +76,14 @@ framework module FW_Private { umbrella header "FW_Private.h" }
 // CHECK-NEXT:         }
 // CHECK-NEXT:       ],
 // CHECK-NEXT:       "command-line": [
-// CHECK:              "-fmodule-file={{.*}}/FW_Private-{{.*}}.pcm"
 // CHECK:              "-fmodule-file={{.*}}/FW-{{.*}}.pcm"
+// CHECK:              "-fmodule-file={{.*}}/FW_Private-{{.*}}.pcm"
 // CHECK:            ],
-// CHECK-NEXT:       "file-deps": [
+// CHECK:            "file-deps": [
 // CHECK-NEXT:         "[[PREFIX]]/tu.m"
 // CHECK-NEXT:       ],
 // CHECK-NEXT:       "input-file": "[[PREFIX]]/tu.m"
 // CHECK-NEXT:     }
-// CHECK-NEXT:   ]
-// CHECK-NEXT: }
 
 // RUN: %deps-to-rsp %t/result.json --module-name=FW > %t/FW.cc1.rsp
 // RUN: %deps-to-rsp %t/result.json --module-name=FW_Private > %t/FW_Private.cc1.rsp

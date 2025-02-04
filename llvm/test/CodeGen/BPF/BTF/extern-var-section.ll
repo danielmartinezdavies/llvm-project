@@ -1,5 +1,5 @@
-; RUN: llc -march=bpfel -filetype=asm -o - %s | FileCheck -check-prefixes=CHECK %s
-; RUN: llc -march=bpfeb -filetype=asm -o - %s | FileCheck -check-prefixes=CHECK %s
+; RUN: llc -mtriple=bpfel -filetype=asm -o - %s | FileCheck -check-prefixes=CHECK %s
+; RUN: llc -mtriple=bpfeb -filetype=asm -o - %s | FileCheck -check-prefixes=CHECK %s
 ;
 ; Source code:
 ;   extern int global_func(char c) __attribute__((section("abc")));
@@ -16,7 +16,7 @@
 define dso_local i32 @test() local_unnamed_addr #0 !dbg !16 {
 entry:
   %call = tail call i32 @global_func(i8 signext 0) #2, !dbg !19
-  %0 = load i8, i8* @ch, align 1, !dbg !20, !tbaa !21
+  %0 = load i8, ptr @ch, align 1, !dbg !20, !tbaa !21
   %conv = sext i8 %0 to i32, !dbg !20
   %add = add nsw i32 %call, %conv, !dbg !24
   ret i32 %add, !dbg !25

@@ -16,9 +16,7 @@
 
 using namespace clang::ast_matchers;
 
-namespace clang {
-namespace tidy {
-namespace modernize {
+namespace clang::tidy::modernize {
 
 ReplaceRandomShuffleCheck::ReplaceRandomShuffleCheck(StringRef Name,
                                                      ClangTidyContext *Context)
@@ -85,7 +83,7 @@ void ReplaceRandomShuffleCheck::check(const MatchFinder::MatchResult &Result) {
   StringRef ContainerText = Lexer::getSourceText(
       CharSourceRange::getTokenRange(MatchedDecl->getSourceRange()),
       *Result.SourceManager, getLangOpts());
-  if (ContainerText.startswith("std::"))
+  if (ContainerText.starts_with("std::"))
     NewName = "std::" + NewName;
 
   Diag << FixItHint::CreateRemoval(MatchedDecl->getSourceRange());
@@ -96,6 +94,4 @@ void ReplaceRandomShuffleCheck::check(const MatchFinder::MatchResult &Result) {
       "<random>");
 }
 
-} // namespace modernize
-} // namespace tidy
-} // namespace clang
+} // namespace clang::tidy::modernize

@@ -52,9 +52,12 @@ def DirectivePwr7: SubtargetFeature<"", "CPUDirective", "PPC::DIR_PWR7", "">;
 def DirectivePwr8: SubtargetFeature<"", "CPUDirective", "PPC::DIR_PWR8", "">;
 def DirectivePwr9: SubtargetFeature<"", "CPUDirective", "PPC::DIR_PWR9", "">;
 def DirectivePwr10: SubtargetFeature<"", "CPUDirective", "PPC::DIR_PWR10", "">;
+def DirectivePwr11: SubtargetFeature<"", "CPUDirective", "PPC::DIR_PWR11", "">;
 def DirectivePwrFuture
     : SubtargetFeature<"", "CPUDirective", "PPC::DIR_PWR_FUTURE", "">;
 
+// Specifies that the selected CPU supports 64-bit instructions, regardless of
+// whether we are in 32-bit or 64-bit mode.
 def Feature64Bit     : SubtargetFeature<"64bit","Has64BitSupport", "true",
                                         "Enable 64-bit instructions">;
 def AIXOS: SubtargetFeature<"aix", "IsAIX", "true", "AIX OS">;
@@ -63,8 +66,14 @@ def FeatureModernAIXAs
                        "AIX system assembler is modern enough to support new mnes">;
 def FeatureHardFloat : SubtargetFeature<"hard-float", "HasHardFloat", "true",
                               "Enable floating-point instructions">;
+
+// Specifies that we are in 64-bit mode or that we should use 64-bit registers
+// in 32-bit mode when possible. Requires Feature64Bit to be enabled.
 def Feature64BitRegs : SubtargetFeature<"64bitregs","Use64BitRegs", "true",
                               "Enable 64-bit registers usage for ppc32 [beta]">;
+
+// Specify if we should store and manipulate i1 values in the individual
+// condition register bits.
 def FeatureCRBits    : SubtargetFeature<"crbits", "UseCRBits", "true",
                               "Use condition-register bits individually">;
 def FeatureFPU       : SubtargetFeature<"fpu","HasFPU","true",
@@ -133,7 +142,7 @@ def FeatureMSYNC     : SubtargetFeature<"msync", "HasOnlyMSYNC", "true",
                               [FeatureBookE]>;
 def FeatureE500      : SubtargetFeature<"e500", "IsE500", "true",
                                         "Enable E500/E500mc instructions">;
-def FeatureSecurePlt : SubtargetFeature<"secure-plt","SecurePlt", "true",
+def FeatureSecurePlt : SubtargetFeature<"secure-plt","IsSecurePlt", "true",
                                         "Enable secure plt mode">;
 def FeaturePPC4xx    : SubtargetFeature<"ppc4xx", "IsPPC4xx", "true",
                                         "Enable PPC 4xx instructions">;
@@ -172,7 +181,7 @@ def FeatureLongCall : SubtargetFeature<"longcall", "UseLongCalls", "true",
                                        "Always use indirect calls">;
 def FeatureHTM : SubtargetFeature<"htm", "HasHTM", "true",
                                   "Enable Hardware Transactional Memory instructions">;
-def FeatureMFTB   : SubtargetFeature<"", "FeatureMFTB", "true",
+def FeatureMFTB   : SubtargetFeature<"", "IsFeatureMFTB", "true",
                                         "Implement mftb using the mfspr instruction">;
 def FeatureFusion : SubtargetFeature<"fusion", "HasFusion", "true",
                                      "Target supports instruction fusion">;
@@ -246,7 +255,7 @@ def FeatureSlowPOPCNTD : SubtargetFeature<"slow-popcntd","HasPOPCNTD",
                                           "POPCNTD_Slow",
                                           "Has slow popcnt[dw] instructions">;
 
-def DeprecatedDST    : SubtargetFeature<"", "DeprecatedDST", "true",
+def DeprecatedDST    : SubtargetFeature<"", "IsDeprecatedDST", "true",
   "Treat vector data stream cache control instructions as deprecated">;
 
 def FeatureISA2_06 : SubtargetFeature<"isa-v206-instructions", "IsISA2_06",
@@ -288,8 +297,7 @@ def FeatureVectorsUseTwoUnits : SubtargetFeature<"vectors-use-two-units",
 def FeaturePrefixInstrs : SubtargetFeature<"prefix-instrs", "HasPrefixInstrs",
                                            "true",
                                            "Enable prefixed instructions",
-                                           [FeatureISA3_0, FeatureP8Vector,
-                                            FeatureP9Altivec]>;
+                                           [FeatureISA3_1]>;
 def FeaturePCRelativeMemops :
   SubtargetFeature<"pcrelative-memops", "HasPCRelativeMemops", "true",
                    "Enable PC relative Memory Ops",
@@ -310,11 +318,40 @@ def FeaturePrivileged :
   SubtargetFeature<"privileged", "HasPrivileged", "true",
                    "Add privileged instructions">;
 
+// Specifies that local-exec TLS accesses in any function with this target
+// attribute should use the optimized TOC-free sequence (where the offset is an
+// immediate off of R13 for which the linker might add fix-up code if the
+// immediate is too large).
+// Clearly, this isn't really a feature of the subtarget, but is used as a
+// convenient way to affect code generation for individual functions.
+def FeatureAIXLocalExecTLS :
+  SubtargetFeature<"aix-small-local-exec-tls", "HasAIXSmallLocalExecTLS", "true",
+                   "Produce a TOC-free local-exec TLS sequence for this function "
+                   "for 64-bit AIX">;
+
+// Specifies that local-dynamic TLS accesses in any function with this target
+// attribute should use the optimized sequence (where the offset is an immediate
+// off the module-handle for which the linker might add fix-up code for if the
+// immediate is too large).
+def FeatureAIXLocalDynamicTLS :
+  SubtargetFeature<"aix-small-local-dynamic-tls", "HasAIXSmallLocalDynamicTLS",
+                   "true", "Produce a faster local-dynamic TLS sequence for this "
+                   "function for 64-bit AIX">;
+
+def FeatureAIXSharedLibTLSModelOpt :
+  SubtargetFeature<"aix-shared-lib-tls-model-opt",
+                   "HasAIXShLibTLSModelOpt", "true",
+                   "Tune TLS model at function level in shared library loaded "
+                   "with the main program (for 64-bit AIX only)">;
+
 def FeaturePredictableSelectIsExpensive :
   SubtargetFeature<"predictable-select-expensive",
                    "PredictableSelectIsExpensive",
                    "true",
                    "Prefer likely predicted branches over selects">;
+
+def FeatureFastMFLR : SubtargetFeature<"fast-MFLR", "HasFastMFLR", "true",
+                                       "MFLR is a fast instruction">;
 
 // Since new processors generally contain a superset of features of those that
 // came before them, the idea is to make implementations of new processors
@@ -424,20 +461,32 @@ def ProcessorFeatures {
     !listconcat(FusionFeatures, [
        DirectivePwr10, FeatureISA3_1, FeaturePrefixInstrs,
        FeaturePCRelativeMemops, FeatureP10Vector, FeatureMMA,
-       FeaturePairedVectorMemops]);
+       FeaturePairedVectorMemops, FeatureFastMFLR]);
   list<SubtargetFeature> P10SpecificFeatures = [];
   list<SubtargetFeature> P10InheritableFeatures =
     !listconcat(P9InheritableFeatures, P10AdditionalFeatures);
   list<SubtargetFeature> P10Features =
     !listconcat(P10InheritableFeatures, P10SpecificFeatures);
 
-  // Future
-  // For future CPU we assume that all of the existing features from Power10
+  // Power11
+  // For P11 CPU we assume that all the existing features from Power10
   // still exist with the exception of those we know are Power10 specific.
+  list<SubtargetFeature> P11AdditionalFeatures =
+    [DirectivePwr11];
+  list<SubtargetFeature> P11SpecificFeatures =
+    [];
+  list<SubtargetFeature> P11InheritableFeatures =
+    !listconcat(P10InheritableFeatures, P11AdditionalFeatures);
+  list<SubtargetFeature> P11Features =
+    !listconcat(P11InheritableFeatures, P11SpecificFeatures);
+
+  // Future
+  // For future CPU we assume that all of the existing features from Power11
+  // still exist with the exception of those we know are Power11 specific.
   list<SubtargetFeature> FutureAdditionalFeatures = [FeatureISAFuture];
   list<SubtargetFeature> FutureSpecificFeatures = [];
   list<SubtargetFeature> FutureInheritableFeatures =
-    !listconcat(P10InheritableFeatures, FutureAdditionalFeatures);
+    !listconcat(P11InheritableFeatures, FutureAdditionalFeatures);
   list<SubtargetFeature> FutureFeatures =
     !listconcat(FutureInheritableFeatures, FutureSpecificFeatures);
 }
@@ -500,6 +549,18 @@ def getAltVSXFMAOpcode : InstrMapping {
   // The key column are the (default) addend-killing instructions.
   let KeyCol = ["0"];
   // Value columns IsVSXFMAAlt=1
+  let ValueCols = [["1"]];
+}
+
+def get64BitInstrFromSignedExt32BitInstr : InstrMapping {
+  let FilterClass = "SExt32To64";
+  // Instructions with the same opcode.
+  let RowFields = ["Inst"];
+  // Instructions with the same Interpretation64Bit value form a column.
+  let ColFields = ["Interpretation64Bit"];
+  // The key column are not the Interpretation64Bit-form instructions.
+  let KeyCol = ["0"];
+  // Value columns are the Interpretation64Bit-form instructions.
   let ValueCols = [["1"]];
 }
 
@@ -636,6 +697,7 @@ def : ProcessorModel<"pwr7", P7Model, ProcessorFeatures.P7Features>;
 def : ProcessorModel<"pwr8", P8Model, ProcessorFeatures.P8Features>;
 def : ProcessorModel<"pwr9", P9Model, ProcessorFeatures.P9Features>;
 def : ProcessorModel<"pwr10", P10Model, ProcessorFeatures.P10Features>;
+def : ProcessorModel<"pwr11", P10Model, ProcessorFeatures.P11Features>;
 // No scheduler model for future CPU.
 def : ProcessorModel<"future", NoSchedModel,
                   ProcessorFeatures.FutureFeatures>;
@@ -659,11 +721,6 @@ include "PPCCallingConv.td"
 
 def PPCInstrInfo : InstrInfo {
   let isLittleEndianEncoding = 1;
-
-  // FIXME: Unset this when no longer needed!
-  let decodePositionallyEncodedOperands = 1;
-
-  let noNamedPositionallyEncodedOperands = 1;
 }
 
 def PPCAsmWriter : AsmWriter {
@@ -674,7 +731,8 @@ def PPCAsmWriter : AsmWriter {
 }
 
 def PPCAsmParser : AsmParser {
-  let ShouldEmitMatchRegisterName = 0;
+  let ShouldEmitMatchRegisterName = 1;
+  let AllowDuplicateRegisterNames = 1;
 }
 
 def PPCAsmParserVariant : AsmParserVariant {

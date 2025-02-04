@@ -9,8 +9,10 @@
 #ifndef LLD_COFF_CONFIG_H
 #define LLD_COFF_CONFIG_H
 
+#include "lld/Common/ErrorHandler.h"
 #include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/SetVector.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Object/COFF.h"
@@ -26,8 +28,8 @@ namespace lld::coff {
 using llvm::COFF::IMAGE_FILE_MACHINE_UNKNOWN;
 using llvm::COFF::WindowsSubsystem;
 using llvm::StringRef;
+class COFFLinkerContext;
 class DefinedAbsolute;
-class DefinedRelative;
 class StringChunk;
 class Symbol;
 class InputFile;
@@ -36,14 +38,26 @@ class SectionChunk;
 // Short aliases.
 static const auto AMD64 = llvm::COFF::IMAGE_FILE_MACHINE_AMD64;
 static const auto ARM64 = llvm::COFF::IMAGE_FILE_MACHINE_ARM64;
+static const auto ARM64EC = llvm::COFF::IMAGE_FILE_MACHINE_ARM64EC;
+static const auto ARM64X = llvm::COFF::IMAGE_FILE_MACHINE_ARM64X;
 static const auto ARMNT = llvm::COFF::IMAGE_FILE_MACHINE_ARMNT;
 static const auto I386 = llvm::COFF::IMAGE_FILE_MACHINE_I386;
+
+enum class ExportSource {
+  Unset,
+  Directives,
+  Export,
+  ModuleDefinition,
+};
+
+enum class EmitKind { Obj, LLVM, ASM };
 
 // Represents an /export option.
 struct Export {
   StringRef name;       // N in /export:N or /export:E=N
   StringRef extName;    // E in /export:E=N
-  StringRef aliasTarget; // GNU specific: N in "alias == N"
+  StringRef exportAs;   // E in /export:N,EXPORTAS,E
+  StringRef importName; // GNU specific: N in "othername == N"
   Symbol *sym = nullptr;
   uint16_t ordinal = 0;
   bool noname = false;
@@ -57,16 +71,14 @@ struct Export {
   StringRef forwardTo;
   StringChunk *forwardChunk = nullptr;
 
-  // True if this /export option was in .drectves section.
-  bool directives = false;
+  ExportSource source = ExportSource::Unset;
   StringRef symbolName;
   StringRef exportName; // Name in DLL
 
-  bool operator==(const Export &e) {
-    return (name == e.name && extName == e.extName &&
-            aliasTarget == e.aliasTarget &&
-            ordinal == e.ordinal && noname == e.noname &&
-            data == e.data && isPrivate == e.isPrivate);
+  bool operator==(const Export &e) const {
+    return (name == e.name && extName == e.extName && exportAs == e.exportAs &&
+            importName == e.importName && ordinal == e.ordinal &&
+            noname == e.noname && data == e.data && isPrivate == e.isPrivate);
   }
 };
 
@@ -92,16 +104,23 @@ enum class ICFLevel {
         // behavior.
 };
 
+enum class BuildIDHash {
+  None,
+  PDB,
+  Binary,
+};
+
 // Global configuration.
 struct Configuration {
   enum ManifestKind { Default, SideBySide, Embed, No };
-  bool is64() { return machine == AMD64 || machine == ARM64; }
+  bool is64() const { return llvm::COFF::is64Bit(machine); }
 
+  std::unique_ptr<MemoryBuffer> dosStub;
   llvm::COFF::MachineTypes machine = IMAGE_FILE_MACHINE_UNKNOWN;
+  bool machineInferred = false;
   size_t wordsize;
   bool verbose = false;
   WindowsSubsystem subsystem = llvm::COFF::IMAGE_SUBSYSTEM_UNKNOWN;
-  Symbol *entry = nullptr;
   bool noEntry = false;
   std::string outputFile;
   std::string importName;
@@ -114,15 +133,17 @@ struct Configuration {
   bool forceMultipleRes = false;
   bool forceUnresolved = false;
   bool debug = false;
-  bool debugDwarf = false;
+  bool includeDwarfChunks = false;
   bool debugGHashes = false;
-  bool debugSymtab = false;
+  bool writeSymtab = false;
   bool driver = false;
   bool driverUponly = false;
   bool driverWdm = false;
   bool showTiming = false;
   bool showSummary = false;
+  bool printSearchPaths = false;
   unsigned debugTypes = static_cast<unsigned>(DebugType::None);
+  llvm::SmallVector<llvm::StringRef, 0> mllvmOpts;
   std::vector<std::string> natvisFiles;
   llvm::StringMap<std::string> namedStreams;
   llvm::SmallString<128> pdbAltPath;
@@ -141,13 +162,11 @@ struct Configuration {
   bool dll = false;
   StringRef implib;
   bool noimplib = false;
-  std::vector<Export> exports;
-  bool hadExplicitExports;
   std::set<std::string> delayLoads;
   std::map<std::string, int> dllOrder;
-  Symbol *delayLoadHelper = nullptr;
+  Symbol *arm64ECIcallHelper = nullptr;
 
-  bool saveTemps = false;
+  llvm::DenseSet<llvm::StringRef> saveTempsArgs;
 
   // /guard:cf
   int guardCF = GuardCFLevel::Off;
@@ -160,15 +179,17 @@ struct Configuration {
 
   // Used for /opt:lldlto=N
   unsigned ltoo = 2;
+  // Used for /opt:lldltocgo=N
+  std::optional<unsigned> ltoCgo;
 
   // Used for /opt:lldltojobs=N
   std::string thinLTOJobs;
   // Used for /opt:lldltopartitions=N
   unsigned ltoPartitions = 1;
 
-  // Used for /opt:lldltocache=path
+  // Used for /lldltocache=path
   StringRef ltoCache;
-  // Used for /opt:lldltocachepolicy=policy
+  // Used for /lldltocachepolicy=policy
   llvm::CachePruningPolicy ltoCachePolicy;
 
   // Used for /opt:[no]ltodebugpassmanager
@@ -190,6 +211,9 @@ struct Configuration {
   StringRef manifestUIAccess = "'false'";
   StringRef manifestFile;
 
+  // used for /dwodir
+  StringRef dwoDir;
+
   // Used for /aligncomm.
   std::map<std::string, int> alignComm;
 
@@ -208,11 +232,22 @@ struct Configuration {
   // Used for /map.
   std::string mapFile;
 
+  // Used for /mapinfo.
+  bool mapInfo = false;
+
   // Used for /thinlto-index-only:
   llvm::StringRef thinLTOIndexOnlyArg;
 
-  // Used for /thinlto-object-prefix-replace:
-  std::pair<llvm::StringRef, llvm::StringRef> thinLTOPrefixReplace;
+  // Used for /thinlto-prefix-replace:
+  // Replace the prefix in paths generated for ThinLTO, replacing
+  // thinLTOPrefixReplaceOld with thinLTOPrefixReplaceNew. If
+  // thinLTOPrefixReplaceNativeObject is defined, replace the prefix of object
+  // file paths written to the response file given in the
+  // --thinlto-index-only=${response} option with
+  // thinLTOPrefixReplaceNativeObject, instead of thinLTOPrefixReplaceNew.
+  llvm::StringRef thinLTOPrefixReplaceOld;
+  llvm::StringRef thinLTOPrefixReplaceNew;
+  llvm::StringRef thinLTOPrefixReplaceNativeObject;
 
   // Used for /thinlto-object-suffix-replace:
   std::pair<llvm::StringRef, llvm::StringRef> thinLTOObjectSuffixReplace;
@@ -228,6 +263,9 @@ struct Configuration {
 
   // Used for /lto-pgo-warn-mismatch:
   bool ltoPGOWarnMismatch = true;
+
+  // Used for /lto-sample-profile:
+  llvm::StringRef ltoSampleProfileName;
 
   // Used for /call-graph-ordering-file:
   llvm::MapVector<std::pair<const SectionChunk *, const SectionChunk *>,
@@ -258,6 +296,8 @@ struct Configuration {
   uint32_t minorSubsystemVersion = 0;
   uint32_t timestamp = 0;
   uint32_t functionPadMin = 0;
+  uint32_t timeTraceGranularity = 0;
+  uint16_t dependentLoadFlags = 0;
   bool dynamicBase = true;
   bool allowBind = true;
   bool cetCompat = false;
@@ -281,12 +321,57 @@ struct Configuration {
   bool swaprunNet = false;
   bool thinLTOEmitImportsFiles;
   bool thinLTOIndexOnly;
+  bool timeTraceEnabled = false;
   bool autoImport = false;
   bool pseudoRelocs = false;
   bool stdcallFixup = false;
+  bool writeCheckSum = false;
+  EmitKind emit = EmitKind::Obj;
+  bool allowDuplicateWeak = false;
+  BuildIDHash buildIDHash = BuildIDHash::None;
 };
 
-extern std::unique_ptr<Configuration> config;
+struct COFFSyncStream : SyncStream {
+  COFFLinkerContext &ctx;
+  COFFSyncStream(COFFLinkerContext &ctx, DiagLevel level);
+};
+
+template <typename T>
+std::enable_if_t<!std::is_pointer_v<std::remove_reference_t<T>>,
+                 const COFFSyncStream &>
+operator<<(const COFFSyncStream &s, T &&v) {
+  s.os << std::forward<T>(v);
+  return s;
+}
+
+inline const COFFSyncStream &operator<<(const COFFSyncStream &s,
+                                        const char *v) {
+  s.os << v;
+  return s;
+}
+
+inline const COFFSyncStream &operator<<(const COFFSyncStream &s, Error v) {
+  s.os << llvm::toString(std::move(v));
+  return s;
+}
+
+// Report a log if -verbose is specified.
+COFFSyncStream Log(COFFLinkerContext &ctx);
+
+// Print a message to stdout.
+COFFSyncStream Msg(COFFLinkerContext &ctx);
+
+// Report a warning. Upgraded to an error if /WX is specified.
+COFFSyncStream Warn(COFFLinkerContext &ctx);
+
+// Report an error that will suppress the output file generation.
+COFFSyncStream Err(COFFLinkerContext &ctx);
+
+// Report a fatal error that exits immediately. This should generally be avoided
+// in favor of Err.
+COFFSyncStream Fatal(COFFLinkerContext &ctx);
+
+uint64_t errCount(COFFLinkerContext &ctx);
 
 } // namespace lld::coff
 

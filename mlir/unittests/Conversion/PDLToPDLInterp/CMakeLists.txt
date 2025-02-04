@@ -1,8 +1,8 @@
 add_mlir_unittest(MLIRPDLToPDLInterpTests
   RootOrderingTest.cpp
 )
-target_link_libraries(MLIRPDLToPDLInterpTests
+mlir_target_link_libraries(MLIRPDLToPDLInterpTests
   PRIVATE
-  MLIRArithmeticDialect
+  MLIRArithDialect
   MLIRPDLToPDLInterp
 )

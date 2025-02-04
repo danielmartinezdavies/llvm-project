@@ -318,7 +318,7 @@ void ExecutionDomainFix::visitSoftInstr(MachineInstr *mi, unsigned mask) {
 
   // If the collapsed operands force a single domain, propagate the collapse.
   if (isPowerOf2_32(available)) {
-    unsigned domain = countTrailingZeros(available);
+    unsigned domain = llvm::countr_zero(available);
     TII->setExecutionDomain(*mi, domain);
     visitHardInstr(mi, domain);
     return;
@@ -445,7 +445,7 @@ bool ExecutionDomainFix::runOnMachineFunction(MachineFunction &mf) {
     for (unsigned i = 0, e = RC->getNumRegs(); i != e; ++i)
       for (MCRegAliasIterator AI(RC->getRegister(i), TRI, true); AI.isValid();
            ++AI)
-        AliasMap[*AI].push_back(i);
+        AliasMap[(*AI).id()].push_back(i);
   }
 
   // Initialize the MBBOutRegsInfos

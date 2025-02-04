@@ -70,13 +70,18 @@ const char *MessageFormattedText::Convert(const std::string &s) {
   return conversions_.front().c_str();
 }
 
-const char *MessageFormattedText::Convert(std::string &s) {
+const char *MessageFormattedText::Convert(std::string &&s) {
+  conversions_.emplace_front(std::move(s));
+  return conversions_.front().c_str();
+}
+
+const char *MessageFormattedText::Convert(const std::string_view &s) {
   conversions_.emplace_front(s);
   return conversions_.front().c_str();
 }
 
-const char *MessageFormattedText::Convert(std::string &&s) {
-  conversions_.emplace_front(std::move(s));
+const char *MessageFormattedText::Convert(std::string_view &&s) {
+  conversions_.emplace_front(s);
   return conversions_.front().c_str();
 }
 
@@ -177,6 +182,24 @@ Message &Message::set_severity(Severity severity) {
           [severity](MessageFormattedText &x) { x.set_severity(severity); },
       },
       text_);
+  return *this;
+}
+
+std::optional<common::LanguageFeature> Message::languageFeature() const {
+  return languageFeature_;
+}
+
+Message &Message::set_languageFeature(common::LanguageFeature feature) {
+  languageFeature_ = feature;
+  return *this;
+}
+
+std::optional<common::UsageWarning> Message::usageWarning() const {
+  return usageWarning_;
+}
+
+Message &Message::set_usageWarning(common::UsageWarning warning) {
+  usageWarning_ = warning;
   return *this;
 }
 

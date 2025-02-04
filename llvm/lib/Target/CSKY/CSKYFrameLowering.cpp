@@ -33,7 +33,7 @@ static Register getFPReg(const CSKYSubtarget &STI) { return CSKY::R8; }
 // callee saved register to save the value.
 static Register getBPReg(const CSKYSubtarget &STI) { return CSKY::R7; }
 
-bool CSKYFrameLowering::hasFP(const MachineFunction &MF) const {
+bool CSKYFrameLowering::hasFPImpl(const MachineFunction &MF) const {
   const TargetRegisterInfo *RegInfo = MF.getSubtarget().getRegisterInfo();
 
   const MachineFrameInfo &MFI = MF.getFrameInfo();
@@ -441,7 +441,7 @@ void CSKYFrameLowering::determineCalleeSaves(MachineFunction &MF,
     unsigned size = TRI->getSpillSize(*RC);
     Align align = TRI->getSpillAlign(*RC);
 
-    RS->addScavengingFrameIndex(MFI.CreateStackObject(size, align, false));
+    RS->addScavengingFrameIndex(MFI.CreateSpillStackObject(size, align));
   }
 
   unsigned FnSize = EstimateFunctionSizeInBytes(MF, *TII);
@@ -476,7 +476,8 @@ bool CSKYFrameLowering::spillCalleeSavedRegisters(
     // Insert the spill to the stack frame.
     Register Reg = CS.getReg();
     const TargetRegisterClass *RC = TRI->getMinimalPhysRegClass(Reg);
-    TII.storeRegToStackSlot(MBB, MI, Reg, true, CS.getFrameIdx(), RC, TRI);
+    TII.storeRegToStackSlot(MBB, MI, Reg, true, CS.getFrameIdx(), RC, TRI,
+                            Register());
   }
 
   return true;
@@ -497,7 +498,8 @@ bool CSKYFrameLowering::restoreCalleeSavedRegisters(
   for (auto &CS : reverse(CSI)) {
     Register Reg = CS.getReg();
     const TargetRegisterClass *RC = TRI->getMinimalPhysRegClass(Reg);
-    TII.loadRegFromStackSlot(MBB, MI, Reg, CS.getFrameIdx(), RC, TRI);
+    TII.loadRegFromStackSlot(MBB, MI, Reg, CS.getFrameIdx(), RC, TRI,
+                             Register());
     assert(MI != MBB.begin() && "loadRegFromStackSlot didn't insert any code!");
   }
 

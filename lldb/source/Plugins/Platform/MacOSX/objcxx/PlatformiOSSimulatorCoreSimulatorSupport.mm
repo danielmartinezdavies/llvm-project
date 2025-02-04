@@ -61,10 +61,10 @@ using namespace lldb_private;
 CoreSimulatorSupport::Process::Process(lldb::pid_t p) : m_pid(p), m_error() {}
 
 CoreSimulatorSupport::Process::Process(Status error)
-    : m_pid(LLDB_INVALID_PROCESS_ID), m_error(error) {}
+    : m_pid(LLDB_INVALID_PROCESS_ID), m_error(std::move(error)) {}
 
 CoreSimulatorSupport::Process::Process(lldb::pid_t p, Status error)
-    : m_pid(p), m_error(error) {}
+    : m_pid(p), m_error(std::move(error)) {}
 
 CoreSimulatorSupport::DeviceType::DeviceType() : m_model_identifier() {}
 
@@ -167,21 +167,21 @@ CoreSimulatorSupport::OSVersion::OSVersion() : OSVersion("", "") {}
 
 CoreSimulatorSupport::ModelIdentifier
 CoreSimulatorSupport::DeviceType::GetModelIdentifier() {
-  if (!m_model_identifier.hasValue()) {
+  if (!m_model_identifier.has_value()) {
     auto utf8_model_id = [[m_dev modelIdentifier] UTF8String];
     if (utf8_model_id && *utf8_model_id)
       m_model_identifier = ModelIdentifier(utf8_model_id);
   }
 
-  if (m_model_identifier.hasValue())
-    return m_model_identifier.getValue();
+  if (m_model_identifier.has_value())
+    return m_model_identifier.value();
   else
     return ModelIdentifier();
 }
 
 CoreSimulatorSupport::OSVersion
 CoreSimulatorSupport::DeviceRuntime::GetVersion() {
-  if (!m_os_version.hasValue()) {
+  if (!m_os_version.has_value()) {
     auto utf8_ver_string = [[m_dev versionString] UTF8String];
     auto utf8_build_ver = [[m_dev buildVersionString] UTF8String];
     if (utf8_ver_string && *utf8_ver_string && utf8_build_ver &&
@@ -190,8 +190,8 @@ CoreSimulatorSupport::DeviceRuntime::GetVersion() {
     }
   }
 
-  if (m_os_version.hasValue())
-    return m_os_version.getValue();
+  if (m_os_version.has_value())
+    return m_os_version.value();
   return OSVersion();
 }
 
@@ -218,18 +218,18 @@ std::string CoreSimulatorSupport::Device::GetUDID() const {
 }
 
 CoreSimulatorSupport::DeviceType CoreSimulatorSupport::Device::GetDeviceType() {
-  if (!m_dev_type.hasValue())
+  if (!m_dev_type.has_value())
     m_dev_type = DeviceType([m_dev deviceType]);
 
-  return m_dev_type.getValue();
+  return m_dev_type.value();
 }
 
 CoreSimulatorSupport::DeviceRuntime
 CoreSimulatorSupport::Device::GetDeviceRuntime() {
-  if (!m_dev_runtime.hasValue())
+  if (!m_dev_runtime.has_value())
     m_dev_runtime = DeviceRuntime([m_dev runtime]);
 
-  return m_dev_runtime.getValue();
+  return m_dev_runtime.value();
 }
 
 bool CoreSimulatorSupport::
@@ -341,7 +341,7 @@ operator!=(const CoreSimulatorSupport::ModelIdentifier &lhs,
 
 bool CoreSimulatorSupport::Device::Boot(Status &err) {
   if (m_dev == nil) {
-    err.SetErrorString("no valid simulator instance");
+    err = Status::FromErrorString("no valid simulator instance");
     return false;
   }
 
@@ -360,7 +360,7 @@ bool CoreSimulatorSupport::Device::Boot(Status &err) {
     err.Clear();
     return true;
   } else {
-    err.SetErrorString([[nserror description] UTF8String]);
+    err = Status::FromErrorString([[nserror description] UTF8String]);
     return false;
   }
 }
@@ -371,7 +371,7 @@ bool CoreSimulatorSupport::Device::Shutdown(Status &err) {
     err.Clear();
     return true;
   } else {
-    err.SetErrorString([[nserror description] UTF8String]);
+    err = Status::FromErrorString([[nserror description] UTF8String]);
     return false;
   }
 }
@@ -387,12 +387,12 @@ static Status HandleFileAction(ProcessLaunchInfo &launch_info,
       break;
 
     case FileAction::eFileActionClose:
-      error.SetErrorStringWithFormat("close file action for %i not supported",
-                                     fd);
+      error = Status::FromErrorStringWithFormat(
+          "close file action for %i not supported", fd);
       break;
 
     case FileAction::eFileActionDuplicate:
-      error.SetErrorStringWithFormat(
+      error = Status::FromErrorStringWithFormat(
           "duplication file action for %i not supported", fd);
       break;
 
@@ -408,7 +408,7 @@ static Status HandleFileAction(ProcessLaunchInfo &launch_info,
                 launch_info.GetPTY().GetSecondaryFileDescriptor();
             if (secondary_fd == PseudoTerminal::invalid_fd) {
               if (llvm::Error Err = launch_info.GetPTY().OpenSecondary(O_RDWR))
-                return Status(std::move(Err));
+                return Status::FromError(std::move(Err));
             }
             secondary_fd = launch_info.GetPTY().GetSecondaryFileDescriptor();
             assert(secondary_fd != PseudoTerminal::invalid_fd);
@@ -417,7 +417,6 @@ static Status HandleFileAction(ProcessLaunchInfo &launch_info,
             return error; // Success
           }
         }
-        Status posix_error;
         int oflag = file_action->GetActionArgument();
         int created_fd =
             open(file_spec.GetPath().c_str(), oflag, S_IRUSR | S_IWUSR);
@@ -433,10 +432,10 @@ static Status HandleFileAction(ProcessLaunchInfo &launch_info,
           [options setValue:[NSNumber numberWithInteger:created_fd] forKey:key];
           return error; // Success
         } else {
-          posix_error.SetErrorToErrno();
-          error.SetErrorStringWithFormat("unable to open file '%s': %s",
-                                         file_spec.GetPath().c_str(),
-                                         posix_error.AsCString());
+          Status posix_error = Status::FromErrno();
+          return Status::FromErrorStringWithFormatv(
+              "unable to open file '{0}': {1}", file_spec.GetPath(),
+              posix_error.AsCString());
         }
       }
     } break;
@@ -499,19 +498,19 @@ CoreSimulatorSupport::Device::Spawn(ProcessLaunchInfo &launch_info) {
                            STDIN_FILENO, stdin_file);
 
   if (error.Fail())
-    return CoreSimulatorSupport::Process(error);
+    return CoreSimulatorSupport::Process(std::move(error));
 
   error = HandleFileAction(launch_info, options, kSimDeviceSpawnStdout,
                            STDOUT_FILENO, stdout_file);
 
   if (error.Fail())
-    return CoreSimulatorSupport::Process(error);
+    return CoreSimulatorSupport::Process(std::move(error));
 
   error = HandleFileAction(launch_info, options, kSimDeviceSpawnStderr,
                            STDERR_FILENO, stderr_file);
 
   if (error.Fail())
-    return CoreSimulatorSupport::Process(error);
+    return CoreSimulatorSupport::Process(std::move(error));
 
 #undef kSimDeviceSpawnEnvironment
 #undef kSimDeviceSpawnStdin
@@ -536,10 +535,11 @@ CoreSimulatorSupport::Device::Spawn(ProcessLaunchInfo &launch_info) {
 
   if (!success) {
     const char *nserror_string = [[nserror description] UTF8String];
-    error.SetErrorString(nserror_string ? nserror_string : "unable to launch");
+    error = Status::FromErrorString(nserror_string ? nserror_string
+                                                   : "unable to launch");
   }
 
-  return CoreSimulatorSupport::Process(pid, error);
+  return CoreSimulatorSupport::Process(pid, std::move(error));
 }
 
 CoreSimulatorSupport::DeviceSet

@@ -72,7 +72,10 @@
 // || `[0x2000000000, 0x23ffffffff]` || LowShadow  ||
 // || `[0x0000000000, 0x1fffffffff]` || LowMem     ||
 //
-// Default Linux/RISCV64 Sv39 mapping:
+// Default Linux/RISCV64 Sv39 mapping with SHADOW_OFFSET == 0xd55550000;
+// (the exact location of SHADOW_OFFSET may vary depending the dynamic probing
+//  by FindDynamicShadowStart).
+//
 // || `[0x1555550000, 0x3fffffffff]` || HighMem    ||
 // || `[0x0fffffa000, 0x1555555fff]` || HighShadow ||
 // || `[0x0effffa000, 0x0fffff9fff]` || ShadowGap  ||
@@ -186,7 +189,7 @@
 #  elif SANITIZER_FREEBSD && defined(__aarch64__)
 #    define ASAN_SHADOW_OFFSET_CONST 0x0000800000000000
 #  elif SANITIZER_RISCV64
-#    define ASAN_SHADOW_OFFSET_CONST 0x0000000d55550000
+#    define ASAN_SHADOW_OFFSET_DYNAMIC
 #  elif defined(__aarch64__)
 #    define ASAN_SHADOW_OFFSET_CONST 0x0000001000000000
 #  elif defined(__powerpc64__)
@@ -272,6 +275,8 @@ extern uptr kHighMemEnd, kMidMemBeg, kMidMemEnd;  // Initialized in __asan_init.
 #  else
 #    define MEM_TO_SHADOW(mem) \
       (((mem) >> ASAN_SHADOW_SCALE) + (ASAN_SHADOW_OFFSET))
+#    define SHADOW_TO_MEM(mem) \
+      (((mem) - (ASAN_SHADOW_OFFSET)) << (ASAN_SHADOW_SCALE))
 
 #    define kLowMemBeg 0
 #    define kLowMemEnd (ASAN_SHADOW_OFFSET ? ASAN_SHADOW_OFFSET - 1 : 0)
@@ -374,6 +379,12 @@ static inline uptr MemToShadow(uptr p) {
 static inline bool AddrIsInShadow(uptr a) {
   PROFILE_ASAN_MAPPING();
   return AddrIsInLowShadow(a) || AddrIsInMidShadow(a) || AddrIsInHighShadow(a);
+}
+
+static inline uptr ShadowToMem(uptr p) {
+  PROFILE_ASAN_MAPPING();
+  CHECK(AddrIsInShadow(p));
+  return SHADOW_TO_MEM(p);
 }
 
 static inline bool AddrIsAlignedByGranularity(uptr a) {

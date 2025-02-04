@@ -29,17 +29,19 @@ bstrins.d $a0, $a0, 63, -1
 bstrpick.d $a0, $a0, 64, 0
 # CHECK: :[[#@LINE-1]]:22: error: immediate must be an integer in the range [0, 63]
 
-## simm12
+## simm12_addlike
 addi.d $a0, $a0, -2049
 # CHECK: :[[#@LINE-1]]:18: error: operand must be a symbol with modifier (e.g. %pc_lo12) or an integer in the range [-2048, 2047]
-lu52i.d $a0, $a0, -2049
-# CHECK: :[[#@LINE-1]]:19: error: operand must be a symbol with modifier (e.g. %pc_lo12) or an integer in the range [-2048, 2047]
 ld.wu $a0, $a0, 2048
 # CHECK: :[[#@LINE-1]]:17: error: operand must be a symbol with modifier (e.g. %pc_lo12) or an integer in the range [-2048, 2047]
 ld.d $a0, $a0, 2048
 # CHECK: :[[#@LINE-1]]:16: error: operand must be a symbol with modifier (e.g. %pc_lo12) or an integer in the range [-2048, 2047]
 st.d $a0, $a0, 2048
 # CHECK: :[[#@LINE-1]]:16: error: operand must be a symbol with modifier (e.g. %pc_lo12) or an integer in the range [-2048, 2047]
+
+## simm12_lu52id
+lu52i.d $a0, $a0, 2048
+# CHECK-LA64: :[[#@LINE-1]]:19: error: operand must be a symbol with modifier (e.g. %pc64_hi12) or an integer in the range [-2048, 2047]
 
 ## simm14_lsl2
 ldptr.w $a0, $a0, -32772
@@ -62,10 +64,12 @@ addu16i.d $a0, $a0, 32768
 # CHECK: :[[#@LINE-1]]:21: error: immediate must be an integer in the range [-32768, 32767]
 
 ## simm20
-lu32i.d $a0, -0x80001
-# CHECK: :[[#@LINE-1]]:14: error: immediate must be an integer in the range [-524288, 524287]
 pcaddu18i $a0, 0x80000
-# CHECK: :[[#@LINE-1]]:16: error: immediate must be an integer in the range [-524288, 524287]
+# CHECK: :[[#@LINE-1]]:16: error: operand must be a symbol with modifier (e.g. %call36) or an integer in the range [-524288, 524287]
+
+## simm20_lu32id
+lu32i.d $a0, 0x80000
+# CHECK-LA64: :[[#@LINE-1]]:14: error: operand must be a symbol with modifier (e.g. %abs64_lo20) or an integer in the range [-524288, 524287]
 
 ## msbd < lsbd
 # CHECK: :[[#@LINE+1]]:21: error: msb is less than lsb
@@ -75,3 +79,26 @@ bstrins.d $a0, $a0, 1, 2
 # CHECK: :[[#@LINE+1]]:22: error: msb is less than lsb
 bstrpick.d $a0, $a0, 32, 63
 # CHECK:             ^~~~~~
+
+# CHECK: :[[#@LINE+1]]:10: error: $rd must be different from both $rk and $rj
+amadd.d $a0, $a0, $a0
+# CHECK: :[[#@LINE+1]]:10: error: $rd must be different from both $rk and $rj
+ammin.w $a0, $a0, $a1
+# CHECK: :[[#@LINE+1]]:10: error: $rd must be different from both $rk and $rj
+amxor.w $a0, $a1, $a0
+
+# CHECK: :[[#@LINE+1]]:24: error: expected optional integer offset
+amadd.d $a0, $a1, $a2, $a3
+# CHECK: :[[#@LINE+1]]:24: error: optional integer offset must be 0
+amadd.d $a0, $a1, $a2, 1
+
+## According to experiment results on real LA664 HW, the AMCAS instructions
+## are subject to the same constraint as the other 3-register atomic insns.
+## This is undocumented in v1.10 of the LoongArch Reference Manual.
+
+# CHECK: :[[#@LINE+1]]:10: error: $rd must be different from both $rk and $rj
+amcas.b $a0, $a0, $a0
+# CHECK: :[[#@LINE+1]]:10: error: $rd must be different from both $rk and $rj
+amcas.h $a0, $a0, $a1
+# CHECK: :[[#@LINE+1]]:13: error: $rd must be different from both $rk and $rj
+amcas_db.w $a0, $a1, $a0

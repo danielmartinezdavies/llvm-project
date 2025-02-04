@@ -12,9 +12,12 @@
 #include "lldb/Core/Module.h"
 #include "lldb/Symbol/CompileUnit.h"
 #include "lldb/Symbol/Function.h"
+#include "lldb/Target/Target.h"
 #include "lldb/Utility/LLDBLog.h"
 #include "lldb/Utility/Log.h"
+#include "lldb/Utility/RealpathPrefixes.h"
 #include "lldb/Utility/StreamString.h"
+#include <optional>
 
 using namespace lldb;
 using namespace lldb_private;
@@ -22,13 +25,14 @@ using namespace lldb_private;
 // BreakpointResolverFileLine:
 BreakpointResolverFileLine::BreakpointResolverFileLine(
     const BreakpointSP &bkpt, lldb::addr_t offset, bool skip_prologue,
-    const SourceLocationSpec &location_spec)
+    const SourceLocationSpec &location_spec,
+    std::optional<llvm::StringRef> removed_prefix_opt)
     : BreakpointResolver(bkpt, BreakpointResolver::FileLineResolver, offset),
-      m_location_spec(location_spec), m_skip_prologue(skip_prologue) {}
+      m_location_spec(location_spec), m_skip_prologue(skip_prologue),
+      m_removed_prefix_opt(removed_prefix_opt) {}
 
-BreakpointResolver *BreakpointResolverFileLine::CreateFromStructuredData(
-    const BreakpointSP &bkpt, const StructuredData::Dictionary &options_dict,
-    Status &error) {
+BreakpointResolverSP BreakpointResolverFileLine::CreateFromStructuredData(
+    const StructuredData::Dictionary &options_dict, Status &error) {
   llvm::StringRef filename;
   uint32_t line;
   uint16_t column;
@@ -42,14 +46,16 @@ BreakpointResolver *BreakpointResolverFileLine::CreateFromStructuredData(
   success = options_dict.GetValueForKeyAsString(GetKey(OptionNames::FileName),
                                                 filename);
   if (!success) {
-    error.SetErrorString("BRFL::CFSD: Couldn't find filename entry.");
+    error =
+        Status::FromErrorString("BRFL::CFSD: Couldn't find filename entry.");
     return nullptr;
   }
 
   success = options_dict.GetValueForKeyAsInteger(
       GetKey(OptionNames::LineNumber), line);
   if (!success) {
-    error.SetErrorString("BRFL::CFSD: Couldn't find line number entry.");
+    error =
+        Status::FromErrorString("BRFL::CFSD: Couldn't find line number entry.");
     return nullptr;
   }
 
@@ -63,21 +69,24 @@ BreakpointResolver *BreakpointResolverFileLine::CreateFromStructuredData(
   success = options_dict.GetValueForKeyAsBoolean(GetKey(OptionNames::Inlines),
                                                  check_inlines);
   if (!success) {
-    error.SetErrorString("BRFL::CFSD: Couldn't find check inlines entry.");
+    error = Status::FromErrorString(
+        "BRFL::CFSD: Couldn't find check inlines entry.");
     return nullptr;
   }
 
   success = options_dict.GetValueForKeyAsBoolean(
       GetKey(OptionNames::SkipPrologue), skip_prologue);
   if (!success) {
-    error.SetErrorString("BRFL::CFSD: Couldn't find skip prologue entry.");
+    error = Status::FromErrorString(
+        "BRFL::CFSD: Couldn't find skip prologue entry.");
     return nullptr;
   }
 
   success = options_dict.GetValueForKeyAsBoolean(
       GetKey(OptionNames::ExactMatch), exact_match);
   if (!success) {
-    error.SetErrorString("BRFL::CFSD: Couldn't find exact match entry.");
+    error =
+        Status::FromErrorString("BRFL::CFSD: Couldn't find exact match entry.");
     return nullptr;
   }
 
@@ -86,8 +95,8 @@ BreakpointResolver *BreakpointResolverFileLine::CreateFromStructuredData(
   if (!location_spec)
     return nullptr;
 
-  return new BreakpointResolverFileLine(bkpt, offset, skip_prologue,
-                                        location_spec);
+  return std::make_shared<BreakpointResolverFileLine>(
+      nullptr, offset, skip_prologue, location_spec);
 }
 
 StructuredData::ObjectSP
@@ -130,22 +139,25 @@ void BreakpointResolverFileLine::FilterContexts(SymbolContextList &sc_list) {
     if (!sc.block)
       continue;
 
-    FileSpec file;
+    SupportFileSP file_sp;
     uint32_t line;
     const Block *inline_block = sc.block->GetContainingInlinedBlock();
     if (inline_block) {
       const Declaration &inline_declaration = inline_block->GetInlinedFunctionInfo()->GetDeclaration();
       if (!inline_declaration.IsValid())
         continue;
-      file = inline_declaration.GetFile();
+      file_sp = std::make_shared<SupportFile>(inline_declaration.GetFile());
       line = inline_declaration.GetLine();
     } else if (sc.function)
-      sc.function->GetStartLineSourceInfo(file, line);
+      sc.function->GetStartLineSourceInfo(file_sp, line);
     else
       continue;
 
-    if (file != sc.line_entry.file) {
-      LLDB_LOG(log, "unexpected symbol context file {0}", sc.line_entry.file);
+    if (!file_sp ||
+        !file_sp->Equal(*sc.line_entry.file_sp,
+                        SupportFile::eEqualFileSpecAndChecksumIfSet)) {
+      LLDB_LOG(log, "unexpected symbol context file {0}",
+               sc.line_entry.GetFile());
       continue;
     }
 
@@ -180,9 +192,86 @@ void BreakpointResolverFileLine::FilterContexts(SymbolContextList &sc_list) {
     const int decl_line_is_too_late_fudge = 1;
     if (line &&
         m_location_spec.GetLine() < line - decl_line_is_too_late_fudge) {
-      LLDB_LOG(log, "removing symbol context at {0}:{1}", file, line);
+      LLDB_LOG(log, "removing symbol context at {0}:{1}",
+               file_sp->GetSpecOnly(), line);
       sc_list.RemoveContextAtIndex(i);
       --i;
+    }
+  }
+}
+
+void BreakpointResolverFileLine::DeduceSourceMapping(
+    const SymbolContextList &sc_list) {
+  Target &target = GetBreakpoint()->GetTarget();
+  if (!target.GetAutoSourceMapRelative())
+    return;
+
+  Log *log = GetLog(LLDBLog::Breakpoints);
+  // Check if "b" is a suffix of "a".
+  // And return std::nullopt if not or the new path
+  // of "a" after consuming "b" from the back.
+  auto check_suffix =
+      [](llvm::StringRef a, llvm::StringRef b,
+         bool case_sensitive) -> std::optional<llvm::StringRef> {
+    if (case_sensitive ? a.consume_back(b) : a.consume_back_insensitive(b)) {
+      // Note sc_file_dir and request_file_dir below are normalized
+      // and always contain the path separator '/'.
+      if (a.empty() || a.ends_with("/")) {
+        return a;
+      }
+    }
+    return std::nullopt;
+  };
+
+  FileSpec request_file = m_location_spec.GetFileSpec();
+
+  // Only auto deduce source map if breakpoint is full path.
+  // Note: an existing source map reverse mapping (m_removed_prefix_opt has
+  // value) may make request_file relative.
+  if (!m_removed_prefix_opt.has_value() && request_file.IsRelative())
+    return;
+
+  const bool case_sensitive = request_file.IsCaseSensitive();
+  for (const SymbolContext &sc : sc_list) {
+    FileSpec sc_file = sc.line_entry.GetFile();
+
+    if (FileSpec::Equal(sc_file, request_file, /*full*/ true))
+      continue;
+
+    llvm::StringRef sc_file_dir = sc_file.GetDirectory().GetStringRef();
+    llvm::StringRef request_file_dir =
+        request_file.GetDirectory().GetStringRef();
+
+    llvm::StringRef new_mapping_from;
+    llvm::SmallString<256> new_mapping_to;
+
+    // Adding back any potentially reverse mapping stripped prefix.
+    // for new_mapping_to.
+    if (m_removed_prefix_opt.has_value())
+      llvm::sys::path::append(new_mapping_to, *m_removed_prefix_opt);
+
+    std::optional<llvm::StringRef> new_mapping_from_opt =
+        check_suffix(sc_file_dir, request_file_dir, case_sensitive);
+    if (new_mapping_from_opt) {
+      new_mapping_from = *new_mapping_from_opt;
+      if (new_mapping_to.empty())
+        new_mapping_to = ".";
+    } else {
+      std::optional<llvm::StringRef> new_mapping_to_opt =
+          check_suffix(request_file_dir, sc_file_dir, case_sensitive);
+      if (new_mapping_to_opt) {
+        new_mapping_from = ".";
+        llvm::sys::path::append(new_mapping_to, *new_mapping_to_opt);
+      }
+    }
+
+    if (!new_mapping_from.empty() && !new_mapping_to.empty()) {
+      LLDB_LOG(log, "generating auto source map from {0} to {1}",
+               new_mapping_from, new_mapping_to);
+      if (target.GetSourcePathMap().AppendUnique(new_mapping_from,
+                                                 new_mapping_to,
+                                                 /*notify*/ true))
+        target.GetStatistics().IncreaseSourceMapDeduceCount();
     }
   }
 }
@@ -208,7 +297,10 @@ Searcher::CallbackReturn BreakpointResolverFileLine::SearchCallback(
   // same file spec in their line_entry and treat each set separately.
 
   const uint32_t line = m_location_spec.GetLine().value_or(0);
-  const llvm::Optional<uint16_t> column = m_location_spec.GetColumn();
+  const std::optional<uint16_t> column = m_location_spec.GetColumn();
+
+  Target &target = GetBreakpoint()->GetTarget();
+  RealpathPrefixes realpath_prefixes = target.GetSourceRealpathPrefixes();
 
   const size_t num_comp_units = context.module_sp->GetNumCompileUnits();
   for (size_t i = 0; i < num_comp_units; i++) {
@@ -216,11 +308,19 @@ Searcher::CallbackReturn BreakpointResolverFileLine::SearchCallback(
     if (cu_sp) {
       if (filter.CompUnitPasses(*cu_sp))
         cu_sp->ResolveSymbolContext(m_location_spec, eSymbolContextEverything,
-                                    sc_list);
+                                    sc_list, &realpath_prefixes);
     }
   }
 
+  // Gather stats into the Target
+  target.GetStatistics().IncreaseSourceRealpathAttemptCount(
+      realpath_prefixes.GetSourceRealpathAttemptCount());
+  target.GetStatistics().IncreaseSourceRealpathCompatibleCount(
+      realpath_prefixes.GetSourceRealpathCompatibleCount());
+
   FilterContexts(sc_list);
+
+  DeduceSourceMapping(sc_list);
 
   StreamString s;
   s.Printf("for %s:%d ",

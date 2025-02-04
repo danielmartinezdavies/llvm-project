@@ -93,11 +93,38 @@ static void markSymbols(const CommonConfig &, Object &Obj) {
 static void updateAndRemoveSymbols(const CommonConfig &Config,
                                    const MachOConfig &MachOConfig,
                                    Object &Obj) {
-  for (SymbolEntry &Sym : Obj.SymTable) {
+  Obj.SymTable.updateSymbols([&](SymbolEntry &Sym) {
+    if (Config.SymbolsToSkip.matches(Sym.Name))
+      return;
+
+    if (!Sym.isUndefinedSymbol() && Config.SymbolsToLocalize.matches(Sym.Name))
+      Sym.n_type &= ~MachO::N_EXT;
+
+    // Note: these two globalize flags have very similar names but different
+    // meanings:
+    //
+    // --globalize-symbol: promote a symbol to global
+    // --keep-global-symbol: all symbols except for these should be made local
+    //
+    // If --globalize-symbol is specified for a given symbol, it will be
+    // global in the output file even if it is not included via
+    // --keep-global-symbol. Because of that, make sure to check
+    // --globalize-symbol second.
+    if (!Sym.isUndefinedSymbol() && !Config.SymbolsToKeepGlobal.empty() &&
+        !Config.SymbolsToKeepGlobal.matches(Sym.Name))
+      Sym.n_type &= ~MachO::N_EXT;
+
+    if (!Sym.isUndefinedSymbol() && Config.SymbolsToGlobalize.matches(Sym.Name))
+      Sym.n_type |= MachO::N_EXT;
+
+    if (Sym.isExternalSymbol() && !Sym.isUndefinedSymbol() &&
+        (Config.Weaken || Config.SymbolsToWeaken.matches(Sym.Name)))
+      Sym.n_desc |= MachO::N_WEAK_DEF;
+
     auto I = Config.SymbolsToRename.find(Sym.Name);
     if (I != Config.SymbolsToRename.end())
       Sym.Name = std::string(I->getValue());
-  }
+  });
 
   auto RemovePred = [&Config, &MachOConfig,
                      &Obj](const std::unique_ptr<SymbolEntry> &N) {
@@ -110,6 +137,9 @@ static void updateAndRemoveSymbols(const CommonConfig &Config,
     if (Config.StripAll)
       return true;
     if (Config.DiscardMode == DiscardType::All && !(N->n_type & MachO::N_EXT))
+      return true;
+    // This behavior is consistent with cctools' strip.
+    if (Config.StripDebug && (N->n_type & MachO::N_STAB))
       return true;
     // This behavior is consistent with cctools' strip.
     if (MachOConfig.StripSwiftSymbols &&
@@ -307,7 +337,7 @@ static Error addSection(const NewSectionInfo &NewSection, Object &Obj) {
 
   // Add the a section into an existing segment.
   for (LoadCommand &LC : Obj.LoadCommands) {
-    Optional<StringRef> SegName = LC.getSegmentName();
+    std::optional<StringRef> SegName = LC.getSegmentName();
     if (SegName && SegName == TargetSegName) {
       uint64_t Addr = *LC.getSegmentVMAddr();
       for (const std::unique_ptr<Section> &S : LC.Sections)
@@ -348,7 +378,7 @@ static Expected<Section &> findSection(StringRef SecName, Object &O) {
                              SecName.str().c_str());
 
   assert(FoundSec->get()->CanonicalName == (SegName + "," + SecName).str());
-  return *FoundSec->get();
+  return **FoundSec;
 }
 
 static Error updateSection(const NewSectionInfo &NewSection, Object &O) {
@@ -487,10 +517,12 @@ Error objcopy::macho::executeObjcopyOnMachOUniversalBinary(
       if (Kind == object::Archive::K_BSD)
         Kind = object::Archive::K_DARWIN;
       Expected<std::unique_ptr<MemoryBuffer>> OutputBufferOrErr =
-          writeArchiveToBuffer(*NewArchiveMembersOrErr,
-                               (*ArOrErr)->hasSymbolTable(), Kind,
-                               Config.getCommonConfig().DeterministicArchives,
-                               (*ArOrErr)->isThin());
+          writeArchiveToBuffer(
+              *NewArchiveMembersOrErr,
+              (*ArOrErr)->hasSymbolTable() ? SymtabWritingMode::NormalSymtab
+                                           : SymtabWritingMode::NoSymtab,
+              Kind, Config.getCommonConfig().DeterministicArchives,
+              (*ArOrErr)->isThin());
       if (!OutputBufferOrErr)
         return OutputBufferOrErr.takeError();
       Expected<std::unique_ptr<Binary>> BinaryOrErr =

@@ -3,6 +3,7 @@
 ; RUN:   -verify-machineinstrs | FileCheck %s
 ; RUN: sed 's/iXLen/i64/g' %s | llc -mtriple=riscv64 -mattr=+v \
 ; RUN:   -verify-machineinstrs | FileCheck %s
+
 declare <vscale x 1 x i8> @llvm.riscv.viota.nxv1i8(
   <vscale x 1 x i8>,
   <vscale x 1 x i1>,
@@ -11,7 +12,7 @@ declare <vscale x 1 x i8> @llvm.riscv.viota.nxv1i8(
 define <vscale x 1 x i8> @intrinsic_viota_m_nxv1i8_nxv1i1(<vscale x 1 x i1> %0, iXLen %1) nounwind {
 ; CHECK-LABEL: intrinsic_viota_m_nxv1i8_nxv1i1:
 ; CHECK:       # %bb.0: # %entry
-; CHECK-NEXT:    vsetvli zero, a0, e8, mf8, ta, mu
+; CHECK-NEXT:    vsetvli zero, a0, e8, mf8, ta, ma
 ; CHECK-NEXT:    viota.m v8, v0
 ; CHECK-NEXT:    ret
 entry:
@@ -53,7 +54,7 @@ declare <vscale x 2 x i8> @llvm.riscv.viota.nxv2i8(
 define <vscale x 2 x i8> @intrinsic_viota_m_nxv2i8_nxv2i1(<vscale x 2 x i1> %0, iXLen %1) nounwind {
 ; CHECK-LABEL: intrinsic_viota_m_nxv2i8_nxv2i1:
 ; CHECK:       # %bb.0: # %entry
-; CHECK-NEXT:    vsetvli zero, a0, e8, mf4, ta, mu
+; CHECK-NEXT:    vsetvli zero, a0, e8, mf4, ta, ma
 ; CHECK-NEXT:    viota.m v8, v0
 ; CHECK-NEXT:    ret
 entry:
@@ -95,7 +96,7 @@ declare <vscale x 4 x i8> @llvm.riscv.viota.nxv4i8(
 define <vscale x 4 x i8> @intrinsic_viota_m_nxv4i8_nxv4i1(<vscale x 4 x i1> %0, iXLen %1) nounwind {
 ; CHECK-LABEL: intrinsic_viota_m_nxv4i8_nxv4i1:
 ; CHECK:       # %bb.0: # %entry
-; CHECK-NEXT:    vsetvli zero, a0, e8, mf2, ta, mu
+; CHECK-NEXT:    vsetvli zero, a0, e8, mf2, ta, ma
 ; CHECK-NEXT:    viota.m v8, v0
 ; CHECK-NEXT:    ret
 entry:
@@ -137,7 +138,7 @@ declare <vscale x 8 x i8> @llvm.riscv.viota.nxv8i8(
 define <vscale x 8 x i8> @intrinsic_viota_m_nxv8i8_nxv8i1(<vscale x 8 x i1> %0, iXLen %1) nounwind {
 ; CHECK-LABEL: intrinsic_viota_m_nxv8i8_nxv8i1:
 ; CHECK:       # %bb.0: # %entry
-; CHECK-NEXT:    vsetvli zero, a0, e8, m1, ta, mu
+; CHECK-NEXT:    vsetvli zero, a0, e8, m1, ta, ma
 ; CHECK-NEXT:    viota.m v8, v0
 ; CHECK-NEXT:    ret
 entry:
@@ -179,7 +180,7 @@ declare <vscale x 16 x i8> @llvm.riscv.viota.nxv16i8(
 define <vscale x 16 x i8> @intrinsic_viota_m_nxv16i8_nxv16i1(<vscale x 16 x i1> %0, iXLen %1) nounwind {
 ; CHECK-LABEL: intrinsic_viota_m_nxv16i8_nxv16i1:
 ; CHECK:       # %bb.0: # %entry
-; CHECK-NEXT:    vsetvli zero, a0, e8, m2, ta, mu
+; CHECK-NEXT:    vsetvli zero, a0, e8, m2, ta, ma
 ; CHECK-NEXT:    viota.m v8, v0
 ; CHECK-NEXT:    ret
 entry:
@@ -221,7 +222,7 @@ declare <vscale x 32 x i8> @llvm.riscv.viota.nxv32i8(
 define <vscale x 32 x i8> @intrinsic_viota_m_nxv32i8_nxv32i1(<vscale x 32 x i1> %0, iXLen %1) nounwind {
 ; CHECK-LABEL: intrinsic_viota_m_nxv32i8_nxv32i1:
 ; CHECK:       # %bb.0: # %entry
-; CHECK-NEXT:    vsetvli zero, a0, e8, m4, ta, mu
+; CHECK-NEXT:    vsetvli zero, a0, e8, m4, ta, ma
 ; CHECK-NEXT:    viota.m v8, v0
 ; CHECK-NEXT:    ret
 entry:
@@ -263,7 +264,7 @@ declare <vscale x 64 x i8> @llvm.riscv.viota.nxv64i8(
 define <vscale x 64 x i8> @intrinsic_viota_m_nxv64i8_nxv64i1(<vscale x 64 x i1> %0, iXLen %1) nounwind {
 ; CHECK-LABEL: intrinsic_viota_m_nxv64i8_nxv64i1:
 ; CHECK:       # %bb.0: # %entry
-; CHECK-NEXT:    vsetvli zero, a0, e8, m8, ta, mu
+; CHECK-NEXT:    vsetvli zero, a0, e8, m8, ta, ma
 ; CHECK-NEXT:    viota.m v8, v0
 ; CHECK-NEXT:    ret
 entry:
@@ -305,7 +306,7 @@ declare <vscale x 1 x i16> @llvm.riscv.viota.nxv1i16(
 define <vscale x 1 x i16> @intrinsic_viota_m_nxv1i16_nxv1i1(<vscale x 1 x i1> %0, iXLen %1) nounwind {
 ; CHECK-LABEL: intrinsic_viota_m_nxv1i16_nxv1i1:
 ; CHECK:       # %bb.0: # %entry
-; CHECK-NEXT:    vsetvli zero, a0, e16, mf4, ta, mu
+; CHECK-NEXT:    vsetvli zero, a0, e16, mf4, ta, ma
 ; CHECK-NEXT:    viota.m v8, v0
 ; CHECK-NEXT:    ret
 entry:
@@ -347,7 +348,7 @@ declare <vscale x 2 x i16> @llvm.riscv.viota.nxv2i16(
 define <vscale x 2 x i16> @intrinsic_viota_m_nxv2i16_nxv2i1(<vscale x 2 x i1> %0, iXLen %1) nounwind {
 ; CHECK-LABEL: intrinsic_viota_m_nxv2i16_nxv2i1:
 ; CHECK:       # %bb.0: # %entry
-; CHECK-NEXT:    vsetvli zero, a0, e16, mf2, ta, mu
+; CHECK-NEXT:    vsetvli zero, a0, e16, mf2, ta, ma
 ; CHECK-NEXT:    viota.m v8, v0
 ; CHECK-NEXT:    ret
 entry:
@@ -389,7 +390,7 @@ declare <vscale x 4 x i16> @llvm.riscv.viota.nxv4i16(
 define <vscale x 4 x i16> @intrinsic_viota_m_nxv4i16_nxv4i1(<vscale x 4 x i1> %0, iXLen %1) nounwind {
 ; CHECK-LABEL: intrinsic_viota_m_nxv4i16_nxv4i1:
 ; CHECK:       # %bb.0: # %entry
-; CHECK-NEXT:    vsetvli zero, a0, e16, m1, ta, mu
+; CHECK-NEXT:    vsetvli zero, a0, e16, m1, ta, ma
 ; CHECK-NEXT:    viota.m v8, v0
 ; CHECK-NEXT:    ret
 entry:
@@ -431,7 +432,7 @@ declare <vscale x 8 x i16> @llvm.riscv.viota.nxv8i16(
 define <vscale x 8 x i16> @intrinsic_viota_m_nxv8i16_nxv8i1(<vscale x 8 x i1> %0, iXLen %1) nounwind {
 ; CHECK-LABEL: intrinsic_viota_m_nxv8i16_nxv8i1:
 ; CHECK:       # %bb.0: # %entry
-; CHECK-NEXT:    vsetvli zero, a0, e16, m2, ta, mu
+; CHECK-NEXT:    vsetvli zero, a0, e16, m2, ta, ma
 ; CHECK-NEXT:    viota.m v8, v0
 ; CHECK-NEXT:    ret
 entry:
@@ -473,7 +474,7 @@ declare <vscale x 16 x i16> @llvm.riscv.viota.nxv16i16(
 define <vscale x 16 x i16> @intrinsic_viota_m_nxv16i16_nxv16i1(<vscale x 16 x i1> %0, iXLen %1) nounwind {
 ; CHECK-LABEL: intrinsic_viota_m_nxv16i16_nxv16i1:
 ; CHECK:       # %bb.0: # %entry
-; CHECK-NEXT:    vsetvli zero, a0, e16, m4, ta, mu
+; CHECK-NEXT:    vsetvli zero, a0, e16, m4, ta, ma
 ; CHECK-NEXT:    viota.m v8, v0
 ; CHECK-NEXT:    ret
 entry:
@@ -515,7 +516,7 @@ declare <vscale x 32 x i16> @llvm.riscv.viota.nxv32i16(
 define <vscale x 32 x i16> @intrinsic_viota_m_nxv32i16_nxv32i1(<vscale x 32 x i1> %0, iXLen %1) nounwind {
 ; CHECK-LABEL: intrinsic_viota_m_nxv32i16_nxv32i1:
 ; CHECK:       # %bb.0: # %entry
-; CHECK-NEXT:    vsetvli zero, a0, e16, m8, ta, mu
+; CHECK-NEXT:    vsetvli zero, a0, e16, m8, ta, ma
 ; CHECK-NEXT:    viota.m v8, v0
 ; CHECK-NEXT:    ret
 entry:
@@ -557,7 +558,7 @@ declare <vscale x 1 x i32> @llvm.riscv.viota.nxv1i32(
 define <vscale x 1 x i32> @intrinsic_viota_m_nxv1i32_nxv1i1(<vscale x 1 x i1> %0, iXLen %1) nounwind {
 ; CHECK-LABEL: intrinsic_viota_m_nxv1i32_nxv1i1:
 ; CHECK:       # %bb.0: # %entry
-; CHECK-NEXT:    vsetvli zero, a0, e32, mf2, ta, mu
+; CHECK-NEXT:    vsetvli zero, a0, e32, mf2, ta, ma
 ; CHECK-NEXT:    viota.m v8, v0
 ; CHECK-NEXT:    ret
 entry:
@@ -599,7 +600,7 @@ declare <vscale x 2 x i32> @llvm.riscv.viota.nxv2i32(
 define <vscale x 2 x i32> @intrinsic_viota_m_nxv2i32_nxv2i1(<vscale x 2 x i1> %0, iXLen %1) nounwind {
 ; CHECK-LABEL: intrinsic_viota_m_nxv2i32_nxv2i1:
 ; CHECK:       # %bb.0: # %entry
-; CHECK-NEXT:    vsetvli zero, a0, e32, m1, ta, mu
+; CHECK-NEXT:    vsetvli zero, a0, e32, m1, ta, ma
 ; CHECK-NEXT:    viota.m v8, v0
 ; CHECK-NEXT:    ret
 entry:
@@ -641,7 +642,7 @@ declare <vscale x 4 x i32> @llvm.riscv.viota.nxv4i32(
 define <vscale x 4 x i32> @intrinsic_viota_m_nxv4i32_nxv4i1(<vscale x 4 x i1> %0, iXLen %1) nounwind {
 ; CHECK-LABEL: intrinsic_viota_m_nxv4i32_nxv4i1:
 ; CHECK:       # %bb.0: # %entry
-; CHECK-NEXT:    vsetvli zero, a0, e32, m2, ta, mu
+; CHECK-NEXT:    vsetvli zero, a0, e32, m2, ta, ma
 ; CHECK-NEXT:    viota.m v8, v0
 ; CHECK-NEXT:    ret
 entry:
@@ -683,7 +684,7 @@ declare <vscale x 8 x i32> @llvm.riscv.viota.nxv8i32(
 define <vscale x 8 x i32> @intrinsic_viota_m_nxv8i32_nxv8i1(<vscale x 8 x i1> %0, iXLen %1) nounwind {
 ; CHECK-LABEL: intrinsic_viota_m_nxv8i32_nxv8i1:
 ; CHECK:       # %bb.0: # %entry
-; CHECK-NEXT:    vsetvli zero, a0, e32, m4, ta, mu
+; CHECK-NEXT:    vsetvli zero, a0, e32, m4, ta, ma
 ; CHECK-NEXT:    viota.m v8, v0
 ; CHECK-NEXT:    ret
 entry:
@@ -725,7 +726,7 @@ declare <vscale x 16 x i32> @llvm.riscv.viota.nxv16i32(
 define <vscale x 16 x i32> @intrinsic_viota_m_nxv16i32_nxv16i1(<vscale x 16 x i1> %0, iXLen %1) nounwind {
 ; CHECK-LABEL: intrinsic_viota_m_nxv16i32_nxv16i1:
 ; CHECK:       # %bb.0: # %entry
-; CHECK-NEXT:    vsetvli zero, a0, e32, m8, ta, mu
+; CHECK-NEXT:    vsetvli zero, a0, e32, m8, ta, ma
 ; CHECK-NEXT:    viota.m v8, v0
 ; CHECK-NEXT:    ret
 entry:
@@ -767,7 +768,7 @@ declare <vscale x 1 x i64> @llvm.riscv.viota.nxv1i64(
 define <vscale x 1 x i64> @intrinsic_viota_m_nxv1i64_nxv1i1(<vscale x 1 x i1> %0, iXLen %1) nounwind {
 ; CHECK-LABEL: intrinsic_viota_m_nxv1i64_nxv1i1:
 ; CHECK:       # %bb.0: # %entry
-; CHECK-NEXT:    vsetvli zero, a0, e64, m1, ta, mu
+; CHECK-NEXT:    vsetvli zero, a0, e64, m1, ta, ma
 ; CHECK-NEXT:    viota.m v8, v0
 ; CHECK-NEXT:    ret
 entry:
@@ -809,7 +810,7 @@ declare <vscale x 2 x i64> @llvm.riscv.viota.nxv2i64(
 define <vscale x 2 x i64> @intrinsic_viota_m_nxv2i64_nxv2i1(<vscale x 2 x i1> %0, iXLen %1) nounwind {
 ; CHECK-LABEL: intrinsic_viota_m_nxv2i64_nxv2i1:
 ; CHECK:       # %bb.0: # %entry
-; CHECK-NEXT:    vsetvli zero, a0, e64, m2, ta, mu
+; CHECK-NEXT:    vsetvli zero, a0, e64, m2, ta, ma
 ; CHECK-NEXT:    viota.m v8, v0
 ; CHECK-NEXT:    ret
 entry:
@@ -851,7 +852,7 @@ declare <vscale x 4 x i64> @llvm.riscv.viota.nxv4i64(
 define <vscale x 4 x i64> @intrinsic_viota_m_nxv4i64_nxv4i1(<vscale x 4 x i1> %0, iXLen %1) nounwind {
 ; CHECK-LABEL: intrinsic_viota_m_nxv4i64_nxv4i1:
 ; CHECK:       # %bb.0: # %entry
-; CHECK-NEXT:    vsetvli zero, a0, e64, m4, ta, mu
+; CHECK-NEXT:    vsetvli zero, a0, e64, m4, ta, ma
 ; CHECK-NEXT:    viota.m v8, v0
 ; CHECK-NEXT:    ret
 entry:
@@ -893,7 +894,7 @@ declare <vscale x 8 x i64> @llvm.riscv.viota.nxv8i64(
 define <vscale x 8 x i64> @intrinsic_viota_m_nxv8i64_nxv8i1(<vscale x 8 x i1> %0, iXLen %1) nounwind {
 ; CHECK-LABEL: intrinsic_viota_m_nxv8i64_nxv8i1:
 ; CHECK:       # %bb.0: # %entry
-; CHECK-NEXT:    vsetvli zero, a0, e64, m8, ta, mu
+; CHECK-NEXT:    vsetvli zero, a0, e64, m8, ta, ma
 ; CHECK-NEXT:    viota.m v8, v0
 ; CHECK-NEXT:    ret
 entry:

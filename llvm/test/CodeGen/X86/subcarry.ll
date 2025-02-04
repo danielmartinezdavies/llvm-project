@@ -41,18 +41,18 @@ define %S @negate(ptr nocapture readonly %this) {
 ; CHECK-LABEL: negate:
 ; CHECK:       # %bb.0: # %entry
 ; CHECK-NEXT:    movq %rdi, %rax
-; CHECK-NEXT:    xorl %r8d, %r8d
+; CHECK-NEXT:    xorl %ecx, %ecx
 ; CHECK-NEXT:    xorl %edx, %edx
 ; CHECK-NEXT:    subq (%rsi), %rdx
 ; CHECK-NEXT:    movl $0, %edi
 ; CHECK-NEXT:    sbbq 8(%rsi), %rdi
-; CHECK-NEXT:    movl $0, %ecx
-; CHECK-NEXT:    sbbq 16(%rsi), %rcx
-; CHECK-NEXT:    sbbq 24(%rsi), %r8
+; CHECK-NEXT:    movl $0, %r8d
+; CHECK-NEXT:    sbbq 16(%rsi), %r8
+; CHECK-NEXT:    sbbq 24(%rsi), %rcx
 ; CHECK-NEXT:    movq %rdx, (%rax)
 ; CHECK-NEXT:    movq %rdi, 8(%rax)
-; CHECK-NEXT:    movq %rcx, 16(%rax)
-; CHECK-NEXT:    movq %r8, 24(%rax)
+; CHECK-NEXT:    movq %r8, 16(%rax)
+; CHECK-NEXT:    movq %rcx, 24(%rax)
 ; CHECK-NEXT:    retq
 entry:
   %0 = load i64, ptr %this, align 8
@@ -93,25 +93,25 @@ define %S @sub(ptr nocapture readonly %this, %S %arg.b) {
 ; CHECK-LABEL: sub:
 ; CHECK:       # %bb.0: # %entry
 ; CHECK-NEXT:    movq %rdi, %rax
-; CHECK-NEXT:    movq (%rsi), %r10
-; CHECK-NEXT:    movq 8(%rsi), %rdi
-; CHECK-NEXT:    subq %rdx, %r10
+; CHECK-NEXT:    movq (%rsi), %rdi
+; CHECK-NEXT:    movq 8(%rsi), %r10
+; CHECK-NEXT:    subq %rdx, %rdi
 ; CHECK-NEXT:    setae %dl
 ; CHECK-NEXT:    addb $-1, %dl
-; CHECK-NEXT:    adcq $0, %rdi
-; CHECK-NEXT:    setb %dl
-; CHECK-NEXT:    movzbl %dl, %r11d
-; CHECK-NEXT:    notq %rcx
-; CHECK-NEXT:    addq %rdi, %rcx
-; CHECK-NEXT:    adcq 16(%rsi), %r11
+; CHECK-NEXT:    adcq $0, %r10
 ; CHECK-NEXT:    setb %dl
 ; CHECK-NEXT:    movzbl %dl, %edx
+; CHECK-NEXT:    notq %rcx
+; CHECK-NEXT:    addq %r10, %rcx
+; CHECK-NEXT:    adcq 16(%rsi), %rdx
+; CHECK-NEXT:    setb %r10b
+; CHECK-NEXT:    movzbl %r10b, %r10d
 ; CHECK-NEXT:    notq %r8
-; CHECK-NEXT:    addq %r11, %r8
-; CHECK-NEXT:    adcq 24(%rsi), %rdx
+; CHECK-NEXT:    addq %rdx, %r8
+; CHECK-NEXT:    adcq 24(%rsi), %r10
 ; CHECK-NEXT:    notq %r9
-; CHECK-NEXT:    addq %rdx, %r9
-; CHECK-NEXT:    movq %r10, (%rax)
+; CHECK-NEXT:    addq %r10, %r9
+; CHECK-NEXT:    movq %rdi, (%rax)
 ; CHECK-NEXT:    movq %rcx, 8(%rax)
 ; CHECK-NEXT:    movq %r8, 16(%rax)
 ; CHECK-NEXT:    movq %r9, 24(%rax)
@@ -310,15 +310,10 @@ define { i64, i64, i1 } @subcarry_2x64_add_reversed(i64 %x0, i64 %x1, i64 %y0, i
 ; CHECK-LABEL: subcarry_2x64_add_reversed:
 ; CHECK:       # %bb.0:
 ; CHECK-NEXT:    movq %rdi, %rax
-; CHECK-NEXT:    movq %rsi, %rdi
-; CHECK-NEXT:    subq %rcx, %rdi
 ; CHECK-NEXT:    subq %rdx, %rax
-; CHECK-NEXT:    sbbq $0, %rdi
-; CHECK-NEXT:    setb %r8b
-; CHECK-NEXT:    cmpq %rcx, %rsi
-; CHECK-NEXT:    adcb $0, %r8b
-; CHECK-NEXT:    movq %rdi, %rdx
-; CHECK-NEXT:    movl %r8d, %ecx
+; CHECK-NEXT:    sbbq %rcx, %rsi
+; CHECK-NEXT:    setb %cl
+; CHECK-NEXT:    movq %rsi, %rdx
 ; CHECK-NEXT:    retq
   %t0 = call { i64, i1 } @llvm.usub.with.overflow.i64(i64 %x0, i64 %y0)
   %s0 = extractvalue { i64, i1 } %t0, 0
@@ -392,7 +387,6 @@ define { i64, i1 } @subcarry_carry_not_zext(i64 %a, i64 %b, i64 %carryin) {
 define { i64, i1 } @subcarry_carry_not_i1(i64 %a, i64 %b, i8 %carryin) {
 ; CHECK-LABEL: subcarry_carry_not_i1:
 ; CHECK:       # %bb.0:
-; CHECK-NEXT:    # kill: def $edx killed $edx def $rdx
 ; CHECK-NEXT:    movq %rdi, %rax
 ; CHECK-NEXT:    subq %rsi, %rax
 ; CHECK-NEXT:    setb %cl
@@ -593,21 +587,21 @@ define void @sub_U256_without_i128_or_recursive(ptr sret(%uint256) %0, ptr %1, p
 ; CHECK-LABEL: sub_U256_without_i128_or_recursive:
 ; CHECK:       # %bb.0:
 ; CHECK-NEXT:    movq %rdi, %rax
-; CHECK-NEXT:    movq (%rsi), %r8
-; CHECK-NEXT:    movq 8(%rsi), %r9
-; CHECK-NEXT:    movq 16(%rsi), %rcx
+; CHECK-NEXT:    movq (%rsi), %rcx
+; CHECK-NEXT:    movq 8(%rsi), %rdi
+; CHECK-NEXT:    movq 16(%rsi), %r8
 ; CHECK-NEXT:    movq 24(%rsi), %rsi
-; CHECK-NEXT:    xorl %edi, %edi
-; CHECK-NEXT:    subq 16(%rdx), %rcx
-; CHECK-NEXT:    setb %dil
+; CHECK-NEXT:    xorl %r9d, %r9d
+; CHECK-NEXT:    subq 16(%rdx), %r8
+; CHECK-NEXT:    setb %r9b
 ; CHECK-NEXT:    subq 24(%rdx), %rsi
-; CHECK-NEXT:    subq (%rdx), %r8
-; CHECK-NEXT:    sbbq 8(%rdx), %r9
-; CHECK-NEXT:    sbbq $0, %rcx
-; CHECK-NEXT:    sbbq %rdi, %rsi
-; CHECK-NEXT:    movq %r8, (%rax)
-; CHECK-NEXT:    movq %r9, 8(%rax)
-; CHECK-NEXT:    movq %rcx, 16(%rax)
+; CHECK-NEXT:    subq (%rdx), %rcx
+; CHECK-NEXT:    sbbq 8(%rdx), %rdi
+; CHECK-NEXT:    sbbq $0, %r8
+; CHECK-NEXT:    sbbq %r9, %rsi
+; CHECK-NEXT:    movq %rcx, (%rax)
+; CHECK-NEXT:    movq %rdi, 8(%rax)
+; CHECK-NEXT:    movq %r8, 16(%rax)
 ; CHECK-NEXT:    movq %rsi, 24(%rax)
 ; CHECK-NEXT:    retq
   %4 = load i64, ptr %1, align 8

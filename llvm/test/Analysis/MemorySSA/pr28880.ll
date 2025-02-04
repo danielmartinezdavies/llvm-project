@@ -8,38 +8,38 @@
 @global.1 = external hidden unnamed_addr global double, align 8
 
 ; Function Attrs: nounwind ssp uwtable
-define hidden fastcc void @hoge() unnamed_addr #0 {
+define hidden fastcc void @hoge(i1 %arg) unnamed_addr #0 {
 bb:
-  br i1 undef, label %bb1, label %bb2
+  br i1 %arg, label %bb1, label %bb2
 
 bb1:                                              ; preds = %bb
 ; These accesses should not conflict.
 ; CHECK:  1 = MemoryDef(liveOnEntry)
 ; 1 = MemoryDef(liveOnEntry)
-; CHECK-NEXT:   store double undef, double* @global, align 8
-  store double undef, double* @global, align 8
+; CHECK-NEXT:   store double undef, ptr @global, align 8
+  store double undef, ptr @global, align 8
 ; CHECK:  MemoryUse(liveOnEntry)
 ; MemoryUse(liveOnEntry)
-; CHECK-NEXT:   %tmp = load double, double* @global.1, align 8
-  %tmp = load double, double* @global.1, align 8
+; CHECK-NEXT:   %tmp = load double, ptr @global.1, align 8
+  %tmp = load double, ptr @global.1, align 8
   unreachable
 
 bb2:                                              ; preds = %bb
   br label %bb3
 
 bb3:                                              ; preds = %bb2
-  br i1 undef, label %bb4, label %bb6
+  br i1 %arg, label %bb4, label %bb6
 
 bb4:                                              ; preds = %bb3
 ; These accesses should conflict.
 ; CHECK:  2 = MemoryDef(liveOnEntry)
 ; 2 = MemoryDef(liveOnEntry)
-; CHECK-NEXT:   store double 0.000000e+00, double* @global.1, align 8
-  store double 0.000000e+00, double* @global.1, align 8
+; CHECK-NEXT:   store double 0.000000e+00, ptr @global.1, align 8
+  store double 0.000000e+00, ptr @global.1, align 8
 ; CHECK:  MemoryUse(2)
 ; MemoryUse(2)
-; CHECK-NEXT:   %tmp5 = load double, double* @global.1, align 8
-  %tmp5 = load double, double* @global.1, align 8
+; CHECK-NEXT:   %tmp5 = load double, ptr @global.1, align 8
+  %tmp5 = load double, ptr @global.1, align 8
   unreachable
 
 bb6:                                              ; preds = %bb3

@@ -19,10 +19,22 @@ module m
   !WARNING: Attribute 'PRIVATE' cannot be used more than once
   procedure(procFunc), private, pointer, private :: proc2
   !WARNING: Attribute 'BIND(C)' cannot be used more than once
-  !ERROR: An interface name with BIND attribute must be specified if the BIND attribute is specified in a procedure declaration statement
+  !ERROR: An interface name with the BIND attribute must appear if the BIND attribute appears in a procedure declaration
   procedure(procFunc), bind(c), pointer, bind(c) :: proc3
   !WARNING: Attribute 'PROTECTED' cannot be used more than once
   procedure(procFunc), protected, pointer, protected :: proc4
+  !ERROR: A PROTECTED entity must be a variable or pointer
+  external extsub
+  protected extsub
+  real x
+  !ERROR: A PROTECTED entity must be a variable or pointer
+  namelist /nml/ x
+  protected nml
+  !ERROR: A PROTECTED entity may not be in a common block
+  real y
+  common /blk/ y
+  protected y
+  logical,protected,external,pointer :: z
 
 contains
 
@@ -43,6 +55,14 @@ contains
       procedure(procFunc), pointer, optional, pointer :: arg10
       !WARNING: Attribute 'SAVE' cannot be used more than once
       procedure(procFunc), save, pointer, save :: localProc
+      !ERROR: A PROTECTED entity must be in the specification part of a module
+      real x
+      protected x
     end subroutine testProcDecl
 
 end module m
+
+subroutine subb()
+  !Ensure no spurious error from a benign UseError
+  use m, testProcDecl=>z
+end

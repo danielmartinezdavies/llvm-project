@@ -133,6 +133,7 @@ namespace ValidButUnsupported {
     int arr[&f<X> ? 1 : 2];
 #if __cplusplus < 201103L
     // expected-warning@-2 {{folded to constant}}
+    // expected-warning@-3 {{variable length arrays in C++ are a Clang extension}}
 #endif
   } C; // expected-note {{by this typedef}}
 }
@@ -189,3 +190,20 @@ typedef struct { // expected-warning {{anonymous non-C-compatible type}}
   }
 } A; // expected-note {{given name 'A' for linkage purposes by this typedef}}
 }
+
+#if __cplusplus > 201103L
+namespace GH58800 {
+struct A {
+  union {
+    struct {
+      float red = 0.0f;
+    };
+  };
+};
+
+A GetA() {
+  A result{};
+  return result;
+}
+}
+#endif

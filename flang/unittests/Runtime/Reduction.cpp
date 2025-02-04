@@ -9,9 +9,11 @@
 #include "flang/Runtime/reduction.h"
 #include "gtest/gtest.h"
 #include "tools.h"
+#include "flang/Common/float128.h"
 #include "flang/Runtime/allocatable.h"
 #include "flang/Runtime/cpp-type.h"
 #include "flang/Runtime/descriptor.h"
+#include "flang/Runtime/reduce.h"
 #include "flang/Runtime/type-code.h"
 #include <cstdint>
 #include <cstring>
@@ -40,7 +42,7 @@ TEST(Reductions, DimMaskProductInt4) {
       shape, std::vector<std::int32_t>{1, 2, 3, 4, 5, 6})};
   auto mask{MakeArray<TypeCategory::Logical, 1>(
       shape, std::vector<bool>{true, false, false, true, true, true})};
-  StaticDescriptor<1, true> statDesc;
+  StaticDescriptor<maxRank, true> statDesc;
   Descriptor &prod{statDesc.descriptor()};
   RTNAME(ProductDim)(prod, *array, 1, __FILE__, __LINE__, &*mask);
   EXPECT_EQ(prod.rank(), 1);
@@ -74,7 +76,7 @@ TEST(Reductions, DoubleMaxMinNorm2) {
   EXPECT_LE(norm2Error, 0.000001 * naiveNorm2);
   StaticDescriptor<2, true> statDesc;
   Descriptor &loc{statDesc.descriptor()};
-  RTNAME(Maxloc)
+  RTNAME(MaxlocReal8)
   (loc, *array, /*KIND=*/8, __FILE__, __LINE__, /*MASK=*/nullptr,
       /*BACK=*/false);
   EXPECT_EQ(loc.rank(), 1);
@@ -88,7 +90,7 @@ TEST(Reductions, DoubleMaxMinNorm2) {
   EXPECT_EQ(*loc.ZeroBasedIndexedElement<std::int64_t>(1), 4);
   EXPECT_EQ(*loc.ZeroBasedIndexedElement<std::int64_t>(2), 2);
   loc.Destroy();
-  RTNAME(Maxloc)
+  RTNAME(MaxlocReal8)
   (loc, *array, /*KIND=*/8, __FILE__, __LINE__, /*MASK=*/nullptr,
       /*BACK=*/true);
   EXPECT_EQ(loc.rank(), 1);
@@ -150,7 +152,7 @@ TEST(Reductions, DoubleMaxMinNorm2) {
   // A scalar result occurs when you have a rank 1 array and dim == 1.
   std::vector<int> shape1{24};
   auto array1{MakeArray<TypeCategory::Real, 8>(shape1, rawData)};
-  StaticDescriptor<1, true> statDesc0[1];
+  StaticDescriptor<2, true> statDesc0[1];
   Descriptor &scalarResult{statDesc0[0].descriptor()};
   RTNAME(MaxlocDim)
   (scalarResult, *array1, /*KIND=*/2, /*DIM=*/1, __FILE__, __LINE__,
@@ -264,7 +266,7 @@ TEST(Reductions, Character) {
   EXPECT_EQ(res.type().raw(), (TypeCode{TypeCategory::Character, 1}.raw()));
   EXPECT_EQ(std::memcmp(res.OffsetElement<char>(), "abc", 3), 0);
   res.Destroy();
-  RTNAME(Maxloc)
+  RTNAME(MaxlocCharacter)
   (res, *array, /*KIND=*/4, __FILE__, __LINE__, /*MASK=*/nullptr,
       /*BACK=*/false);
   EXPECT_EQ(res.rank(), 1);
@@ -276,7 +278,7 @@ TEST(Reductions, Character) {
   res.Destroy();
   auto mask{MakeArray<TypeCategory::Logical, 1>(
       shape, std::vector<bool>{false, true, false, true, false, true})};
-  RTNAME(Maxloc)
+  RTNAME(MaxlocCharacter)
   (res, *array, /*KIND=*/4, __FILE__, __LINE__, /*MASK=*/&*mask,
       /*BACK=*/false);
   EXPECT_EQ(res.rank(), 1);
@@ -286,7 +288,7 @@ TEST(Reductions, Character) {
   EXPECT_EQ(*res.ZeroBasedIndexedElement<std::int32_t>(0), 2);
   EXPECT_EQ(*res.ZeroBasedIndexedElement<std::int32_t>(1), 2);
   res.Destroy();
-  RTNAME(Minloc)
+  RTNAME(MinlocCharacter)
   (res, *array, /*KIND=*/4, __FILE__, __LINE__, /*MASK=*/nullptr,
       /*BACK=*/false);
   EXPECT_EQ(res.rank(), 1);
@@ -296,7 +298,7 @@ TEST(Reductions, Character) {
   EXPECT_EQ(*res.ZeroBasedIndexedElement<std::int32_t>(0), 1);
   EXPECT_EQ(*res.ZeroBasedIndexedElement<std::int32_t>(1), 1);
   res.Destroy();
-  RTNAME(Minloc)
+  RTNAME(MinlocCharacter)
   (res, *array, /*KIND=*/4, __FILE__, __LINE__, /*MASK=*/nullptr,
       /*BACK=*/true);
   EXPECT_EQ(res.rank(), 1);
@@ -306,7 +308,7 @@ TEST(Reductions, Character) {
   EXPECT_EQ(*res.ZeroBasedIndexedElement<std::int32_t>(0), 2);
   EXPECT_EQ(*res.ZeroBasedIndexedElement<std::int32_t>(1), 3);
   res.Destroy();
-  RTNAME(Minloc)
+  RTNAME(MinlocCharacter)
   (res, *array, /*KIND=*/4, __FILE__, __LINE__, /*MASK=*/&*mask,
       /*BACK=*/true);
   EXPECT_EQ(res.rank(), 1);
@@ -615,4 +617,58 @@ TEST(Reductions, DotProduct) {
       *logicalVector1, *logicalVector2, __FILE__, __LINE__));
   EXPECT_FALSE(RTNAME(DotProductLogical)(
       *logicalVector2, *logicalVector1, __FILE__, __LINE__));
+}
+
+#if HAS_LDBL128 || HAS_FLOAT128
+TEST(Reductions, ExtremaReal16) {
+  // The identity value for Min/Maxval for REAL(16) was mistakenly
+  // set to 0.0.
+  using ElemType = CppTypeFor<TypeCategory::Real, 16>;
+  std::vector<int> shape{3};
+  //   1.0  2.0  3.0
+  std::vector<ElemType> rawMinData{1.0, 2.0, 3.0};
+  auto minArray{MakeArray<TypeCategory::Real, 16>(shape, rawMinData)};
+  EXPECT_EQ(RTNAME(MinvalReal16)(*minArray, __FILE__, __LINE__), 1.0);
+  //   -1.0  -2.0  -3.0
+  std::vector<ElemType> rawMaxData{-1.0, -2.0, -3.0};
+  auto maxArray{MakeArray<TypeCategory::Real, 16>(shape, rawMaxData)};
+  EXPECT_EQ(RTNAME(MaxvalReal16)(*maxArray, __FILE__, __LINE__), -1.0);
+}
+#endif // HAS_LDBL128 || HAS_FLOAT128
+
+static std::int32_t IAdd(const std::int32_t *x, const std::int32_t *y) {
+  return *x + *y;
+}
+
+static std::int32_t IMultiply(const std::int32_t *x, const std::int32_t *y) {
+  return *x * *y;
+}
+
+TEST(Reductions, ReduceInt4) {
+  auto intVector{MakeArray<TypeCategory::Integer, 4>(
+      std::vector<int>{4}, std::vector<std::int32_t>{1, 2, 3, 4})};
+  EXPECT_EQ(
+      RTNAME(ReduceInteger4Ref)(*intVector, IAdd, __FILE__, __LINE__), 10);
+  EXPECT_EQ(
+      RTNAME(ReduceInteger4Ref)(*intVector, IMultiply, __FILE__, __LINE__), 24);
+}
+TEST(Reductions, ReduceInt4Dim) {
+  auto intMatrix{MakeArray<TypeCategory::Integer, 4>(
+      std::vector<int>{2, 2}, std::vector<std::int32_t>{1, 2, 3, 4})};
+  StaticDescriptor<2, true> statDesc;
+  Descriptor &sums{statDesc.descriptor()};
+  RTNAME(ReduceInteger4DimRef)(sums, *intMatrix, IAdd, __FILE__, __LINE__, 1);
+  EXPECT_EQ(sums.rank(), 1);
+  EXPECT_EQ(sums.GetDimension(0).LowerBound(), 1);
+  EXPECT_EQ(sums.GetDimension(0).Extent(), 2);
+  EXPECT_EQ(*sums.ZeroBasedIndexedElement<std::int32_t>(0), 3);
+  EXPECT_EQ(*sums.ZeroBasedIndexedElement<std::int32_t>(1), 7);
+  sums.Destroy();
+  RTNAME(ReduceInteger4DimRef)(sums, *intMatrix, IAdd, __FILE__, __LINE__, 2);
+  EXPECT_EQ(sums.rank(), 1);
+  EXPECT_EQ(sums.GetDimension(0).LowerBound(), 1);
+  EXPECT_EQ(sums.GetDimension(0).Extent(), 2);
+  EXPECT_EQ(*sums.ZeroBasedIndexedElement<std::int32_t>(0), 4);
+  EXPECT_EQ(*sums.ZeroBasedIndexedElement<std::int32_t>(1), 6);
+  sums.Destroy();
 }

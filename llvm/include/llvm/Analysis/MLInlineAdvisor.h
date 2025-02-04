@@ -15,19 +15,21 @@
 #include "llvm/Analysis/MLModelRunner.h"
 #include "llvm/IR/PassManager.h"
 
-#include <deque>
 #include <map>
 #include <memory>
+#include <optional>
 
 namespace llvm {
 class DiagnosticInfoOptimizationBase;
 class Module;
 class MLInlineAdvice;
+class ProfileSummaryInfo;
 
 class MLInlineAdvisor : public InlineAdvisor {
 public:
   MLInlineAdvisor(Module &M, ModuleAnalysisManager &MAM,
-                  std::unique_ptr<MLModelRunner> ModelRunner);
+                  std::unique_ptr<MLModelRunner> ModelRunner,
+                  std::function<bool(CallBase &)> GetDefaultAdvice);
 
   virtual ~MLInlineAdvisor() = default;
 
@@ -42,7 +44,7 @@ public:
 
   bool isForcedToStop() const { return ForceStop; }
   int64_t getLocalCalls(Function &F);
-  const MLModelRunner &getModelRunner() const { return *ModelRunner.get(); }
+  const MLModelRunner &getModelRunner() const { return *ModelRunner; }
   FunctionPropertiesInfo &getCachedFPI(Function &) const;
 
 protected:
@@ -62,6 +64,7 @@ protected:
   unsigned getInitialFunctionLevel(const Function &F) const;
 
   std::unique_ptr<MLModelRunner> ModelRunner;
+  std::function<bool(CallBase &)> GetDefaultAdvice;
 
 private:
   int64_t getModuleIRSize() const;
@@ -69,7 +72,10 @@ private:
   getSkipAdviceIfUnreachableCallsite(CallBase &CB);
   void print(raw_ostream &OS) const override;
 
-  mutable DenseMap<const Function *, FunctionPropertiesInfo> FPICache;
+  // Using std::map to benefit from its iterator / reference non-invalidating
+  // semantics, which make it easy to use `getCachedFPI` results from multiple
+  // calls without needing to copy to avoid invalidation effects.
+  mutable std::map<const Function *, FunctionPropertiesInfo> FPICache;
 
   LazyCallGraph &CG;
 
@@ -82,7 +88,9 @@ private:
   int32_t CurrentIRSize = 0;
   llvm::SmallPtrSet<const LazyCallGraph::Node *, 1> NodesInLastSCC;
   DenseSet<const LazyCallGraph::Node *> AllNodes;
+  DenseSet<Function *> DeadFunctions;
   bool ForceStop = false;
+  ProfileSummaryInfo &PSI;
 };
 
 /// InlineAdvice that tracks changes post inlining. For that reason, it only
@@ -114,7 +122,7 @@ private:
   // Make a copy of the FPI of the caller right before inlining. If inlining
   // fails, we can just update the cache with that value.
   const FunctionPropertiesInfo PreInlineCallerFPI;
-  Optional<FunctionPropertiesUpdater> FPU;
+  std::optional<FunctionPropertiesUpdater> FPU;
 };
 
 } // namespace llvm

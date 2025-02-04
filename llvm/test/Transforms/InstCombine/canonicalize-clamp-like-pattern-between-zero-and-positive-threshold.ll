@@ -312,7 +312,7 @@ define i32 @n16_oneuse6(i32 %x, i32 %replacement_low, i32 %replacement_high) {
 define <2 x i32> @t17_ult_slt_vec_splat(<2 x i32> %x, <2 x i32> %replacement_low, <2 x i32> %replacement_high) {
 ; CHECK-LABEL: @t17_ult_slt_vec_splat(
 ; CHECK-NEXT:    [[TMP1:%.*]] = icmp slt <2 x i32> [[X:%.*]], zeroinitializer
-; CHECK-NEXT:    [[TMP2:%.*]] = icmp sgt <2 x i32> [[X]], <i32 65535, i32 65535>
+; CHECK-NEXT:    [[TMP2:%.*]] = icmp sgt <2 x i32> [[X]], splat (i32 65535)
 ; CHECK-NEXT:    [[TMP3:%.*]] = select <2 x i1> [[TMP1]], <2 x i32> [[REPLACEMENT_LOW:%.*]], <2 x i32> [[X]]
 ; CHECK-NEXT:    [[R:%.*]] = select <2 x i1> [[TMP2]], <2 x i32> [[REPLACEMENT_HIGH:%.*]], <2 x i32> [[TMP3]]
 ; CHECK-NEXT:    ret <2 x i32> [[R]]
@@ -338,62 +338,62 @@ define <2 x i32> @t18_ult_slt_vec_nonsplat(<2 x i32> %x, <2 x i32> %replacement_
   ret <2 x i32> %r
 }
 
-define <3 x i32> @t19_ult_slt_vec_undef0(<3 x i32> %x, <3 x i32> %replacement_low, <3 x i32> %replacement_high) {
-; CHECK-LABEL: @t19_ult_slt_vec_undef0(
+define <3 x i32> @t19_ult_slt_vec_poison0(<3 x i32> %x, <3 x i32> %replacement_low, <3 x i32> %replacement_high) {
+; CHECK-LABEL: @t19_ult_slt_vec_poison0(
 ; CHECK-NEXT:    [[TMP1:%.*]] = icmp slt <3 x i32> [[X:%.*]], zeroinitializer
-; CHECK-NEXT:    [[TMP2:%.*]] = icmp sgt <3 x i32> [[X]], <i32 65535, i32 65535, i32 65535>
+; CHECK-NEXT:    [[TMP2:%.*]] = icmp sgt <3 x i32> [[X]], splat (i32 65535)
 ; CHECK-NEXT:    [[TMP3:%.*]] = select <3 x i1> [[TMP1]], <3 x i32> [[REPLACEMENT_LOW:%.*]], <3 x i32> [[X]]
 ; CHECK-NEXT:    [[R:%.*]] = select <3 x i1> [[TMP2]], <3 x i32> [[REPLACEMENT_HIGH:%.*]], <3 x i32> [[TMP3]]
 ; CHECK-NEXT:    ret <3 x i32> [[R]]
 ;
-  %t0 = icmp slt <3 x i32> %x, <i32 65536, i32 undef, i32 65536>
+  %t0 = icmp slt <3 x i32> %x, <i32 65536, i32 poison, i32 65536>
   %t1 = select <3 x i1> %t0, <3 x i32> %replacement_low, <3 x i32> %replacement_high
   %t2 = icmp ult <3 x i32> %x, <i32 65536, i32 65536, i32 65536>
   %r = select <3 x i1> %t2, <3 x i32> %x, <3 x i32> %t1
   ret <3 x i32> %r
 }
-define <3 x i32> @t20_ult_slt_vec_undef1(<3 x i32> %x, <3 x i32> %replacement_low, <3 x i32> %replacement_high) {
-; CHECK-LABEL: @t20_ult_slt_vec_undef1(
+define <3 x i32> @t20_ult_slt_vec_poison1(<3 x i32> %x, <3 x i32> %replacement_low, <3 x i32> %replacement_high) {
+; CHECK-LABEL: @t20_ult_slt_vec_poison1(
 ; CHECK-NEXT:    [[TMP1:%.*]] = icmp slt <3 x i32> [[X:%.*]], zeroinitializer
-; CHECK-NEXT:    [[TMP2:%.*]] = icmp sgt <3 x i32> [[X]], <i32 65535, i32 65535, i32 65535>
+; CHECK-NEXT:    [[TMP2:%.*]] = icmp sgt <3 x i32> [[X]], splat (i32 65535)
 ; CHECK-NEXT:    [[TMP3:%.*]] = select <3 x i1> [[TMP1]], <3 x i32> [[REPLACEMENT_LOW:%.*]], <3 x i32> [[X]]
 ; CHECK-NEXT:    [[R:%.*]] = select <3 x i1> [[TMP2]], <3 x i32> [[REPLACEMENT_HIGH:%.*]], <3 x i32> [[TMP3]]
 ; CHECK-NEXT:    ret <3 x i32> [[R]]
 ;
   %t0 = icmp slt <3 x i32> %x, <i32 65536, i32 65537, i32 65536>
   %t1 = select <3 x i1> %t0, <3 x i32> %replacement_low, <3 x i32> %replacement_high
-  %t2 = icmp ult <3 x i32> %x, <i32 65536, i32 undef, i32 65536>
+  %t2 = icmp ult <3 x i32> %x, <i32 65536, i32 poison, i32 65536>
   %r = select <3 x i1> %t2, <3 x i32> %x, <3 x i32> %t1
   ret <3 x i32> %r
 }
-define <3 x i32> @t21_ult_slt_vec_undef2(<3 x i32> %x, <3 x i32> %replacement_low, <3 x i32> %replacement_high) {
-; CHECK-LABEL: @t21_ult_slt_vec_undef2(
+define <3 x i32> @t21_ult_slt_vec_poison2(<3 x i32> %x, <3 x i32> %replacement_low, <3 x i32> %replacement_high) {
+; CHECK-LABEL: @t21_ult_slt_vec_poison2(
 ; CHECK-NEXT:    [[TMP1:%.*]] = icmp slt <3 x i32> [[X:%.*]], zeroinitializer
-; CHECK-NEXT:    [[TMP2:%.*]] = icmp sgt <3 x i32> [[X]], <i32 65535, i32 65535, i32 65535>
+; CHECK-NEXT:    [[TMP2:%.*]] = icmp sgt <3 x i32> [[X]], splat (i32 65535)
 ; CHECK-NEXT:    [[TMP3:%.*]] = select <3 x i1> [[TMP1]], <3 x i32> [[REPLACEMENT_LOW:%.*]], <3 x i32> [[X]]
 ; CHECK-NEXT:    [[R:%.*]] = select <3 x i1> [[TMP2]], <3 x i32> [[REPLACEMENT_HIGH:%.*]], <3 x i32> [[TMP3]]
 ; CHECK-NEXT:    ret <3 x i32> [[R]]
 ;
-  %t0 = icmp slt <3 x i32> %x, <i32 65536, i32 undef, i32 65536>
+  %t0 = icmp slt <3 x i32> %x, <i32 65536, i32 poison, i32 65536>
   %t1 = select <3 x i1> %t0, <3 x i32> %replacement_low, <3 x i32> %replacement_high
-  %t2 = icmp ult <3 x i32> %x, <i32 65536, i32 undef, i32 65536>
+  %t2 = icmp ult <3 x i32> %x, <i32 65536, i32 poison, i32 65536>
   %r = select <3 x i1> %t2, <3 x i32> %x, <3 x i32> %t1
   ret <3 x i32> %r
 }
 
 ;-------------------------------------------------------------------------------
 
-define i32* @t22_pointers(i32* %x, i32* %replacement_low, i32* %replacement_high) {
+define ptr @t22_pointers(ptr %x, ptr %replacement_low, ptr %replacement_high) {
 ; CHECK-LABEL: @t22_pointers(
-; CHECK-NEXT:    [[T0:%.*]] = icmp slt i32* [[X:%.*]], inttoptr (i64 65536 to i32*)
-; CHECK-NEXT:    [[T1:%.*]] = select i1 [[T0]], i32* [[REPLACEMENT_LOW:%.*]], i32* [[REPLACEMENT_HIGH:%.*]]
-; CHECK-NEXT:    [[T2:%.*]] = icmp ult i32* [[X]], inttoptr (i64 65536 to i32*)
-; CHECK-NEXT:    [[R:%.*]] = select i1 [[T2]], i32* [[X]], i32* [[T1]]
-; CHECK-NEXT:    ret i32* [[R]]
+; CHECK-NEXT:    [[T0:%.*]] = icmp slt ptr [[X:%.*]], inttoptr (i64 65536 to ptr)
+; CHECK-NEXT:    [[T1:%.*]] = select i1 [[T0]], ptr [[REPLACEMENT_LOW:%.*]], ptr [[REPLACEMENT_HIGH:%.*]]
+; CHECK-NEXT:    [[T2:%.*]] = icmp ult ptr [[X]], inttoptr (i64 65536 to ptr)
+; CHECK-NEXT:    [[R:%.*]] = select i1 [[T2]], ptr [[X]], ptr [[T1]]
+; CHECK-NEXT:    ret ptr [[R]]
 ;
-  %t0 = icmp slt i32* %x, inttoptr (i64 65536 to i32*)
-  %t1 = select i1 %t0, i32* %replacement_low, i32* %replacement_high
-  %t2 = icmp ult i32* %x, inttoptr (i64 65536 to i32*)
-  %r = select i1 %t2, i32* %x, i32* %t1
-  ret i32* %r
+  %t0 = icmp slt ptr %x, inttoptr (i64 65536 to ptr)
+  %t1 = select i1 %t0, ptr %replacement_low, ptr %replacement_high
+  %t2 = icmp ult ptr %x, inttoptr (i64 65536 to ptr)
+  %r = select i1 %t2, ptr %x, ptr %t1
+  ret ptr %r
 }

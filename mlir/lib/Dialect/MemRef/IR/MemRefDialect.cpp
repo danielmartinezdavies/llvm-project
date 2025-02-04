@@ -6,10 +6,17 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "mlir/Dialect/Arithmetic/IR/Arithmetic.h"
+#include "mlir/Conversion/ConvertToLLVM/ToLLVMInterface.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/Bufferization/IR/AllocationOpInterface.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/IR/BuiltinTypes.h"
+#include "mlir/Interfaces/MemorySlotInterfaces.h"
+#include "mlir/Interfaces/RuntimeVerifiableOpInterface.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
+#include "mlir/Interfaces/ValueBoundsOpInterface.h"
 #include "mlir/Transforms/InliningUtils.h"
+#include <optional>
 
 using namespace mlir;
 using namespace mlir::memref;
@@ -24,11 +31,11 @@ namespace {
 struct MemRefInlinerInterface : public DialectInlinerInterface {
   using DialectInlinerInterface::DialectInlinerInterface;
   bool isLegalToInline(Region *dest, Region *src, bool wouldBeCloned,
-                       BlockAndValueMapping &valueMapping) const final {
+                       IRMapping &valueMapping) const final {
     return true;
   }
   bool isLegalToInline(Operation *, Region *, bool wouldBeCloned,
-                       BlockAndValueMapping &) const final {
+                       IRMapping &) const final {
     return true;
   }
 };
@@ -40,28 +47,28 @@ void mlir::memref::MemRefDialect::initialize() {
 #include "mlir/Dialect/MemRef/IR/MemRefOps.cpp.inc"
       >();
   addInterfaces<MemRefInlinerInterface>();
+  declarePromisedInterface<ConvertToLLVMPatternInterface, MemRefDialect>();
+  declarePromisedInterfaces<bufferization::AllocationOpInterface, AllocOp,
+                            AllocaOp, ReallocOp>();
+  declarePromisedInterfaces<RuntimeVerifiableOpInterface, CastOp, ExpandShapeOp,
+                            LoadOp, ReinterpretCastOp, StoreOp, SubViewOp>();
+  declarePromisedInterfaces<ValueBoundsOpInterface, AllocOp, AllocaOp, CastOp,
+                            DimOp, GetGlobalOp, RankOp, SubViewOp>();
+  declarePromisedInterface<DestructurableTypeInterface, MemRefType>();
 }
 
-/// Finds a single dealloc operation for the given allocated value.
-llvm::Optional<Operation *> mlir::memref::findDealloc(Value allocValue) {
+/// Finds the unique dealloc operation (if one exists) for `allocValue`.
+std::optional<Operation *> mlir::memref::findDealloc(Value allocValue) {
   Operation *dealloc = nullptr;
   for (Operation *user : allocValue.getUsers()) {
-    auto effectInterface = dyn_cast<MemoryEffectOpInterface>(user);
-    if (!effectInterface)
+    if (!hasEffect<MemoryEffects::Free>(user, allocValue))
       continue;
-    // Try to find a free effect that is applied to one of our values
-    // that will be automatically freed by our pass.
-    SmallVector<MemoryEffects::EffectInstance, 2> effects;
-    effectInterface.getEffectsOnValue(allocValue, effects);
-    const bool isFree =
-        llvm::any_of(effects, [&](MemoryEffects::EffectInstance &it) {
-          return isa<MemoryEffects::Free>(it.getEffect());
-        });
-    if (!isFree)
-      continue;
-    // If we found > 1 dealloc, return None.
+    // If we found a realloc instead of dealloc, return std::nullopt.
+    if (isa<memref::ReallocOp>(user))
+      return std::nullopt;
+    // If we found > 1 dealloc, return std::nullopt.
     if (dealloc)
-      return llvm::None;
+      return std::nullopt;
     dealloc = user;
   }
   return dealloc;

@@ -5,9 +5,15 @@ add_mlir_dialect_library(MLIRAMDGPUDialect
   ${MLIR_MAIN_INCLUDE_DIR}/mlir/Dialect/AMDGPU
 
   DEPENDS
+  MLIRAMDGPUEnumsGen
+  MLIRAMDGPUAttributesIncGen
   MLIRAMDGPUIncGen
 
   LINK_LIBS PUBLIC
+  MLIRArithDialect
+  MLIRROCDLDialect
+  # Needed for GPU address space enum definition
+  MLIRGPUDialect
   MLIRIR
   MLIRSideEffectInterfaces
   )

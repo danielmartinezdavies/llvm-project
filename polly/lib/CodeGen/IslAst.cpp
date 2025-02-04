@@ -52,6 +52,7 @@
 #include <cassert>
 #include <cstdlib>
 
+#include "polly/Support/PollyDebug.h"
 #define DEBUG_TYPE "polly-ast"
 
 using namespace llvm;
@@ -638,23 +639,19 @@ isl::ast_build IslAstInfo::getBuild(const isl::ast_node &Node) {
 static std::unique_ptr<IslAstInfo> runIslAst(
     Scop &Scop,
     function_ref<const Dependences &(Dependences::AnalysisLevel)> GetDeps) {
-  // Skip SCoPs in case they're already handled by PPCGCodeGeneration.
-  if (Scop.isToBeSkipped())
-    return {};
-
   ScopsProcessed++;
 
   const Dependences &D = GetDeps(Dependences::AL_Statement);
 
   if (D.getSharedIslCtx() != Scop.getSharedIslCtx()) {
-    LLVM_DEBUG(
+    POLLY_DEBUG(
         dbgs() << "Got dependence analysis for different SCoP/isl_ctx\n");
     return {};
   }
 
   std::unique_ptr<IslAstInfo> Ast = std::make_unique<IslAstInfo>(Scop, D);
 
-  LLVM_DEBUG({
+  POLLY_DEBUG({
     if (Ast)
       Ast->print(dbgs());
   });
@@ -755,7 +752,7 @@ void IslAstInfo::print(raw_ostream &OS) {
   P = isl_ast_node_print(RootNode.get(), P, Options);
   AstStr = isl_printer_get_str(P);
 
-  LLVM_DEBUG({
+  POLLY_DEBUG({
     dbgs() << S.getContextStr() << "\n";
     dbgs() << stringFromIslObj(S.getScheduleTree(), "null");
   });

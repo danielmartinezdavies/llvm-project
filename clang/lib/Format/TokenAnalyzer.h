@@ -17,19 +17,8 @@
 #define LLVM_CLANG_LIB_FORMAT_TOKENANALYZER_H
 
 #include "AffectedRangeManager.h"
-#include "Encoding.h"
-#include "FormatToken.h"
 #include "FormatTokenLexer.h"
 #include "TokenAnnotator.h"
-#include "UnwrappedLineParser.h"
-#include "clang/Basic/Diagnostic.h"
-#include "clang/Basic/DiagnosticOptions.h"
-#include "clang/Basic/FileManager.h"
-#include "clang/Basic/SourceManager.h"
-#include "clang/Format/Format.h"
-#include "llvm/ADT/STLExtras.h"
-#include "llvm/Support/Debug.h"
-#include <memory>
 
 namespace clang {
 namespace format {
@@ -46,7 +35,7 @@ public:
 
   FileID getFileID() const { return ID; }
 
-  const SourceManager &getSourceManager() const { return SM; }
+  SourceManager &getSourceManager() const { return SM; }
 
   ArrayRef<CharSourceRange> getCharRanges() const { return CharRanges; }
 
@@ -89,7 +78,8 @@ class TokenAnalyzer : public UnwrappedLineConsumer {
 public:
   TokenAnalyzer(const Environment &Env, const FormatStyle &Style);
 
-  std::pair<tooling::Replacements, unsigned> process();
+  std::pair<tooling::Replacements, unsigned>
+  process(bool SkipAnnotation = false);
 
 protected:
   virtual std::pair<tooling::Replacements, unsigned>
@@ -102,6 +92,7 @@ protected:
   void finishRun() override;
 
   FormatStyle Style;
+  LangOptions LangOpts;
   // Stores Style, FileID and SourceManager etc.
   const Environment &Env;
   // AffectedRangeMgr stores ranges to be fixed.

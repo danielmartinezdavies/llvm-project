@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "rewrite-parse-tree.h"
+#include "rewrite-directives.h"
 #include "flang/Common/indirection.h"
 #include "flang/Parser/parse-tree-visitor.h"
 #include "flang/Parser/parse-tree.h"
@@ -31,7 +32,7 @@ using namespace parser::literals;
 class RewriteMutator {
 public:
   RewriteMutator(SemanticsContext &context)
-      : errorOnUnresolvedName_{!context.AnyFatalError()},
+      : context_{context}, errorOnUnresolvedName_{!context.AnyFatalError()},
         messages_{context.messages()} {}
 
   // Default action for a parse tree node is to visit children.
@@ -39,9 +40,12 @@ public:
   template <typename T> void Post(T &) {}
 
   void Post(parser::Name &);
-  void Post(parser::SpecificationPart &);
-  bool Pre(parser::ExecutionPart &);
-  void Post(parser::IoUnit &);
+  bool Pre(parser::MainProgram &);
+  bool Pre(parser::FunctionSubprogram &);
+  bool Pre(parser::SubroutineSubprogram &);
+  bool Pre(parser::SeparateModuleSubprogram &);
+  bool Pre(parser::BlockConstruct &);
+  bool Pre(parser::ActionStmt &);
   void Post(parser::ReadStmt &);
   void Post(parser::WriteStmt &);
 
@@ -64,11 +68,11 @@ public:
   bool Pre(parser::EndTypeStmt &) { return false; }
 
 private:
-  using stmtFuncType =
-      parser::Statement<common::Indirection<parser::StmtFunctionStmt>>;
+  void FixMisparsedStmtFuncs(parser::SpecificationPart &, parser::Block &);
+
+  SemanticsContext &context_;
   bool errorOnUnresolvedName_{true};
   parser::Messages &messages_;
-  std::list<stmtFuncType> stmtFuncsToConvert_;
 };
 
 // Check that name has been resolved to a symbol
@@ -92,23 +96,33 @@ static bool ReturnsDataPointer(const Symbol &symbol) {
   return false;
 }
 
-// Find mis-parsed statement functions and move to stmtFuncsToConvert_ list.
-void RewriteMutator::Post(parser::SpecificationPart &x) {
-  auto &list{std::get<std::list<parser::DeclarationConstruct>>(x.t)};
+// Finds misparsed statement functions in a specification part, rewrites
+// them into array element assignment statements, and moves them into the
+// beginning of the corresponding (execution part's) block.
+void RewriteMutator::FixMisparsedStmtFuncs(
+    parser::SpecificationPart &specPart, parser::Block &block) {
+  auto &list{std::get<std::list<parser::DeclarationConstruct>>(specPart.t)};
+  auto origFirst{block.begin()}; // insert each elem before origFirst
   for (auto it{list.begin()}; it != list.end();) {
-    bool isAssignment{false};
-    if (auto *stmt{std::get_if<stmtFuncType>(&it->u)}) {
+    bool convert{false};
+    if (auto *stmt{std::get_if<
+            parser::Statement<common::Indirection<parser::StmtFunctionStmt>>>(
+            &it->u)}) {
       if (const Symbol *
           symbol{std::get<parser::Name>(stmt->statement.value().t).symbol}) {
         const Symbol &ultimate{symbol->GetUltimate()};
-        isAssignment =
+        convert =
             ultimate.has<ObjectEntityDetails>() || ReturnsDataPointer(ultimate);
-        if (isAssignment) {
-          stmtFuncsToConvert_.emplace_back(std::move(*stmt));
+        if (convert) {
+          auto newStmt{stmt->statement.value().ConvertToAssignment()};
+          newStmt.source = stmt->source;
+          block.insert(origFirst,
+              parser::ExecutionPartConstruct{
+                  parser::ExecutableConstruct{std::move(newStmt)}});
         }
       }
     }
-    if (isAssignment) {
+    if (convert) {
       it = list.erase(it);
     } else {
       ++it;
@@ -116,41 +130,57 @@ void RewriteMutator::Post(parser::SpecificationPart &x) {
   }
 }
 
-// Insert converted assignments at start of ExecutionPart.
-bool RewriteMutator::Pre(parser::ExecutionPart &x) {
-  auto origFirst{x.v.begin()}; // insert each elem before origFirst
-  for (stmtFuncType &sf : stmtFuncsToConvert_) {
-    auto stmt{sf.statement.value().ConvertToAssignment()};
-    stmt.source = sf.source;
-    x.v.insert(origFirst,
-        parser::ExecutionPartConstruct{
-            parser::ExecutableConstruct{std::move(stmt)}});
-  }
-  stmtFuncsToConvert_.clear();
+bool RewriteMutator::Pre(parser::MainProgram &program) {
+  FixMisparsedStmtFuncs(std::get<parser::SpecificationPart>(program.t),
+      std::get<parser::ExecutionPart>(program.t).v);
   return true;
 }
 
-// Convert a syntactically ambiguous io-unit internal-file-variable to a
-// file-unit-number.
-void RewriteMutator::Post(parser::IoUnit &x) {
-  if (auto *var{std::get_if<parser::Variable>(&x.u)}) {
-    const parser::Name &last{parser::GetLastName(*var)};
-    DeclTypeSpec *type{last.symbol ? last.symbol->GetType() : nullptr};
-    if (!type || type->category() != DeclTypeSpec::Character) {
-      // If the Variable is not known to be character (any kind), transform
-      // the I/O unit in situ to a FileUnitNumber so that automatic expression
-      // constraint checking will be applied.
-      auto source{var->GetSource()};
-      auto expr{common::visit(
-          [](auto &&indirection) {
-            return parser::Expr{std::move(indirection)};
-          },
-          std::move(var->u))};
-      expr.source = source;
-      x.u = parser::FileUnitNumber{
-          parser::ScalarIntExpr{parser::IntExpr{std::move(expr)}}};
+bool RewriteMutator::Pre(parser::FunctionSubprogram &func) {
+  FixMisparsedStmtFuncs(std::get<parser::SpecificationPart>(func.t),
+      std::get<parser::ExecutionPart>(func.t).v);
+  return true;
+}
+
+bool RewriteMutator::Pre(parser::SubroutineSubprogram &subr) {
+  FixMisparsedStmtFuncs(std::get<parser::SpecificationPart>(subr.t),
+      std::get<parser::ExecutionPart>(subr.t).v);
+  return true;
+}
+
+bool RewriteMutator::Pre(parser::SeparateModuleSubprogram &subp) {
+  FixMisparsedStmtFuncs(std::get<parser::SpecificationPart>(subp.t),
+      std::get<parser::ExecutionPart>(subp.t).v);
+  return true;
+}
+
+bool RewriteMutator::Pre(parser::BlockConstruct &block) {
+  FixMisparsedStmtFuncs(std::get<parser::BlockSpecificationPart>(block.t).v,
+      std::get<parser::Block>(block.t));
+  return true;
+}
+
+// Rewrite PRINT NML -> WRITE(*,NML=NML)
+bool RewriteMutator::Pre(parser::ActionStmt &x) {
+  if (auto *print{std::get_if<common::Indirection<parser::PrintStmt>>(&x.u)};
+      print &&
+      std::get<std::list<parser::OutputItem>>(print->value().t).empty()) {
+    auto &format{std::get<parser::Format>(print->value().t)};
+    if (std::holds_alternative<parser::Expr>(format.u)) {
+      if (auto *name{parser::Unwrap<parser::Name>(format)}; name &&
+          name->symbol && name->symbol->GetUltimate().has<NamelistDetails>() &&
+          context_.IsEnabled(common::LanguageFeature::PrintNamelist)) {
+        context_.Warn(common::LanguageFeature::PrintNamelist, name->source,
+            "nonstandard: namelist in PRINT statement"_port_en_US);
+        std::list<parser::IoControlSpec> controls;
+        controls.emplace_back(std::move(*name));
+        x.u = common::Indirection<parser::WriteStmt>::Make(
+            parser::IoUnit{parser::Star{}}, std::optional<parser::Format>{},
+            std::move(controls), std::list<parser::OutputItem>{});
+      }
     }
   }
+  return true;
 }
 
 // When a namelist group name appears (without NML=) in a READ or WRITE
@@ -199,7 +229,7 @@ void RewriteMutator::Post(parser::WriteStmt &x) {
 bool RewriteParseTree(SemanticsContext &context, parser::Program &program) {
   RewriteMutator mutator{context};
   parser::Walk(program, mutator);
-  return !context.AnyFatalError();
+  return !context.AnyFatalError() && RewriteOmpParts(context, program);
 }
 
 } // namespace Fortran::semantics

@@ -16,7 +16,8 @@
 #include "mlir/ExecutionEngine/Msan.h"
 
 #ifndef _WIN32
-#if defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__)
+#if defined(__FreeBSD__) || defined(__NetBSD__) || defined(__OpenBSD__) || \
+    defined(__DragonFly__)
 #include <cstdlib>
 #else
 #include <alloca.h>
@@ -26,12 +27,23 @@
 #include "malloc.h"
 #endif // _WIN32
 
+#include <algorithm>
 #include <cinttypes>
 #include <cstdio>
 #include <cstdlib>
+#include <numeric>
+#include <random>
 #include <string.h>
 
 #ifdef MLIR_CRUNNERUTILS_DEFINE_FUNCTIONS
+
+namespace {
+template <typename V>
+void stdSort(uint64_t n, V *p) {
+  std::sort(p, p + n);
+}
+
+} // namespace
 
 // Small runtime support "lib" for vector.print lowering.
 // By providing elementary printing methods only, this
@@ -39,8 +51,21 @@
 // details of our vectors. Also useful for direct LLVM IR output.
 extern "C" void printI64(int64_t i) { fprintf(stdout, "%" PRId64, i); }
 extern "C" void printU64(uint64_t u) { fprintf(stdout, "%" PRIu64, u); }
-extern "C" void printF32(float f) { fprintf(stdout, "%g", f); }
-extern "C" void printF64(double d) { fprintf(stdout, "%lg", d); }
+extern "C" void printF32(float f) {
+  if (std::isnan(f) && std::signbit(f)) {
+    fprintf(stdout, "-nan");
+  } else {
+    fprintf(stdout, "%g", f);
+  }
+}
+extern "C" void printF64(double d) {
+  if (std::isnan(d) && std::signbit(d)) {
+    fprintf(stdout, "-nan");
+  } else {
+    fprintf(stdout, "%lg", d);
+  }
+}
+extern "C" void printString(char const *s) { fputs(s, stdout); }
 extern "C" void printOpen() { fputs("( ", stdout); }
 extern "C" void printClose() { fputs(" )", stdout); }
 extern "C" void printComma() { fputs(", ", stdout); }
@@ -122,9 +147,9 @@ extern "C" double rtclock() {
 #endif // _WIN32
 }
 
-extern "C" void *_mlir_alloc(uint64_t size) { return malloc(size); }
+extern "C" void *mlirAlloc(uint64_t size) { return malloc(size); }
 
-extern "C" void *_mlir_aligned_alloc(uint64_t alignment, uint64_t size) {
+extern "C" void *mlirAlignedAlloc(uint64_t alignment, uint64_t size) {
 #ifdef _WIN32
   return _aligned_malloc(size, alignment);
 #elif defined(__APPLE__)
@@ -138,14 +163,54 @@ extern "C" void *_mlir_aligned_alloc(uint64_t alignment, uint64_t size) {
 #endif
 }
 
-extern "C" void _mlir_free(void *ptr) { free(ptr); }
+extern "C" void mlirFree(void *ptr) { free(ptr); }
 
-extern "C" void _mlir_aligned_free(void *ptr) {
+extern "C" void mlirAlignedFree(void *ptr) {
 #ifdef _WIN32
   _aligned_free(ptr);
 #else
   free(ptr);
 #endif
 }
+
+extern "C" void *rtsrand(uint64_t s) {
+  // Standard mersenne_twister_engine seeded with s.
+  return new std::mt19937(s);
+}
+
+extern "C" uint64_t rtrand(void *g, uint64_t m) {
+  std::mt19937 *generator = static_cast<std::mt19937 *>(g);
+  std::uniform_int_distribution<uint64_t> distrib(0, m);
+  return distrib(*generator);
+}
+
+extern "C" void rtdrand(void *g) {
+  std::mt19937 *generator = static_cast<std::mt19937 *>(g);
+  delete generator;
+}
+
+extern "C" void _mlir_ciface_shuffle(StridedMemRefType<uint64_t, 1> *mref,
+                                     void *g) {
+  assert(mref);
+  assert(mref->strides[0] == 1); // consecutive
+  std::mt19937 *generator = static_cast<std::mt19937 *>(g);
+  uint64_t s = mref->sizes[0];
+  uint64_t *data = mref->data + mref->offset;
+  std::iota(data, data + s, 0);
+  std::shuffle(data, data + s, *generator);
+}
+
+#define IMPL_STDSORT(VNAME, V)                                                 \
+  extern "C" void _mlir_ciface_stdSort##VNAME(uint64_t n,                      \
+                                              StridedMemRefType<V, 1> *vref) { \
+    assert(vref);                                                              \
+    assert(vref->strides[0] == 1);                                             \
+    V *values = vref->data + vref->offset;                                     \
+    stdSort(n, values);                                                        \
+  }
+IMPL_STDSORT(I64, int64_t)
+IMPL_STDSORT(F64, double)
+IMPL_STDSORT(F32, float)
+#undef IMPL_STDSORT
 
 #endif // MLIR_CRUNNERUTILS_DEFINE_FUNCTIONS

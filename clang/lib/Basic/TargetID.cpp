@@ -7,11 +7,13 @@
 //===----------------------------------------------------------------------===//
 
 #include "clang/Basic/TargetID.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallSet.h"
-#include "llvm/ADT/Triple.h"
-#include "llvm/Support/TargetParser.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/TargetParser/TargetParser.h"
+#include "llvm/TargetParser/Triple.h"
 #include <map>
+#include <optional>
 
 namespace clang {
 
@@ -62,7 +64,7 @@ llvm::StringRef getProcessorFromTargetID(const llvm::Triple &T,
 // A target ID is a processor name followed by a list of target features
 // delimited by colon. Each target feature is a string post-fixed by a plus
 // or minus sign, e.g. gfx908:sramecc+:xnack-.
-static llvm::Optional<llvm::StringRef>
+static std::optional<llvm::StringRef>
 parseTargetIDWithFormatCheckingOnly(llvm::StringRef TargetID,
                                     llvm::StringMap<bool> *FeatureMap) {
   llvm::StringRef Processor;
@@ -73,7 +75,7 @@ parseTargetIDWithFormatCheckingOnly(llvm::StringRef TargetID,
   auto Split = TargetID.split(':');
   Processor = Split.first;
   if (Processor.empty())
-    return llvm::None;
+    return std::nullopt;
 
   auto Features = Split.second;
   if (Features.empty())
@@ -88,30 +90,28 @@ parseTargetIDWithFormatCheckingOnly(llvm::StringRef TargetID,
     auto Sign = Splits.first.back();
     auto Feature = Splits.first.drop_back();
     if (Sign != '+' && Sign != '-')
-      return llvm::None;
+      return std::nullopt;
     bool IsOn = Sign == '+';
-    auto Loc = FeatureMap->find(Feature);
     // Each feature can only show up at most once in target ID.
-    if (Loc != FeatureMap->end())
-      return llvm::None;
-    (*FeatureMap)[Feature] = IsOn;
+    if (!FeatureMap->try_emplace(Feature, IsOn).second)
+      return std::nullopt;
     Features = Splits.second;
   }
   return Processor;
 }
 
-llvm::Optional<llvm::StringRef>
+std::optional<llvm::StringRef>
 parseTargetID(const llvm::Triple &T, llvm::StringRef TargetID,
               llvm::StringMap<bool> *FeatureMap) {
   auto OptionalProcessor =
       parseTargetIDWithFormatCheckingOnly(TargetID, FeatureMap);
 
   if (!OptionalProcessor)
-    return llvm::None;
+    return std::nullopt;
 
   llvm::StringRef Processor = getCanonicalProcessorName(T, *OptionalProcessor);
   if (Processor.empty())
-    return llvm::None;
+    return std::nullopt;
 
   llvm::SmallSet<llvm::StringRef, 4> AllFeatures;
   for (auto &&F : getAllPossibleTargetIDFeatures(T, Processor))
@@ -119,7 +119,7 @@ parseTargetID(const llvm::Triple &T, llvm::StringRef TargetID,
 
   for (auto &&F : *FeatureMap)
     if (!AllFeatures.count(F.first()))
-      return llvm::None;
+      return std::nullopt;
 
   return Processor;
 }
@@ -132,7 +132,7 @@ std::string getCanonicalTargetID(llvm::StringRef Processor,
   std::map<const llvm::StringRef, bool> OrderedMap;
   for (const auto &F : Features)
     OrderedMap[F.first()] = F.second;
-  for (auto F : OrderedMap)
+  for (const auto &F : OrderedMap)
     TargetID = TargetID + ':' + F.first.str() + (F.second ? "+" : "-");
   return TargetID;
 }
@@ -140,20 +140,20 @@ std::string getCanonicalTargetID(llvm::StringRef Processor,
 // For a specific processor, a feature either shows up in all target IDs, or
 // does not show up in any target IDs. Otherwise the target ID combination
 // is invalid.
-llvm::Optional<std::pair<llvm::StringRef, llvm::StringRef>>
+std::optional<std::pair<llvm::StringRef, llvm::StringRef>>
 getConflictTargetIDCombination(const std::set<llvm::StringRef> &TargetIDs) {
   struct Info {
     llvm::StringRef TargetID;
     llvm::StringMap<bool> Features;
+    Info(llvm::StringRef TargetID, const llvm::StringMap<bool> &Features)
+        : TargetID(TargetID), Features(Features) {}
   };
   llvm::StringMap<Info> FeatureMap;
   for (auto &&ID : TargetIDs) {
     llvm::StringMap<bool> Features;
     llvm::StringRef Proc = *parseTargetIDWithFormatCheckingOnly(ID, &Features);
-    auto Loc = FeatureMap.find(Proc);
-    if (Loc == FeatureMap.end())
-      FeatureMap[Proc] = Info{ID, Features};
-    else {
+    auto [Loc, Inserted] = FeatureMap.try_emplace(Proc, ID, Features);
+    if (!Inserted) {
       auto &ExistingFeatures = Loc->second.Features;
       if (llvm::any_of(Features, [&](auto &F) {
             return ExistingFeatures.count(F.first()) == 0;
@@ -161,7 +161,28 @@ getConflictTargetIDCombination(const std::set<llvm::StringRef> &TargetIDs) {
         return std::make_pair(Loc->second.TargetID, ID);
     }
   }
-  return llvm::None;
+  return std::nullopt;
+}
+
+bool isCompatibleTargetID(llvm::StringRef Provided, llvm::StringRef Requested) {
+  llvm::StringMap<bool> ProvidedFeatures, RequestedFeatures;
+  llvm::StringRef ProvidedProc =
+      *parseTargetIDWithFormatCheckingOnly(Provided, &ProvidedFeatures);
+  llvm::StringRef RequestedProc =
+      *parseTargetIDWithFormatCheckingOnly(Requested, &RequestedFeatures);
+  if (ProvidedProc != RequestedProc)
+    return false;
+  for (const auto &F : ProvidedFeatures) {
+    auto Loc = RequestedFeatures.find(F.first());
+    // The default (unspecified) value of a feature is 'All', which can match
+    // either 'On' or 'Off'.
+    if (Loc == RequestedFeatures.end())
+      return false;
+    // If a feature is specified, it must have exact match.
+    if (Loc->second != F.second)
+      return false;
+  }
+  return true;
 }
 
 } // namespace clang

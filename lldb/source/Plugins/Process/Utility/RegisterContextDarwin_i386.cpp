@@ -154,7 +154,7 @@ enum {
                          {LLDB_INVALID_REGNUM, dwarf_##reg##i,                 \
                           LLDB_INVALID_REGNUM, LLDB_INVALID_REGNUM,            \
                           fpu_##reg##i },                                      \
-                          nullptr, nullptr,
+                          nullptr, nullptr, nullptr,
 
 #define DEFINE_EXC(reg)                                                        \
   #reg, NULL, sizeof(((RegisterContextDarwin_i386::EXC *) NULL)->reg),         \
@@ -165,14 +165,10 @@ enum {
    sizeof(RegisterContextDarwin_i386::EXC))
 
 static RegisterInfo g_register_infos[] = {
-    //  Macro auto defines most stuff   eh_frame                DWARF
-    //  GENERIC                    PROCESS PLUGIN       LLDB
-    //  =============================== =======================
-    //  ===================   =========================  ==================
-    //  =================
     {DEFINE_GPR(eax, nullptr),
      {ehframe_eax, dwarf_eax, LLDB_INVALID_REGNUM, LLDB_INVALID_REGNUM,
       gpr_eax},
+     nullptr,
      nullptr,
      nullptr,
     },
@@ -181,10 +177,12 @@ static RegisterInfo g_register_infos[] = {
       gpr_ebx},
      nullptr,
      nullptr,
+     nullptr,
     },
     {DEFINE_GPR(ecx, nullptr),
      {ehframe_ecx, dwarf_ecx, LLDB_INVALID_REGNUM, LLDB_INVALID_REGNUM,
       gpr_ecx},
+     nullptr,
      nullptr,
      nullptr,
     },
@@ -193,10 +191,12 @@ static RegisterInfo g_register_infos[] = {
       gpr_edx},
      nullptr,
      nullptr,
+     nullptr,
     },
     {DEFINE_GPR(edi, nullptr),
      {ehframe_edi, dwarf_edi, LLDB_INVALID_REGNUM, LLDB_INVALID_REGNUM,
       gpr_edi},
+     nullptr,
      nullptr,
      nullptr,
     },
@@ -205,10 +205,12 @@ static RegisterInfo g_register_infos[] = {
       gpr_esi},
      nullptr,
      nullptr,
+     nullptr,
     },
     {DEFINE_GPR(ebp, "fp"),
      {ehframe_ebp, dwarf_ebp, LLDB_REGNUM_GENERIC_FP, LLDB_INVALID_REGNUM,
       gpr_ebp},
+     nullptr,
      nullptr,
      nullptr,
     },
@@ -217,10 +219,12 @@ static RegisterInfo g_register_infos[] = {
       gpr_esp},
      nullptr,
      nullptr,
+     nullptr,
     },
     {DEFINE_GPR(ss, nullptr),
      {LLDB_INVALID_REGNUM, LLDB_INVALID_REGNUM, LLDB_INVALID_REGNUM,
       LLDB_INVALID_REGNUM, gpr_ss},
+     nullptr,
      nullptr,
      nullptr,
     },
@@ -229,10 +233,12 @@ static RegisterInfo g_register_infos[] = {
       LLDB_INVALID_REGNUM, gpr_eflags},
      nullptr,
      nullptr,
+     nullptr,
     },
     {DEFINE_GPR(eip, "pc"),
      {ehframe_eip, dwarf_eip, LLDB_REGNUM_GENERIC_PC, LLDB_INVALID_REGNUM,
       gpr_eip},
+     nullptr,
      nullptr,
      nullptr,
     },
@@ -241,10 +247,12 @@ static RegisterInfo g_register_infos[] = {
       LLDB_INVALID_REGNUM, gpr_cs},
      nullptr,
      nullptr,
+     nullptr,
     },
     {DEFINE_GPR(ds, nullptr),
      {LLDB_INVALID_REGNUM, LLDB_INVALID_REGNUM, LLDB_INVALID_REGNUM,
       LLDB_INVALID_REGNUM, gpr_ds},
+     nullptr,
      nullptr,
      nullptr,
     },
@@ -253,16 +261,19 @@ static RegisterInfo g_register_infos[] = {
       LLDB_INVALID_REGNUM, gpr_es},
      nullptr,
      nullptr,
+     nullptr,
     },
     {DEFINE_GPR(fs, nullptr),
      {LLDB_INVALID_REGNUM, LLDB_INVALID_REGNUM, LLDB_INVALID_REGNUM,
       LLDB_INVALID_REGNUM, gpr_fs},
      nullptr,
      nullptr,
+     nullptr,
     },
     {DEFINE_GPR(gs, nullptr),
      {LLDB_INVALID_REGNUM, LLDB_INVALID_REGNUM, LLDB_INVALID_REGNUM,
       LLDB_INVALID_REGNUM, gpr_gs},
+     nullptr,
      nullptr,
      nullptr,
     },
@@ -272,10 +283,12 @@ static RegisterInfo g_register_infos[] = {
       LLDB_INVALID_REGNUM, fpu_fcw},
      nullptr,
      nullptr,
+     nullptr,
     },
     {DEFINE_FPU_UINT(fsw),
      {LLDB_INVALID_REGNUM, LLDB_INVALID_REGNUM, LLDB_INVALID_REGNUM,
       LLDB_INVALID_REGNUM, fpu_fsw},
+     nullptr,
      nullptr,
      nullptr,
     },
@@ -284,10 +297,12 @@ static RegisterInfo g_register_infos[] = {
       LLDB_INVALID_REGNUM, fpu_ftw},
      nullptr,
      nullptr,
+     nullptr,
     },
     {DEFINE_FPU_UINT(fop),
      {LLDB_INVALID_REGNUM, LLDB_INVALID_REGNUM, LLDB_INVALID_REGNUM,
       LLDB_INVALID_REGNUM, fpu_fop},
+     nullptr,
      nullptr,
      nullptr,
     },
@@ -296,10 +311,12 @@ static RegisterInfo g_register_infos[] = {
       LLDB_INVALID_REGNUM, fpu_ip},
      nullptr,
      nullptr,
+     nullptr,
     },
     {DEFINE_FPU_UINT(cs),
      {LLDB_INVALID_REGNUM, LLDB_INVALID_REGNUM, LLDB_INVALID_REGNUM,
       LLDB_INVALID_REGNUM, fpu_cs},
+     nullptr,
      nullptr,
      nullptr,
     },
@@ -308,10 +325,12 @@ static RegisterInfo g_register_infos[] = {
       LLDB_INVALID_REGNUM, fpu_dp},
      nullptr,
      nullptr,
+     nullptr,
     },
     {DEFINE_FPU_UINT(ds),
      {LLDB_INVALID_REGNUM, LLDB_INVALID_REGNUM, LLDB_INVALID_REGNUM,
       LLDB_INVALID_REGNUM, fpu_ds},
+     nullptr,
      nullptr,
      nullptr,
     },
@@ -320,10 +339,12 @@ static RegisterInfo g_register_infos[] = {
       LLDB_INVALID_REGNUM, fpu_mxcsr},
      nullptr,
      nullptr,
+     nullptr,
     },
     {DEFINE_FPU_UINT(mxcsrmask),
      {LLDB_INVALID_REGNUM, LLDB_INVALID_REGNUM, LLDB_INVALID_REGNUM,
       LLDB_INVALID_REGNUM, fpu_mxcsrmask},
+     nullptr,
      nullptr,
      nullptr,
     },
@@ -349,10 +370,12 @@ static RegisterInfo g_register_infos[] = {
       LLDB_INVALID_REGNUM, exc_trapno},
      nullptr,
      nullptr,
+     nullptr,
     },
     {DEFINE_EXC(err),
      {LLDB_INVALID_REGNUM, LLDB_INVALID_REGNUM, LLDB_INVALID_REGNUM,
       LLDB_INVALID_REGNUM, exc_err},
+     nullptr,
      nullptr,
      nullptr,
     },
@@ -361,9 +384,10 @@ static RegisterInfo g_register_infos[] = {
       LLDB_INVALID_REGNUM, exc_faultvaddr},
      nullptr,
      nullptr,
+     nullptr,
      }};
 
-static size_t k_num_register_infos = llvm::array_lengthof(g_register_infos);
+static size_t k_num_register_infos = std::size(g_register_infos);
 
 RegisterContextDarwin_i386::RegisterContextDarwin_i386(
     Thread &thread, uint32_t concrete_frame_idx)
@@ -421,9 +445,9 @@ static uint32_t g_fpu_regnums[] = {
 static uint32_t g_exc_regnums[] = {exc_trapno, exc_err, exc_faultvaddr};
 
 // Number of registers in each register set
-const size_t k_num_gpr_registers = llvm::array_lengthof(g_gpr_regnums);
-const size_t k_num_fpu_registers = llvm::array_lengthof(g_fpu_regnums);
-const size_t k_num_exc_registers = llvm::array_lengthof(g_exc_regnums);
+const size_t k_num_gpr_registers = std::size(g_gpr_regnums);
+const size_t k_num_fpu_registers = std::size(g_fpu_regnums);
+const size_t k_num_exc_registers = std::size(g_exc_regnums);
 
 // Register set definitions. The first definitions at register set index of
 // zero is for all registers, followed by other registers sets. The register
@@ -435,7 +459,7 @@ static const RegisterSet g_reg_sets[] = {
     {"Floating Point Registers", "fpu", k_num_fpu_registers, g_fpu_regnums},
     {"Exception State Registers", "exc", k_num_exc_registers, g_exc_regnums}};
 
-const size_t k_num_regsets = llvm::array_lengthof(g_reg_sets);
+const size_t k_num_regsets = std::size(g_reg_sets);
 
 size_t RegisterContextDarwin_i386::GetRegisterSetCount() {
   return k_num_regsets;

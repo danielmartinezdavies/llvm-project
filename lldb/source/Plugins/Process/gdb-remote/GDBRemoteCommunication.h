@@ -21,6 +21,7 @@
 #include "lldb/Core/Communication.h"
 #include "lldb/Host/Config.h"
 #include "lldb/Host/HostThread.h"
+#include "lldb/Host/Socket.h"
 #include "lldb/Utility/Args.h"
 #include "lldb/Utility/Listener.h"
 #include "lldb/Utility/Predicate.h"
@@ -82,10 +83,6 @@ class ProcessGDBRemote;
 
 class GDBRemoteCommunication : public Communication {
 public:
-  enum {
-    eBroadcastBitRunPacketSent = kLoUserBroadcastBit,
-  };
-
   enum class PacketType { Invalid = 0, Standard, Notify };
 
   enum class PacketResult {
@@ -120,7 +117,7 @@ public:
     bool m_timeout_modified;
   };
 
-  GDBRemoteCommunication(const char *comm_name, const char *listener_name);
+  GDBRemoteCommunication();
 
   ~GDBRemoteCommunication() override;
 
@@ -150,6 +147,9 @@ public:
 
   std::chrono::seconds GetPacketTimeout() const { return m_packet_timeout; }
 
+  // Get the debugserver path and check that it exist.
+  FileSpec GetDebugserverPath(Platform *platform);
+
   // Start a debugserver instance on the current host using the
   // supplied connection URL.
   Status StartDebugserverProcess(
@@ -157,8 +157,8 @@ public:
       Platform *platform, // If non nullptr, then check with the platform for
                           // the GDB server binary if it can't be located
       ProcessLaunchInfo &launch_info, uint16_t *port, const Args *inferior_args,
-      int pass_comm_fd); // Communication file descriptor to pass during
-                         // fork/exec to avoid having to connect/accept
+      shared_fd_t pass_comm_fd); // Communication file descriptor to pass during
+                                 // fork/exec to avoid having to connect/accept
 
   void DumpHistory(Stream &strm);
 
@@ -180,6 +180,8 @@ protected:
                       // false if this class represents a debug session for
                       // a single process
 
+  std::string m_bytes;
+  std::recursive_mutex m_bytes_mutex;
   CompressionType m_compression_type;
 
   PacketResult SendPacketNoLock(llvm::StringRef payload);
@@ -191,11 +193,6 @@ protected:
 
   PacketResult ReadPacket(StringExtractorGDBRemote &response,
                           Timeout<std::micro> timeout, bool sync_on_timeout);
-
-  PacketResult ReadPacketWithOutputSupport(
-      StringExtractorGDBRemote &response, Timeout<std::micro> timeout,
-      bool sync_on_timeout,
-      llvm::function_ref<void(llvm::StringRef)> output_callback);
 
   PacketResult WaitForPacketNoLock(StringExtractorGDBRemote &response,
                                    Timeout<std::micro> timeout,

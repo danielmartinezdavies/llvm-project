@@ -15,6 +15,8 @@
 #include "llvm/Support/PointerLikeTypeTraits.h"
 
 namespace mlir {
+class AsmState;
+
 /// Instances of the Type class are uniqued, have an immutable identifier and an
 /// optional mutable component.  They wrap a pointer to the storage object owned
 /// by MLIRContext.  Therefore, instances of Type are passed around by value.
@@ -32,7 +34,7 @@ namespace mlir {
 /// Derived type classes are expected to implement several required
 /// implementation hooks:
 ///  * Optional:
-///    - static LogicalResult verify(
+///    - static LogicalResult verifyInvariants(
 ///                                function_ref<InFlightDiagnostic()> emitError,
 ///                                Args... args)
 ///      * This method is invoked when calling the 'TypeBase::get/getChecked'
@@ -81,7 +83,7 @@ public:
 
   using AbstractTy = AbstractType;
 
-  constexpr Type() {}
+  constexpr Type() = default;
   /* implicit */ Type(const ImplType *impl)
       : impl(const_cast<ImplType *>(impl)) {}
 
@@ -95,18 +97,20 @@ public:
   bool operator!() const { return impl == nullptr; }
 
   template <typename... Tys>
+  [[deprecated("Use mlir::isa<U>() instead")]]
   bool isa() const;
   template <typename... Tys>
+  [[deprecated("Use mlir::isa_and_nonnull<U>() instead")]]
   bool isa_and_nonnull() const;
   template <typename U>
+  [[deprecated("Use mlir::dyn_cast<U>() instead")]]
   U dyn_cast() const;
   template <typename U>
+  [[deprecated("Use mlir::dyn_cast_or_null<U>() instead")]]
   U dyn_cast_or_null() const;
   template <typename U>
+  [[deprecated("Use mlir::cast<U>() instead")]]
   U cast() const;
-
-  // Support type casting Type to itself.
-  static bool classof(Type) { return true; }
 
   /// Return a unique identifier for the concrete type. This is used to support
   /// dynamic type casting.
@@ -123,12 +127,14 @@ public:
   bool isIndex() const;
   bool isBF16() const;
   bool isF16() const;
+  bool isTF32() const;
   bool isF32() const;
   bool isF64() const;
   bool isF80() const;
   bool isF128() const;
 
-  /// Return true if this is an integer type with the specified width.
+  /// Return true if this is an integer type (with the specified width).
+  bool isInteger() const;
   bool isInteger(unsigned width) const;
   /// Return true if this is a signless integer type (with the specified width).
   bool isSignlessInteger() const;
@@ -162,6 +168,7 @@ public:
 
   /// Print the current type.
   void print(raw_ostream &os) const;
+  void print(raw_ostream &os, AsmState &state) const;
   void dump() const;
 
   friend ::llvm::hash_code hash_value(Type arg);
@@ -174,6 +181,15 @@ public:
     return Type(reinterpret_cast<ImplType *>(const_cast<void *>(pointer)));
   }
 
+  /// Returns true if `InterfaceT` has been promised by the dialect or
+  /// implemented.
+  template <typename InterfaceT>
+  bool hasPromiseOrImplementsInterface() {
+    return dialect_extension_detail::hasPromisedInterface(
+               getDialect(), getTypeID(), InterfaceT::getInterfaceID()) ||
+           mlir::isa<InterfaceT>(*this);
+  }
+
   /// Returns true if the type was registered with a particular trait.
   template <template <typename T> class Trait>
   bool hasTrait() {
@@ -181,10 +197,51 @@ public:
   }
 
   /// Return the abstract type descriptor for this type.
-  const AbstractTy &getAbstractType() { return impl->getAbstractType(); }
+  const AbstractTy &getAbstractType() const { return impl->getAbstractType(); }
 
   /// Return the Type implementation.
   ImplType *getImpl() const { return impl; }
+
+  /// Walk all of the immediately nested sub-attributes and sub-types. This
+  /// method does not recurse into sub elements.
+  void walkImmediateSubElements(function_ref<void(Attribute)> walkAttrsFn,
+                                function_ref<void(Type)> walkTypesFn) const {
+    getAbstractType().walkImmediateSubElements(*this, walkAttrsFn, walkTypesFn);
+  }
+
+  /// Replace the immediately nested sub-attributes and sub-types with those
+  /// provided. The order of the provided elements is derived from the order of
+  /// the elements returned by the callbacks of `walkImmediateSubElements`. The
+  /// element at index 0 would replace the very first attribute given by
+  /// `walkImmediateSubElements`. On success, the new instance with the values
+  /// replaced is returned. If replacement fails, nullptr is returned.
+  auto replaceImmediateSubElements(ArrayRef<Attribute> replAttrs,
+                                   ArrayRef<Type> replTypes) const {
+    return getAbstractType().replaceImmediateSubElements(*this, replAttrs,
+                                                         replTypes);
+  }
+
+  /// Walk this type and all attibutes/types nested within using the
+  /// provided walk functions. See `AttrTypeWalker` for information on the
+  /// supported walk function types.
+  template <WalkOrder Order = WalkOrder::PostOrder, typename... WalkFns>
+  auto walk(WalkFns &&...walkFns) {
+    AttrTypeWalker walker;
+    (walker.addWalk(std::forward<WalkFns>(walkFns)), ...);
+    return walker.walk<Order>(*this);
+  }
+
+  /// Recursively replace all of the nested sub-attributes and sub-types using
+  /// the provided map functions. Returns nullptr in the case of failure. See
+  /// `AttrTypeReplacer` for information on the support replacement function
+  /// types.
+  template <typename... ReplacementFns>
+  auto replace(ReplacementFns &&...replacementFns) {
+    AttrTypeReplacer replacer;
+    (replacer.addReplacement(std::forward<ReplacementFns>(replacementFns)),
+     ...);
+    return replacer.replace(*this);
+  }
 
 protected:
   ImplType *impl{nullptr};
@@ -220,9 +277,17 @@ public:
       detail::Interface<ConcreteType, Type, Traits, Type, TypeTrait::TraitBase>;
   using InterfaceBase::InterfaceBase;
 
-private:
+protected:
   /// Returns the impl interface instance for the given type.
   static typename InterfaceBase::Concept *getInterfaceFor(Type type) {
+#ifndef NDEBUG
+    // Check that the current interface isn't an unresolved promise for the
+    // given type.
+    dialect_extension_detail::handleUseOfUndefinedPromisedInterface(
+        type.getDialect(), type.getTypeID(), ConcreteType::getInterfaceID(),
+        llvm::getTypeName<ConcreteType>());
+#endif
+
     return type.getAbstractType().getInterface<ConcreteType>();
   }
 
@@ -325,24 +390,27 @@ public:
 /// We provide a cast between To and From if From is mlir::Type or derives from
 /// it
 template <typename To, typename From>
-struct CastInfo<To, From,
-                typename std::enable_if<
-                    std::is_same_v<mlir::Type, std::remove_const_t<From>> ||
-                    std::is_base_of_v<mlir::Type, From>>::type>
+struct CastInfo<
+    To, From,
+    std::enable_if_t<std::is_same_v<mlir::Type, std::remove_const_t<From>> ||
+                     std::is_base_of_v<mlir::Type, From>>>
     : NullableValueCastFailed<To>,
       DefaultDoCastIfPossible<To, From, CastInfo<To, From>> {
-  /// Arguments are taken as mlir::Type here and not as From.
-  /// Because when casting from an intermediate type of the hierarchy to one of
-  /// its children, the val.getTypeID() inside T::classof will use the static
-  /// getTypeID of the parent instead of the non-static Type::getTypeID return
-  /// the dynamic ID. so T::classof would end up comparing the static TypeID of
-  /// The children to the static TypeID of its parent making it impossible to
-  /// downcast from the parent to the child
+  /// Arguments are taken as mlir::Type here and not as `From`, because when
+  /// casting from an intermediate type of the hierarchy to one of its children,
+  /// the val.getTypeID() inside T::classof will use the static getTypeID of the
+  /// parent instead of the non-static Type::getTypeID that returns the dynamic
+  /// ID. This means that T::classof would end up comparing the static TypeID of
+  /// the children to the static TypeID of its parent, making it impossible to
+  /// downcast from the parent to the child.
   static inline bool isPossible(mlir::Type ty) {
     /// Return a constant true instead of a dynamic true when casting to self or
-    /// up the hierarchy
-    return std::is_same_v<To, std::remove_const_t<From>> ||
-           std::is_base_of_v<To, From> || To::classof(ty);
+    /// up the hierarchy.
+    if constexpr (std::is_base_of_v<To, From>) {
+      return true;
+    } else {
+      return To::classof(ty);
+    };
   }
   static inline To doCast(mlir::Type ty) { return To(ty.getImpl()); }
 };

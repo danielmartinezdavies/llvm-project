@@ -5,19 +5,19 @@
 
 ; CHECK-LABEL: @main
 ; CHECK-NOT: MemoryDef
-define void @main() {
+define void @main(i1 %arg) {
 entry:
   br label %for.cond120
 
 for.cond120:                                      ; preds = %for.body127, %entry
-  call void @foo()
-  br i1 undef, label %for.body127, label %for.cond.cleanup126
+  call void @foo(i1 %arg)
+  br i1 %arg, label %for.body127, label %for.cond.cleanup126
 
 for.cond.cleanup126:                              ; preds = %for.cond120
   unreachable
 
 for.body127:                                      ; preds = %for.cond120
-  %0 = load i16**, i16*** undef, align 1
+  %0 = load ptr, ptr undef, align 1
   br label %for.cond120
 }
 

@@ -15,10 +15,8 @@
 #include "MipsRegisterInfo.h"
 #include "MipsSubtarget.h"
 #include "llvm/ADT/APInt.h"
-#include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
-#include "llvm/ADT/Triple.h"
 #include "llvm/CodeGen/CallingConvLower.h"
 #include "llvm/CodeGen/ISDOpcodes.h"
 #include "llvm/CodeGen/MachineBasicBlock.h"
@@ -32,6 +30,7 @@
 #include "llvm/CodeGen/TargetInstrInfo.h"
 #include "llvm/CodeGen/TargetSubtargetInfo.h"
 #include "llvm/CodeGen/ValueTypes.h"
+#include "llvm/CodeGenTypes/MachineValueType.h"
 #include "llvm/IR/DebugLoc.h"
 #include "llvm/IR/Intrinsics.h"
 #include "llvm/IR/IntrinsicsMips.h"
@@ -39,11 +38,11 @@
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
-#include "llvm/Support/MachineValueType.h"
-#include "llvm/Support/MathExtras.h"
 #include "llvm/Support/raw_ostream.h"
+#include "llvm/TargetParser/Triple.h"
 #include <algorithm>
 #include <cassert>
+#include <cstddef>
 #include <cstdint>
 #include <iterator>
 #include <utility>
@@ -60,6 +59,45 @@ static cl::opt<bool> NoDPLoadStore("mno-ldc1-sdc1", cl::init(false),
                                    cl::desc("Expand double precision loads and "
                                             "stores to their single precision "
                                             "counterparts"));
+
+// Widen the v2 vectors to the register width, i.e. v2i16 -> v8i16,
+// v2i32 -> v4i32, etc, to ensure the correct rail size is used, i.e.
+// INST.h for v16, INST.w for v32, INST.d for v64.
+TargetLoweringBase::LegalizeTypeAction
+MipsSETargetLowering::getPreferredVectorAction(MVT VT) const {
+  if (this->Subtarget.hasMSA()) {
+    switch (VT.SimpleTy) {
+    // Leave v2i1 vectors to be promoted to larger ones.
+    // Other i1 types will be promoted by default.
+    case MVT::v2i1:
+      return TypePromoteInteger;
+      break;
+    // 16-bit vector types (v2 and longer)
+    case MVT::v2i8:
+    // 32-bit vector types (v2 and longer)
+    case MVT::v2i16:
+    case MVT::v4i8:
+    // 64-bit vector types (v2 and longer)
+    case MVT::v2i32:
+    case MVT::v4i16:
+    case MVT::v8i8:
+      return TypeWidenVector;
+      break;
+    // Only word (.w) and doubleword (.d) are available for floating point
+    // vectors. That means floating point vectors should be either v2f64
+    // or v4f32.
+    // Here we only explicitly widen the f32 types - f16 will be promoted
+    // by default.
+    case MVT::v2f32:
+    case MVT::v3f32:
+      return TypeWidenVector;
+    // v2i64 is already 128-bit wide.
+    default:
+      break;
+    }
+  }
+  return TargetLoweringBase::getPreferredVectorAction(VT);
+}
 
 MipsSETargetLowering::MipsSETargetLowering(const MipsTargetMachine &TM,
                                            const MipsSubtarget &STI)
@@ -198,8 +236,13 @@ MipsSETargetLowering::MipsSETargetLowering(const MipsTargetMachine &TM,
   setOperationAction(ISD::SDIVREM, MVT::i32, Custom);
   setOperationAction(ISD::UDIVREM, MVT::i32, Custom);
   setOperationAction(ISD::ATOMIC_FENCE,       MVT::Other, Custom);
-  setOperationAction(ISD::LOAD,               MVT::i32, Custom);
-  setOperationAction(ISD::STORE,              MVT::i32, Custom);
+  if (Subtarget.hasMips32r6()) {
+    setOperationAction(ISD::LOAD,               MVT::i32, Legal);
+    setOperationAction(ISD::STORE,              MVT::i32, Legal);
+  } else {
+    setOperationAction(ISD::LOAD,               MVT::i32, Custom);
+    setOperationAction(ISD::STORE,              MVT::i32, Custom);
+  }
 
   setTargetDAGCombine(ISD::MUL);
 
@@ -415,7 +458,7 @@ SDValue MipsSETargetLowering::lowerSELECT(SDValue Op, SelectionDAG &DAG) const {
 }
 
 bool MipsSETargetLowering::allowsMisalignedMemoryAccesses(
-    EVT VT, unsigned, Align, MachineMemOperand::Flags, bool *Fast) const {
+    EVT VT, unsigned, Align, MachineMemOperand::Flags, unsigned *Fast) const {
   MVT::SimpleValueType SVT = VT.getSimpleVT().SimpleTy;
 
   if (Subtarget.systemSupportsUnalignedAccess()) {
@@ -424,15 +467,17 @@ bool MipsSETargetLowering::allowsMisalignedMemoryAccesses(
     // a hybrid of the two but it's expected that most implementations will
     // handle the majority of cases in hardware.
     if (Fast)
-      *Fast = true;
+      *Fast = 1;
     return true;
+  } else if (Subtarget.hasMips32r6()) {
+    return false;
   }
 
   switch (SVT) {
   case MVT::i64:
   case MVT::i32:
     if (Fast)
-      *Fast = true;
+      *Fast = 1;
     return true;
   default:
     return false;
@@ -508,7 +553,7 @@ static SDValue performANDCombine(SDNode *N, SelectionDAG &DAG,
       SDValue Ops[] = { Op0->getOperand(0), Op0->getOperand(1), Op0Op2 };
       return DAG.getNode(MipsISD::VEXTRACT_ZEXT_ELT, SDLoc(Op0),
                          Op0->getVTList(),
-                         makeArrayRef(Ops, Op0->getNumOperands()));
+                         ArrayRef(Ops, Op0->getNumOperands()));
     }
   }
 
@@ -917,7 +962,7 @@ static SDValue performSRACombine(SDNode *N, SelectionDAG &DAG,
                           Op0Op0->getOperand(2) };
         return DAG.getNode(MipsISD::VEXTRACT_SEXT_ELT, SDLoc(Op0Op0),
                            Op0Op0->getVTList(),
-                           makeArrayRef(Ops, Op0Op0->getNumOperands()));
+                           ArrayRef(Ops, Op0Op0->getNumOperands()));
       }
     }
   }
@@ -1230,15 +1275,19 @@ SDValue MipsSETargetLowering::lowerBITCAST(SDValue Op,
 
   // Bitcast i64 to double.
   if (Src == MVT::i64 && Dest == MVT::f64) {
-    SDValue Lo = DAG.getNode(ISD::EXTRACT_ELEMENT, DL, MVT::i32,
-                             Op.getOperand(0), DAG.getIntPtrConstant(0, DL));
-    SDValue Hi = DAG.getNode(ISD::EXTRACT_ELEMENT, DL, MVT::i32,
-                             Op.getOperand(0), DAG.getIntPtrConstant(1, DL));
+    SDValue Lo, Hi;
+    std::tie(Lo, Hi) =
+        DAG.SplitScalar(Op.getOperand(0), DL, MVT::i32, MVT::i32);
     return DAG.getNode(MipsISD::BuildPairF64, DL, MVT::f64, Lo, Hi);
   }
 
   // Bitcast double to i64.
   if (Src == MVT::f64 && Dest == MVT::i64) {
+    // Skip lower bitcast when operand0 has converted float results to integer
+    // which was done by function SoftenFloatResult.
+    if (getTypeAction(*DAG.getContext(), Op.getOperand(0).getValueType()) ==
+        TargetLowering::TypeSoftenFloat)
+      return SDValue();
     SDValue Lo =
         DAG.getNode(MipsISD::ExtractElementF64, DL, MVT::i32, Op.getOperand(0),
                     DAG.getConstant(0, DL, MVT::i32));
@@ -1277,10 +1326,8 @@ SDValue MipsSETargetLowering::lowerMulDiv(SDValue Op, unsigned NewOpc,
 }
 
 static SDValue initAccumulator(SDValue In, const SDLoc &DL, SelectionDAG &DAG) {
-  SDValue InLo = DAG.getNode(ISD::EXTRACT_ELEMENT, DL, MVT::i32, In,
-                             DAG.getConstant(0, DL, MVT::i32));
-  SDValue InHi = DAG.getNode(ISD::EXTRACT_ELEMENT, DL, MVT::i32, In,
-                             DAG.getConstant(1, DL, MVT::i32));
+  SDValue InLo, InHi;
+  std::tie(InLo, InHi) = DAG.SplitScalar(In, DL, MVT::i32, MVT::i32);
   return DAG.getNode(MipsISD::MTLOHI, DL, MVT::Untyped, InLo, InHi);
 }
 
@@ -1396,7 +1443,7 @@ static SDValue lowerMSASplatZExt(SDValue Op, unsigned OpNr, SelectionDAG &DAG) {
                       LaneA, LaneB, LaneA, LaneB, LaneA, LaneB, LaneA, LaneB };
 
   SDValue Result = DAG.getBuildVector(
-      ViaVecTy, DL, makeArrayRef(Ops, ViaVecTy.getVectorNumElements()));
+      ViaVecTy, DL, ArrayRef(Ops, ViaVecTy.getVectorNumElements()));
 
   if (ViaVecTy != ResVecTy) {
     SDValue One = DAG.getConstant(1, DL, ViaVecTy);
@@ -1444,7 +1491,7 @@ static SDValue getBuildVectorSplat(EVT VecTy, SDValue SplatValue,
                       SplatValueA, SplatValueB, SplatValueA, SplatValueB };
 
   SDValue Result = DAG.getBuildVector(
-      ViaVecTy, DL, makeArrayRef(Ops, ViaVecTy.getVectorNumElements()));
+      ViaVecTy, DL, ArrayRef(Ops, ViaVecTy.getVectorNumElements()));
 
   if (VecTy != ViaVecTy)
     Result = DAG.getNode(ISD::BITCAST, DL, VecTy, Result);
@@ -1523,7 +1570,7 @@ static SDValue lowerMSABitClearImm(SDValue Op, SelectionDAG &DAG) {
   SDLoc DL(Op);
   EVT ResTy = Op->getValueType(0);
   APInt BitImm = APInt(ResTy.getScalarSizeInBits(), 1)
-                 << cast<ConstantSDNode>(Op->getOperand(2))->getAPIntValue();
+                 << Op->getConstantOperandAPInt(2);
   SDValue BitMask = DAG.getConstant(~BitImm, DL, ResTy);
 
   return DAG.getNode(ISD::AND, DL, ResTy, Op->getOperand(1), BitMask);
@@ -1532,7 +1579,7 @@ static SDValue lowerMSABitClearImm(SDValue Op, SelectionDAG &DAG) {
 SDValue MipsSETargetLowering::lowerINTRINSIC_WO_CHAIN(SDValue Op,
                                                       SelectionDAG &DAG) const {
   SDLoc DL(Op);
-  unsigned Intrinsic = cast<ConstantSDNode>(Op->getOperand(0))->getZExtValue();
+  unsigned Intrinsic = Op->getConstantOperandVal(0);
   switch (Intrinsic) {
   default:
     return SDValue();
@@ -2304,7 +2351,7 @@ static SDValue lowerMSALoadIntr(SDValue Op, SelectionDAG &DAG, unsigned Intr,
 
 SDValue MipsSETargetLowering::lowerINTRINSIC_W_CHAIN(SDValue Op,
                                                      SelectionDAG &DAG) const {
-  unsigned Intr = cast<ConstantSDNode>(Op->getOperand(1))->getZExtValue();
+  unsigned Intr = Op->getConstantOperandVal(1);
   switch (Intr) {
   default:
     return SDValue();
@@ -2379,7 +2426,7 @@ static SDValue lowerMSAStoreIntr(SDValue Op, SelectionDAG &DAG, unsigned Intr,
 
 SDValue MipsSETargetLowering::lowerINTRINSIC_VOID(SDValue Op,
                                                   SelectionDAG &DAG) const {
-  unsigned Intr = cast<ConstantSDNode>(Op->getOperand(1))->getZExtValue();
+  unsigned Intr = Op->getConstantOperandVal(1);
   switch (Intr) {
   default:
     return SDValue();
@@ -2729,7 +2776,7 @@ static SDValue lowerVECTOR_SHUFFLE_ILVOD(SDValue Op, EVT ResTy,
   else
     return SDValue();
 
-  return DAG.getNode(MipsISD::ILVOD, SDLoc(Op), ResTy, Wt, Ws);
+  return DAG.getNode(MipsISD::ILVOD, SDLoc(Op), ResTy, Ws, Wt);
 }
 
 // Lower VECTOR_SHUFFLE into ILVR (if possible).
@@ -2922,8 +2969,14 @@ static SDValue lowerVECTOR_SHUFFLE_PCKOD(SDValue Op, EVT ResTy,
 // if the type is v8i16 and all the indices are less than 8 then the second
 // operand is unused and can be replaced with anything. We choose to replace it
 // with the used operand since this reduces the number of instructions overall.
+//
+// NOTE: SPLATI shuffle masks may contain UNDEFs, since isSPLATI() treats
+//       UNDEFs as same as SPLATI index.
+//       For other instances we use the last valid index if UNDEF is
+//       encountered.
 static SDValue lowerVECTOR_SHUFFLE_VSHF(SDValue Op, EVT ResTy,
                                         const SmallVector<int, 16> &Indices,
+                                        const bool isSPLATI,
                                         SelectionDAG &DAG) {
   SmallVector<SDValue, 16> Ops;
   SDValue Op0;
@@ -2935,6 +2988,9 @@ static SDValue lowerVECTOR_SHUFFLE_VSHF(SDValue Op, EVT ResTy,
   SDLoc DL(Op);
   int ResTyNumElts = ResTy.getVectorNumElements();
 
+  assert(Indices[0] >= 0 &&
+         "shuffle mask starts with an UNDEF, which is not expected");
+
   for (int i = 0; i < ResTyNumElts; ++i) {
     // Idx == -1 means UNDEF
     int Idx = Indices[i];
@@ -2944,9 +3000,17 @@ static SDValue lowerVECTOR_SHUFFLE_VSHF(SDValue Op, EVT ResTy,
     if (ResTyNumElts <= Idx && Idx < ResTyNumElts * 2)
       Using2ndVec = true;
   }
-
-  for (int Idx : Indices)
+  int LastValidIndex = 0;
+  for (size_t i = 0; i < Indices.size(); i++) {
+    int Idx = Indices[i];
+    if (Idx < 0) {
+      // Continue using splati index or use the last valid index.
+      Idx = isSPLATI ? Indices[0] : LastValidIndex;
+    } else {
+      LastValidIndex = Idx;
+    }
     Ops.push_back(DAG.getTargetConstant(Idx, DL, MaskEltTy));
+  }
 
   SDValue MaskVec = DAG.getBuildVector(MaskVecTy, DL, Ops);
 
@@ -2989,7 +3053,7 @@ SDValue MipsSETargetLowering::lowerVECTOR_SHUFFLE(SDValue Op,
   // splati.[bhwd] is preferable to the others but is matched from
   // MipsISD::VSHF.
   if (isVECTOR_SHUFFLE_SPLATI(Op, ResTy, Indices, DAG))
-    return lowerVECTOR_SHUFFLE_VSHF(Op, ResTy, Indices, DAG);
+    return lowerVECTOR_SHUFFLE_VSHF(Op, ResTy, Indices, true, DAG);
   SDValue Result;
   if ((Result = lowerVECTOR_SHUFFLE_ILVEV(Op, ResTy, Indices, DAG)))
     return Result;
@@ -3005,7 +3069,7 @@ SDValue MipsSETargetLowering::lowerVECTOR_SHUFFLE(SDValue Op,
     return Result;
   if ((Result = lowerVECTOR_SHUFFLE_SHF(Op, ResTy, Indices, DAG)))
     return Result;
-  return lowerVECTOR_SHUFFLE_VSHF(Op, ResTy, Indices, DAG);
+  return lowerVECTOR_SHUFFLE_VSHF(Op, ResTy, Indices, false, DAG);
 }
 
 MachineBasicBlock *

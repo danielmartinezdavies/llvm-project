@@ -15,7 +15,6 @@
 
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
-#include "llvm/ADT/Triple.h"
 #include "llvm/CodeGen/MachineBasicBlock.h"
 #include "llvm/CodeGen/MachineDominators.h"
 #include "llvm/CodeGen/MachineFunction.h"
@@ -25,10 +24,12 @@
 #include "llvm/CodeGen/TargetInstrInfo.h"
 #include "llvm/CodeGen/TargetSubtargetInfo.h"
 #include "llvm/IR/Attributes.h"
+#include "llvm/IR/DiagnosticInfo.h"
 #include "llvm/IR/Function.h"
 #include "llvm/InitializePasses.h"
 #include "llvm/Pass.h"
 #include "llvm/Target/TargetMachine.h"
+#include "llvm/TargetParser/Triple.h"
 
 using namespace llvm;
 
@@ -52,8 +53,8 @@ struct XRayInstrumentation : public MachineFunctionPass {
 
   void getAnalysisUsage(AnalysisUsage &AU) const override {
     AU.setPreservesCFG();
-    AU.addPreserved<MachineLoopInfo>();
-    AU.addPreserved<MachineDominatorTree>();
+    AU.addPreserved<MachineLoopInfoWrapperPass>();
+    AU.addPreserved<MachineDominatorTreeWrapperPass>();
     MachineFunctionPass::getAnalysisUsage(AU);
   }
 
@@ -111,8 +112,8 @@ void XRayInstrumentation::replaceRetWithPatchableRet(
         for (auto &MO : T.operands())
           MIB.add(MO);
         Terminators.push_back(&T);
-        if (T.shouldUpdateCallSiteInfo())
-          MF.eraseCallSiteInfo(&T);
+        if (T.shouldUpdateAdditionalCallInfo())
+          MF.eraseAdditionalCallInfo(&T);
       }
     }
   }
@@ -151,19 +152,18 @@ bool XRayInstrumentation::runOnMachineFunction(MachineFunction &MF) {
                          InstrAttr.getValueAsString() == "xray-never";
   if (NeverInstrument && !AlwaysInstrument)
     return false;
-  auto ThresholdAttr = F.getFnAttribute("xray-instruction-threshold");
   auto IgnoreLoopsAttr = F.getFnAttribute("xray-ignore-loops");
-  unsigned int XRayThreshold = 0;
-  if (!AlwaysInstrument) {
-    if (!ThresholdAttr.isStringAttribute())
-      return false; // XRay threshold attribute not found.
-    if (ThresholdAttr.getValueAsString().getAsInteger(10, XRayThreshold))
-      return false; // Invalid value for threshold.
 
+  uint64_t XRayThreshold = 0;
+  if (!AlwaysInstrument) {
     bool IgnoreLoops = IgnoreLoopsAttr.isValid();
+    XRayThreshold = F.getFnAttributeAsParsedInteger(
+        "xray-instruction-threshold", std::numeric_limits<uint64_t>::max());
+    if (XRayThreshold == std::numeric_limits<uint64_t>::max())
+      return false;
 
     // Count the number of MachineInstr`s in MachineFunction
-    int64_t MICount = 0;
+    uint64_t MICount = 0;
     for (const auto &MBB : MF)
       MICount += MBB.size();
 
@@ -171,18 +171,21 @@ bool XRayInstrumentation::runOnMachineFunction(MachineFunction &MF) {
 
     if (!IgnoreLoops) {
       // Get MachineDominatorTree or compute it on the fly if it's unavailable
-      auto *MDT = getAnalysisIfAvailable<MachineDominatorTree>();
+      auto *MDTWrapper =
+          getAnalysisIfAvailable<MachineDominatorTreeWrapperPass>();
+      auto *MDT = MDTWrapper ? &MDTWrapper->getDomTree() : nullptr;
       MachineDominatorTree ComputedMDT;
       if (!MDT) {
-        ComputedMDT.getBase().recalculate(MF);
+        ComputedMDT.recalculate(MF);
         MDT = &ComputedMDT;
       }
 
       // Get MachineLoopInfo or compute it on the fly if it's unavailable
-      auto *MLI = getAnalysisIfAvailable<MachineLoopInfo>();
+      auto *MLIWrapper = getAnalysisIfAvailable<MachineLoopInfoWrapperPass>();
+      auto *MLI = MLIWrapper ? &MLIWrapper->getLI() : nullptr;
       MachineLoopInfo ComputedMLI;
       if (!MLI) {
-        ComputedMLI.getBase().analyze(MDT->getBase());
+        ComputedMLI.analyze(*MDT);
         MLI = &ComputedMLI;
       }
 
@@ -209,8 +212,12 @@ bool XRayInstrumentation::runOnMachineFunction(MachineFunction &MF) {
   auto &FirstMI = *FirstMBB.begin();
 
   if (!MF.getSubtarget().isXRaySupported()) {
-    FirstMI.emitError("An attempt to perform XRay instrumentation for an"
-                      " unsupported target.");
+
+    const Function &Fn = FirstMBB.getParent()->getFunction();
+    Fn.getContext().diagnose(DiagnosticInfoUnsupported(
+        Fn, "An attempt to perform XRay instrumentation for an"
+            " unsupported target."));
+
     return false;
   }
 
@@ -227,18 +234,23 @@ bool XRayInstrumentation::runOnMachineFunction(MachineFunction &MF) {
     case Triple::ArchType::thumb:
     case Triple::ArchType::aarch64:
     case Triple::ArchType::hexagon:
+    case Triple::ArchType::loongarch64:
     case Triple::ArchType::mips:
     case Triple::ArchType::mipsel:
     case Triple::ArchType::mips64:
-    case Triple::ArchType::mips64el: {
+    case Triple::ArchType::mips64el:
+    case Triple::ArchType::riscv32:
+    case Triple::ArchType::riscv64: {
       // For the architectures which don't have a single return instruction
       InstrumentationOptions op;
-      op.HandleTailcall = false;
+      // RISC-V supports patching tail calls.
+      op.HandleTailcall = MF.getTarget().getTargetTriple().isRISCV();
       op.HandleAllReturns = true;
       prependRetWithPatchableExit(MF, TII, op);
       break;
     }
-    case Triple::ArchType::ppc64le: {
+    case Triple::ArchType::ppc64le:
+    case Triple::ArchType::systemz: {
       // PPC has conditional returns. Turn them into branch and plain returns.
       InstrumentationOptions op;
       op.HandleTailcall = false;
@@ -264,6 +276,6 @@ char XRayInstrumentation::ID = 0;
 char &llvm::XRayInstrumentationID = XRayInstrumentation::ID;
 INITIALIZE_PASS_BEGIN(XRayInstrumentation, "xray-instrumentation",
                       "Insert XRay ops", false, false)
-INITIALIZE_PASS_DEPENDENCY(MachineLoopInfo)
+INITIALIZE_PASS_DEPENDENCY(MachineLoopInfoWrapperPass)
 INITIALIZE_PASS_END(XRayInstrumentation, "xray-instrumentation",
                     "Insert XRay ops", false, false)

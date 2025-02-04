@@ -4,18 +4,16 @@ add_llvm_library(LLVMBOLTPasses
   AllocCombiner.cpp
   AsmDump.cpp
   BinaryPasses.cpp
-  BinaryFunctionCallGraph.cpp
   CMOVConversion.cpp
   CacheMetrics.cpp
-  CallGraph.cpp
-  CallGraphWalker.cpp
   DataflowAnalysis.cpp
   DataflowInfoManager.cpp
-  ExtTSPReorderAlgorithm.cpp
   FrameAnalysis.cpp
   FrameOptimizer.cpp
+  FixRelaxationPass.cpp
+  FixRISCVCallsPass.cpp
   HFSort.cpp
-  HFSortPlus.cpp
+  Hugify.cpp
   IdenticalCodeFolding.cpp
   IndirectCallPromotion.cpp
   Inliner.cpp
@@ -28,6 +26,7 @@ add_llvm_library(LLVMBOLTPasses
   PatchEntries.cpp
   PettisAndHansen.cpp
   PLTCall.cpp
+  ContinuityStats.cpp
   RegAnalysis.cpp
   RegReAssign.cpp
   ReorderAlgorithm.cpp
@@ -43,8 +42,12 @@ add_llvm_library(LLVMBOLTPasses
   TailDuplication.cpp
   ThreeWayBranch.cpp
   ValidateInternalCalls.cpp
+  ValidateMemRefs.cpp
   VeneerElimination.cpp
   RetpolineInsertion.cpp
+
+  NO_EXPORT
+  DISABLE_LLVM_LINK_LLVM_DYLIB
 
   LINK_LIBS
   ${LLVM_PTHREAD_LIB}
@@ -53,6 +56,8 @@ add_llvm_library(LLVMBOLTPasses
   AsmPrinter
   MC
   Support
+  TargetParser
+  TransformUtils
   )
 
 target_link_libraries(LLVMBOLTPasses

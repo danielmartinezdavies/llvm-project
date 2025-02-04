@@ -14,13 +14,10 @@
 
 #include "MCTargetDesc/PPCPredicates.h"
 #include "PPC.h"
-#include "PPCCCState.h"
 #include "PPCCallingConv.h"
 #include "PPCISelLowering.h"
 #include "PPCMachineFunctionInfo.h"
 #include "PPCSubtarget.h"
-#include "PPCTargetMachine.h"
-#include "llvm/ADT/Optional.h"
 #include "llvm/CodeGen/CallingConvLower.h"
 #include "llvm/CodeGen/FastISel.h"
 #include "llvm/CodeGen/FunctionLoweringInfo.h"
@@ -31,11 +28,8 @@
 #include "llvm/CodeGen/TargetLowering.h"
 #include "llvm/IR/CallingConv.h"
 #include "llvm/IR/GetElementPtrTypeIterator.h"
-#include "llvm/IR/GlobalAlias.h"
 #include "llvm/IR/GlobalVariable.h"
-#include "llvm/IR/IntrinsicInst.h"
 #include "llvm/IR/Operator.h"
-#include "llvm/Support/Debug.h"
 #include "llvm/Target/TargetMachine.h"
 
 //===----------------------------------------------------------------------===//
@@ -151,7 +145,7 @@ class PPCFastISel final : public FastISel {
                                unsigned SrcReg, unsigned Flag = 0,
                                unsigned SubReg = 0) {
       Register TmpReg = createResultReg(ToRC);
-      BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DbgLoc,
+      BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, MIMD,
               TII.get(TargetOpcode::COPY), TmpReg).addReg(SrcReg, Flag, SubReg);
       return TmpReg;
     }
@@ -198,8 +192,8 @@ class PPCFastISel final : public FastISel {
 
 } // end anonymous namespace
 
-static Optional<PPC::Predicate> getComparePred(CmpInst::Predicate Pred) {
-  switch (Pred) {
+static std::optional<PPC::Predicate> getComparePred(CmpInst::Predicate Pred) {
+    switch (Pred) {
     // These are not representable with any single compare.
     case CmpInst::FCMP_FALSE:
     case CmpInst::FCMP_TRUE:
@@ -226,7 +220,7 @@ static Optional<PPC::Predicate> getComparePred(CmpInst::Predicate Pred) {
     case CmpInst::FCMP_OLE:
     case CmpInst::FCMP_ONE:
     default:
-      return Optional<PPC::Predicate>();
+      return std::nullopt;
 
     case CmpInst::FCMP_OEQ:
     case CmpInst::ICMP_EQ:
@@ -298,7 +292,7 @@ bool PPCFastISel::isValueAvailable(const Value *V) const {
     return true;
 
   const auto *I = cast<Instruction>(V);
-  return FuncInfo.MBBMap[I->getParent()] == FuncInfo.MBB;
+  return FuncInfo.getMBB(I->getParent()) == FuncInfo.MBB;
 }
 
 // Given a value Obj, create an Address object Addr that represents its
@@ -310,7 +304,7 @@ bool PPCFastISel::PPCComputeAddress(const Value *Obj, Address &Addr) {
     // Don't walk into other basic blocks unless the object is an alloca from
     // another block, otherwise it may not have a virtual register assigned.
     if (FuncInfo.StaticAllocaMap.count(static_cast<const AllocaInst *>(Obj)) ||
-        FuncInfo.MBBMap[I->getParent()] == FuncInfo.MBB) {
+        FuncInfo.getMBB(I->getParent()) == FuncInfo.MBB) {
       Opcode = I->getOpcode();
       U = I;
     }
@@ -351,7 +345,7 @@ bool PPCFastISel::PPCComputeAddress(const Value *Obj, Address &Addr) {
           unsigned Idx = cast<ConstantInt>(Op)->getZExtValue();
           TmpOffset += SL->getElementOffset(Idx);
         } else {
-          uint64_t S = DL.getTypeAllocSize(GTI.getIndexedType());
+          uint64_t S = GTI.getSequentialElementStride(DL);
           for (;;) {
             if (const ConstantInt *CI = dyn_cast<ConstantInt>(Op)) {
               // Constant-offset addressing.
@@ -429,7 +423,7 @@ void PPCFastISel::PPCSimplifyAddress(Address &Addr, bool &UseOffset,
   // register and continue. This should almost never happen.
   if (!UseOffset && Addr.BaseType == Address::FrameIndexBase) {
     Register ResultReg = createResultReg(&PPC::G8RC_and_G8RC_NOX0RegClass);
-    BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DbgLoc, TII.get(PPC::ADDI8),
+    BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, MIMD, TII.get(PPC::ADDI8),
             ResultReg).addFrameIndex(Addr.Base.FI).addImm(0);
     Addr.Base.Reg = ResultReg;
     Addr.BaseType = Address::RegBase;
@@ -533,7 +527,7 @@ bool PPCFastISel::PPCEmitLoad(MVT VT, Register &ResultReg, Address &Addr,
         MachineMemOperand::MOLoad, MFI.getObjectSize(Addr.Base.FI),
         MFI.getObjectAlign(Addr.Base.FI));
 
-    BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DbgLoc, TII.get(Opc), ResultReg)
+    BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, MIMD, TII.get(Opc), ResultReg)
       .addImm(Addr.Offset).addFrameIndex(Addr.Base.FI).addMemOperand(MMO);
 
   // Base reg with offset in range.
@@ -541,7 +535,7 @@ bool PPCFastISel::PPCEmitLoad(MVT VT, Register &ResultReg, Address &Addr,
     // VSX only provides an indexed load.
     if (Is32VSXLoad || Is64VSXLoad) return false;
 
-    BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DbgLoc, TII.get(Opc), ResultReg)
+    BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, MIMD, TII.get(Opc), ResultReg)
       .addImm(Addr.Offset).addReg(Addr.Base.Reg);
 
   // Indexed form.
@@ -568,7 +562,7 @@ bool PPCFastISel::PPCEmitLoad(MVT VT, Register &ResultReg, Address &Addr,
       case PPC::SPELWZ: Opc = PPC::SPELWZX;    break;
     }
 
-    auto MIB = BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DbgLoc, TII.get(Opc),
+    auto MIB = BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, MIMD, TII.get(Opc),
                        ResultReg);
 
     // If we have an index register defined we use it in the store inst,
@@ -679,7 +673,7 @@ bool PPCFastISel::PPCEmitStore(MVT VT, unsigned SrcReg, Address &Addr) {
         MachineMemOperand::MOStore, MFI.getObjectSize(Addr.Base.FI),
         MFI.getObjectAlign(Addr.Base.FI));
 
-    BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DbgLoc, TII.get(Opc))
+    BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, MIMD, TII.get(Opc))
         .addReg(SrcReg)
         .addImm(Addr.Offset)
         .addFrameIndex(Addr.Base.FI)
@@ -691,7 +685,7 @@ bool PPCFastISel::PPCEmitStore(MVT VT, unsigned SrcReg, Address &Addr) {
     if (Is32VSXStore || Is64VSXStore)
       return false;
 
-    BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DbgLoc, TII.get(Opc))
+    BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, MIMD, TII.get(Opc))
       .addReg(SrcReg).addImm(Addr.Offset).addReg(Addr.Base.Reg);
 
   // Indexed form.
@@ -714,7 +708,7 @@ bool PPCFastISel::PPCEmitStore(MVT VT, unsigned SrcReg, Address &Addr) {
       case PPC::SPESTW: Opc = PPC::SPESTWX; break;
     }
 
-    auto MIB = BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DbgLoc, TII.get(Opc))
+    auto MIB = BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, MIMD, TII.get(Opc))
         .addReg(SrcReg);
 
     // If we have an index register defined we use it in the store inst,
@@ -764,13 +758,14 @@ bool PPCFastISel::SelectStore(const Instruction *I) {
 bool PPCFastISel::SelectBranch(const Instruction *I) {
   const BranchInst *BI = cast<BranchInst>(I);
   MachineBasicBlock *BrBB = FuncInfo.MBB;
-  MachineBasicBlock *TBB = FuncInfo.MBBMap[BI->getSuccessor(0)];
-  MachineBasicBlock *FBB = FuncInfo.MBBMap[BI->getSuccessor(1)];
+  MachineBasicBlock *TBB = FuncInfo.getMBB(BI->getSuccessor(0));
+  MachineBasicBlock *FBB = FuncInfo.getMBB(BI->getSuccessor(1));
 
   // For now, just try the simplest case where it's fed by a compare.
   if (const CmpInst *CI = dyn_cast<CmpInst>(BI->getCondition())) {
     if (isValueAvailable(CI)) {
-      Optional<PPC::Predicate> OptPPCPred = getComparePred(CI->getPredicate());
+      std::optional<PPC::Predicate> OptPPCPred =
+          getComparePred(CI->getPredicate());
       if (!OptPPCPred)
         return false;
 
@@ -788,7 +783,7 @@ bool PPCFastISel::SelectBranch(const Instruction *I) {
                       CondReg, PPCPred))
         return false;
 
-      BuildMI(*BrBB, FuncInfo.InsertPt, DbgLoc, TII.get(PPC::BCC))
+      BuildMI(*BrBB, FuncInfo.InsertPt, MIMD, TII.get(PPC::BCC))
           .addImm(Subtarget->hasSPE() ? PPC::PRED_SPE : PPCPred)
           .addReg(CondReg)
           .addMBB(TBB);
@@ -799,7 +794,7 @@ bool PPCFastISel::SelectBranch(const Instruction *I) {
              dyn_cast<ConstantInt>(BI->getCondition())) {
     uint64_t Imm = CI->getZExtValue();
     MachineBasicBlock *Target = (Imm == 0) ? FBB : TBB;
-    fastEmitBranch(Target, DbgLoc);
+    fastEmitBranch(Target, MIMD.getDL());
     return true;
   }
 
@@ -942,10 +937,10 @@ bool PPCFastISel::PPCEmitCmp(const Value *SrcValue1, const Value *SrcValue2,
   }
 
   if (!UseImm)
-    BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DbgLoc, TII.get(CmpOpc), DestReg)
+    BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, MIMD, TII.get(CmpOpc), DestReg)
       .addReg(SrcReg1).addReg(SrcReg2);
   else
-    BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DbgLoc, TII.get(CmpOpc), DestReg)
+    BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, MIMD, TII.get(CmpOpc), DestReg)
       .addReg(SrcReg1).addImm(Imm);
 
   return true;
@@ -987,18 +982,18 @@ bool PPCFastISel::SelectFPTrunc(const Instruction *I) {
   auto RC = MRI.getRegClass(SrcReg);
   if (Subtarget->hasSPE()) {
     DestReg = createResultReg(&PPC::GPRCRegClass);
-    BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DbgLoc, TII.get(PPC::EFSCFD),
+    BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, MIMD, TII.get(PPC::EFSCFD),
             DestReg)
         .addReg(SrcReg);
   } else if (Subtarget->hasP8Vector() && isVSFRCRegClass(RC)) {
     DestReg = createResultReg(&PPC::VSSRCRegClass);
-    BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DbgLoc, TII.get(PPC::XSRSP),
+    BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, MIMD, TII.get(PPC::XSRSP),
             DestReg)
         .addReg(SrcReg);
   } else {
     SrcReg = copyRegToRegClass(&PPC::F8RCRegClass, SrcReg);
     DestReg = createResultReg(&PPC::F4RCRegClass);
-    BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DbgLoc,
+    BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, MIMD,
       TII.get(PPC::FRSP), DestReg)
       .addReg(SrcReg);
   }
@@ -1093,7 +1088,7 @@ bool PPCFastISel::SelectIToFP(const Instruction *I, bool IsSigned) {
 
     Register DestReg = createResultReg(&PPC::SPERCRegClass);
     // Generate the convert.
-    BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DbgLoc, TII.get(Opc), DestReg)
+    BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, MIMD, TII.get(Opc), DestReg)
       .addReg(SrcReg);
     updateValueMap(I, DestReg);
     return true;
@@ -1137,7 +1132,7 @@ bool PPCFastISel::SelectIToFP(const Instruction *I, bool IsSigned) {
     Opc = IsSigned ? PPC::FCFID : PPC::FCFIDU;
 
   // Generate the convert.
-  BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DbgLoc, TII.get(Opc), DestReg)
+  BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, MIMD, TII.get(Opc), DestReg)
     .addReg(FPReg);
 
   updateValueMap(I, DestReg);
@@ -1248,7 +1243,7 @@ bool PPCFastISel::SelectFPToI(const Instruction *I, bool IsSigned) {
   }
 
   // Generate the convert.
-  BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DbgLoc, TII.get(Opc), DestReg)
+  BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, MIMD, TII.get(Opc), DestReg)
     .addReg(SrcReg);
 
   // Now move the integer value from a float register to an integer register.
@@ -1344,7 +1339,7 @@ bool PPCFastISel::SelectBinaryIntOp(const Instruction *I, unsigned ISDOpcode) {
       }
 
       if (UseImm) {
-        BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DbgLoc, TII.get(Opc),
+        BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, MIMD, TII.get(Opc),
                 ResultReg)
             .addReg(SrcReg1)
             .addImm(Imm);
@@ -1362,7 +1357,7 @@ bool PPCFastISel::SelectBinaryIntOp(const Instruction *I, unsigned ISDOpcode) {
   if (ISDOpcode == ISD::SUB)
     std::swap(SrcReg1, SrcReg2);
 
-  BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DbgLoc, TII.get(Opc), ResultReg)
+  BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, MIMD, TII.get(Opc), ResultReg)
     .addReg(SrcReg1).addReg(SrcReg2);
   updateValueMap(I, ResultReg);
   return true;
@@ -1388,8 +1383,7 @@ bool PPCFastISel::processCallArgs(SmallVectorImpl<Value*> &Args,
   CCInfo.AnalyzeCallOperands(ArgVTs, ArgFlags, CC_PPC64_ELF_FIS);
 
   // Bail out if we can't handle any of the arguments.
-  for (unsigned I = 0, E = ArgLocs.size(); I != E; ++I) {
-    CCValAssign &VA = ArgLocs[I];
+  for (const CCValAssign &VA : ArgLocs) {
     MVT ArgVT = ArgVTs[VA.getValNo()];
 
     // Skip vector arguments for now, as well as long double and
@@ -1404,7 +1398,7 @@ bool PPCFastISel::processCallArgs(SmallVectorImpl<Value*> &Args,
   }
 
   // Get a count of how many bytes are to be pushed onto the stack.
-  NumBytes = CCInfo.getNextStackOffset();
+  NumBytes = CCInfo.getStackSize();
 
   // The prolog code of the callee may store up to 8 GPR argument registers to
   // the stack, allowing va_start to index over them in memory if its varargs.
@@ -1415,7 +1409,7 @@ bool PPCFastISel::processCallArgs(SmallVectorImpl<Value*> &Args,
   NumBytes = std::max(NumBytes, LinkageSize + 64);
 
   // Issue CALLSEQ_START.
-  BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DbgLoc,
+  BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, MIMD,
           TII.get(TII.getCallFrameSetupOpcode()))
     .addImm(NumBytes).addImm(0);
 
@@ -1426,8 +1420,7 @@ bool PPCFastISel::processCallArgs(SmallVectorImpl<Value*> &Args,
   unsigned NextFPR = PPC::F1;
 
   // Process arguments.
-  for (unsigned I = 0, E = ArgLocs.size(); I != E; ++I) {
-    CCValAssign &VA = ArgLocs[I];
+  for (const CCValAssign &VA : ArgLocs) {
     unsigned Arg = ArgRegs[VA.getValNo()];
     MVT ArgVT = ArgVTs[VA.getValNo()];
 
@@ -1476,7 +1469,7 @@ bool PPCFastISel::processCallArgs(SmallVectorImpl<Value*> &Args,
     } else
       ArgReg = NextGPR++;
 
-    BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DbgLoc,
+    BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, MIMD,
             TII.get(TargetOpcode::COPY), ArgReg).addReg(Arg);
     RegArgs.push_back(ArgReg);
   }
@@ -1490,7 +1483,7 @@ bool PPCFastISel::finishCall(MVT RetVT, CallLoweringInfo &CLI, unsigned &NumByte
   CallingConv::ID CC = CLI.CallConv;
 
   // Issue CallSEQ_END.
-  BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DbgLoc,
+  BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, MIMD,
           TII.get(TII.getCallFrameDestroyOpcode()))
     .addImm(NumBytes).addImm(0);
 
@@ -1523,7 +1516,7 @@ bool PPCFastISel::finishCall(MVT RetVT, CallLoweringInfo &CLI, unsigned &NumByte
     // If necessary, round the floating result to single precision.
     } else if (CopyVT == MVT::f64) {
       ResultReg = createResultReg(TLI.getRegClassFor(RetVT));
-      BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DbgLoc, TII.get(PPC::FRSP),
+      BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, MIMD, TII.get(PPC::FRSP),
               ResultReg).addReg(SourcePhysReg);
 
     // If only the low half of a general register is needed, generate
@@ -1555,8 +1548,8 @@ bool PPCFastISel::fastLowerCall(CallLoweringInfo &CLI) {
   if (!Callee && !Symbol)
     return false;
 
-  // Allow SelectionDAG isel to handle tail calls.
-  if (IsTailCall)
+  // Allow SelectionDAG isel to handle tail calls and long calls.
+  if (IsTailCall || Subtarget->useLongCalls())
     return false;
 
   // Let SDISel handle vararg functions.
@@ -1657,21 +1650,21 @@ bool PPCFastISel::fastLowerCall(CallLoweringInfo &CLI) {
     // the call we generate here will be erased by FastISel::selectPatchpoint,
     // so don't try very hard...
     if (CLI.IsPatchPoint)
-      MIB = BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DbgLoc, TII.get(PPC::NOP));
+      MIB = BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, MIMD, TII.get(PPC::NOP));
     else
       return false;
   } else {
     // Build direct call with NOP for TOC restore.
     // FIXME: We can and should optimize away the NOP for local calls.
-    MIB = BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DbgLoc,
+    MIB = BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, MIMD,
                   TII.get(PPC::BL8_NOP));
     // Add callee.
     MIB.addGlobalAddress(GV);
   }
 
   // Add implicit physical register uses to the call.
-  for (unsigned II = 0, IE = RegArgs.size(); II != IE; ++II)
-    MIB.addReg(RegArgs[II], RegState::Implicit);
+  for (unsigned Reg : RegArgs)
+    MIB.addReg(Reg, RegState::Implicit);
 
   // Direct calls, in both the ELF V1 and V2 ABIs, need the TOC register live
   // into the call.
@@ -1728,7 +1721,7 @@ bool PPCFastISel::SelectRet(const Instruction *I) {
       unsigned SrcReg =
           PPCMaterializeInt(CI, MVT::i64, VA.getLocInfo() != CCValAssign::ZExt);
 
-      BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DbgLoc,
+      BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, MIMD,
             TII.get(TargetOpcode::COPY), RetReg).addReg(SrcReg);
 
       RetRegs.push_back(RetReg);
@@ -1785,18 +1778,18 @@ bool PPCFastISel::SelectRet(const Instruction *I) {
           }
         }
 
-        BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DbgLoc,
+        BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, MIMD,
                 TII.get(TargetOpcode::COPY), RetRegs[i])
           .addReg(SrcReg);
       }
     }
   }
 
-  MachineInstrBuilder MIB = BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DbgLoc,
+  MachineInstrBuilder MIB = BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, MIMD,
                                     TII.get(PPC::BLR8));
 
-  for (unsigned i = 0, e = RetRegs.size(); i != e; ++i)
-    MIB.addReg(RetRegs[i], RegState::Implicit);
+  for (unsigned Reg : RetRegs)
+    MIB.addReg(Reg, RegState::Implicit);
 
   return true;
 }
@@ -1822,7 +1815,7 @@ bool PPCFastISel::PPCEmitIntExt(MVT SrcVT, unsigned SrcReg, MVT DestVT,
       assert(DestVT == MVT::i64 && "Signed extend from i32 to i32??");
       Opc = PPC::EXTSW_32_64;
     }
-    BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DbgLoc, TII.get(Opc), DestReg)
+    BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, MIMD, TII.get(Opc), DestReg)
       .addReg(SrcReg);
 
   // Unsigned 32-bit extensions use RLWINM.
@@ -1834,7 +1827,7 @@ bool PPCFastISel::PPCEmitIntExt(MVT SrcVT, unsigned SrcReg, MVT DestVT,
       assert(SrcVT == MVT::i16 && "Unsigned extend from i32 to i32??");
       MB = 16;
     }
-    BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DbgLoc, TII.get(PPC::RLWINM),
+    BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, MIMD, TII.get(PPC::RLWINM),
             DestReg)
       .addReg(SrcReg).addImm(/*SH=*/0).addImm(MB).addImm(/*ME=*/31);
 
@@ -1847,7 +1840,7 @@ bool PPCFastISel::PPCEmitIntExt(MVT SrcVT, unsigned SrcReg, MVT DestVT,
       MB = 48;
     else
       MB = 32;
-    BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DbgLoc,
+    BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, MIMD,
             TII.get(PPC::RLDICL_32_64), DestReg)
       .addReg(SrcReg).addImm(/*SH=*/0).addImm(MB);
   }
@@ -1861,13 +1854,13 @@ bool PPCFastISel::SelectIndirectBr(const Instruction *I) {
   if (AddrReg == 0)
     return false;
 
-  BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DbgLoc, TII.get(PPC::MTCTR8))
+  BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, MIMD, TII.get(PPC::MTCTR8))
     .addReg(AddrReg);
-  BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DbgLoc, TII.get(PPC::BCTR8));
+  BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, MIMD, TII.get(PPC::BCTR8));
 
   const IndirectBrInst *IB = cast<IndirectBrInst>(I);
   for (const BasicBlock *SuccBB : IB->successors())
-    FuncInfo.MBB->addSuccessor(FuncInfo.MBBMap[SuccBB]);
+    FuncInfo.MBB->addSuccessor(FuncInfo.getMBB(SuccBB));
 
   return true;
 }
@@ -2022,26 +2015,26 @@ unsigned PPCFastISel::PPCMaterializeFP(const ConstantFP *CFP, MVT VT) {
   PPCFuncInfo->setUsesTOCBasePtr();
   // For small code model, generate a LF[SD](0, LDtocCPT(Idx, X2)).
   if (CModel == CodeModel::Small) {
-    BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DbgLoc, TII.get(PPC::LDtocCPT),
+    BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, MIMD, TII.get(PPC::LDtocCPT),
             TmpReg)
       .addConstantPoolIndex(Idx).addReg(PPC::X2);
-    BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DbgLoc, TII.get(Opc), DestReg)
+    BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, MIMD, TII.get(Opc), DestReg)
       .addImm(0).addReg(TmpReg).addMemOperand(MMO);
   } else {
     // Otherwise we generate LF[SD](Idx[lo], ADDIStocHA8(X2, Idx)).
-    BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DbgLoc, TII.get(PPC::ADDIStocHA8),
+    BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, MIMD, TII.get(PPC::ADDIStocHA8),
             TmpReg).addReg(PPC::X2).addConstantPoolIndex(Idx);
     // But for large code model, we must generate a LDtocL followed
     // by the LF[SD].
     if (CModel == CodeModel::Large) {
       Register TmpReg2 = createResultReg(&PPC::G8RC_and_G8RC_NOX0RegClass);
-      BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DbgLoc, TII.get(PPC::LDtocL),
+      BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, MIMD, TII.get(PPC::LDtocL),
               TmpReg2).addConstantPoolIndex(Idx).addReg(TmpReg);
-      BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DbgLoc, TII.get(Opc), DestReg)
+      BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, MIMD, TII.get(Opc), DestReg)
           .addImm(0)
           .addReg(TmpReg2);
     } else
-      BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DbgLoc, TII.get(Opc), DestReg)
+      BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, MIMD, TII.get(Opc), DestReg)
         .addConstantPoolIndex(Idx, 0, PPCII::MO_TOC_LO)
         .addReg(TmpReg)
         .addMemOperand(MMO);
@@ -2074,39 +2067,43 @@ unsigned PPCFastISel::PPCMaterializeGV(const GlobalValue *GV, MVT VT) {
   if (GV->isThreadLocal())
     return 0;
 
-  // If the global has the toc-data attribute then fallback to DAG-ISEL.
-  if (TM.getTargetTriple().isOSAIX())
-    if (const GlobalVariable *Var = dyn_cast_or_null<GlobalVariable>(GV))
-      if (Var->hasAttribute("toc-data"))
-        return false;
-
   PPCFuncInfo->setUsesTOCBasePtr();
+  bool IsAIXTocData = TM.getTargetTriple().isOSAIX() &&
+                      isa<GlobalVariable>(GV) &&
+                      cast<GlobalVariable>(GV)->hasAttribute("toc-data");
+
   // For small code model, generate a simple TOC load.
-  if (CModel == CodeModel::Small)
-    BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DbgLoc, TII.get(PPC::LDtoc),
-            DestReg)
-        .addGlobalAddress(GV)
-        .addReg(PPC::X2);
-  else {
+  if (CModel == CodeModel::Small) {
+    auto MIB = BuildMI(
+        *FuncInfo.MBB, FuncInfo.InsertPt, MIMD,
+        IsAIXTocData ? TII.get(PPC::ADDItoc8) : TII.get(PPC::LDtoc), DestReg);
+    if (IsAIXTocData)
+      MIB.addReg(PPC::X2).addGlobalAddress(GV);
+    else
+      MIB.addGlobalAddress(GV).addReg(PPC::X2);
+  } else {
     // If the address is an externally defined symbol, a symbol with common
     // or externally available linkage, a non-local function address, or a
     // jump table address (not yet needed), or if we are generating code
     // for large code model, we generate:
     //       LDtocL(GV, ADDIStocHA8(%x2, GV))
     // Otherwise we generate:
-    //       ADDItocL(ADDIStocHA8(%x2, GV), GV)
+    //       ADDItocL8(ADDIStocHA8(%x2, GV), GV)
     // Either way, start with the ADDIStocHA8:
     Register HighPartReg = createResultReg(RC);
-    BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DbgLoc, TII.get(PPC::ADDIStocHA8),
+    BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, MIMD, TII.get(PPC::ADDIStocHA8),
             HighPartReg).addReg(PPC::X2).addGlobalAddress(GV);
 
     if (Subtarget->isGVIndirectSymbol(GV)) {
-      BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DbgLoc, TII.get(PPC::LDtocL),
+      assert(!IsAIXTocData && "TOC data should always be direct.");
+      BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, MIMD, TII.get(PPC::LDtocL),
               DestReg).addGlobalAddress(GV).addReg(HighPartReg);
     } else {
-      // Otherwise generate the ADDItocL.
-      BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DbgLoc, TII.get(PPC::ADDItocL),
-              DestReg).addReg(HighPartReg).addGlobalAddress(GV);
+      // Otherwise generate the ADDItocL8.
+      BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, MIMD, TII.get(PPC::ADDItocL8),
+              DestReg)
+          .addReg(HighPartReg)
+          .addGlobalAddress(GV);
     }
   }
 
@@ -2124,21 +2121,21 @@ unsigned PPCFastISel::PPCMaterialize32BitInt(int64_t Imm,
   bool IsGPRC = RC->hasSuperClassEq(&PPC::GPRCRegClass);
 
   if (isInt<16>(Imm))
-    BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DbgLoc,
+    BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, MIMD,
             TII.get(IsGPRC ? PPC::LI : PPC::LI8), ResultReg)
       .addImm(Imm);
   else if (Lo) {
     // Both Lo and Hi have nonzero bits.
     Register TmpReg = createResultReg(RC);
-    BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DbgLoc,
+    BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, MIMD,
             TII.get(IsGPRC ? PPC::LIS : PPC::LIS8), TmpReg)
       .addImm(Hi);
-    BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DbgLoc,
+    BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, MIMD,
             TII.get(IsGPRC ? PPC::ORI : PPC::ORI8), ResultReg)
       .addReg(TmpReg).addImm(Lo);
   } else
     // Just Hi bits.
-    BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DbgLoc,
+    BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, MIMD,
             TII.get(IsGPRC ? PPC::LIS : PPC::LIS8), ResultReg)
         .addImm(Hi);
 
@@ -2155,7 +2152,7 @@ unsigned PPCFastISel::PPCMaterialize64BitInt(int64_t Imm,
   // If the value doesn't fit in 32 bits, see if we can shift it
   // so that it fits in 32 bits.
   if (!isInt<32>(Imm)) {
-    Shift = countTrailingZeros<uint64_t>(Imm);
+    Shift = llvm::countr_zero<uint64_t>(Imm);
     int64_t ImmSh = static_cast<uint64_t>(Imm) >> Shift;
 
     if (isInt<32>(ImmSh))
@@ -2178,7 +2175,7 @@ unsigned PPCFastISel::PPCMaterialize64BitInt(int64_t Imm,
   unsigned TmpReg2;
   if (Imm) {
     TmpReg2 = createResultReg(RC);
-    BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DbgLoc, TII.get(PPC::RLDICR),
+    BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, MIMD, TII.get(PPC::RLDICR),
             TmpReg2).addReg(TmpReg1).addImm(Shift).addImm(63 - Shift);
   } else
     TmpReg2 = TmpReg1;
@@ -2186,14 +2183,14 @@ unsigned PPCFastISel::PPCMaterialize64BitInt(int64_t Imm,
   unsigned TmpReg3, Hi, Lo;
   if ((Hi = (Remainder >> 16) & 0xFFFF)) {
     TmpReg3 = createResultReg(RC);
-    BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DbgLoc, TII.get(PPC::ORIS8),
+    BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, MIMD, TII.get(PPC::ORIS8),
             TmpReg3).addReg(TmpReg2).addImm(Hi);
   } else
     TmpReg3 = TmpReg2;
 
   if ((Lo = Remainder & 0xFFFF)) {
     Register ResultReg = createResultReg(RC);
-    BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DbgLoc, TII.get(PPC::ORI8),
+    BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, MIMD, TII.get(PPC::ORI8),
             ResultReg).addReg(TmpReg3).addImm(Lo);
     return ResultReg;
   }
@@ -2209,7 +2206,7 @@ unsigned PPCFastISel::PPCMaterializeInt(const ConstantInt *CI, MVT VT,
   // case first.
   if (VT == MVT::i1 && Subtarget->useCRBits()) {
     Register ImmReg = createResultReg(&PPC::CRBITRCRegClass);
-    BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DbgLoc,
+    BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, MIMD,
             TII.get(CI->isZero() ? PPC::CRUNSET : PPC::CRSET), ImmReg);
     return ImmReg;
   }
@@ -2229,7 +2226,7 @@ unsigned PPCFastISel::PPCMaterializeInt(const ConstantInt *CI, MVT VT,
   if (isInt<16>(Imm)) {
     unsigned Opc = (VT == MVT::i64) ? PPC::LI8 : PPC::LI;
     Register ImmReg = createResultReg(RC);
-    BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DbgLoc, TII.get(Opc), ImmReg)
+    BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, MIMD, TII.get(Opc), ImmReg)
         .addImm(Imm);
     return ImmReg;
   }
@@ -2281,7 +2278,7 @@ unsigned PPCFastISel::fastMaterializeAlloca(const AllocaInst *AI) {
 
   if (SI != FuncInfo.StaticAllocaMap.end()) {
     Register ResultReg = createResultReg(&PPC::G8RC_and_G8RC_NOX0RegClass);
-    BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DbgLoc, TII.get(PPC::ADDI8),
+    BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, MIMD, TII.get(PPC::ADDI8),
             ResultReg).addFrameIndex(SI->second).addImm(0);
     return ResultReg;
   }
@@ -2391,7 +2388,7 @@ unsigned PPCFastISel::fastEmit_i(MVT Ty, MVT VT, unsigned Opc, uint64_t Imm) {
   // case first.
   if (VT == MVT::i1 && Subtarget->useCRBits()) {
     Register ImmReg = createResultReg(&PPC::CRBITRCRegClass);
-    BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, DbgLoc,
+    BuildMI(*FuncInfo.MBB, FuncInfo.InsertPt, MIMD,
             TII.get(Imm == 0 ? PPC::CRUNSET : PPC::CRSET), ImmReg);
     return ImmReg;
   }

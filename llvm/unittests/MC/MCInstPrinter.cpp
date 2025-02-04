@@ -53,7 +53,6 @@ public:
     std::string Buffer;
     raw_string_ostream OS(Buffer);
     OS << Printer->formatHex(i);
-    OS.flush();
     return Buffer;
   }
 };
@@ -61,7 +60,7 @@ public:
 
 TEST_F(MCInstPrinterTest, formatHex) {
   if (!Printer)
-    return;
+    GTEST_SKIP();
 
   EXPECT_EQ("0x1", formatHex<int64_t>(1));
   EXPECT_EQ("0x7fffffffffffffff",

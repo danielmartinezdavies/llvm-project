@@ -76,11 +76,16 @@ public:
   Value operator[](unsigned index) const {
     if (isOperandProduced(index))
       return Value();
-    return forwardedOperands[index - producedOperandCount];
+    return forwardedOperands[index - producedOperandCount].get();
   }
 
   /// Get the range of operands that are simply forwarded to the successor.
   OperandRange getForwardedOperands() const { return forwardedOperands; }
+
+  /// Get the range of operands that are simply forwarded to the successor.
+  MutableOperandRange getMutableForwardedOperands() const {
+    return forwardedOperands;
+  }
 
   /// Get a slice of the operands forwarded to the successor. The given range
   /// must not contain any operands produced by the operation.
@@ -126,9 +131,9 @@ private:
 
 namespace detail {
 /// Return the `BlockArgument` corresponding to operand `operandIndex` in some
-/// successor if `operandIndex` is within the range of `operands`, or None if
-/// `operandIndex` isn't a successor operand index.
-Optional<BlockArgument>
+/// successor if `operandIndex` is within the range of `operands`, or
+/// std::nullopt if `operandIndex` isn't a successor operand index.
+std::optional<BlockArgument>
 getBranchSuccessorArgument(const SuccessorOperands &operands,
                            unsigned operandIndex, Block *successor);
 
@@ -164,8 +169,10 @@ public:
   RegionSuccessor(Region *region, Block::BlockArgListType regionInputs = {})
       : region(region), inputs(regionInputs) {}
   /// Initialize a successor that branches back to/out of the parent operation.
-  RegionSuccessor(Optional<Operation::result_range> results = {})
-      : inputs(results ? ValueRange(*results) : ValueRange()) {}
+  RegionSuccessor(Operation::result_range results)
+      : inputs(ValueRange(results)) {}
+  /// Constructor with no arguments.
+  RegionSuccessor() : inputs(ValueRange()) {}
 
   /// Return the given region successor. Returns nullptr if the successor is the
   /// parent operation.
@@ -183,6 +190,68 @@ private:
   ValueRange inputs;
 };
 
+/// This class represents a point being branched from in the methods of the
+/// `RegionBranchOpInterface`.
+/// One can branch from one of two kinds of places:
+/// * The parent operation (aka the `RegionBranchOpInterface` implementation)
+/// * A region within the parent operation.
+class RegionBranchPoint {
+public:
+  /// Returns an instance of `RegionBranchPoint` representing the parent
+  /// operation.
+  static constexpr RegionBranchPoint parent() { return RegionBranchPoint(); }
+
+  /// Creates a `RegionBranchPoint` that branches from the given region.
+  /// The pointer must not be null.
+  RegionBranchPoint(Region *region) : maybeRegion(region) {
+    assert(region && "Region must not be null");
+  }
+
+  RegionBranchPoint(Region &region) : RegionBranchPoint(&region) {}
+
+  /// Explicitly stops users from constructing with `nullptr`.
+  RegionBranchPoint(std::nullptr_t) = delete;
+
+  /// Constructs a `RegionBranchPoint` from the the target of a
+  /// `RegionSuccessor` instance.
+  RegionBranchPoint(RegionSuccessor successor) {
+    if (successor.isParent())
+      maybeRegion = nullptr;
+    else
+      maybeRegion = successor.getSuccessor();
+  }
+
+  /// Assigns a region being branched from.
+  RegionBranchPoint &operator=(Region &region) {
+    maybeRegion = &region;
+    return *this;
+  }
+
+  /// Returns true if branching from the parent op.
+  bool isParent() const { return maybeRegion == nullptr; }
+
+  /// Returns the region if branching from a region.
+  /// A null pointer otherwise.
+  Region *getRegionOrNull() const { return maybeRegion; }
+
+  /// Returns true if the two branch points are equal.
+  friend bool operator==(RegionBranchPoint lhs, RegionBranchPoint rhs) {
+    return lhs.maybeRegion == rhs.maybeRegion;
+  }
+
+private:
+  // Private constructor to encourage the use of `RegionBranchPoint::parent`.
+  constexpr RegionBranchPoint() : maybeRegion(nullptr) {}
+
+  /// Internal encoding. Uses nullptr for representing branching from the parent
+  /// op and the region being branched from otherwise.
+  Region *maybeRegion;
+};
+
+inline bool operator!=(RegionBranchPoint lhs, RegionBranchPoint rhs) {
+  return !(lhs == rhs);
+}
+
 /// This class represents upper and lower bounds on the number of times a region
 /// of a `RegionBranchOpInterface` can be invoked. The lower bound is at least
 /// zero, but the upper bound may not be known.
@@ -190,7 +259,8 @@ class InvocationBounds {
 public:
   /// Create invocation bounds. The lower bound must be at least 0 and only the
   /// upper bound can be unknown.
-  InvocationBounds(unsigned lb, Optional<unsigned> ub) : lower(lb), upper(ub) {
+  InvocationBounds(unsigned lb, std::optional<unsigned> ub)
+      : lower(lb), upper(ub) {
     assert((!ub || ub >= lb) && "upper bound cannot be less than lower bound");
   }
 
@@ -198,18 +268,18 @@ public:
   unsigned getLowerBound() const { return lower; }
 
   /// Return the upper bound.
-  Optional<unsigned> getUpperBound() const { return upper; }
+  std::optional<unsigned> getUpperBound() const { return upper; }
 
   /// Returns the unknown invocation bounds, i.e., there is no information on
   /// how many times a region may be invoked.
-  static InvocationBounds getUnknown() { return {0, llvm::None}; }
+  static InvocationBounds getUnknown() { return {0, std::nullopt}; }
 
 private:
   /// The minimum number of times the successor region will be invoked.
   unsigned lower;
-  /// The maximum number of times the successor region will be invoked or `None`
-  /// if an upper bound is not known.
-  Optional<unsigned> upper;
+  /// The maximum number of times the successor region will be invoked or
+  /// `std::nullopt` if an upper bound is not known.
+  std::optional<unsigned> upper;
 };
 
 /// Return `true` if `a` and `b` are in mutually exclusive regions as per
@@ -225,32 +295,6 @@ Region *getEnclosingRepetitiveRegion(Operation *op);
 /// repetitively as per RegionBranchOpInterface or `nullptr` if no such region
 /// exists.
 Region *getEnclosingRepetitiveRegion(Value value);
-
-//===----------------------------------------------------------------------===//
-// RegionBranchTerminatorOpInterface
-//===----------------------------------------------------------------------===//
-
-/// Returns true if the given operation is either annotated with the
-/// `ReturnLike` trait or implements the `RegionBranchTerminatorOpInterface`.
-bool isRegionReturnLike(Operation *operation);
-
-/// Returns the mutable operands that are passed to the region with the given
-/// `regionIndex`. If the operation does not implement the
-/// `RegionBranchTerminatorOpInterface` and is not marked as `ReturnLike`, the
-/// result will be `llvm::None`. In all other cases, the resulting
-/// `OperandRange` represents all operands that are passed to the specified
-/// successor region. If `regionIndex` is `llvm::None`, all operands that are
-/// passed to the parent operation will be returned.
-Optional<MutableOperandRange>
-getMutableRegionBranchSuccessorOperands(Operation *operation,
-                                        Optional<unsigned> regionIndex);
-
-/// Returns the read only operands that are passed to the region with the given
-/// `regionIndex`. See `getMutableRegionBranchSuccessorOperands` for more
-/// information.
-Optional<OperandRange>
-getRegionBranchSuccessorOperands(Operation *operation,
-                                 Optional<unsigned> regionIndex);
 
 //===----------------------------------------------------------------------===//
 // ControlFlow Traits

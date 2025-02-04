@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "lldb/Host/posix/ProcessLauncherPosixFork.h"
+#include "lldb/Host/FileSystem.h"
 #include "lldb/Host/Host.h"
 #include "lldb/Host/HostProcess.h"
 #include "lldb/Host/Pipe.h"
@@ -14,24 +15,16 @@
 #include "lldb/Utility/FileSpec.h"
 #include "lldb/Utility/Log.h"
 #include "llvm/Support/Errno.h"
-#include "llvm/Support/FileSystem.h"
 
 #include <climits>
 #include <sys/ptrace.h>
 #include <sys/wait.h>
 #include <unistd.h>
 
-#include <sstream>
 #include <csignal>
+#include <sstream>
 
-#ifdef __ANDROID__
-#include <android/api-level.h>
-#define PT_TRACE_ME PTRACE_TRACEME
-#endif
-
-#if defined(__ANDROID_API__) && __ANDROID_API__ < 15
-#include <linux/personality.h>
-#elif defined(__linux__)
+#if defined(__linux__)
 #include <sys/personality.h>
 #endif
 
@@ -47,8 +40,7 @@ static void write_string(int error_fd, const char *str) {
   (void)r;
 }
 
-[[noreturn]] static void ExitWithError(int error_fd,
-                                       const char *operation) {
+[[noreturn]] static void ExitWithError(int error_fd, const char *operation) {
   int err = errno;
   write_string(error_fd, operation);
   write_string(error_fd, " failed: ");
@@ -71,7 +63,7 @@ static void DisableASLR(int error_fd) {
 }
 
 static void DupDescriptor(int error_fd, const char *file, int fd, int flags) {
-  int target_fd = llvm::sys::RetryAfterSignal(-1, ::open, file, flags, 0666);
+  int target_fd = FileSystem::Instance().Open(file, flags, 0666);
 
   if (target_fd == -1)
     ExitWithError(error_fd, "DupDescriptor-open");
@@ -193,7 +185,11 @@ struct ForkLaunchInfo {
     }
 
     // Start tracing this child that is about to exec.
+#ifdef _AIX
+    if (ptrace64(PT_TRACE_ME, 0, 0, 0, nullptr) == -1)
+#else
     if (ptrace(PT_TRACE_ME, 0, nullptr, 0) == -1)
+#endif
       ExitWithError(error_fd, "ptrace");
   }
 
@@ -234,16 +230,6 @@ MakeForkActions(const ProcessLaunchInfo &info) {
   return result;
 }
 
-static Environment::Envp FixupEnvironment(Environment env) {
-#ifdef __ANDROID__
-  // If there is no PATH variable specified inside the environment then set the
-  // path to /system/bin. It is required because the default path used by
-  // execve() is wrong on android.
-  env.try_emplace("PATH", "/system/bin");
-#endif
-  return env.getEnvp();
-}
-
 ForkLaunchInfo::ForkLaunchInfo(const ProcessLaunchInfo &info)
     : separate_process_group(
           info.GetFlags().Test(eLaunchFlagLaunchInSeparateProcessGroup)),
@@ -251,8 +237,7 @@ ForkLaunchInfo::ForkLaunchInfo(const ProcessLaunchInfo &info)
       disable_aslr(info.GetFlags().Test(eLaunchFlagDisableASLR)),
       wd(info.GetWorkingDirectory().GetPath()),
       argv(info.GetArguments().GetConstArgumentVector()),
-      envp(FixupEnvironment(info.GetEnvironment())),
-      actions(MakeForkActions(info)) {}
+      envp(info.GetEnvironment().getEnvp()), actions(MakeForkActions(info)) {}
 
 HostProcess
 ProcessLauncherPosixFork::LaunchProcess(const ProcessLaunchInfo &launch_info,
@@ -269,8 +254,8 @@ ProcessLauncherPosixFork::LaunchProcess(const ProcessLaunchInfo &launch_info,
   ::pid_t pid = ::fork();
   if (pid == -1) {
     // Fork failed
-    error.SetErrorStringWithFormatv("Fork failed with error message: {0}",
-                                    llvm::sys::StrError());
+    error = Status::FromErrorStringWithFormatv(
+        "Fork failed with error message: {0}", llvm::sys::StrError());
     return HostProcess(LLDB_INVALID_PROCESS_ID);
   }
   if (pid == 0) {
@@ -282,13 +267,22 @@ ProcessLauncherPosixFork::LaunchProcess(const ProcessLaunchInfo &launch_info,
   // parent process
 
   pipe.CloseWriteFileDescriptor();
-  char buf[1000];
-  int r = read(pipe.GetReadFileDescriptor(), buf, sizeof buf);
+  llvm::SmallString<0> buf;
+  size_t pos = 0;
+  ssize_t r = 0;
+  do {
+    pos += r;
+    buf.resize_for_overwrite(pos + 100);
+    r = llvm::sys::RetryAfterSignal(-1, read, pipe.GetReadFileDescriptor(),
+                                    buf.begin() + pos, buf.size() - pos);
+  } while (r > 0);
+  assert(r != -1);
 
-  if (r == 0)
+  buf.resize(pos);
+  if (buf.empty())
     return HostProcess(pid); // No error. We're done.
 
-  error.SetErrorString(buf);
+  error = Status(buf.str().str());
 
   llvm::sys::RetryAfterSignal(-1, waitpid, pid, nullptr, 0);
 

@@ -27,6 +27,7 @@ namespace XCOFF {
 
 constexpr size_t FileNamePadSize = 6;
 constexpr size_t NameSize = 8;
+constexpr size_t AuxFileEntNameSize = 14;
 constexpr size_t FileHeaderSize32 = 20;
 constexpr size_t FileHeaderSize64 = 24;
 constexpr size_t AuxFileHeaderSize32 = 72;
@@ -37,12 +38,26 @@ constexpr size_t SectionHeaderSize64 = 72;
 constexpr size_t SymbolTableEntrySize = 18;
 constexpr size_t RelocationSerializationSize32 = 10;
 constexpr size_t RelocationSerializationSize64 = 14;
+constexpr size_t ExceptionSectionEntrySize32 = 6;
+constexpr size_t ExceptionSectionEntrySize64 = 10;
 constexpr uint16_t RelocOverflow = 65535;
 constexpr uint8_t AllocRegNo = 31;
 
 enum ReservedSectionNum : int16_t { N_DEBUG = -2, N_ABS = -1, N_UNDEF = 0 };
 
 enum MagicNumber : uint16_t { XCOFF32 = 0x01DF, XCOFF64 = 0x01F7 };
+
+// Masks for packing/unpacking the r_rsize field of relocations.
+
+// The msb is used to indicate if the bits being relocated are signed or
+// unsigned.
+static constexpr uint8_t XR_SIGN_INDICATOR_MASK = 0x80;
+// The 2nd msb is used to indicate that the binder has replaced/modified the
+// original instruction.
+static constexpr uint8_t XR_FIXUP_INDICATOR_MASK = 0x40;
+// The remaining bits specify the bit length of the relocatable reference
+// minus one.
+static constexpr uint8_t XR_BIASED_LENGTH_MASK = 0x3f;
 
 // This field only exists in the XCOFF64 definition.
 enum AuxHeaderFlags64 : uint16_t {
@@ -314,13 +329,37 @@ enum CFileStringType : uint8_t {
 
 enum CFileLangId : uint8_t {
   TB_C = 0,        ///< C language.
+  TB_Fortran = 1,  ///< Fortran language.
   TB_CPLUSPLUS = 9 ///< C++ language.
 };
 
+// XCOFF specific CPU IDs, defined in AIX OS header: `/usr/include/aouthdr.h`.
 enum CFileCpuId : uint8_t {
-  TCPU_PPC64 = 2, ///< PowerPC common architecture 64-bit mode.
-  TCPU_COM = 3,   ///< POWER and PowerPC architecture common.
-  TCPU_970 = 19   ///< PPC970 - PowerPC 64-bit architecture.
+  TCPU_INVALID = 0, ///< Invalid id - assumes POWER for old objects.
+  TCPU_PPC = 1,     ///< PowerPC common architecture 32 bit mode.
+  TCPU_PPC64 = 2,   ///< PowerPC common architecture 64-bit mode.
+  TCPU_COM = 3,     ///< POWER and PowerPC architecture common.
+  TCPU_PWR = 4,     ///< POWER common architecture objects.
+  TCPU_ANY = 5,     ///< Mixture of any incompatable POWER
+                    ///< and PowerPC architecture implementations.
+  TCPU_601 = 6,     ///< 601 implementation of PowerPC architecture.
+  TCPU_603 = 7,     ///< 603 implementation of PowerPC architecture.
+  TCPU_604 = 8,     ///< 604 implementation of PowerPC architecture.
+
+  // The following are PowerPC 64-bit architectures.
+  TCPU_620 = 16,
+  TCPU_A35 = 17,
+  TCPU_PWR5 = 18,
+  TCPU_970 = 19,
+  TCPU_PWR6 = 20,
+  TCPU_PWR5X = 22,
+  TCPU_PWR6E = 23,
+  TCPU_PWR7 = 24,
+  TCPU_PWR8 = 25,
+  TCPU_PWR9 = 26,
+  TCPU_PWR10 = 27,
+
+  TCPU_PWRX = 224 ///< RS2 implementation of POWER architecture.
 };
 
 enum SymbolAuxType : uint8_t {
@@ -334,6 +373,7 @@ enum SymbolAuxType : uint8_t {
 
 StringRef getMappingClassString(XCOFF::StorageMappingClass SMC);
 StringRef getRelocationTypeString(XCOFF::RelocationType Type);
+StringRef getTCPUString(XCOFF::CFileCpuId TCPU);
 Expected<SmallString<32>> parseParmsType(uint32_t Value, unsigned FixedParmsNum,
                                          unsigned FloatingParmsNum);
 Expected<SmallString<32>> parseParmsTypeWithVecInfo(uint32_t Value,
@@ -452,6 +492,7 @@ enum ExtendedTBTableFlag : uint8_t {
 
 StringRef getNameForTracebackTableLanguageId(TracebackTable::LanguageID LangId);
 SmallString<32> getExtendedTBTableFlagString(uint8_t Flag);
+XCOFF::CFileCpuId getCpuID(StringRef CPU);
 
 struct CsectProperties {
   CsectProperties(StorageMappingClass SMC, SymbolType ST)

@@ -10,13 +10,18 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "PassDetail.h"
-#include "mlir/Dialect/Affine/IR/AffineOps.h"
-#include "mlir/Dialect/Arithmetic/IR/Arithmetic.h"
-#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/SCF/Transforms/Passes.h"
+
+#include "mlir/Dialect/Affine/IR/AffineOps.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/SCF/Transforms/Transforms.h"
 #include "mlir/Dialect/SCF/Utils/Utils.h"
+
+namespace mlir {
+#define GEN_PASS_DEF_SCFPARALLELLOOPTILING
+#include "mlir/Dialect/SCF/Transforms/Passes.h.inc"
+} // namespace mlir
 
 using namespace mlir;
 using namespace mlir::scf;
@@ -125,8 +130,8 @@ mlir::scf::tileParallelLoop(ParallelOp op, ArrayRef<int64_t> tileSizes,
     // Otherwise, we dynamically compute the bound for
     // each iteration of the outer loop.
     newBounds.push_back(
-        b.create<AffineMinOp>(op.getLoc(), b.getIndexType(), minMap,
-                              ValueRange{newStep, upperBound, iv}));
+        b.create<affine::AffineMinOp>(op.getLoc(), b.getIndexType(), minMap,
+                                      ValueRange{newStep, upperBound, iv}));
   }
   auto innerLoop = b.create<ParallelOp>(
       op.getLoc(), SmallVector<Value, 2>(newBounds.size(), zero), newBounds,
@@ -154,6 +159,11 @@ mlir::scf::tileParallelLoop(ParallelOp op, ArrayRef<int64_t> tileSizes,
                                     /*hasElseRegion*/ false);
     ifInbound.getThenRegion().takeBody(op.getRegion());
     Block &thenBlock = ifInbound.getThenRegion().front();
+    // Replace the scf.reduce terminator with an scf.yield terminator.
+    Operation *reduceOp = thenBlock.getTerminator();
+    b.setInsertionPointToEnd(&thenBlock);
+    b.create<scf::YieldOp>(reduceOp->getLoc());
+    reduceOp->erase();
     b.setInsertionPointToStart(innerLoop.getBody());
     for (const auto &ivs : llvm::enumerate(llvm::zip(
              innerLoop.getInductionVars(), outerLoop.getInductionVars()))) {
@@ -162,8 +172,7 @@ mlir::scf::tileParallelLoop(ParallelOp op, ArrayRef<int64_t> tileSizes,
       thenBlock.getArgument(ivs.index())
           .replaceAllUsesExcept(newIndex, newIndex);
     }
-    thenBlock.eraseArguments(llvm::to_vector<4>(
-        llvm::seq((unsigned)0, thenBlock.getNumArguments())));
+    thenBlock.eraseArguments(0, thenBlock.getNumArguments());
   } else {
     innerLoop.getRegion().takeBody(op.getRegion());
     b.setInsertionPointToStart(innerLoop.getBody());
@@ -182,7 +191,7 @@ mlir::scf::tileParallelLoop(ParallelOp op, ArrayRef<int64_t> tileSizes,
 
 namespace {
 struct ParallelLoopTiling
-    : public SCFParallelLoopTilingBase<ParallelLoopTiling> {
+    : public impl::SCFParallelLoopTilingBase<ParallelLoopTiling> {
   ParallelLoopTiling() = default;
   explicit ParallelLoopTiling(ArrayRef<int64_t> tileSizes,
                               bool noMinMaxBounds = false) {
@@ -191,6 +200,12 @@ struct ParallelLoopTiling
   }
 
   void runOnOperation() override {
+    for (auto tileSize : tileSizes)
+      if (tileSize == 0) {
+        mlir::emitError(mlir::UnknownLoc::get(&Pass::getContext()),
+                        "tile size cannot be 0");
+        return signalPassFailure();
+      }
     auto *parentOp = getOperation();
     SmallVector<ParallelOp, 2> innermostPloops;
     getInnermostParallelLoops(parentOp, innermostPloops);

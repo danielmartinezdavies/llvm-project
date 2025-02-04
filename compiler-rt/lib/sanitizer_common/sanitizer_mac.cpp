@@ -12,81 +12,81 @@
 
 #include "sanitizer_platform.h"
 #if SANITIZER_APPLE
-#include "sanitizer_mac.h"
-#include "interception/interception.h"
+#  include "interception/interception.h"
+#  include "sanitizer_mac.h"
 
 // Use 64-bit inodes in file operations. ASan does not support OS X 10.5, so
 // the clients will most certainly use 64-bit ones as well.
-#ifndef _DARWIN_USE_64_BIT_INODE
-#define _DARWIN_USE_64_BIT_INODE 1
-#endif
-#include <stdio.h>
+#  ifndef _DARWIN_USE_64_BIT_INODE
+#    define _DARWIN_USE_64_BIT_INODE 1
+#  endif
+#  include <stdio.h>
 
-#include "sanitizer_common.h"
-#include "sanitizer_file.h"
-#include "sanitizer_flags.h"
-#include "sanitizer_interface_internal.h"
-#include "sanitizer_internal_defs.h"
-#include "sanitizer_libc.h"
-#include "sanitizer_platform_limits_posix.h"
-#include "sanitizer_procmaps.h"
-#include "sanitizer_ptrauth.h"
+#  include "sanitizer_common.h"
+#  include "sanitizer_file.h"
+#  include "sanitizer_flags.h"
+#  include "sanitizer_interface_internal.h"
+#  include "sanitizer_internal_defs.h"
+#  include "sanitizer_libc.h"
+#  include "sanitizer_platform_limits_posix.h"
+#  include "sanitizer_procmaps.h"
+#  include "sanitizer_ptrauth.h"
 
-#if !SANITIZER_IOS
-#include <crt_externs.h>  // for _NSGetEnviron
-#else
+#  if !SANITIZER_IOS
+#    include <crt_externs.h>  // for _NSGetEnviron
+#  else
 extern char **environ;
-#endif
+#  endif
 
-#if defined(__has_include) && __has_include(<os/trace.h>)
-#define SANITIZER_OS_TRACE 1
-#include <os/trace.h>
-#else
-#define SANITIZER_OS_TRACE 0
-#endif
+#  if defined(__has_include) && __has_include(<os/trace.h>)
+#    define SANITIZER_OS_TRACE 1
+#    include <os/trace.h>
+#  else
+#    define SANITIZER_OS_TRACE 0
+#  endif
 
-// import new crash reporting api
-#if defined(__has_include) && __has_include(<CrashReporterClient.h>)
-#define HAVE_CRASHREPORTERCLIENT_H 1
-#include <CrashReporterClient.h>
-#else
-#define HAVE_CRASHREPORTERCLIENT_H 0
-#endif
+// Integrate with CrashReporter library if available
+#  if defined(__has_include) && __has_include(<CrashReporterClient.h>)
+#    define HAVE_CRASHREPORTERCLIENT_H 1
+#    include <CrashReporterClient.h>
+#  else
+#    define HAVE_CRASHREPORTERCLIENT_H 0
+#  endif
 
-#if !SANITIZER_IOS
-#include <crt_externs.h>  // for _NSGetArgv and _NSGetEnviron
-#else
+#  if !SANITIZER_IOS
+#    include <crt_externs.h>  // for _NSGetArgv and _NSGetEnviron
+#  else
 extern "C" {
-  extern char ***_NSGetArgv(void);
+extern char ***_NSGetArgv(void);
 }
-#endif
+#  endif
 
-#include <asl.h>
-#include <dlfcn.h>  // for dladdr()
-#include <errno.h>
-#include <fcntl.h>
-#include <libkern/OSAtomic.h>
-#include <mach-o/dyld.h>
-#include <mach/mach.h>
-#include <mach/mach_time.h>
-#include <mach/vm_statistics.h>
-#include <malloc/malloc.h>
-#include <os/log.h>
-#include <pthread.h>
-#include <pthread/introspection.h>
-#include <sched.h>
-#include <signal.h>
-#include <spawn.h>
-#include <stdlib.h>
-#include <sys/ioctl.h>
-#include <sys/mman.h>
-#include <sys/resource.h>
-#include <sys/stat.h>
-#include <sys/sysctl.h>
-#include <sys/types.h>
-#include <sys/wait.h>
-#include <unistd.h>
-#include <util.h>
+#  include <asl.h>
+#  include <dlfcn.h>  // for dladdr()
+#  include <errno.h>
+#  include <fcntl.h>
+#  include <libkern/OSAtomic.h>
+#  include <mach-o/dyld.h>
+#  include <mach/mach.h>
+#  include <mach/mach_time.h>
+#  include <mach/vm_statistics.h>
+#  include <malloc/malloc.h>
+#  include <os/log.h>
+#  include <pthread.h>
+#  include <pthread/introspection.h>
+#  include <sched.h>
+#  include <signal.h>
+#  include <spawn.h>
+#  include <stdlib.h>
+#  include <sys/ioctl.h>
+#  include <sys/mman.h>
+#  include <sys/resource.h>
+#  include <sys/stat.h>
+#  include <sys/sysctl.h>
+#  include <sys/types.h>
+#  include <sys/wait.h>
+#  include <unistd.h>
+#  include <util.h>
 
 // From <crt_externs.h>, but we don't have that file on iOS.
 extern "C" {
@@ -545,9 +545,6 @@ uptr GetTlsSize() {
   return 0;
 }
 
-void InitTlsSize() {
-}
-
 uptr TlsBaseAddr() {
   uptr segbase = 0;
 #if defined(__x86_64__)
@@ -572,21 +569,18 @@ uptr TlsSize() {
 #endif
 }
 
-void GetThreadStackAndTls(bool main, uptr *stk_addr, uptr *stk_size,
-                          uptr *tls_addr, uptr *tls_size) {
-#if !SANITIZER_GO
-  uptr stack_top, stack_bottom;
-  GetThreadStackTopAndBottom(main, &stack_top, &stack_bottom);
-  *stk_addr = stack_bottom;
-  *stk_size = stack_top - stack_bottom;
-  *tls_addr = TlsBaseAddr();
-  *tls_size = TlsSize();
-#else
-  *stk_addr = 0;
-  *stk_size = 0;
-  *tls_addr = 0;
-  *tls_size = 0;
-#endif
+void GetThreadStackAndTls(bool main, uptr *stk_begin, uptr *stk_end,
+                          uptr *tls_begin, uptr *tls_end) {
+#  if !SANITIZER_GO
+  GetThreadStackTopAndBottom(main, stk_end, stk_begin);
+  *tls_begin = TlsBaseAddr();
+  *tls_end = *tls_begin + TlsSize();
+#  else
+  *stk_begin = 0;
+  *stk_end = 0;
+  *tls_begin = 0;
+  *tls_end = 0;
+#  endif
 }
 
 void ListOfModules::init() {
@@ -788,7 +782,11 @@ void WriteOneLineToSyslog(const char *s) {
   if (GetMacosAlignedVersion() >= MacosVersion(10, 12)) {
     os_log_error(OS_LOG_DEFAULT, "%{public}s", s);
   } else {
+#pragma clang diagnostic push
+// as_log is deprecated.
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
     asl_log(nullptr, nullptr, ASL_LEVEL_ERR, "%s", s);
+#pragma clang diagnostic pop
   }
 #endif
 }
@@ -798,8 +796,13 @@ static char crashreporter_info_buff[__sanitizer::kErrorMessageBufferSize] = {};
 static Mutex crashreporter_info_mutex;
 
 extern "C" {
-// Integrate with crash reporter libraries.
+
 #if HAVE_CRASHREPORTERCLIENT_H
+// Available in CRASHREPORTER_ANNOTATIONS_VERSION 5+
+#    ifdef CRASHREPORTER_ANNOTATIONS_INITIALIZER
+CRASHREPORTER_ANNOTATIONS_INITIALIZER()
+#    else
+// Support for older CrashRerporter annotiations
 CRASH_REPORTER_CLIENT_HIDDEN
 struct crashreporter_annotations_t gCRAnnotations
     __attribute__((section("__DATA," CRASHREPORTER_ANNOTATIONS_SECTION))) = {
@@ -810,17 +813,17 @@ struct crashreporter_annotations_t gCRAnnotations
         0,
         0,
         0,
-#if CRASHREPORTER_ANNOTATIONS_VERSION > 4
+#      if CRASHREPORTER_ANNOTATIONS_VERSION > 4
         0,
-#endif
+#      endif
 };
-
-#else
-// fall back to old crashreporter api
+#    endif
+#  else
+// Revert to previous crash reporter API if client header is not available
 static const char *__crashreporter_info__ __attribute__((__used__)) =
     &crashreporter_info_buff[0];
 asm(".desc ___crashreporter_info__, 0x10");
-#endif
+#endif  // HAVE_CRASHREPORTERCLIENT_H
 
 }  // extern "C"
 
@@ -843,6 +846,9 @@ void LogFullErrorReport(const char *buffer) {
 #if !SANITIZER_GO
   // Log with os_trace. This will make it into the crash log.
 #if SANITIZER_OS_TRACE
+#pragma clang diagnostic push
+// os_trace is deprecated.
+#pragma clang diagnostic ignored "-Wdeprecated-declarations"
   if (GetMacosAlignedVersion() >= MacosVersion(10, 10)) {
     // os_trace requires the message (format parameter) to be a string literal.
     if (internal_strncmp(SanitizerToolName, "AddressSanitizer",
@@ -860,6 +866,7 @@ void LogFullErrorReport(const char *buffer) {
     if (common_flags()->log_to_syslog)
       os_trace("Consult syslog for more information.");
   }
+#pragma clang diagnostic pop
 #endif
 
   // Log to syslog.
@@ -970,8 +977,9 @@ static const char kDyldInsertLibraries[] = "DYLD_INSERT_LIBRARIES";
 LowLevelAllocator allocator_for_env;
 
 static bool ShouldCheckInterceptors() {
-  // Restrict "interceptors working?" check to ASan and TSan.
-  const char *sanitizer_names[] = {"AddressSanitizer", "ThreadSanitizer"};
+  // Restrict "interceptors working?" check
+  const char *sanitizer_names[] = {"AddressSanitizer", "ThreadSanitizer",
+                                   "RealtimeSanitizer"};
   size_t count = sizeof(sanitizer_names) / sizeof(sanitizer_names[0]);
   for (size_t i = 0; i < count; i++) {
     if (internal_strcmp(sanitizer_names[i], SanitizerToolName) == 0)
@@ -989,7 +997,7 @@ static void VerifyInterceptorsWorking() {
   // "wrap_puts" within our own dylib.
   Dl_info info_puts, info_runtime;
   RAW_CHECK(dladdr(dlsym(RTLD_DEFAULT, "puts"), &info_puts));
-  RAW_CHECK(dladdr((void *)__sanitizer_report_error_summary, &info_runtime));
+  RAW_CHECK(dladdr((void *)&VerifyInterceptorsWorking, &info_runtime));
   if (internal_strcmp(info_puts.dli_fname, info_runtime.dli_fname) != 0) {
     Report(
         "ERROR: Interceptors are not working. This may be because %s is "
@@ -1039,7 +1047,7 @@ static void StripEnv() {
     return;
 
   Dl_info info;
-  RAW_CHECK(dladdr((void *)__sanitizer_report_error_summary, &info));
+  RAW_CHECK(dladdr((void *)&StripEnv, &info));
   const char *dylib_name = StripModuleName(info.dli_fname);
   bool lib_is_in_env = internal_strstr(dyld_insert_libraries, dylib_name);
   if (!lib_is_in_env)
@@ -1188,20 +1196,21 @@ uptr GetMaxVirtualAddress() {
 }
 
 uptr MapDynamicShadow(uptr shadow_size_bytes, uptr shadow_scale,
-                      uptr min_shadow_base_alignment, uptr &high_mem_end) {
-  const uptr granularity = GetMmapGranularity();
+                      uptr min_shadow_base_alignment, uptr &high_mem_end,
+                      uptr granularity) {
   const uptr alignment =
       Max<uptr>(granularity << shadow_scale, 1ULL << min_shadow_base_alignment);
   const uptr left_padding =
       Max<uptr>(granularity, 1ULL << min_shadow_base_alignment);
 
-  uptr space_size = shadow_size_bytes + left_padding;
+  uptr space_size = shadow_size_bytes;
 
   uptr largest_gap_found = 0;
   uptr max_occupied_addr = 0;
+
   VReport(2, "FindDynamicShadowStart, space_size = %p\n", (void *)space_size);
   uptr shadow_start =
-      FindAvailableMemoryRange(space_size, alignment, granularity,
+      FindAvailableMemoryRange(space_size, alignment, left_padding,
                                &largest_gap_found, &max_occupied_addr);
   // If the shadow doesn't fit, restrict the address space to make it fit.
   if (shadow_start == 0) {
@@ -1221,9 +1230,9 @@ uptr MapDynamicShadow(uptr shadow_size_bytes, uptr shadow_scale,
     }
     RestrictMemoryToMaxAddress(new_max_vm);
     high_mem_end = new_max_vm - 1;
-    space_size = (high_mem_end >> shadow_scale) + left_padding;
+    space_size = (high_mem_end >> shadow_scale);
     VReport(2, "FindDynamicShadowStart, space_size = %p\n", (void *)space_size);
-    shadow_start = FindAvailableMemoryRange(space_size, alignment, granularity,
+    shadow_start = FindAvailableMemoryRange(space_size, alignment, left_padding,
                                             nullptr, nullptr);
     if (shadow_start == 0) {
       Report("Unable to find a memory range after restricting VM.\n");
@@ -1251,6 +1260,7 @@ uptr FindAvailableMemoryRange(uptr size, uptr alignment, uptr left_padding,
   mach_vm_address_t start_address =
     (SANITIZER_WORDSIZE == 32) ? 0x000000001000 : 0x000100000000;
 
+  const mach_vm_address_t max_vm_address = GetMaxVirtualAddress() + 1;
   mach_vm_address_t address = start_address;
   mach_vm_address_t free_begin = start_address;
   kern_return_t kr = KERN_SUCCESS;
@@ -1263,17 +1273,22 @@ uptr FindAvailableMemoryRange(uptr size, uptr alignment, uptr left_padding,
     mach_msg_type_number_t count = kRegionInfoSize;
     kr = mach_vm_region_recurse(mach_task_self(), &address, &vmsize, &depth,
                                 (vm_region_info_t)&vminfo, &count);
-    if (kr == KERN_INVALID_ADDRESS) {
+
+    // There are cases where going beyond the processes' max vm does
+    // not return KERN_INVALID_ADDRESS so we check for going beyond that
+    // max address as well.
+    if (kr == KERN_INVALID_ADDRESS || address > max_vm_address) {
       // No more regions beyond "address", consider the gap at the end of VM.
-      address = GetMaxVirtualAddress() + 1;
+      address = max_vm_address;
       vmsize = 0;
+      kr = -1;  // break after this iteration.
     } else {
       if (max_occupied_addr) *max_occupied_addr = address + vmsize;
     }
     if (free_begin != address) {
       // We found a free region [free_begin..address-1].
       uptr gap_start = RoundUpTo((uptr)free_begin + left_padding, alignment);
-      uptr gap_end = RoundDownTo((uptr)address, alignment);
+      uptr gap_end = RoundDownTo((uptr)Min(address, max_vm_address), alignment);
       uptr gap_size = gap_end > gap_start ? gap_end - gap_start : 0;
       if (size < gap_size) {
         return gap_start;
@@ -1371,8 +1386,8 @@ void DumpProcessMap() {
   for (uptr i = 0; i < modules.size(); ++i) {
     char uuid_str[128];
     FormatUUID(uuid_str, sizeof(uuid_str), modules[i].uuid());
-    Printf("0x%zx-0x%zx %s (%s) %s\n", modules[i].base_address(),
-           modules[i].max_address(), modules[i].full_name(),
+    Printf("%p-%p %s (%s) %s\n", (void *)modules[i].base_address(),
+           (void *)modules[i].max_address(), modules[i].full_name(),
            ModuleArchToString(modules[i].arch()), uuid_str);
   }
   Printf("End of module map.\n");

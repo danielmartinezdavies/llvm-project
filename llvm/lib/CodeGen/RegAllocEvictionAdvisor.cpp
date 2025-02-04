@@ -17,6 +17,7 @@
 #include "llvm/CodeGen/MachineFunction.h"
 #include "llvm/CodeGen/RegisterClassInfo.h"
 #include "llvm/CodeGen/VirtRegMap.h"
+#include "llvm/IR/Module.h"
 #include "llvm/InitializePasses.h"
 #include "llvm/Pass.h"
 #include "llvm/Support/CommandLine.h"
@@ -43,6 +44,7 @@ static cl::opt<bool> EnableLocalReassignment(
              "may be compile time intensive"),
     cl::init(false));
 
+namespace llvm {
 cl::opt<unsigned> EvictInterferenceCutoff(
     "regalloc-eviction-max-interference-cutoff", cl::Hidden,
     cl::desc("Number of interferences after which we declare "
@@ -50,6 +52,7 @@ cl::opt<unsigned> EvictInterferenceCutoff(
              "is a compilation cost-saving consideration. To "
              "disable, pass a very large number."),
     cl::init(10));
+}
 
 #define DEBUG_TYPE "regalloc"
 #ifdef LLVM_HAVE_TF_AOT_REGALLOCEVICTMODEL
@@ -81,7 +84,7 @@ private:
   bool doInitialization(Module &M) override {
     if (NotAsRequested)
       M.getContext().emitError("Requested regalloc eviction advisor analysis "
-                               "could be created. Using default");
+                               "could not be created. Using default");
     return RegAllocEvictionAdvisorAnalysis::doInitialization(M);
   }
   const bool NotAsRequested;
@@ -95,14 +98,12 @@ template <> Pass *llvm::callDefaultCtor<RegAllocEvictionAdvisorAnalysis>() {
     Ret = new DefaultEvictionAdvisorAnalysis(/*NotAsRequested*/ false);
     break;
   case RegAllocEvictionAdvisorAnalysis::AdvisorMode::Development:
-#if defined(LLVM_HAVE_TF_API)
+#if defined(LLVM_HAVE_TFLITE)
     Ret = createDevelopmentModeAdvisor();
 #endif
     break;
   case RegAllocEvictionAdvisorAnalysis::AdvisorMode::Release:
-#if defined(LLVM_HAVE_TF_AOT)
     Ret = createReleaseModeAdvisor();
-#endif
     break;
   }
   if (Ret)
@@ -156,7 +157,7 @@ bool DefaultEvictionAdvisor::shouldEvict(const LiveInterval &A, bool IsHint,
     return true;
 
   if (A.weight() > B.weight()) {
-    LLVM_DEBUG(dbgs() << "should evict: " << B << " w= " << B.weight() << '\n');
+    LLVM_DEBUG(dbgs() << "should evict: " << B << '\n');
     return true;
   }
   return false;
@@ -201,8 +202,8 @@ bool DefaultEvictionAdvisor::canEvictInterferenceBasedOnCost(
   unsigned Cascade = RA.getExtraInfo().getCascadeOrCurrentNext(VirtReg.reg());
 
   EvictionCost Cost;
-  for (MCRegUnitIterator Units(PhysReg, TRI); Units.isValid(); ++Units) {
-    LiveIntervalUnion::Query &Q = Matrix->query(VirtReg, *Units);
+  for (MCRegUnit Unit : TRI->regunits(PhysReg)) {
+    LiveIntervalUnion::Query &Q = Matrix->query(VirtReg, Unit);
     // If there is 10 or more interferences, chances are one is heavier.
     const auto &Interferences = Q.interferingVRegs(EvictInterferenceCutoff);
     if (Interferences.size() >= EvictInterferenceCutoff)
@@ -210,7 +211,7 @@ bool DefaultEvictionAdvisor::canEvictInterferenceBasedOnCost(
 
     // Check if any interfering live range is heavier than MaxWeight.
     for (const LiveInterval *Intf : reverse(Interferences)) {
-      assert(Register::isVirtualRegister(Intf->reg()) &&
+      assert(Intf->reg().isVirtual() &&
              "Only expecting virtual register interference from query");
 
       // Do not allow eviction of a virtual register if we are in the middle

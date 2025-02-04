@@ -8,7 +8,6 @@
 
 #include "lldb/Utility/ConstString.h"
 #include "llvm/Support/FormatVariadic.h"
-#include "llvm/Support/YAMLParser.h"
 #include "gtest/gtest.h"
 
 using namespace lldb_private;
@@ -89,6 +88,7 @@ TEST(ConstStringTest, NullAndEmptyStates) {
   EXPECT_TRUE(!null);
   EXPECT_TRUE(null.IsEmpty());
   EXPECT_TRUE(null.IsNull());
+  EXPECT_TRUE(null.GetString().empty());
 }
 
 TEST(ConstStringTest, CompareConstString) {
@@ -139,21 +139,16 @@ TEST(ConstStringTest, CompareStringRef) {
   EXPECT_TRUE(null != "bar");
 }
 
-TEST(ConstStringTest, YAML) {
-  std::string buffer;
-  llvm::raw_string_ostream os(buffer);
+TEST(ConstStringTest, StringConversions) {
+  ConstString foo("foo");
 
-  // Serialize.
-  std::vector<ConstString> strings = {ConstString("foo"), ConstString("bar"),
-                                      ConstString("")};
-  llvm::yaml::Output yout(os);
-  yout << strings;
-  os.flush();
+  // Member functions.
+  EXPECT_EQ(llvm::StringRef("foo"), foo.GetStringRef());
+  EXPECT_EQ(std::string("foo"), foo.GetString());
+  EXPECT_STREQ("foo", foo.AsCString());
 
-  // Deserialize.
-  std::vector<ConstString> deserialized;
-  llvm::yaml::Input yin(buffer);
-  yin >> deserialized;
-
-  EXPECT_EQ(strings, deserialized);
+  // Conversion operators.
+  EXPECT_EQ(llvm::StringRef("foo"), llvm::StringRef(foo));
+  EXPECT_EQ(std::string("foo"), std::string_view(foo));
+  EXPECT_EQ(std::string("foo"), std::string(foo));
 }

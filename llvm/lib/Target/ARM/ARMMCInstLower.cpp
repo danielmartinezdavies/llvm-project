@@ -58,6 +58,22 @@ MCOperand ARMAsmPrinter::GetSymbolRef(const MachineOperand &MO,
         MCSymbolRefExpr::create(Symbol, SymbolVariant, OutContext);
     Expr = ARMMCExpr::createUpper16(Expr, OutContext);
     break;
+  case ARMII::MO_LO_0_7:
+    Expr = MCSymbolRefExpr::create(Symbol, SymbolVariant, OutContext);
+    Expr = ARMMCExpr::createLower0_7(Expr, OutContext);
+    break;
+  case ARMII::MO_LO_8_15:
+    Expr = MCSymbolRefExpr::create(Symbol, SymbolVariant, OutContext);
+    Expr = ARMMCExpr::createLower8_15(Expr, OutContext);
+    break;
+  case ARMII::MO_HI_0_7:
+    Expr = MCSymbolRefExpr::create(Symbol, SymbolVariant, OutContext);
+    Expr = ARMMCExpr::createUpper0_7(Expr, OutContext);
+    break;
+  case ARMII::MO_HI_8_15:
+    Expr = MCSymbolRefExpr::create(Symbol, SymbolVariant, OutContext);
+    Expr = ARMMCExpr::createUpper8_15(Expr, OutContext);
+    break;
   }
 
   if (!MO.isJTI() && MO.getOffset())
@@ -167,11 +183,15 @@ void llvm::LowerARMMachineInstrToMCInst(const MachineInstr *MI, MCInst &OutMI,
 
 void ARMAsmPrinter::EmitSled(const MachineInstr &MI, SledKind Kind)
 {
-  if (MI.getParent()->getParent()->getInfo<ARMFunctionInfo>()
-    ->isThumbFunction())
-  {
-    MI.emitError("An attempt to perform XRay instrumentation for a"
-      " Thumb function (not supported). Detected when emitting a sled.");
+  const MachineFunction *MF = MI.getParent()->getParent();
+  if (MF->getInfo<ARMFunctionInfo>()->isThumbFunction()) {
+    const Function &Fn = MF->getFunction();
+    DiagnosticInfoUnsupported Unsupported(
+        Fn,
+        "An attempt to perform XRay instrumentation for a"
+        " Thumb function (not supported). Detected when emitting a sled.",
+        MI.getDebugLoc());
+    Fn.getContext().diagnose(Unsupported);
     return;
   }
   static const int8_t NoopsInSledCount = 6;
@@ -194,7 +214,7 @@ void ARMAsmPrinter::EmitSled(const MachineInstr &MI, SledKind Kind)
   //   BLX ip
   //   POP{ r0, lr }
   //
-  OutStreamer->emitCodeAlignment(4, &getSubtargetInfo());
+  OutStreamer->emitCodeAlignment(Align(4), &getSubtargetInfo());
   auto CurSled = OutContext.createTempSymbol("xray_sled_", true);
   OutStreamer->emitLabel(CurSled);
   auto Target = OutContext.createTempSymbol();
@@ -202,7 +222,7 @@ void ARMAsmPrinter::EmitSled(const MachineInstr &MI, SledKind Kind)
   // Emit "B #20" instruction, which jumps over the next 24 bytes (because
   // register pc is 8 bytes ahead of the jump instruction by the moment CPU
   // is executing it).
-  // By analogy to ARMAsmPrinter::emitPseudoExpansionLowering() |case ARM::B|.
+  // By analogy to ARMAsmPrinter::lowerPseudoInstExpansion() |case ARM::B|.
   // It is not clear why |addReg(0)| is needed (the last operand).
   EmitToStreamer(*OutStreamer, MCInstBuilder(ARM::Bcc).addImm(20)
     .addImm(ARMCC::AL).addReg(0));

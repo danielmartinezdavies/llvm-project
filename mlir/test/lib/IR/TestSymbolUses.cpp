@@ -6,7 +6,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "TestDialect.h"
+#include "TestOps.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Pass/Pass.h"
 
@@ -26,7 +26,7 @@ struct SymbolUsesPass
   WalkResult operateOnSymbol(Operation *symbol, ModuleOp module,
                              SmallVectorImpl<func::FuncOp> &deadFunctions) {
     // Test computing uses on a non symboltable op.
-    Optional<SymbolTable::UseRange> symbolUses =
+    std::optional<SymbolTable::UseRange> symbolUses =
         SymbolTable::getSymbolUses(symbol);
 
     // Test the conservative failure case.
@@ -59,7 +59,7 @@ struct SymbolUsesPass
               symbolUse.getUser()->getParentOp(), symbolUse.getSymbolRef())) {
         symbolUse.getUser()->emitRemark()
             << "found use of symbol : " << symbolUse.getSymbolRef() << " : "
-            << symbol->getAttr(SymbolTable::getSymbolAttrName());
+            << *symbol->getInherentAttr(SymbolTable::getSymbolAttrName());
       }
     }
     symbol->emitRemark() << "symbol has " << llvm::size(*symbolUses) << " uses";

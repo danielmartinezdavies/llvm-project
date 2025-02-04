@@ -14,16 +14,54 @@
 #define MLIR_DIALECT_SPIRV_TRANSFORMS_SPIRVCONVERSION_H
 
 #include "mlir/Dialect/SPIRV/IR/SPIRVAttributes.h"
+#include "mlir/Dialect/SPIRV/IR/SPIRVOps.h"
 #include "mlir/Dialect/SPIRV/IR/SPIRVTypes.h"
 #include "mlir/Dialect/SPIRV/IR/TargetAndABI.h"
+#include "mlir/Dialect/Vector/Transforms/VectorRewritePatterns.h"
 #include "mlir/Transforms/DialectConversion.h"
+#include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "mlir/Transforms/OneToNTypeConversion.h"
 #include "llvm/ADT/SmallSet.h"
+#include "llvm/Support/LogicalResult.h"
 
 namespace mlir {
 
 //===----------------------------------------------------------------------===//
 // Type Converter
 //===----------------------------------------------------------------------===//
+
+/// How sub-byte values are storaged in memory.
+enum class SPIRVSubByteTypeStorage {
+  /// Sub-byte values are tightly packed without any padding, e.g., 4xi2 -> i8.
+  Packed,
+};
+
+struct SPIRVConversionOptions {
+  /// The number of bits to store a boolean value.
+  unsigned boolNumBits{8};
+
+  /// How sub-byte values are storaged in memory.
+  SPIRVSubByteTypeStorage subByteTypeStorage{SPIRVSubByteTypeStorage::Packed};
+
+  /// Whether to emulate narrower scalar types with 32-bit scalar types if not
+  /// supported by the target.
+  ///
+  /// Non-32-bit scalar types require special hardware support that may not
+  /// exist on all GPUs. This is reflected in SPIR-V as that non-32-bit scalar
+  /// types require special capabilities or extensions. This option controls
+  /// whether to use 32-bit types to emulate < 32-bits-wide scalars, if a scalar
+  /// type of a certain bitwidth is not supported in the target environment.
+  /// This requires the runtime to also feed in data with a matched bitwidth and
+  /// layout for interface types. The runtime can do that by inspecting the
+  /// SPIR-V module.
+  ///
+  /// If the original scalar type has less than 32-bit, a multiple of its
+  /// values will be packed into one 32-bit value to be memory efficient.
+  bool emulateLT32BitScalarTypes{true};
+
+  /// Use 64-bit integers when converting index types.
+  bool use64bitIndex{false};
+};
 
 /// Type conversion from builtin types to SPIR-V types for shader interface.
 ///
@@ -32,49 +70,28 @@ namespace mlir {
 /// pointers to structs.
 class SPIRVTypeConverter : public TypeConverter {
 public:
-  struct Options {
-    /// Whether to emulate non-32-bit scalar types with 32-bit scalar types if
-    /// no native support.
-    ///
-    /// Non-32-bit scalar types require special hardware support that may not
-    /// exist on all GPUs. This is reflected in SPIR-V as that non-32-bit scalar
-    /// types require special capabilities or extensions. This option controls
-    /// whether to use 32-bit types to emulate, if a scalar type of a certain
-    /// bitwidth is not supported in the target environment. This requires the
-    /// runtime to also feed in data with a matched bitwidth and layout for
-    /// interface types. The runtime can do that by inspecting the SPIR-V
-    /// module.
-    ///
-    /// If the original scalar type has less than 32-bit, a multiple of its
-    /// values will be packed into one 32-bit value to be memory efficient.
-    bool emulateNon32BitScalarTypes{true};
-
-    /// Use 64-bit integers to convert index types.
-    bool use64bitIndex{false};
-
-    /// The number of bits to store a boolean value. It is eight bits by
-    /// default.
-    unsigned boolNumBits{8};
-
-    // Note: we need this instead of inline initializers because of
-    // https://bugs.llvm.org/show_bug.cgi?id=36684
-    Options()
-
-    {}
-  };
-
   explicit SPIRVTypeConverter(spirv::TargetEnvAttr targetAttr,
-                              Options options = {});
+                              const SPIRVConversionOptions &options = {});
 
   /// Gets the SPIR-V correspondence for the standard index type.
   Type getIndexType() const;
 
+  /// Gets the bitwidth of the index type when converted to SPIR-V.
+  unsigned getIndexTypeBitwidth() const {
+    return options.use64bitIndex ? 64 : 32;
+  }
+
+  const spirv::TargetEnv &getTargetEnv() const { return targetEnv; }
+
   /// Returns the options controlling the SPIR-V type converter.
-  const Options &getOptions() const;
+  const SPIRVConversionOptions &getOptions() const { return options; }
+
+  /// Checks if the SPIR-V capability inquired is supported.
+  bool allows(spirv::Capability capability) const;
 
 private:
   spirv::TargetEnv targetEnv;
-  Options options;
+  SPIRVConversionOptions options;
 
   MLIRContext *getContext() const;
 };
@@ -118,8 +135,12 @@ private:
 /// `func` op to the SPIR-V dialect. These patterns do not handle shader
 /// interface/ABI; they convert function parameters to be of SPIR-V allowed
 /// types.
-void populateBuiltinFuncToSPIRVPatterns(SPIRVTypeConverter &typeConverter,
+void populateBuiltinFuncToSPIRVPatterns(const SPIRVTypeConverter &typeConverter,
                                         RewritePatternSet &patterns);
+
+void populateFuncOpVectorRewritePatterns(RewritePatternSet &patterns);
+
+void populateReturnOpVectorRewritePatterns(RewritePatternSet &patterns);
 
 namespace spirv {
 class AccessChainOp;
@@ -127,8 +148,13 @@ class AccessChainOp;
 /// Returns the value for the given `builtin` variable. This function gets or
 /// inserts the global variable associated for the builtin within the nearest
 /// symbol table enclosing `op`. Returns null Value on error.
+///
+/// The global name being generated will be mangled using `preffix` and
+/// `suffix`.
 Value getBuiltinVariableValue(Operation *op, BuiltIn builtin, Type integerType,
-                              OpBuilder &builder);
+                              OpBuilder &builder,
+                              StringRef prefix = "__builtin__",
+                              StringRef suffix = "__");
 
 /// Gets the value at the given `offset` of the push constant storage with a
 /// total of `elementCount` `integerType` integers. A global variable will be
@@ -151,10 +177,38 @@ Value linearizeIndex(ValueRange indices, ArrayRef<int64_t> strides,
 
 // TODO: This method assumes that the `baseType` is a MemRefType with AffineMap
 // that has static strides. Extend to handle dynamic strides.
-spirv::AccessChainOp getElementPtr(SPIRVTypeConverter &typeConverter,
-                                   MemRefType baseType, Value basePtr,
-                                   ValueRange indices, Location loc,
-                                   OpBuilder &builder);
+Value getElementPtr(const SPIRVTypeConverter &typeConverter,
+                    MemRefType baseType, Value basePtr, ValueRange indices,
+                    Location loc, OpBuilder &builder);
+
+// GetElementPtr implementation for Kernel/OpenCL flavored SPIR-V.
+Value getOpenCLElementPtr(const SPIRVTypeConverter &typeConverter,
+                          MemRefType baseType, Value basePtr,
+                          ValueRange indices, Location loc, OpBuilder &builder);
+
+// GetElementPtr implementation for Vulkan/Shader flavored SPIR-V.
+Value getVulkanElementPtr(const SPIRVTypeConverter &typeConverter,
+                          MemRefType baseType, Value basePtr,
+                          ValueRange indices, Location loc, OpBuilder &builder);
+
+// Find the largest factor of size among {2,3,4} for the lowest dimension of
+// the target shape.
+int getComputeVectorSize(int64_t size);
+
+// GetNativeVectorShape implementation for reduction ops.
+SmallVector<int64_t> getNativeVectorShapeImpl(vector::ReductionOp op);
+
+// GetNativeVectorShape implementation for transpose ops.
+SmallVector<int64_t> getNativeVectorShapeImpl(vector::TransposeOp op);
+
+// For general ops.
+std::optional<SmallVector<int64_t>> getNativeVectorShape(Operation *op);
+
+// Unroll vectors in function signatures to native size.
+LogicalResult unrollVectorsInSignatures(Operation *op);
+
+// Unroll vectors in function bodies to native size.
+LogicalResult unrollVectorsInFuncBodies(Operation *op);
 
 } // namespace spirv
 } // namespace mlir

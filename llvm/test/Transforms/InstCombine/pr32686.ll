@@ -6,18 +6,23 @@
 
 define void @tinkywinky() {
 ; CHECK-LABEL: @tinkywinky(
-; CHECK-NEXT:    [[PATATINO:%.*]] = load i8, i8* @a, align 1
-; CHECK-NEXT:    [[TOBOOL:%.*]] = icmp eq i8 [[PATATINO]], 0
-; CHECK-NEXT:    [[TMP1:%.*]] = zext i1 [[TOBOOL]] to i32
-; CHECK-NEXT:    [[OR1:%.*]] = or i32 [[TMP1]], or (i32 zext (i1 icmp ne (i32* bitcast (i8* @a to i32*), i32* @b) to i32), i32 2)
-; CHECK-NEXT:    store i32 [[OR1]], i32* @b, align 4
+; CHECK-NEXT:    [[PATATINO:%.*]] = load i8, ptr @a, align 1
+; CHECK-NEXT:    [[TOBOOL_NOT:%.*]] = icmp eq i8 [[PATATINO]], 0
+; CHECK-NEXT:    [[CMP:%.*]] = icmp ne ptr @a, @b
+; CHECK-NEXT:    [[XOR1:%.*]] = or i1 [[CMP]], [[TOBOOL_NOT]]
+; CHECK-NEXT:    [[XOR:%.*]] = zext i1 [[XOR1]] to i32
+; CHECK-NEXT:    [[OR:%.*]] = or disjoint i32 [[XOR]], 2
+; CHECK-NEXT:    store i32 [[OR]], ptr @b, align 4
 ; CHECK-NEXT:    ret void
 ;
-  %patatino = load i8, i8* @a
+  %patatino = load i8, ptr @a
   %tobool = icmp ne i8 %patatino, 0
   %lnot = xor i1 %tobool, true
   %lnot.ext = zext i1 %lnot to i32
-  %or = or i32 xor (i32 zext (i1 icmp ne (i32* bitcast (i8* @a to i32*), i32* @b) to i32), i32 2), %lnot.ext
-  store i32 %or, i32* @b, align 4
+  %cmp = icmp ne ptr @a, @b
+  %zext = zext i1 %cmp to i32
+  %xor = xor i32 %zext, 2
+  %or = or i32 %xor, %lnot.ext
+  store i32 %or, ptr @b, align 4
   ret void
 }

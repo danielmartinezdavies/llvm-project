@@ -13,7 +13,7 @@
 
 #include "clang/AST/ASTConsumer.h"
 #include "clang/AST/ASTContext.h"
-#include "clang/AST/RecursiveASTVisitor.h"
+#include "clang/AST/DynamicRecursiveASTVisitor.h"
 #include "clang/Tooling/Tooling.h"
 #include "gtest/gtest.h"
 #include <map>
@@ -28,8 +28,8 @@ typedef std::map<std::string, bool> VarInfoMap;
 
 /// \brief Records information on variable initializers to a map.
 class EvaluateConstantInitializersVisitor
-    : public clang::RecursiveASTVisitor<EvaluateConstantInitializersVisitor> {
- public:
+    : public clang::DynamicRecursiveASTVisitor {
+public:
   explicit EvaluateConstantInitializersVisitor(VarInfoMap &VarInfo)
       : VarInfo(VarInfo) {}
 
@@ -38,7 +38,7 @@ class EvaluateConstantInitializersVisitor
   ///
   /// For each VarDecl with an initializer this also records in VarInfo
   /// whether the initializer could be evaluated as a constant.
-  bool VisitVarDecl(const clang::VarDecl *VD) {
+  bool VisitVarDecl(clang::VarDecl *VD) override {
     if (const clang::Expr *Init = VD->getInit()) {
       clang::Expr::EvalResult Result;
       bool WasEvaluated = Init->EvaluateAsRValue(Result, VD->getASTContext());
@@ -105,5 +105,52 @@ TEST(EvaluateAsRValue, FailsGracefullyForUnknownTypes) {
         "  (void) Constant;"
         "}",
         Args));
+  }
+}
+
+class CheckLValueToRValueConversionVisitor
+    : public clang::DynamicRecursiveASTVisitor {
+public:
+  bool VisitDeclRefExpr(clang::DeclRefExpr *E) override {
+    clang::Expr::EvalResult Result;
+    E->EvaluateAsRValue(Result, E->getDecl()->getASTContext(), true);
+
+    EXPECT_TRUE(Result.Val.hasValue());
+    // Since EvaluateAsRValue does an implicit lvalue-to-rvalue conversion,
+    // the result cannot be a LValue.
+    EXPECT_FALSE(Result.Val.isLValue());
+
+    return true;
+  }
+};
+
+class CheckConversionAction : public clang::ASTFrontendAction {
+public:
+  std::unique_ptr<clang::ASTConsumer>
+  CreateASTConsumer(clang::CompilerInstance &Compiler,
+                    llvm::StringRef FilePath) override {
+    return std::make_unique<Consumer>();
+  }
+
+private:
+  class Consumer : public clang::ASTConsumer {
+  public:
+    ~Consumer() override {}
+
+    void HandleTranslationUnit(clang::ASTContext &Ctx) override {
+      CheckLValueToRValueConversionVisitor Evaluator;
+      Evaluator.TraverseDecl(Ctx.getTranslationUnitDecl());
+    }
+  };
+};
+
+TEST(EvaluateAsRValue, LValueToRValueConversionWorks) {
+  std::string ModesToTest[] = {"", "-fexperimental-new-constant-interpreter"};
+  for (std::string const &Mode : ModesToTest) {
+    std::vector<std::string> Args(1, Mode);
+    ASSERT_TRUE(runToolOnCodeWithArgs(std::make_unique<CheckConversionAction>(),
+                                      "constexpr int a = 20;\n"
+                                      "static_assert(a == 20, \"\");\n",
+                                      Args));
   }
 }

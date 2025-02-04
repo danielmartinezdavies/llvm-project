@@ -1,5 +1,7 @@
-; RUN: llc -mtriple=amdgcn-amd-amdhsa -mcpu=kaveri -enable-ipra=0 -verify-machineinstrs < %s | FileCheck -enable-var-scope -check-prefixes=GCN,GFX7,UNPACKED-TID %s
-; RUN: llc -mtriple=amdgcn-amd-amdhsa -mcpu=gfx90a -mattr=-xnack -enable-ipra=0 -verify-machineinstrs < %s | FileCheck -enable-var-scope -check-prefixes=GCN,GFX90A,PACKED-TID %s
+; RUN: opt -passes=amdgpu-attributor -mcpu=kaveri < %s | llc -mcpu=gfx90a -enable-ipra=0 | FileCheck -enable-var-scope -check-prefixes=GCN,GFX7,UNPACKED-TID %s
+; RUN: opt -passes=amdgpu-attributor -mcpu=gfx90a -mattr=-xnack < %s | llc -mcpu=gfx90a -mattr=-xnack -enable-ipra=0 | FileCheck -enable-var-scope -check-prefixes=GCN,GFX90A,PACKED-TID %s
+
+target triple = "amdgcn-amd-amdhsa"
 
 ; GCN-LABEL: {{^}}use_workitem_id_x:
 ; GCN: s_waitcnt
@@ -9,7 +11,7 @@
 ; GCN-NEXT: s_setpc_b64
 define void @use_workitem_id_x() #1 {
   %val = call i32 @llvm.amdgcn.workitem.id.x()
-  store volatile i32 %val, i32 addrspace(1)* undef
+  store volatile i32 %val, ptr addrspace(1) undef
   ret void
 }
 
@@ -21,7 +23,7 @@ define void @use_workitem_id_x() #1 {
 ; GCN-NEXT: s_setpc_b64
 define void @use_workitem_id_y() #1 {
   %val = call i32 @llvm.amdgcn.workitem.id.y()
-  store volatile i32 %val, i32 addrspace(1)* undef
+  store volatile i32 %val, ptr addrspace(1) undef
   ret void
 }
 
@@ -33,7 +35,7 @@ define void @use_workitem_id_y() #1 {
 ; GCN-NEXT: s_setpc_b64
 define void @use_workitem_id_z() #1 {
   %val = call i32 @llvm.amdgcn.workitem.id.z()
-  store volatile i32 %val, i32 addrspace(1)* undef
+  store volatile i32 %val, ptr addrspace(1) undef
   ret void
 }
 
@@ -48,8 +50,8 @@ define void @use_workitem_id_z() #1 {
 define void @use_workitem_id_xy() #1 {
   %val0 = call i32 @llvm.amdgcn.workitem.id.x()
   %val1 = call i32 @llvm.amdgcn.workitem.id.y()
-  store volatile i32 %val0, i32 addrspace(1)* undef
-  store volatile i32 %val1, i32 addrspace(1)* undef
+  store volatile i32 %val0, ptr addrspace(1) undef
+  store volatile i32 %val1, ptr addrspace(1) undef
   ret void
 }
 
@@ -67,9 +69,9 @@ define void @use_workitem_id_xyz() #1 {
   %val0 = call i32 @llvm.amdgcn.workitem.id.x()
   %val1 = call i32 @llvm.amdgcn.workitem.id.y()
   %val2 = call i32 @llvm.amdgcn.workitem.id.z()
-  store volatile i32 %val0, i32 addrspace(1)* undef
-  store volatile i32 %val1, i32 addrspace(1)* undef
-  store volatile i32 %val2, i32 addrspace(1)* undef
+  store volatile i32 %val0, ptr addrspace(1) undef
+  store volatile i32 %val1, ptr addrspace(1) undef
+  store volatile i32 %val2, ptr addrspace(1) undef
   ret void
 }
 
@@ -84,8 +86,8 @@ define void @use_workitem_id_xyz() #1 {
 define void @use_workitem_id_xz() #1 {
   %val0 = call i32 @llvm.amdgcn.workitem.id.x()
   %val1 = call i32 @llvm.amdgcn.workitem.id.z()
-  store volatile i32 %val0, i32 addrspace(1)* undef
-  store volatile i32 %val1, i32 addrspace(1)* undef
+  store volatile i32 %val0, ptr addrspace(1) undef
+  store volatile i32 %val1, ptr addrspace(1) undef
   ret void
 }
 
@@ -100,8 +102,8 @@ define void @use_workitem_id_xz() #1 {
 define void @use_workitem_id_yz() #1 {
   %val0 = call i32 @llvm.amdgcn.workitem.id.y()
   %val1 = call i32 @llvm.amdgcn.workitem.id.z()
-  store volatile i32 %val0, i32 addrspace(1)* undef
-  store volatile i32 %val1, i32 addrspace(1)* undef
+  store volatile i32 %val0, ptr addrspace(1) undef
+  store volatile i32 %val1, ptr addrspace(1) undef
   ret void
 }
 
@@ -248,8 +250,8 @@ define void @func_indirect_use_workitem_id_z() #1 {
 ; GCN-DAG: {{flat|global}}_store_dword v{{\[[0-9]+:[0-9]+\]}}, [[ID]]
 define void @other_arg_use_workitem_id_x(i32 %arg0) #1 {
   %val = call i32 @llvm.amdgcn.workitem.id.x()
-  store volatile i32 %arg0, i32 addrspace(1)* undef
-  store volatile i32 %val, i32 addrspace(1)* undef
+  store volatile i32 %arg0, ptr addrspace(1) undef
+  store volatile i32 %val, ptr addrspace(1) undef
   ret void
 }
 
@@ -260,8 +262,8 @@ define void @other_arg_use_workitem_id_x(i32 %arg0) #1 {
 ; GCN-DAG: {{flat|global}}_store_dword v{{\[[0-9]+:[0-9]+\]}}, [[ID]]
 define void @other_arg_use_workitem_id_y(i32 %arg0) #1 {
   %val = call i32 @llvm.amdgcn.workitem.id.y()
-  store volatile i32 %arg0, i32 addrspace(1)* undef
-  store volatile i32 %val, i32 addrspace(1)* undef
+  store volatile i32 %arg0, ptr addrspace(1) undef
+  store volatile i32 %val, ptr addrspace(1) undef
   ret void
 }
 
@@ -272,8 +274,8 @@ define void @other_arg_use_workitem_id_y(i32 %arg0) #1 {
 ; GCN-DAG: {{flat|global}}_store_dword v{{\[[0-9]+:[0-9]+\]}}, [[ID]]
 define void @other_arg_use_workitem_id_z(i32 %arg0) #1 {
   %val = call i32 @llvm.amdgcn.workitem.id.z()
-  store volatile i32 %arg0, i32 addrspace(1)* undef
-  store volatile i32 %val, i32 addrspace(1)* undef
+  store volatile i32 %arg0, ptr addrspace(1) undef
+  store volatile i32 %val, ptr addrspace(1) undef
   ret void
 }
 
@@ -333,43 +335,43 @@ define void @too_many_args_use_workitem_id_x(
   i32 %arg16, i32 %arg17, i32 %arg18, i32 %arg19, i32 %arg20, i32 %arg21, i32 %arg22, i32 %arg23,
   i32 %arg24, i32 %arg25, i32 %arg26, i32 %arg27, i32 %arg28, i32 %arg29, i32 %arg30, i32 %arg31) #1 {
   %val = call i32 @llvm.amdgcn.workitem.id.x()
-  store volatile i32 %val, i32 addrspace(1)* undef
+  store volatile i32 %val, ptr addrspace(1) undef
 
-  store volatile i32 %arg0, i32 addrspace(1)* undef
-  store volatile i32 %arg1, i32 addrspace(1)* undef
-  store volatile i32 %arg2, i32 addrspace(1)* undef
-  store volatile i32 %arg3, i32 addrspace(1)* undef
-  store volatile i32 %arg4, i32 addrspace(1)* undef
-  store volatile i32 %arg5, i32 addrspace(1)* undef
-  store volatile i32 %arg6, i32 addrspace(1)* undef
-  store volatile i32 %arg7, i32 addrspace(1)* undef
+  store volatile i32 %arg0, ptr addrspace(1) undef
+  store volatile i32 %arg1, ptr addrspace(1) undef
+  store volatile i32 %arg2, ptr addrspace(1) undef
+  store volatile i32 %arg3, ptr addrspace(1) undef
+  store volatile i32 %arg4, ptr addrspace(1) undef
+  store volatile i32 %arg5, ptr addrspace(1) undef
+  store volatile i32 %arg6, ptr addrspace(1) undef
+  store volatile i32 %arg7, ptr addrspace(1) undef
 
-  store volatile i32 %arg8, i32 addrspace(1)* undef
-  store volatile i32 %arg9, i32 addrspace(1)* undef
-  store volatile i32 %arg10, i32 addrspace(1)* undef
-  store volatile i32 %arg11, i32 addrspace(1)* undef
-  store volatile i32 %arg12, i32 addrspace(1)* undef
-  store volatile i32 %arg13, i32 addrspace(1)* undef
-  store volatile i32 %arg14, i32 addrspace(1)* undef
-  store volatile i32 %arg15, i32 addrspace(1)* undef
+  store volatile i32 %arg8, ptr addrspace(1) undef
+  store volatile i32 %arg9, ptr addrspace(1) undef
+  store volatile i32 %arg10, ptr addrspace(1) undef
+  store volatile i32 %arg11, ptr addrspace(1) undef
+  store volatile i32 %arg12, ptr addrspace(1) undef
+  store volatile i32 %arg13, ptr addrspace(1) undef
+  store volatile i32 %arg14, ptr addrspace(1) undef
+  store volatile i32 %arg15, ptr addrspace(1) undef
 
-  store volatile i32 %arg16, i32 addrspace(1)* undef
-  store volatile i32 %arg17, i32 addrspace(1)* undef
-  store volatile i32 %arg18, i32 addrspace(1)* undef
-  store volatile i32 %arg19, i32 addrspace(1)* undef
-  store volatile i32 %arg20, i32 addrspace(1)* undef
-  store volatile i32 %arg21, i32 addrspace(1)* undef
-  store volatile i32 %arg22, i32 addrspace(1)* undef
-  store volatile i32 %arg23, i32 addrspace(1)* undef
+  store volatile i32 %arg16, ptr addrspace(1) undef
+  store volatile i32 %arg17, ptr addrspace(1) undef
+  store volatile i32 %arg18, ptr addrspace(1) undef
+  store volatile i32 %arg19, ptr addrspace(1) undef
+  store volatile i32 %arg20, ptr addrspace(1) undef
+  store volatile i32 %arg21, ptr addrspace(1) undef
+  store volatile i32 %arg22, ptr addrspace(1) undef
+  store volatile i32 %arg23, ptr addrspace(1) undef
 
-  store volatile i32 %arg24, i32 addrspace(1)* undef
-  store volatile i32 %arg25, i32 addrspace(1)* undef
-  store volatile i32 %arg26, i32 addrspace(1)* undef
-  store volatile i32 %arg27, i32 addrspace(1)* undef
-  store volatile i32 %arg28, i32 addrspace(1)* undef
-  store volatile i32 %arg29, i32 addrspace(1)* undef
-  store volatile i32 %arg30, i32 addrspace(1)* undef
-  store volatile i32 %arg31, i32 addrspace(1)* undef
+  store volatile i32 %arg24, ptr addrspace(1) undef
+  store volatile i32 %arg25, ptr addrspace(1) undef
+  store volatile i32 %arg26, ptr addrspace(1) undef
+  store volatile i32 %arg27, ptr addrspace(1) undef
+  store volatile i32 %arg28, ptr addrspace(1) undef
+  store volatile i32 %arg29, ptr addrspace(1) undef
+  store volatile i32 %arg30, ptr addrspace(1) undef
+  store volatile i32 %arg31, ptr addrspace(1) undef
 
   ret void
 }
@@ -403,7 +405,7 @@ define amdgpu_kernel void @kern_call_too_many_args_use_workitem_id_x() #1 {
 ; GCN: s_swappc_b64
 ; GCN-NOT: v31
 define void @func_call_too_many_args_use_workitem_id_x(i32 %arg0) #1 {
-  store volatile i32 %arg0, i32 addrspace(1)* undef
+  store volatile i32 %arg0, ptr addrspace(1) undef
   call void @too_many_args_use_workitem_id_x(
     i32 10, i32 20, i32 30, i32 40,
     i32 50, i32 60, i32 70, i32 80,
@@ -419,15 +421,15 @@ define void @func_call_too_many_args_use_workitem_id_x(i32 %arg0) #1 {
 ; Requires loading and storing to stack slot.
 ; GCN-LABEL: {{^}}too_many_args_call_too_many_args_use_workitem_id_x:
 ; GCN-DAG: s_addk_i32 s32, 0x400{{$}}
-; GCN-DAG: buffer_store_dword v40, off, s[0:3], s32 offset:4 ; 4-byte Folded Spill
+; GCN-DAG: buffer_store_dword v40, off, s[0:3], s33 offset:4 ; 4-byte Folded Spill
 ; GCN-DAG: buffer_load_dword [[TMP_REG:v[0-9]+]], off, s[0:3], s33{{$}}
 
 ; GCN: buffer_store_dword [[TMP_REG]], off, s[0:3], s32{{$}}
 
 ; GCN: s_swappc_b64
 
-; GCN: s_addk_i32 s32, 0xfc00{{$}}
-; GCN: buffer_load_dword v40, off, s[0:3], s32 offset:4 ; 4-byte Folded Reload
+; GCN: s_mov_b32 s32, s33
+; GCN: buffer_load_dword v40, off, s[0:3], s33 offset:4 ; 4-byte Folded Reload
 ; GCN: s_setpc_b64
 define void @too_many_args_call_too_many_args_use_workitem_id_x(
   i32 %arg0, i32 %arg1, i32 %arg2, i32 %arg3, i32 %arg4, i32 %arg5, i32 %arg6, i32 %arg7,
@@ -458,46 +460,46 @@ define void @too_many_args_use_workitem_id_x_byval(
   i32 %arg0, i32 %arg1, i32 %arg2, i32 %arg3, i32 %arg4, i32 %arg5, i32 %arg6, i32 %arg7,
   i32 %arg8, i32 %arg9, i32 %arg10, i32 %arg11, i32 %arg12, i32 %arg13, i32 %arg14, i32 %arg15,
   i32 %arg16, i32 %arg17, i32 %arg18, i32 %arg19, i32 %arg20, i32 %arg21, i32 %arg22, i32 %arg23,
-  i32 %arg24, i32 %arg25, i32 %arg26, i32 %arg27, i32 %arg28, i32 %arg29, i32 %arg30, i32 %arg31, i32 addrspace(5)* byval(i32) %arg32) #1 {
+  i32 %arg24, i32 %arg25, i32 %arg26, i32 %arg27, i32 %arg28, i32 %arg29, i32 %arg30, i32 %arg31, ptr addrspace(5) byval(i32) %arg32) #1 {
   %val = call i32 @llvm.amdgcn.workitem.id.x()
-  store volatile i32 %val, i32 addrspace(1)* undef
+  store volatile i32 %val, ptr addrspace(1) undef
 
-  store volatile i32 %arg0, i32 addrspace(1)* undef
-  store volatile i32 %arg1, i32 addrspace(1)* undef
-  store volatile i32 %arg2, i32 addrspace(1)* undef
-  store volatile i32 %arg3, i32 addrspace(1)* undef
-  store volatile i32 %arg4, i32 addrspace(1)* undef
-  store volatile i32 %arg5, i32 addrspace(1)* undef
-  store volatile i32 %arg6, i32 addrspace(1)* undef
-  store volatile i32 %arg7, i32 addrspace(1)* undef
+  store volatile i32 %arg0, ptr addrspace(1) undef
+  store volatile i32 %arg1, ptr addrspace(1) undef
+  store volatile i32 %arg2, ptr addrspace(1) undef
+  store volatile i32 %arg3, ptr addrspace(1) undef
+  store volatile i32 %arg4, ptr addrspace(1) undef
+  store volatile i32 %arg5, ptr addrspace(1) undef
+  store volatile i32 %arg6, ptr addrspace(1) undef
+  store volatile i32 %arg7, ptr addrspace(1) undef
 
-  store volatile i32 %arg8, i32 addrspace(1)* undef
-  store volatile i32 %arg9, i32 addrspace(1)* undef
-  store volatile i32 %arg10, i32 addrspace(1)* undef
-  store volatile i32 %arg11, i32 addrspace(1)* undef
-  store volatile i32 %arg12, i32 addrspace(1)* undef
-  store volatile i32 %arg13, i32 addrspace(1)* undef
-  store volatile i32 %arg14, i32 addrspace(1)* undef
-  store volatile i32 %arg15, i32 addrspace(1)* undef
+  store volatile i32 %arg8, ptr addrspace(1) undef
+  store volatile i32 %arg9, ptr addrspace(1) undef
+  store volatile i32 %arg10, ptr addrspace(1) undef
+  store volatile i32 %arg11, ptr addrspace(1) undef
+  store volatile i32 %arg12, ptr addrspace(1) undef
+  store volatile i32 %arg13, ptr addrspace(1) undef
+  store volatile i32 %arg14, ptr addrspace(1) undef
+  store volatile i32 %arg15, ptr addrspace(1) undef
 
-  store volatile i32 %arg16, i32 addrspace(1)* undef
-  store volatile i32 %arg17, i32 addrspace(1)* undef
-  store volatile i32 %arg18, i32 addrspace(1)* undef
-  store volatile i32 %arg19, i32 addrspace(1)* undef
-  store volatile i32 %arg20, i32 addrspace(1)* undef
-  store volatile i32 %arg21, i32 addrspace(1)* undef
-  store volatile i32 %arg22, i32 addrspace(1)* undef
-  store volatile i32 %arg23, i32 addrspace(1)* undef
+  store volatile i32 %arg16, ptr addrspace(1) undef
+  store volatile i32 %arg17, ptr addrspace(1) undef
+  store volatile i32 %arg18, ptr addrspace(1) undef
+  store volatile i32 %arg19, ptr addrspace(1) undef
+  store volatile i32 %arg20, ptr addrspace(1) undef
+  store volatile i32 %arg21, ptr addrspace(1) undef
+  store volatile i32 %arg22, ptr addrspace(1) undef
+  store volatile i32 %arg23, ptr addrspace(1) undef
 
-  store volatile i32 %arg24, i32 addrspace(1)* undef
-  store volatile i32 %arg25, i32 addrspace(1)* undef
-  store volatile i32 %arg26, i32 addrspace(1)* undef
-  store volatile i32 %arg27, i32 addrspace(1)* undef
-  store volatile i32 %arg28, i32 addrspace(1)* undef
-  store volatile i32 %arg29, i32 addrspace(1)* undef
-  store volatile i32 %arg30, i32 addrspace(1)* undef
-  store volatile i32 %arg31, i32 addrspace(1)* undef
-  %private = load volatile i32, i32 addrspace(5)* %arg32
+  store volatile i32 %arg24, ptr addrspace(1) undef
+  store volatile i32 %arg25, ptr addrspace(1) undef
+  store volatile i32 %arg26, ptr addrspace(1) undef
+  store volatile i32 %arg27, ptr addrspace(1) undef
+  store volatile i32 %arg28, ptr addrspace(1) undef
+  store volatile i32 %arg29, ptr addrspace(1) undef
+  store volatile i32 %arg30, ptr addrspace(1) undef
+  store volatile i32 %arg31, ptr addrspace(1) undef
+  %private = load volatile i32, ptr addrspace(5) %arg32
   ret void
 }
 
@@ -509,13 +511,13 @@ define void @too_many_args_use_workitem_id_x_byval(
 ; Local stack object initialize. Offset 0 is the emergency spill slot.
 ; GCN-DAG: v_mov_b32_e32 [[K:v[0-9]+]], 0x3e7{{$}}
 ; GCN-DAG: s_movk_i32 s32, 0x400
-; GCN: buffer_store_dword [[K]], off, s[0:3], 0 offset:4
+; GCN: buffer_store_dword [[K]], off, s[0:3], 0
 
 ; Pass %arg31 on stack
 ; GCN: v_mov_b32_e32 [[K1:v[0-9]+]], 0x140{{$}}
 ; GCN: buffer_store_dword [[K1:v[0-9]+]], off, s[0:3], s32{{$}}
 
-; GCN: buffer_load_dword [[RELOAD_BYVAL:v[0-9]+]], off, s[0:3], 0 offset:4
+; GCN: buffer_load_dword [[RELOAD_BYVAL:v[0-9]+]], off, s[0:3], 0
 ; GCN: buffer_store_dword [[RELOAD_BYVAL]], off, s[0:3], s32 offset:4{{$}}
 ; GCN: v_mov_b32_e32 [[RELOAD_BYVAL]],
 ; GCN: s_swappc_b64
@@ -523,7 +525,7 @@ define void @too_many_args_use_workitem_id_x_byval(
 ; GCN: .amdhsa_system_vgpr_workitem_id 0
 define amdgpu_kernel void @kern_call_too_many_args_use_workitem_id_x_byval() #1 {
   %alloca = alloca i32, align 4, addrspace(5)
-  store volatile i32 999, i32 addrspace(5)* %alloca
+  store volatile i32 999, ptr addrspace(5) %alloca
   call void @too_many_args_use_workitem_id_x_byval(
     i32 10, i32 20, i32 30, i32 40,
     i32 50, i32 60, i32 70, i32 80,
@@ -533,7 +535,7 @@ define amdgpu_kernel void @kern_call_too_many_args_use_workitem_id_x_byval() #1 
     i32 210, i32 220, i32 230, i32 240,
     i32 250, i32 260, i32 270, i32 280,
     i32 290, i32 300, i32 310, i32 320,
-    i32 addrspace(5)* byval(i32) %alloca)
+    ptr addrspace(5) byval(i32) %alloca)
   ret void
 }
 
@@ -547,7 +549,7 @@ define amdgpu_kernel void @kern_call_too_many_args_use_workitem_id_x_byval() #1 
 ; GCN: s_swappc_b64
 define void @func_call_too_many_args_use_workitem_id_x_byval() #1 {
   %alloca = alloca i32, align 4, addrspace(5)
-  store volatile i32 999, i32 addrspace(5)* %alloca
+  store volatile i32 999, ptr addrspace(5) %alloca
   call void @too_many_args_use_workitem_id_x_byval(
     i32 10, i32 20, i32 30, i32 40,
     i32 50, i32 60, i32 70, i32 80,
@@ -557,7 +559,7 @@ define void @func_call_too_many_args_use_workitem_id_x_byval() #1 {
     i32 210, i32 220, i32 230, i32 240,
     i32 250, i32 260, i32 270, i32 280,
     i32 290, i32 300, i32 310, i32 320,
-    i32 addrspace(5)* byval(i32) %alloca)
+    ptr addrspace(5) byval(i32) %alloca)
   ret void
 }
 
@@ -588,47 +590,47 @@ define void @too_many_args_use_workitem_id_xyz(
   i32 %arg16, i32 %arg17, i32 %arg18, i32 %arg19, i32 %arg20, i32 %arg21, i32 %arg22, i32 %arg23,
   i32 %arg24, i32 %arg25, i32 %arg26, i32 %arg27, i32 %arg28, i32 %arg29, i32 %arg30, i32 %arg31) #1 {
   %val0 = call i32 @llvm.amdgcn.workitem.id.x()
-  store volatile i32 %val0, i32 addrspace(1)* undef
+  store volatile i32 %val0, ptr addrspace(1) undef
   %val1 = call i32 @llvm.amdgcn.workitem.id.y()
-  store volatile i32 %val1, i32 addrspace(1)* undef
+  store volatile i32 %val1, ptr addrspace(1) undef
   %val2 = call i32 @llvm.amdgcn.workitem.id.z()
-  store volatile i32 %val2, i32 addrspace(1)* undef
+  store volatile i32 %val2, ptr addrspace(1) undef
 
-  store volatile i32 %arg0, i32 addrspace(1)* undef
-  store volatile i32 %arg1, i32 addrspace(1)* undef
-  store volatile i32 %arg2, i32 addrspace(1)* undef
-  store volatile i32 %arg3, i32 addrspace(1)* undef
-  store volatile i32 %arg4, i32 addrspace(1)* undef
-  store volatile i32 %arg5, i32 addrspace(1)* undef
-  store volatile i32 %arg6, i32 addrspace(1)* undef
-  store volatile i32 %arg7, i32 addrspace(1)* undef
+  store volatile i32 %arg0, ptr addrspace(1) undef
+  store volatile i32 %arg1, ptr addrspace(1) undef
+  store volatile i32 %arg2, ptr addrspace(1) undef
+  store volatile i32 %arg3, ptr addrspace(1) undef
+  store volatile i32 %arg4, ptr addrspace(1) undef
+  store volatile i32 %arg5, ptr addrspace(1) undef
+  store volatile i32 %arg6, ptr addrspace(1) undef
+  store volatile i32 %arg7, ptr addrspace(1) undef
 
-  store volatile i32 %arg8, i32 addrspace(1)* undef
-  store volatile i32 %arg9, i32 addrspace(1)* undef
-  store volatile i32 %arg10, i32 addrspace(1)* undef
-  store volatile i32 %arg11, i32 addrspace(1)* undef
-  store volatile i32 %arg12, i32 addrspace(1)* undef
-  store volatile i32 %arg13, i32 addrspace(1)* undef
-  store volatile i32 %arg14, i32 addrspace(1)* undef
-  store volatile i32 %arg15, i32 addrspace(1)* undef
+  store volatile i32 %arg8, ptr addrspace(1) undef
+  store volatile i32 %arg9, ptr addrspace(1) undef
+  store volatile i32 %arg10, ptr addrspace(1) undef
+  store volatile i32 %arg11, ptr addrspace(1) undef
+  store volatile i32 %arg12, ptr addrspace(1) undef
+  store volatile i32 %arg13, ptr addrspace(1) undef
+  store volatile i32 %arg14, ptr addrspace(1) undef
+  store volatile i32 %arg15, ptr addrspace(1) undef
 
-  store volatile i32 %arg16, i32 addrspace(1)* undef
-  store volatile i32 %arg17, i32 addrspace(1)* undef
-  store volatile i32 %arg18, i32 addrspace(1)* undef
-  store volatile i32 %arg19, i32 addrspace(1)* undef
-  store volatile i32 %arg20, i32 addrspace(1)* undef
-  store volatile i32 %arg21, i32 addrspace(1)* undef
-  store volatile i32 %arg22, i32 addrspace(1)* undef
-  store volatile i32 %arg23, i32 addrspace(1)* undef
+  store volatile i32 %arg16, ptr addrspace(1) undef
+  store volatile i32 %arg17, ptr addrspace(1) undef
+  store volatile i32 %arg18, ptr addrspace(1) undef
+  store volatile i32 %arg19, ptr addrspace(1) undef
+  store volatile i32 %arg20, ptr addrspace(1) undef
+  store volatile i32 %arg21, ptr addrspace(1) undef
+  store volatile i32 %arg22, ptr addrspace(1) undef
+  store volatile i32 %arg23, ptr addrspace(1) undef
 
-  store volatile i32 %arg24, i32 addrspace(1)* undef
-  store volatile i32 %arg25, i32 addrspace(1)* undef
-  store volatile i32 %arg26, i32 addrspace(1)* undef
-  store volatile i32 %arg27, i32 addrspace(1)* undef
-  store volatile i32 %arg28, i32 addrspace(1)* undef
-  store volatile i32 %arg29, i32 addrspace(1)* undef
-  store volatile i32 %arg30, i32 addrspace(1)* undef
-  store volatile i32 %arg31, i32 addrspace(1)* undef
+  store volatile i32 %arg24, ptr addrspace(1) undef
+  store volatile i32 %arg25, ptr addrspace(1) undef
+  store volatile i32 %arg26, ptr addrspace(1) undef
+  store volatile i32 %arg27, ptr addrspace(1) undef
+  store volatile i32 %arg28, ptr addrspace(1) undef
+  store volatile i32 %arg29, ptr addrspace(1) undef
+  store volatile i32 %arg30, ptr addrspace(1) undef
+  store volatile i32 %arg31, ptr addrspace(1) undef
 
   ret void
 }
@@ -686,46 +688,46 @@ define void @too_many_args_use_workitem_id_x_stack_yz(
   i32 %arg16, i32 %arg17, i32 %arg18, i32 %arg19, i32 %arg20, i32 %arg21, i32 %arg22, i32 %arg23,
   i32 %arg24, i32 %arg25, i32 %arg26, i32 %arg27, i32 %arg28, i32 %arg29, i32 %arg30) #1 {
   %val0 = call i32 @llvm.amdgcn.workitem.id.x()
-  store volatile i32 %val0, i32 addrspace(1)* undef
+  store volatile i32 %val0, ptr addrspace(1) undef
   %val1 = call i32 @llvm.amdgcn.workitem.id.y()
-  store volatile i32 %val1, i32 addrspace(1)* undef
+  store volatile i32 %val1, ptr addrspace(1) undef
   %val2 = call i32 @llvm.amdgcn.workitem.id.z()
-  store volatile i32 %val2, i32 addrspace(1)* undef
+  store volatile i32 %val2, ptr addrspace(1) undef
 
-  store volatile i32 %arg0, i32 addrspace(1)* undef
-  store volatile i32 %arg1, i32 addrspace(1)* undef
-  store volatile i32 %arg2, i32 addrspace(1)* undef
-  store volatile i32 %arg3, i32 addrspace(1)* undef
-  store volatile i32 %arg4, i32 addrspace(1)* undef
-  store volatile i32 %arg5, i32 addrspace(1)* undef
-  store volatile i32 %arg6, i32 addrspace(1)* undef
-  store volatile i32 %arg7, i32 addrspace(1)* undef
+  store volatile i32 %arg0, ptr addrspace(1) undef
+  store volatile i32 %arg1, ptr addrspace(1) undef
+  store volatile i32 %arg2, ptr addrspace(1) undef
+  store volatile i32 %arg3, ptr addrspace(1) undef
+  store volatile i32 %arg4, ptr addrspace(1) undef
+  store volatile i32 %arg5, ptr addrspace(1) undef
+  store volatile i32 %arg6, ptr addrspace(1) undef
+  store volatile i32 %arg7, ptr addrspace(1) undef
 
-  store volatile i32 %arg8, i32 addrspace(1)* undef
-  store volatile i32 %arg9, i32 addrspace(1)* undef
-  store volatile i32 %arg10, i32 addrspace(1)* undef
-  store volatile i32 %arg11, i32 addrspace(1)* undef
-  store volatile i32 %arg12, i32 addrspace(1)* undef
-  store volatile i32 %arg13, i32 addrspace(1)* undef
-  store volatile i32 %arg14, i32 addrspace(1)* undef
-  store volatile i32 %arg15, i32 addrspace(1)* undef
+  store volatile i32 %arg8, ptr addrspace(1) undef
+  store volatile i32 %arg9, ptr addrspace(1) undef
+  store volatile i32 %arg10, ptr addrspace(1) undef
+  store volatile i32 %arg11, ptr addrspace(1) undef
+  store volatile i32 %arg12, ptr addrspace(1) undef
+  store volatile i32 %arg13, ptr addrspace(1) undef
+  store volatile i32 %arg14, ptr addrspace(1) undef
+  store volatile i32 %arg15, ptr addrspace(1) undef
 
-  store volatile i32 %arg16, i32 addrspace(1)* undef
-  store volatile i32 %arg17, i32 addrspace(1)* undef
-  store volatile i32 %arg18, i32 addrspace(1)* undef
-  store volatile i32 %arg19, i32 addrspace(1)* undef
-  store volatile i32 %arg20, i32 addrspace(1)* undef
-  store volatile i32 %arg21, i32 addrspace(1)* undef
-  store volatile i32 %arg22, i32 addrspace(1)* undef
-  store volatile i32 %arg23, i32 addrspace(1)* undef
+  store volatile i32 %arg16, ptr addrspace(1) undef
+  store volatile i32 %arg17, ptr addrspace(1) undef
+  store volatile i32 %arg18, ptr addrspace(1) undef
+  store volatile i32 %arg19, ptr addrspace(1) undef
+  store volatile i32 %arg20, ptr addrspace(1) undef
+  store volatile i32 %arg21, ptr addrspace(1) undef
+  store volatile i32 %arg22, ptr addrspace(1) undef
+  store volatile i32 %arg23, ptr addrspace(1) undef
 
-  store volatile i32 %arg24, i32 addrspace(1)* undef
-  store volatile i32 %arg25, i32 addrspace(1)* undef
-  store volatile i32 %arg26, i32 addrspace(1)* undef
-  store volatile i32 %arg27, i32 addrspace(1)* undef
-  store volatile i32 %arg28, i32 addrspace(1)* undef
-  store volatile i32 %arg29, i32 addrspace(1)* undef
-  store volatile i32 %arg30, i32 addrspace(1)* undef
+  store volatile i32 %arg24, ptr addrspace(1) undef
+  store volatile i32 %arg25, ptr addrspace(1) undef
+  store volatile i32 %arg26, ptr addrspace(1) undef
+  store volatile i32 %arg27, ptr addrspace(1) undef
+  store volatile i32 %arg28, ptr addrspace(1) undef
+  store volatile i32 %arg29, ptr addrspace(1) undef
+  store volatile i32 %arg30, ptr addrspace(1) undef
 
   ret void
 }

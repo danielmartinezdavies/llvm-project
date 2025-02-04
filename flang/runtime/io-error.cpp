@@ -16,40 +16,73 @@
 #include <cstring>
 
 namespace Fortran::runtime::io {
+RT_OFFLOAD_API_GROUP_BEGIN
 
 void IoErrorHandler::SignalError(int iostatOrErrno, const char *msg, ...) {
-  if (iostatOrErrno == IostatEnd && (flags_ & hasEnd)) {
-    if (ioStat_ == IostatOk || ioStat_ < IostatEnd) {
-      ioStat_ = IostatEnd;
+  // Note that IOMSG= alone without IOSTAT=/END=/EOR=/ERR= does not suffice
+  // for error recovery (see F'2018 subclause 12.11).
+  switch (iostatOrErrno) {
+  case IostatOk:
+    return;
+  case IostatEnd:
+    if ((flags_ & (hasIoStat | hasEnd)) ||
+        ((flags_ & hasErr) && (flags_ & hasRec))) {
+      // EOF goes to ERR= when REC= is present
+      if (ioStat_ == IostatOk || ioStat_ < IostatEnd) {
+        ioStat_ = IostatEnd;
+      }
+      return;
     }
-  } else if (iostatOrErrno == IostatEor && (flags_ & hasEor)) {
-    if (ioStat_ == IostatOk || ioStat_ < IostatEor) {
-      ioStat_ = IostatEor; // least priority
+    break;
+  case IostatEor:
+    if (flags_ & (hasIoStat | hasEor)) {
+      if (ioStat_ == IostatOk || ioStat_ < IostatEor) {
+        ioStat_ = IostatEor; // least priority
+      }
+      return;
     }
-  } else if (iostatOrErrno != IostatOk) {
-    if (flags_ & (hasIoStat | hasIoMsg | hasErr)) {
+    break;
+  default:
+    if (flags_ & (hasIoStat | hasErr)) {
       if (ioStat_ <= 0) {
         ioStat_ = iostatOrErrno; // priority over END=/EOR=
         if (msg && (flags_ & hasIoMsg)) {
+#if !defined(RT_DEVICE_COMPILATION)
           char buffer[256];
           va_list ap;
           va_start(ap, msg);
           std::vsnprintf(buffer, sizeof buffer, msg, ap);
-          ioMsg_ = SaveDefaultCharacter(buffer, std::strlen(buffer) + 1, *this);
           va_end(ap);
+#else
+          const char *buffer = "not implemented yet: IOSTAT with varargs";
+#endif
+          ioMsg_ = SaveDefaultCharacter(
+              buffer, Fortran::runtime::strlen(buffer) + 1, *this);
         }
       }
-    } else if (msg) {
-      va_list ap;
-      va_start(ap, msg);
-      CrashArgs(msg, ap);
-      va_end(ap);
-    } else if (const char *errstr{IostatErrorString(iostatOrErrno)}) {
-      Crash(errstr);
-    } else {
-      Crash("I/O error (errno=%d): %s", iostatOrErrno,
-          std::strerror(iostatOrErrno));
+      return;
     }
+    break;
+  }
+  // I/O error not caught!
+  if (msg) {
+#if !defined(RT_DEVICE_COMPILATION)
+    va_list ap;
+    va_start(ap, msg);
+    CrashArgs(msg, ap);
+    va_end(ap);
+#else
+    Crash("not implemented yet: IOSTAT with varargs");
+#endif
+  } else if (const char *errstr{IostatErrorString(iostatOrErrno)}) {
+    Crash(errstr);
+  } else {
+#if !defined(RT_DEVICE_COMPILATION)
+    Crash("I/O error (errno=%d): %s", iostatOrErrno,
+        std::strerror(iostatOrErrno));
+#else
+    Crash("I/O error (errno=%d)", iostatOrErrno);
+#endif
   }
 }
 
@@ -59,17 +92,14 @@ void IoErrorHandler::SignalError(int iostatOrErrno) {
 
 void IoErrorHandler::Forward(
     int ioStatOrErrno, const char *msg, std::size_t length) {
-  if (ioStat_ != IostatOk && msg && (flags_ & hasIoMsg)) {
-    ioMsg_ = SaveDefaultCharacter(msg, length, *this);
-  }
-  if (ioStatOrErrno != IostatOk && msg) {
-    SignalError(ioStatOrErrno, "%.*s", static_cast<int>(length), msg);
-  } else {
-    SignalError(ioStatOrErrno);
+  if (ioStatOrErrno != IostatOk) {
+    if (msg) {
+      SignalError(ioStatOrErrno, "%.*s", static_cast<int>(length), msg);
+    } else {
+      SignalError(ioStatOrErrno);
+    }
   }
 }
-
-void IoErrorHandler::SignalErrno() { SignalError(errno); }
 
 void IoErrorHandler::SignalEnd() { SignalError(IostatEnd); }
 
@@ -80,6 +110,8 @@ void IoErrorHandler::SignalPendingError() {
   pendingError_ = IostatOk;
   SignalError(error);
 }
+
+void IoErrorHandler::SignalErrno() { SignalError(errno); }
 
 bool IoErrorHandler::GetIoMsg(char *buffer, std::size_t bufferLength) {
   const char *msg{ioMsg_.get()};
@@ -95,7 +127,10 @@ bool IoErrorHandler::GetIoMsg(char *buffer, std::size_t bufferLength) {
   // in LLVM v9.0.1 with inadequate modification for Fortran,
   // since rectified.
   bool ok{false};
-#if HAVE_STRERROR_R
+#if defined(RT_DEVICE_COMPILATION)
+  // strerror_r is not available on device.
+  msg = "errno description is not available on device";
+#elif HAVE_STRERROR_R
   // strerror_r is thread-safe.
 #if defined(__GLIBC__) && defined(_GNU_SOURCE)
   // glibc defines its own incompatible version of strerror_r
@@ -106,20 +141,17 @@ bool IoErrorHandler::GetIoMsg(char *buffer, std::size_t bufferLength) {
 #endif
 #elif HAVE_DECL_STRERROR_S // "Windows Secure API"
   ok = ::strerror_s(buffer, bufferLength, ioStat_) == 0;
-#elif HAVE_STRERROR
+#else
   // Copy the thread un-safe result of strerror into
   // the buffer as fast as possible to minimize impact
   // of collision of strerror in multiple threads.
   msg = strerror(ioStat_);
-#else
-  // Strange that this system doesn't even have strerror
-  return false;
 #endif
   if (msg) {
     ToFortranDefaultCharacter(buffer, bufferLength, msg);
     return true;
   } else if (ok) {
-    std::size_t copied{std::strlen(buffer)};
+    std::size_t copied{Fortran::runtime::strlen(buffer)};
     if (copied < bufferLength) {
       std::memset(buffer + copied, ' ', bufferLength - copied);
     }
@@ -128,4 +160,6 @@ bool IoErrorHandler::GetIoMsg(char *buffer, std::size_t bufferLength) {
     return false;
   }
 }
+
+RT_OFFLOAD_API_GROUP_END
 } // namespace Fortran::runtime::io

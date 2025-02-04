@@ -19,9 +19,7 @@
 
 using IncludeMarker =
     clang::tidy::modernize::DeprecatedHeadersCheck::IncludeMarker;
-namespace clang {
-namespace tidy {
-namespace modernize {
+namespace clang::tidy::modernize {
 namespace {
 
 class IncludeModernizePPCallbacks : public PPCallbacks {
@@ -33,8 +31,9 @@ public:
   void InclusionDirective(SourceLocation HashLoc, const Token &IncludeTok,
                           StringRef FileName, bool IsAngled,
                           CharSourceRange FilenameRange,
-                          Optional<FileEntryRef> File, StringRef SearchPath,
-                          StringRef RelativePath, const Module *Imported,
+                          OptionalFileEntryRef File, StringRef SearchPath,
+                          StringRef RelativePath, const Module *SuggestedModule,
+                          bool ModuleImported,
                           SrcMgr::CharacteristicKind FileType) override;
 
 private:
@@ -59,7 +58,7 @@ public:
   bool shouldVisitLambdaBody() const { return false; }
 
   bool VisitLinkageSpecDecl(LinkageSpecDecl *LinkSpecDecl) const {
-    if (LinkSpecDecl->getLanguage() != LinkageSpecDecl::lang_c ||
+    if (LinkSpecDecl->getLanguage() != LinkageSpecLanguageIDs::C ||
         !LinkSpecDecl->hasBraces())
       return true;
 
@@ -159,7 +158,7 @@ IncludeModernizePPCallbacks::IncludeModernizePPCallbacks(
             {"wctype.h", "cwctype"}})) {
     CStyledHeaderToCxx.insert(KeyValue);
   }
-  // Add C++ 11 headers.
+  // Add C++11 headers.
   if (LangOpts.CPlusPlus11) {
     for (const auto &KeyValue :
          std::vector<std::pair<llvm::StringRef, std::string>>(
@@ -179,9 +178,9 @@ IncludeModernizePPCallbacks::IncludeModernizePPCallbacks(
 
 void IncludeModernizePPCallbacks::InclusionDirective(
     SourceLocation HashLoc, const Token &IncludeTok, StringRef FileName,
-    bool IsAngled, CharSourceRange FilenameRange, Optional<FileEntryRef> File,
-    StringRef SearchPath, StringRef RelativePath, const Module *Imported,
-    SrcMgr::CharacteristicKind FileType) {
+    bool IsAngled, CharSourceRange FilenameRange, OptionalFileEntryRef File,
+    StringRef SearchPath, StringRef RelativePath, const Module *SuggestedModule,
+    bool ModuleImported, SrcMgr::CharacteristicKind FileType) {
 
   // If we don't want to warn for non-main file reports and this is one, skip
   // it.
@@ -201,16 +200,15 @@ void IncludeModernizePPCallbacks::InclusionDirective(
   // 3. Do nothing and let the user deal with the migration himself.
   SourceLocation DiagLoc = FilenameRange.getBegin();
   if (CStyledHeaderToCxx.count(FileName) != 0) {
-    IncludesToBeProcessed.push_back(
+    IncludesToBeProcessed.emplace_back(
         IncludeMarker{CStyledHeaderToCxx[FileName], FileName,
                       FilenameRange.getAsRange(), DiagLoc});
   } else if (DeleteHeaders.count(FileName) != 0) {
-    IncludesToBeProcessed.push_back(
+    IncludesToBeProcessed.emplace_back(
+        // NOLINTNEXTLINE(modernize-use-emplace) - false-positive
         IncludeMarker{std::string{}, FileName,
                       SourceRange{HashLoc, FilenameRange.getEnd()}, DiagLoc});
   }
 }
 
-} // namespace modernize
-} // namespace tidy
-} // namespace clang
+} // namespace clang::tidy::modernize

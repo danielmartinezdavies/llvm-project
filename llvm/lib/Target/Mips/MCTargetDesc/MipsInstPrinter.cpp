@@ -11,12 +11,12 @@
 //===----------------------------------------------------------------------===//
 
 #include "MipsInstPrinter.h"
-#include "MipsInstrInfo.h"
-#include "MipsMCExpr.h"
+#include "Mips.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/MC/MCExpr.h"
 #include "llvm/MC/MCInst.h"
 #include "llvm/MC/MCInstrInfo.h"
+#include "llvm/MC/MCSubtargetInfo.h"
 #include "llvm/MC/MCSymbol.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
@@ -71,8 +71,9 @@ const char* Mips::MipsFCCToString(Mips::CondCode CC) {
   llvm_unreachable("Impossible condition code!");
 }
 
-void MipsInstPrinter::printRegName(raw_ostream &OS, unsigned RegNo) const {
-  OS << '$' << StringRef(getRegisterName(RegNo)).lower();
+void MipsInstPrinter::printRegName(raw_ostream &OS, MCRegister Reg) {
+  markup(OS, Markup::Register)
+      << '$' << StringRef(getRegisterName(Reg)).lower();
 }
 
 void MipsInstPrinter::printInst(const MCInst *MI, uint64_t Address,
@@ -132,7 +133,7 @@ void MipsInstPrinter::printOperand(const MCInst *MI, unsigned OpNo,
   }
 
   if (Op.isImm()) {
-    O << formatImm(Op.getImm());
+    markup(O, Markup::Immediate) << formatImm(Op.getImm());
     return;
   }
 
@@ -148,9 +149,9 @@ void MipsInstPrinter::printJumpOperand(const MCInst *MI, unsigned OpNo,
     return printOperand(MI, OpNo, STI, O);
 
   if (PrintBranchImmAsAddress)
-    O << formatHex(Op.getImm());
+    markup(O, Markup::Immediate) << formatHex(Op.getImm());
   else
-    O << formatImm(Op.getImm());
+    markup(O, Markup::Immediate) << formatImm(Op.getImm());
 }
 
 void MipsInstPrinter::printBranchOperand(const MCInst *MI, uint64_t Address,
@@ -167,9 +168,9 @@ void MipsInstPrinter::printBranchOperand(const MCInst *MI, uint64_t Address,
       Target &= 0xffffffff;
     else if (STI.hasFeature(Mips::FeatureMips16))
       Target &= 0xffff;
-    O << formatHex(Target);
+    markup(O, Markup::Immediate) << formatHex(Target);
   } else {
-    O << formatImm(Op.getImm());
+    markup(O, Markup::Immediate) << formatImm(Op.getImm());
   }
 }
 
@@ -182,7 +183,7 @@ void MipsInstPrinter::printUImm(const MCInst *MI, int opNum,
     Imm -= Offset;
     Imm &= (1 << Bits) - 1;
     Imm += Offset;
-    O << formatImm(Imm);
+    markup(O, Markup::Immediate) << formatImm(Imm);
     return;
   }
 
@@ -211,6 +212,7 @@ void MipsInstPrinter::printMemOperand(const MCInst *MI, int opNum,
     break;
   }
 
+  WithMarkup M = markup(O, Markup::Memory);
   printOperand(MI, opNum + 1, STI, O);
   O << "(";
   printOperand(MI, opNum, STI, O);

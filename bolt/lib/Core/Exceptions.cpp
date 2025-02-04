@@ -98,29 +98,35 @@ namespace bolt {
 // site table will be the same size as GCC uses uleb encodings for PC offsets.
 //
 // Note: some functions have LSDA entries with 0 call site entries.
-void BinaryFunction::parseLSDA(ArrayRef<uint8_t> LSDASectionData,
-                               uint64_t LSDASectionAddress) {
+Error BinaryFunction::parseLSDA(ArrayRef<uint8_t> LSDASectionData,
+                                uint64_t LSDASectionAddress) {
   assert(CurrentState == State::Disassembled && "unexpected function state");
 
   if (!getLSDAAddress())
-    return;
+    return Error::success();
 
   DWARFDataExtractor Data(
       StringRef(reinterpret_cast<const char *>(LSDASectionData.data()),
                 LSDASectionData.size()),
-      BC.DwCtx->getDWARFObj().isLittleEndian(), 8);
+      BC.AsmInfo->isLittleEndian(), BC.AsmInfo->getCodePointerSize());
   uint64_t Offset = getLSDAAddress() - LSDASectionAddress;
   assert(Data.isValidOffset(Offset) && "wrong LSDA address");
 
-  uint8_t LPStartEncoding = Data.getU8(&Offset);
-  uint64_t LPStart = 0;
-  // Convert to offset if LPStartEncoding is typed absptr DW_EH_PE_absptr
-  if (Optional<uint64_t> MaybeLPStart = Data.getEncodedPointer(
-          &Offset, LPStartEncoding, Offset + LSDASectionAddress))
-    LPStart = (LPStartEncoding && 0xFF == 0) ? *MaybeLPStart
-                                             : *MaybeLPStart - Address;
+  const uint8_t LPStartEncoding = Data.getU8(&Offset);
+  uint64_t LPStart = Address;
+  if (LPStartEncoding != dwarf::DW_EH_PE_omit) {
+    std::optional<uint64_t> MaybeLPStart = Data.getEncodedPointer(
+        &Offset, LPStartEncoding, Offset + LSDASectionAddress);
+    if (!MaybeLPStart) {
+      BC.errs() << "BOLT-ERROR: unsupported LPStartEncoding: "
+                << (unsigned)LPStartEncoding << '\n';
+      return createFatalBOLTError("");
+    }
+    LPStart = *MaybeLPStart;
+  }
 
   const uint8_t TTypeEncoding = Data.getU8(&Offset);
+  LSDATypeEncoding = TTypeEncoding;
   size_t TTypeEncodingSize = 0;
   uintptr_t TTypeEnd = 0;
   if (TTypeEncoding != DW_EH_PE_omit) {
@@ -129,13 +135,14 @@ void BinaryFunction::parseLSDA(ArrayRef<uint8_t> LSDASectionData,
   }
 
   if (opts::PrintExceptions) {
-    outs() << "[LSDA at 0x" << Twine::utohexstr(getLSDAAddress())
-           << " for function " << *this << "]:\n";
-    outs() << "LPStart Encoding = 0x" << Twine::utohexstr(LPStartEncoding)
-           << '\n';
-    outs() << "LPStart = 0x" << Twine::utohexstr(LPStart) << '\n';
-    outs() << "TType Encoding = 0x" << Twine::utohexstr(TTypeEncoding) << '\n';
-    outs() << "TType End = " << TTypeEnd << '\n';
+    BC.outs() << "[LSDA at 0x" << Twine::utohexstr(getLSDAAddress())
+              << " for function " << *this << "]:\n";
+    BC.outs() << "LPStart Encoding = 0x" << Twine::utohexstr(LPStartEncoding)
+              << '\n';
+    BC.outs() << "LPStart = 0x" << Twine::utohexstr(LPStart) << '\n';
+    BC.outs() << "TType Encoding = 0x" << Twine::utohexstr(TTypeEncoding)
+              << '\n';
+    BC.outs() << "TType End = " << TTypeEnd << '\n';
   }
 
   // Table to store list of indices in type table. Entries are uleb128 values.
@@ -159,9 +166,9 @@ void BinaryFunction::parseLSDA(ArrayRef<uint8_t> LSDASectionData,
   uint64_t ActionTableStart = CallSiteTableEnd;
 
   if (opts::PrintExceptions) {
-    outs() << "CallSite Encoding = " << (unsigned)CallSiteEncoding << '\n';
-    outs() << "CallSite table length = " << CallSiteTableLength << '\n';
-    outs() << '\n';
+    BC.outs() << "CallSite Encoding = " << (unsigned)CallSiteEncoding << '\n';
+    BC.outs() << "CallSite table length = " << CallSiteTableLength << '\n';
+    BC.outs() << '\n';
   }
 
   this->HasEHRanges = CallSitePtr < CallSiteTableEnd;
@@ -174,49 +181,45 @@ void BinaryFunction::parseLSDA(ArrayRef<uint8_t> LSDASectionData,
     uint64_t LandingPad = *Data.getEncodedPointer(
         &CallSitePtr, CallSiteEncoding, CallSitePtr + LSDASectionAddress);
     uint64_t ActionEntry = Data.getULEB128(&CallSitePtr);
-
-    uint64_t LPOffset = LPStart + LandingPad;
-    uint64_t LPAddress = Address + LPOffset;
-
-    // Verify if landing pad code is located outside current function
-    // Support landing pad to builtin_unreachable
-    if (LPAddress < Address || LPAddress > Address + getSize()) {
-      BinaryFunction *Fragment =
-          BC.getBinaryFunctionContainingAddress(LPAddress);
-      assert(Fragment != nullptr &&
-             "BOLT-ERROR: cannot find landing pad fragment");
-      BC.addInterproceduralReference(this, Fragment->getAddress());
-      BC.processInterproceduralReferences();
-      auto isFragmentOf = [](BinaryFunction *Fragment,
-                             BinaryFunction *Parent) -> bool {
-        return (Fragment->isFragment() && Fragment->isParentFragment(Parent));
-      };
-      (void)isFragmentOf;
-      assert((isFragmentOf(this, Fragment) || isFragmentOf(Fragment, this)) &&
-             "BOLT-ERROR: cannot have landing pads in different "
-             "functions");
-      setHasIndirectTargetToSplitFragment(true);
-      BC.addFragmentsToSkip(this);
-      return;
-    }
+    if (LandingPad)
+      LandingPad += LPStart;
 
     if (opts::PrintExceptions) {
-      outs() << "Call Site: [0x" << Twine::utohexstr(RangeBase + Start)
-             << ", 0x" << Twine::utohexstr(RangeBase + Start + Length)
-             << "); landing pad: 0x" << Twine::utohexstr(LPOffset)
-             << "; action entry: 0x" << Twine::utohexstr(ActionEntry) << "\n";
-      outs() << "  current offset is " << (CallSitePtr - CallSiteTableStart)
-             << '\n';
+      BC.outs() << "Call Site: [0x" << Twine::utohexstr(RangeBase + Start)
+                << ", 0x" << Twine::utohexstr(RangeBase + Start + Length)
+                << "); landing pad: 0x" << Twine::utohexstr(LandingPad)
+                << "; action entry: 0x" << Twine::utohexstr(ActionEntry)
+                << "\n";
+      BC.outs() << "  current offset is " << (CallSitePtr - CallSiteTableStart)
+                << '\n';
     }
 
     // Create a handler entry if necessary.
     MCSymbol *LPSymbol = nullptr;
-    if (LPOffset) {
+    if (LandingPad) {
+      // Verify if landing pad code is located outside current function
+      // Support landing pad to builtin_unreachable
+      if (LandingPad < Address || LandingPad > Address + getSize()) {
+        BinaryFunction *Fragment =
+            BC.getBinaryFunctionContainingAddress(LandingPad);
+        assert(Fragment != nullptr &&
+               "BOLT-ERROR: cannot find landing pad fragment");
+        BC.addInterproceduralReference(this, Fragment->getAddress());
+        BC.processInterproceduralReferences();
+        assert(BC.areRelatedFragments(this, Fragment) &&
+               "BOLT-ERROR: cannot have landing pads in different functions");
+        setHasIndirectTargetToSplitFragment(true);
+        BC.addFragmentsToSkip(this);
+        return Error::success();
+      }
+
+      const uint64_t LPOffset = LandingPad - getAddress();
       if (!getInstructionAtOffset(LPOffset)) {
         if (opts::Verbosity >= 1)
-          errs() << "BOLT-WARNING: landing pad " << Twine::utohexstr(LPOffset)
-                 << " not pointing to an instruction in function " << *this
-                 << " - ignoring.\n";
+          BC.errs() << "BOLT-WARNING: landing pad "
+                    << Twine::utohexstr(LPOffset)
+                    << " not pointing to an instruction in function " << *this
+                    << " - ignoring.\n";
       } else {
         auto Label = Labels.find(LPOffset);
         if (Label != Labels.end()) {
@@ -270,7 +273,7 @@ void BinaryFunction::parseLSDA(ArrayRef<uint8_t> LSDASectionData,
           OS << "0x" << Twine::utohexstr(TypeAddress);
       };
       if (opts::PrintExceptions)
-        outs() << "    actions: ";
+        BC.outs() << "    actions: ";
       uint64_t ActionPtr = ActionTableStart + ActionEntry - 1;
       int64_t ActionType;
       int64_t ActionNext;
@@ -280,21 +283,21 @@ void BinaryFunction::parseLSDA(ArrayRef<uint8_t> LSDASectionData,
         const uint32_t Self = ActionPtr;
         ActionNext = Data.getSLEB128(&ActionPtr);
         if (opts::PrintExceptions)
-          outs() << Sep << "(" << ActionType << ", " << ActionNext << ") ";
+          BC.outs() << Sep << "(" << ActionType << ", " << ActionNext << ") ";
         if (ActionType == 0) {
           if (opts::PrintExceptions)
-            outs() << "cleanup";
+            BC.outs() << "cleanup";
         } else if (ActionType > 0) {
           // It's an index into a type table.
           MaxTypeIndex =
               std::max(MaxTypeIndex, static_cast<unsigned>(ActionType));
           if (opts::PrintExceptions) {
-            outs() << "catch type ";
-            printType(ActionType, outs());
+            BC.outs() << "catch type ";
+            printType(ActionType, BC.outs());
           }
         } else { // ActionType < 0
           if (opts::PrintExceptions)
-            outs() << "filter exception types ";
+            BC.outs() << "filter exception types ";
           const char *TSep = "";
           // ActionType is a negative *byte* offset into *uleb128-encoded* table
           // of indices with base 1.
@@ -304,8 +307,8 @@ void BinaryFunction::parseLSDA(ArrayRef<uint8_t> LSDASectionData,
           while (uint64_t Index = Data.getULEB128(&TypeIndexTablePtr)) {
             MaxTypeIndex = std::max(MaxTypeIndex, static_cast<unsigned>(Index));
             if (opts::PrintExceptions) {
-              outs() << TSep;
-              printType(Index, outs());
+              BC.outs() << TSep;
+              printType(Index, BC.outs());
               TSep = ", ";
             }
           }
@@ -318,11 +321,11 @@ void BinaryFunction::parseLSDA(ArrayRef<uint8_t> LSDASectionData,
         ActionPtr = Self + ActionNext;
       } while (ActionNext);
       if (opts::PrintExceptions)
-        outs() << '\n';
+        BC.outs() << '\n';
     }
   }
   if (opts::PrintExceptions)
-    outs() << '\n';
+    BC.outs() << '\n';
 
   assert(TypeIndexTableStart + MaxTypeIndexTableOffset <=
              Data.getData().size() &&
@@ -353,6 +356,7 @@ void BinaryFunction::parseLSDA(ArrayRef<uint8_t> LSDASectionData,
     LSDATypeIndexTable =
         LSDASectionData.slice(TypeIndexTableStart, MaxTypeIndexTableOffset);
   }
+  return Error::success();
 }
 
 void BinaryFunction::updateEHRanges() {
@@ -367,10 +371,10 @@ void BinaryFunction::updateEHRanges() {
     uint64_t Action;
   };
 
-  for (FunctionFragment &FF : getLayout().fragments()) {
-    // Sites to update - either regular or cold.
-    CallSitesType &Sites = FF.isMainFragment() ? CallSites : ColdCallSites;
+  // Sites to update.
+  CallSitesList Sites;
 
+  for (FunctionFragment &FF : getLayout().fragments()) {
     // If previous call can throw, this is its exception handler.
     EHInfo PreviousEH = {nullptr, 0};
 
@@ -378,25 +382,22 @@ void BinaryFunction::updateEHRanges() {
     const MCSymbol *StartRange = nullptr;
 
     for (BinaryBasicBlock *const BB : FF) {
-      for (auto II = BB->begin(); II != BB->end(); ++II) {
-        if (!BC.MIB->isCall(*II))
+      for (MCInst &Instr : *BB) {
+        if (!BC.MIB->isCall(Instr))
           continue;
 
         // Instruction can throw an exception that should be handled.
-        const bool Throws = BC.MIB->isInvoke(*II);
+        const bool Throws = BC.MIB->isInvoke(Instr);
 
         // Ignore the call if it's a continuation of a no-throw gap.
         if (!Throws && !StartRange)
           continue;
 
-        assert(getLayout().isHotColdSplit() &&
-               "Exceptions only supported for hot/cold splitting");
-
         // Extract exception handling information from the instruction.
         const MCSymbol *LP = nullptr;
         uint64_t Action = 0;
-        if (const Optional<MCPlus::MCLandingPad> EHInfo =
-                BC.MIB->getEHInfo(*II))
+        if (const std::optional<MCPlus::MCLandingPad> EHInfo =
+                BC.MIB->getEHInfo(Instr))
           std::tie(LP, Action) = *EHInfo;
 
         // No action if the exception handler has not changed.
@@ -405,15 +406,13 @@ void BinaryFunction::updateEHRanges() {
           continue;
 
         // Same symbol is used for the beginning and the end of the range.
-        const MCSymbol *EHSymbol;
-        MCInst EHLabel;
-        {
-          std::unique_lock<std::shared_timed_mutex> Lock(BC.CtxMutex);
-          EHSymbol = BC.Ctx->createNamedTempSymbol("EH");
-          BC.MIB->createEHLabel(EHLabel, EHSymbol, BC.Ctx.get());
+        MCSymbol *EHSymbol;
+        if (MCSymbol *InstrLabel = BC.MIB->getInstLabel(Instr)) {
+          EHSymbol = InstrLabel;
+        } else {
+          std::unique_lock<llvm::sys::RWMutex> Lock(BC.CtxMutex);
+          EHSymbol = BC.MIB->getOrCreateInstLabel(Instr, "EH", BC.Ctx.get());
         }
-
-        II = std::next(BB->insertPseudoInstr(II, EHLabel));
 
         // At this point we could be in one of the following states:
         //
@@ -434,10 +433,10 @@ void BinaryFunction::updateEHRanges() {
         }
 
         // Close the previous range.
-        if (EndRange) {
+        if (EndRange)
           Sites.emplace_back(
+              FF.getFragmentNum(),
               CallSite{StartRange, EndRange, PreviousEH.LP, PreviousEH.Action});
-        }
 
         if (Throws) {
           // I, II:
@@ -451,18 +450,21 @@ void BinaryFunction::updateEHRanges() {
 
     // Check if we need to close the range.
     if (StartRange) {
-      assert((FF.isMainFragment() || &Sites == &ColdCallSites) &&
-             "sites mismatch");
       const MCSymbol *EndRange = getFunctionEndLabel(FF.getFragmentNum());
       Sites.emplace_back(
+          FF.getFragmentNum(),
           CallSite{StartRange, EndRange, PreviousEH.LP, PreviousEH.Action});
     }
   }
+
+  addCallSites(Sites);
 }
 
 const uint8_t DWARF_CFI_PRIMARY_OPCODE_MASK = 0xc0;
 
-CFIReaderWriter::CFIReaderWriter(const DWARFDebugFrame &EHFrame) {
+CFIReaderWriter::CFIReaderWriter(BinaryContext &BC,
+                                 const DWARFDebugFrame &EHFrame)
+    : BC(BC) {
   // Prepare FDEs for fast lookup
   for (const dwarf::FrameEntry &Entry : EHFrame.entries()) {
     const auto *CurFDE = dyn_cast<dwarf::FDE>(&Entry);
@@ -477,10 +479,10 @@ CFIReaderWriter::CFIReaderWriter(const DWARFDebugFrame &EHFrame) {
         if (FDEI->second->getAddressRange() == 0) {
           FDEI->second = CurFDE;
         } else if (opts::Verbosity > 0) {
-          errs() << "BOLT-WARNING: different FDEs for function at 0x"
-                 << Twine::utohexstr(FDEI->first)
-                 << " detected; sizes: " << FDEI->second->getAddressRange()
-                 << " and " << CurFDE->getAddressRange() << '\n';
+          BC.errs() << "BOLT-WARNING: different FDEs for function at 0x"
+                    << Twine::utohexstr(FDEI->first)
+                    << " detected; sizes: " << FDEI->second->getAddressRange()
+                    << " and " << CurFDE->getAddressRange() << '\n';
         }
       }
     } else {
@@ -497,7 +499,7 @@ bool CFIReaderWriter::fillCFIInfoFor(BinaryFunction &Function) const {
     return true;
 
   const FDE &CurFDE = *I->second;
-  Optional<uint64_t> LSDA = CurFDE.getLSDAAddress();
+  std::optional<uint64_t> LSDA = CurFDE.getLSDAAddress();
   Function.setLSDAAddress(LSDA ? *LSDA : 0);
 
   uint64_t Offset = Function.getFirstInstructionOffset();
@@ -510,8 +512,8 @@ bool CFIReaderWriter::fillCFIInfoFor(BinaryFunction &Function) const {
         *CurFDE.getLinkedCIE()->getPersonalityEncoding());
   }
 
-  auto decodeFrameInstruction = [&Function, &Offset, Address, CodeAlignment,
-                                 DataAlignment](
+  auto decodeFrameInstruction = [this, &Function, &Offset, Address,
+                                 CodeAlignment, DataAlignment](
                                     const CFIProgram::Instruction &Instr) {
     uint8_t Opcode = Instr.Opcode;
     if (Opcode & DWARF_CFI_PRIMARY_OPCODE_MASK)
@@ -603,7 +605,7 @@ bool CFIReaderWriter::fillCFIInfoFor(BinaryFunction &Function) const {
     case DW_CFA_val_offset_sf:
     case DW_CFA_val_offset:
       if (opts::Verbosity >= 1) {
-        errs() << "BOLT-WARNING: DWARF val_offset() unimplemented\n";
+        BC.errs() << "BOLT-WARNING: DWARF val_offset() unimplemented\n";
       }
       return false;
     case DW_CFA_def_cfa_expression:
@@ -624,21 +626,28 @@ bool CFIReaderWriter::fillCFIInfoFor(BinaryFunction &Function) const {
     }
     case DW_CFA_MIPS_advance_loc8:
       if (opts::Verbosity >= 1)
-        errs() << "BOLT-WARNING: DW_CFA_MIPS_advance_loc unimplemented\n";
+        BC.errs() << "BOLT-WARNING: DW_CFA_MIPS_advance_loc unimplemented\n";
       return false;
     case DW_CFA_GNU_window_save:
+      // DW_CFA_GNU_window_save and DW_CFA_GNU_NegateRAState just use the same
+      // id but mean different things. The latter is used in AArch64.
+      if (Function.getBinaryContext().isAArch64()) {
+        Function.addCFIInstruction(
+            Offset, MCCFIInstruction::createNegateRAState(nullptr));
+        break;
+      }
+      if (opts::Verbosity >= 1)
+        BC.errs() << "BOLT-WARNING: DW_CFA_GNU_window_save unimplemented\n";
+      return false;
     case DW_CFA_lo_user:
     case DW_CFA_hi_user:
-      if (opts::Verbosity >= 1) {
-        errs() << "BOLT-WARNING: DW_CFA_GNU_* and DW_CFA_*_user "
-                  "unimplemented\n";
-      }
+      if (opts::Verbosity >= 1)
+        BC.errs() << "BOLT-WARNING: DW_CFA_*_user unimplemented\n";
       return false;
     default:
-      if (opts::Verbosity >= 1) {
-        errs() << "BOLT-WARNING: Unrecognized CFI instruction: " << Instr.Opcode
-               << '\n';
-      }
+      if (opts::Verbosity >= 1)
+        BC.errs() << "BOLT-WARNING: Unrecognized CFI instruction: "
+                  << Instr.Opcode << '\n';
       return false;
     }
 
@@ -656,15 +665,12 @@ bool CFIReaderWriter::fillCFIInfoFor(BinaryFunction &Function) const {
   return true;
 }
 
-std::vector<char> CFIReaderWriter::generateEHFrameHeader(
-    const DWARFDebugFrame &OldEHFrame, const DWARFDebugFrame &NewEHFrame,
-    uint64_t EHFrameHeaderAddress,
-    std::vector<uint64_t> &FailedAddresses) const {
+std::vector<char>
+CFIReaderWriter::generateEHFrameHeader(const DWARFDebugFrame &OldEHFrame,
+                                       const DWARFDebugFrame &NewEHFrame,
+                                       uint64_t EHFrameHeaderAddress) const {
   // Common PC -> FDE map to be written into .eh_frame_hdr.
   std::map<uint64_t, uint64_t> PCToFDE;
-
-  // Presort array for binary search.
-  llvm::sort(FailedAddresses);
 
   // Initialize PCToFDE using NewEHFrame.
   for (dwarf::FrameEntry &Entry : NewEHFrame.entries()) {
@@ -680,13 +686,7 @@ std::vector<char> CFIReaderWriter::generateEHFrameHeader(
       continue;
 
     // Add the address to the map unless we failed to write it.
-    if (!std::binary_search(FailedAddresses.begin(), FailedAddresses.end(),
-                            FuncAddress)) {
-      LLVM_DEBUG(dbgs() << "BOLT-DEBUG: FDE for function at 0x"
-                        << Twine::utohexstr(FuncAddress) << " is at 0x"
-                        << Twine::utohexstr(FDEAddress) << '\n');
-      PCToFDE[FuncAddress] = FDEAddress;
-    }
+    PCToFDE[FuncAddress] = FDEAddress;
   };
 
   LLVM_DEBUG(dbgs() << "BOLT-DEBUG: new .eh_frame contains "
@@ -786,7 +786,7 @@ Error EHFrameParser::parseCIE(uint64_t StartOffset) {
       break;
     case 'P': {
       uint32_t PersonalityEncoding = Data.getU8(&Offset);
-      Optional<uint64_t> Personality =
+      std::optional<uint64_t> Personality =
           Data.getEncodedPointer(&Offset, PersonalityEncoding,
                                  EHFrameAddress ? EHFrameAddress + Offset : 0);
       // Patch personality address
@@ -818,7 +818,7 @@ Error EHFrameParser::parseCIE(uint64_t StartOffset) {
 
 Error EHFrameParser::parseFDE(uint64_t CIEPointer,
                               uint64_t StartStructureOffset) {
-  Optional<uint64_t> LSDAAddress;
+  std::optional<uint64_t> LSDAAddress;
   CIEInfo *Cie = CIEs[StartStructureOffset - CIEPointer];
 
   // The address size is encoded in the CIE we reference.

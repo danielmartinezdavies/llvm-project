@@ -17,7 +17,6 @@
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/PassManager.h"
-#include "llvm/InitializePasses.h"
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/SourceMgr.h"
@@ -89,7 +88,7 @@ struct MemTransferLowerTest : public testing::Test {
 
     // A failure here means that the test itself is buggy.
     if (!M)
-      report_fatal_error(os.str().c_str());
+      report_fatal_error(errMsg.c_str());
   }
 };
 

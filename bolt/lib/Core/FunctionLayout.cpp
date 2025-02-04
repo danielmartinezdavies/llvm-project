@@ -1,12 +1,17 @@
+//===- bolt/Core/FunctionLayout.cpp - Fragmented Function Layout -*- C++ -*-==//
+//
+// Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
+// See https://llvm.org/LICENSE.txt for license information.
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+
 #include "bolt/Core/FunctionLayout.h"
-#include "bolt/Core/BinaryFunction.h"
+#include "bolt/Core/BinaryBasicBlock.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/edit_distance.h"
 #include <algorithm>
-#include <cstddef>
-#include <functional>
 #include <iterator>
-#include <memory>
 
 using namespace llvm;
 using namespace bolt;
@@ -28,7 +33,9 @@ FunctionFragment::const_iterator FunctionFragment::end() const {
   return const_iterator(Layout->block_begin() + StartIndex + Size);
 }
 
-const BinaryBasicBlock *FunctionFragment::front() const { return *begin(); }
+BinaryBasicBlock *FunctionFragment::front() const { return *begin(); }
+
+BinaryBasicBlock *FunctionFragment::back() const { return *std::prev(end()); }
 
 FunctionLayout::FunctionLayout() { addFragment(); }
 
@@ -151,21 +158,27 @@ void FunctionLayout::eraseBasicBlocks(
   };
   const FragmentListType::iterator EmptyTailBegin =
       llvm::find_if_not(reverse(Fragments), IsEmpty).base();
-  std::for_each(EmptyTailBegin, Fragments.end(),
-                [](FunctionFragment *const FF) { delete FF; });
+  for (FunctionFragment *const FF :
+       llvm::make_range(EmptyTailBegin, Fragments.end()))
+    delete FF;
   Fragments.erase(EmptyTailBegin, Fragments.end());
 
   updateLayoutIndices();
 }
 
-void FunctionLayout::updateLayoutIndices() {
+void FunctionLayout::updateLayoutIndices() const {
   unsigned BlockIndex = 0;
-  for (FunctionFragment &FF : fragments()) {
+  for (const FunctionFragment &FF : fragments()) {
     for (BinaryBasicBlock *const BB : FF) {
       BB->setLayoutIndex(BlockIndex++);
       BB->setFragmentNum(FF.getFragmentNum());
     }
   }
+}
+void FunctionLayout::updateLayoutIndices(
+    ArrayRef<BinaryBasicBlock *> Order) const {
+  for (auto [Index, BB] : llvm::enumerate(Order))
+    BB->setLayoutIndex(Index);
 }
 
 bool FunctionLayout::update(const ArrayRef<BinaryBasicBlock *> NewLayout) {
@@ -187,10 +200,6 @@ bool FunctionLayout::update(const ArrayRef<BinaryBasicBlock *> NewLayout) {
   for (BinaryBasicBlock *const BB : NewLayout) {
     FragmentNum Num = BB->getFragmentNum();
 
-    assert(Num >= Fragments.back()->getFragmentNum() &&
-           "Blocks must be arranged such that fragments are monotonically "
-           "increasing.");
-
     // Add empty fragments if necessary
     while (Fragments.back()->getFragmentNum() < Num)
       addFragment();
@@ -208,8 +217,8 @@ void FunctionLayout::clear() {
   // be written to the output stream at its original file offset (see
   // `RewriteInstance::rewriteFile`). Hence, when the layout is cleared, retain
   // the main fragment, so that this information is not lost.
-  std::for_each(Fragments.begin() + 1, Fragments.end(),
-                [](FunctionFragment *const FF) { delete FF; });
+  for (FunctionFragment *const FF : llvm::drop_begin(Fragments))
+    delete FF;
   Fragments = FragmentListType{Fragments.front()};
   getMainFragment().Size = 0;
 }

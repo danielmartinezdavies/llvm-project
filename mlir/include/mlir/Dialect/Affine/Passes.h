@@ -18,15 +18,20 @@
 #include <limits>
 
 namespace mlir {
+
 namespace func {
 class FuncOp;
 } // namespace func
 
+namespace affine {
 class AffineForOp;
 
 /// Fusion mode to attempt. The default mode `Greedy` does both
 /// producer-consumer and sibling fusion.
 enum FusionMode { Greedy, ProducerConsumer, Sibling };
+
+#define GEN_PASS_DECL
+#include "mlir/Dialect/Affine/Passes.h.inc"
 
 /// Creates a simplification pass for affine structures (maps and sets). In
 /// addition, this pass also normalizes memrefs to have the trivial (identity)
@@ -39,12 +44,11 @@ createSimplifyAffineStructuresPass();
 std::unique_ptr<OperationPass<func::FuncOp>>
 createAffineLoopInvariantCodeMotionPass();
 
-/// Creates a pass to convert all parallel affine.for's into 1-d affine.parallel
-/// ops.
-std::unique_ptr<OperationPass<func::FuncOp>> createAffineParallelizePass();
-
-/// Apply normalization transformations to affine loop-like ops.
-std::unique_ptr<OperationPass<func::FuncOp>> createAffineLoopNormalizePass();
+/// Apply normalization transformations to affine loop-like ops. If
+/// `promoteSingleIter` is true, single iteration loops are promoted (i.e., the
+/// loop is replaced by its loop body).
+std::unique_ptr<OperationPass<func::FuncOp>>
+createAffineLoopNormalizePass(bool promoteSingleIter = false);
 
 /// Performs packing (or explicit copying) of accessed memref regions into
 /// buffers in the specified faster memory space through either pointwise copies
@@ -67,10 +71,11 @@ createAffineScalarReplacementPass();
 /// bounds into a single loop.
 std::unique_ptr<OperationPass<func::FuncOp>> createLoopCoalescingPass();
 
-/// Creates a loop fusion pass which fuses loops according to type of fusion
+/// Creates a loop fusion pass which fuses affine loop nests at the top-level of
+/// the operation the pass is created on according to the type of fusion
 /// specified in `fusionMode`. Buffers of size less than or equal to
 /// `localBufSizeThreshold` are promoted to memory space `fastMemorySpace`.
-std::unique_ptr<OperationPass<func::FuncOp>>
+std::unique_ptr<Pass>
 createLoopFusionPass(unsigned fastMemorySpace = 0,
                      uint64_t localBufSizeThreshold = 0,
                      bool maximalFusion = false,
@@ -103,20 +108,13 @@ createLoopUnrollAndJamPass(int unrollJamFactor = -1);
 /// memory hierarchy.
 std::unique_ptr<OperationPass<func::FuncOp>> createPipelineDataTransferPass();
 
-/// Creates a pass to vectorize loops, operations and data types using a
-/// target-independent, n-D super-vector abstraction.
-std::unique_ptr<OperationPass<func::FuncOp>>
-createSuperVectorizePass(ArrayRef<int64_t> virtualVectorSize);
-/// Overload relying on pass options for initialization.
-std::unique_ptr<OperationPass<func::FuncOp>> createSuperVectorizePass();
-
-/// Populate patterns that expand affine index operations into more fundamental
-/// operations (not necessarily restricted to Affine dialect).
-void populateAffineExpandIndexOpsPatterns(RewritePatternSet &patterns);
-
 /// Creates a pass to expand affine index operations into more fundamental
 /// operations (not necessarily restricted to Affine dialect).
 std::unique_ptr<Pass> createAffineExpandIndexOpsPass();
+
+/// Creates a pass to expand affine index operations into affine.apply
+/// operations.
+std::unique_ptr<Pass> createAffineExpandIndexOpsAsAffinePass();
 
 //===----------------------------------------------------------------------===//
 // Registration
@@ -126,6 +124,7 @@ std::unique_ptr<Pass> createAffineExpandIndexOpsPass();
 #define GEN_PASS_REGISTRATION
 #include "mlir/Dialect/Affine/Passes.h.inc"
 
+} // namespace affine
 } // namespace mlir
 
 #endif // MLIR_DIALECT_AFFINE_PASSES_H

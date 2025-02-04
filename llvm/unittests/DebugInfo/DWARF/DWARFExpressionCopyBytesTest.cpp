@@ -7,7 +7,6 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/ADT/ArrayRef.h"
-#include "llvm/ADT/Triple.h"
 #include "llvm/BinaryFormat/Dwarf.h"
 #include "llvm/DebugInfo/DWARF/DWARFContext.h"
 #include "llvm/DebugInfo/DWARF/DWARFDebugFrame.h"
@@ -30,6 +29,7 @@
 #include "llvm/Support/LEB128.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/TargetSelect.h"
+#include "llvm/TargetParser/Triple.h"
 #include "llvm/Testing/Support/Error.h"
 #include "gtest/gtest.h"
 
@@ -101,7 +101,7 @@ DWARFExpressionCopyBytesTest::createStreamer(raw_pwrite_stream &OS) {
   Res.Ctx =
       std::make_unique<MCContext>(Triple(TripleName), MAI.get(), MRI.get(),
                                   /*MSTI=*/nullptr);
-  Res.MOFI.reset(TheTarget->createMCObjectFileInfo(*Res.Ctx.get(),
+  Res.MOFI.reset(TheTarget->createMCObjectFileInfo(*Res.Ctx,
                                                    /*PIC=*/false));
   Res.Ctx->setObjectFileInfo(Res.MOFI.get());
 
@@ -112,10 +112,7 @@ DWARFExpressionCopyBytesTest::createStreamer(raw_pwrite_stream &OS) {
   std::unique_ptr<MCObjectWriter> OW = MAB->createObjectWriter(OS);
   Res.Streamer.reset(TheTarget->createMCObjectStreamer(
       Triple(TripleName), *Res.Ctx, std::unique_ptr<MCAsmBackend>(MAB),
-      std::move(OW), std::unique_ptr<MCCodeEmitter>(MCE), *STI,
-      /* RelaxAll */ false,
-      /* IncrementalLinkerCompatible */ false,
-      /* DWARFMustBeAtTheEnd */ false));
+      std::move(OW), std::unique_ptr<MCCodeEmitter>(MCE), *STI));
   return Res;
 }
 
@@ -147,8 +144,8 @@ SmallString<0> DWARFExpressionCopyBytesTest::emitObjFile(StringRef ExprBytes) {
 
 void DWARFExpressionCopyBytesTest::parseCFIsAndCheckExpression(
     const llvm::object::ObjectFile &E, ArrayRef<uint8_t> Expected) {
-  auto FetchFirstCfaExpression =
-      [](const DWARFDebugFrame &EHFrame) -> Optional<CFIProgram::Instruction> {
+  auto FetchFirstCfaExpression = [](const DWARFDebugFrame &EHFrame)
+      -> std::optional<CFIProgram::Instruction> {
     for (const dwarf::FrameEntry &Entry : EHFrame.entries()) {
       const auto *CurFDE = dyn_cast<dwarf::FDE>(&Entry);
       if (!CurFDE)
@@ -159,7 +156,7 @@ void DWARFExpressionCopyBytesTest::parseCFIsAndCheckExpression(
         return Instr;
       }
     }
-    return NoneType();
+    return std::nullopt;
   };
 
   std::unique_ptr<DWARFContext> Ctx = DWARFContext::create(E);

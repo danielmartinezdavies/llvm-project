@@ -106,14 +106,13 @@ class BlockRange final
           Block *, Block *, Block *> {
 public:
   using RangeBaseT::RangeBaseT;
-  BlockRange(ArrayRef<Block *> blocks = llvm::None);
+  BlockRange(ArrayRef<Block *> blocks = std::nullopt);
   BlockRange(SuccessorRange successors);
-  template <typename Arg,
-            typename = typename std::enable_if_t<
-                std::is_constructible<ArrayRef<Block *>, Arg>::value>>
-  BlockRange(Arg &&arg)
+  template <typename Arg, typename = std::enable_if_t<std::is_constructible<
+                              ArrayRef<Block *>, Arg>::value>>
+  BlockRange(Arg &&arg LLVM_LIFETIME_BOUND)
       : BlockRange(ArrayRef<Block *>(std::forward<Arg>(arg))) {}
-  BlockRange(std::initializer_list<Block *> blocks)
+  BlockRange(std::initializer_list<Block *> blocks LLVM_LIFETIME_BOUND)
       : BlockRange(ArrayRef<Block *>(blocks)) {}
 
 private:

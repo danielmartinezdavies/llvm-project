@@ -10,6 +10,7 @@
 #include "mlir/Tools/PDLL/AST/Context.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/TypeSwitch.h"
+#include <optional>
 
 using namespace mlir;
 using namespace mlir::pdll::ast;
@@ -57,8 +58,8 @@ public:
 
             // Expressions.
             const AttributeExpr, const CallExpr, const DeclRefExpr,
-            const MemberAccessExpr, const OperationExpr, const TupleExpr,
-            const TypeExpr,
+            const MemberAccessExpr, const OperationExpr, const RangeExpr,
+            const TupleExpr, const TypeExpr,
 
             // Core Constraint Decls.
             const AttrConstraintDecl, const OpConstraintDecl,
@@ -107,6 +108,10 @@ private:
     for (const Node *child : expr->getResultTypes())
       visit(child);
     for (const Node *child : expr->getAttributes())
+      visit(child);
+  }
+  void visitImpl(const RangeExpr *expr) {
+    for (const Node *child : expr->getElements())
       visit(child);
   }
   void visitImpl(const TupleExpr *expr) {
@@ -261,12 +266,13 @@ AttributeExpr *AttributeExpr::create(Context &ctx, SMRange loc,
 //===----------------------------------------------------------------------===//
 
 CallExpr *CallExpr::create(Context &ctx, SMRange loc, Expr *callable,
-                           ArrayRef<Expr *> arguments, Type resultType) {
+                           ArrayRef<Expr *> arguments, Type resultType,
+                           bool isNegated) {
   unsigned allocSize = CallExpr::totalSizeToAlloc<Expr *>(arguments.size());
   void *rawData = ctx.getAllocator().Allocate(allocSize, alignof(CallExpr));
 
-  CallExpr *expr =
-      new (rawData) CallExpr(loc, resultType, callable, arguments.size());
+  CallExpr *expr = new (rawData)
+      CallExpr(loc, resultType, callable, arguments.size(), isNegated);
   std::uninitialized_copy(arguments.begin(), arguments.end(),
                           expr->getArguments().begin());
   return expr;
@@ -321,8 +327,23 @@ OperationExpr::create(Context &ctx, SMRange loc, const ods::Operation *odsOp,
   return opExpr;
 }
 
-Optional<StringRef> OperationExpr::getName() const {
+std::optional<StringRef> OperationExpr::getName() const {
   return getNameDecl()->getName();
+}
+
+//===----------------------------------------------------------------------===//
+// RangeExpr
+//===----------------------------------------------------------------------===//
+
+RangeExpr *RangeExpr::create(Context &ctx, SMRange loc,
+                             ArrayRef<Expr *> elements, RangeType type) {
+  unsigned allocSize = RangeExpr::totalSizeToAlloc<Expr *>(elements.size());
+  void *rawData = ctx.getAllocator().Allocate(allocSize, alignof(TupleExpr));
+
+  RangeExpr *expr = new (rawData) RangeExpr(loc, type, elements.size());
+  std::uninitialized_copy(elements.begin(), elements.end(),
+                          expr->getElements().begin());
+  return expr;
 }
 
 //===----------------------------------------------------------------------===//
@@ -385,7 +406,7 @@ OpConstraintDecl *OpConstraintDecl::create(Context &ctx, SMRange loc,
       OpConstraintDecl(loc, nameDecl);
 }
 
-Optional<StringRef> OpConstraintDecl::getName() const {
+std::optional<StringRef> OpConstraintDecl::getName() const {
   return getNameDecl()->getName();
 }
 
@@ -432,16 +453,17 @@ ValueRangeConstraintDecl::create(Context &ctx, SMRange loc, Expr *typeExpr) {
 // UserConstraintDecl
 //===----------------------------------------------------------------------===//
 
-Optional<StringRef>
+std::optional<StringRef>
 UserConstraintDecl::getNativeInputType(unsigned index) const {
   return hasNativeInputTypes ? getTrailingObjects<StringRef>()[index]
-                             : Optional<StringRef>();
+                             : std::optional<StringRef>();
 }
 
 UserConstraintDecl *UserConstraintDecl::createImpl(
     Context &ctx, const Name &name, ArrayRef<VariableDecl *> inputs,
     ArrayRef<StringRef> nativeInputTypes, ArrayRef<VariableDecl *> results,
-    Optional<StringRef> codeBlock, const CompoundStmt *body, Type resultType) {
+    std::optional<StringRef> codeBlock, const CompoundStmt *body,
+    Type resultType) {
   bool hasNativeInputTypes = !nativeInputTypes.empty();
   assert(!hasNativeInputTypes || nativeInputTypes.size() == inputs.size());
 
@@ -496,7 +518,7 @@ OpNameDecl *OpNameDecl::create(Context &ctx, SMRange loc) {
 //===----------------------------------------------------------------------===//
 
 PatternDecl *PatternDecl::create(Context &ctx, SMRange loc, const Name *name,
-                                 Optional<uint16_t> benefit,
+                                 std::optional<uint16_t> benefit,
                                  bool hasBoundedRecursion,
                                  const CompoundStmt *body) {
   return new (ctx.getAllocator().Allocate<PatternDecl>())
@@ -510,7 +532,7 @@ PatternDecl *PatternDecl::create(Context &ctx, SMRange loc, const Name *name,
 UserRewriteDecl *UserRewriteDecl::createImpl(Context &ctx, const Name &name,
                                              ArrayRef<VariableDecl *> inputs,
                                              ArrayRef<VariableDecl *> results,
-                                             Optional<StringRef> codeBlock,
+                                             std::optional<StringRef> codeBlock,
                                              const CompoundStmt *body,
                                              Type resultType) {
   unsigned allocSize = UserRewriteDecl::totalSizeToAlloc<VariableDecl *>(

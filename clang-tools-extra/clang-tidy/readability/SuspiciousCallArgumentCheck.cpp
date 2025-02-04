@@ -11,14 +11,13 @@
 #include "clang/AST/ASTContext.h"
 #include "clang/AST/Type.h"
 #include "clang/ASTMatchers/ASTMatchFinder.h"
+#include <optional>
 #include <sstream>
 
 using namespace clang::ast_matchers;
 namespace optutils = clang::tidy::utils::options;
 
-namespace clang {
-namespace tidy {
-namespace readability {
+namespace clang::tidy::readability {
 
 namespace {
 struct DefaultHeuristicConfiguration {
@@ -90,7 +89,7 @@ struct AllHeuristicsBoundsWellConfigured {
                                   1>::Value;
 };
 
-static_assert(AllHeuristicsBoundsWellConfigured::Value, "");
+static_assert(AllHeuristicsBoundsWellConfigured::Value);
 } // namespace
 
 static constexpr llvm::StringLiteral DefaultAbbreviations = "addr=address;"
@@ -138,12 +137,12 @@ static bool applyEqualityHeuristic(StringRef Arg, StringRef Param) {
 static bool applyAbbreviationHeuristic(
     const llvm::StringMap<std::string> &AbbreviationDictionary, StringRef Arg,
     StringRef Param) {
-  if (AbbreviationDictionary.find(Arg) != AbbreviationDictionary.end() &&
-      Param.equals(AbbreviationDictionary.lookup(Arg)))
+  if (AbbreviationDictionary.contains(Arg) &&
+      Param == AbbreviationDictionary.lookup(Arg))
     return true;
 
-  if (AbbreviationDictionary.find(Param) != AbbreviationDictionary.end() &&
-      Arg.equals(AbbreviationDictionary.lookup(Param)))
+  if (AbbreviationDictionary.contains(Param) &&
+      Arg == AbbreviationDictionary.lookup(Param))
     return true;
 
   return false;
@@ -155,7 +154,7 @@ static bool applyPrefixHeuristic(StringRef Arg, StringRef Param,
   StringRef Shorter = Arg.size() < Param.size() ? Arg : Param;
   StringRef Longer = Arg.size() >= Param.size() ? Arg : Param;
 
-  if (Longer.startswith_insensitive(Shorter))
+  if (Longer.starts_with_insensitive(Shorter))
     return percentage(Shorter.size(), Longer.size()) > Threshold;
 
   return false;
@@ -167,7 +166,7 @@ static bool applySuffixHeuristic(StringRef Arg, StringRef Param,
   StringRef Shorter = Arg.size() < Param.size() ? Arg : Param;
   StringRef Longer = Arg.size() >= Param.size() ? Arg : Param;
 
-  if (Longer.endswith_insensitive(Shorter))
+  if (Longer.ends_with_insensitive(Shorter))
     return percentage(Shorter.size(), Longer.size()) > Threshold;
 
   return false;
@@ -240,7 +239,7 @@ static bool applyJaroWinklerHeuristic(StringRef Arg, StringRef Param,
   std::ptrdiff_t L = 0;
   for (std::ptrdiff_t I = 0; I < ParamLen; ++I) {
     if (ParamFlags[I] == 1) {
-      std::ptrdiff_t J;
+      std::ptrdiff_t J = 0;
       for (J = L; J < ArgLen; ++J)
         if (ArgFlags[J] == 1) {
           L = J + 1;
@@ -300,10 +299,11 @@ static bool applyDiceHeuristic(StringRef Arg, StringRef Param,
 
 /// Checks if ArgType binds to ParamType regarding reference-ness and
 /// cv-qualifiers.
-static bool areRefAndQualCompatible(QualType ArgType, QualType ParamType) {
+static bool areRefAndQualCompatible(QualType ArgType, QualType ParamType,
+                                    const ASTContext &Ctx) {
   return !ParamType->isReferenceType() ||
          ParamType.getNonReferenceType().isAtLeastAsQualifiedAs(
-             ArgType.getNonReferenceType());
+             ArgType.getNonReferenceType(), Ctx);
 }
 
 static bool isPointerOrArray(QualType TypeToCheck) {
@@ -312,12 +312,12 @@ static bool isPointerOrArray(QualType TypeToCheck) {
 
 /// Checks whether ArgType is an array type identical to ParamType's array type.
 /// Enforces array elements' qualifier compatibility as well.
-static bool isCompatibleWithArrayReference(QualType ArgType,
-                                           QualType ParamType) {
+static bool isCompatibleWithArrayReference(QualType ArgType, QualType ParamType,
+                                           const ASTContext &Ctx) {
   if (!ArgType->isArrayType())
     return false;
   // Here, qualifiers belong to the elements of the arrays.
-  if (!ParamType.isAtLeastAsQualifiedAs(ArgType))
+  if (!ParamType.isAtLeastAsQualifiedAs(ArgType, Ctx))
     return false;
 
   return ParamType.getUnqualifiedType() == ArgType.getUnqualifiedType();
@@ -343,12 +343,13 @@ static QualType convertToPointeeOrArrayElementQualType(QualType TypeToConvert) {
 /// every * in ParamType to the right of that cv-qualifier, except the last
 /// one, must also be const-qualified.
 static bool arePointersStillQualCompatible(QualType ArgType, QualType ParamType,
-                                           bool &IsParamContinuouslyConst) {
+                                           bool &IsParamContinuouslyConst,
+                                           const ASTContext &Ctx) {
   // The types are compatible, if the parameter is at least as qualified as the
   // argument, and if it is more qualified, it has to be const on upper pointer
   // levels.
   bool AreTypesQualCompatible =
-      ParamType.isAtLeastAsQualifiedAs(ArgType) &&
+      ParamType.isAtLeastAsQualifiedAs(ArgType, Ctx) &&
       (!ParamType.hasQualifiers() || IsParamContinuouslyConst);
   // Check whether the parameter's constness continues at the current pointer
   // level.
@@ -360,9 +361,10 @@ static bool arePointersStillQualCompatible(QualType ArgType, QualType ParamType,
 /// Checks whether multilevel pointers are compatible in terms of levels,
 /// qualifiers and pointee type.
 static bool arePointerTypesCompatible(QualType ArgType, QualType ParamType,
-                                      bool IsParamContinuouslyConst) {
+                                      bool IsParamContinuouslyConst,
+                                      const ASTContext &Ctx) {
   if (!arePointersStillQualCompatible(ArgType, ParamType,
-                                      IsParamContinuouslyConst))
+                                      IsParamContinuouslyConst, Ctx))
     return false;
 
   do {
@@ -373,7 +375,7 @@ static bool arePointerTypesCompatible(QualType ArgType, QualType ParamType,
     // Check whether cv-qualifiers permit compatibility on
     // current level.
     if (!arePointersStillQualCompatible(ArgType, ParamType,
-                                        IsParamContinuouslyConst))
+                                        IsParamContinuouslyConst, Ctx))
       return false;
 
     if (ParamType.getUnqualifiedType() == ArgType.getUnqualifiedType())
@@ -397,7 +399,7 @@ static bool areTypesCompatible(QualType ArgType, QualType ParamType,
     return true;
 
   // Check for constness and reference compatibility.
-  if (!areRefAndQualCompatible(ArgType, ParamType))
+  if (!areRefAndQualCompatible(ArgType, ParamType, Ctx))
     return false;
 
   bool IsParamReference = ParamType->isReferenceType();
@@ -435,7 +437,7 @@ static bool areTypesCompatible(QualType ArgType, QualType ParamType,
   // When ParamType is an array reference, ArgType has to be of the same-sized
   // array-type with cv-compatible element type.
   if (IsParamReference && ParamType->isArrayType())
-    return isCompatibleWithArrayReference(ArgType, ParamType);
+    return isCompatibleWithArrayReference(ArgType, ParamType, Ctx);
 
   bool IsParamContinuouslyConst =
       !IsParamReference || ParamType.getNonReferenceType().isConstQualified();
@@ -445,7 +447,7 @@ static bool areTypesCompatible(QualType ArgType, QualType ParamType,
   ParamType = convertToPointeeOrArrayElementQualType(ParamType);
 
   // Check qualifier compatibility on the next level.
-  if (!ParamType.isAtLeastAsQualifiedAs(ArgType))
+  if (!ParamType.isAtLeastAsQualifiedAs(ArgType, Ctx))
     return false;
 
   if (ParamType.getUnqualifiedType() == ArgType.getUnqualifiedType())
@@ -473,8 +475,8 @@ static bool areTypesCompatible(QualType ArgType, QualType ParamType,
   if (!(ParamType->isAnyPointerType() && ArgType->isAnyPointerType()))
     return false;
 
-  return arePointerTypesCompatible(ArgType, ParamType,
-                                   IsParamContinuouslyConst);
+  return arePointerTypesCompatible(ArgType, ParamType, IsParamContinuouslyConst,
+                                   Ctx);
 }
 
 static bool isOverloadedUnaryOrBinarySymbolOperator(const FunctionDecl *FD) {
@@ -581,13 +583,13 @@ bool SuspiciousCallArgumentCheck::isHeuristicEnabled(Heuristic H) const {
   return llvm::is_contained(AppliedHeuristics, H);
 }
 
-Optional<int8_t> SuspiciousCallArgumentCheck::getBound(Heuristic H,
-                                                       BoundKind BK) const {
+std::optional<int8_t>
+SuspiciousCallArgumentCheck::getBound(Heuristic H, BoundKind BK) const {
   auto Idx = static_cast<std::size_t>(H);
   assert(Idx < HeuristicCount);
 
   if (!Defaults[Idx].hasBounds())
-    return None;
+    return std::nullopt;
 
   switch (BK) {
   case BoundKind::DissimilarBelow:
@@ -782,7 +784,7 @@ bool SuspiciousCallArgumentCheck::areNamesSimilar(StringRef Arg,
                                                   StringRef Param, Heuristic H,
                                                   BoundKind BK) const {
   int8_t Threshold = -1;
-  if (Optional<int8_t> GotBound = getBound(H, BK))
+  if (std::optional<int8_t> GotBound = getBound(H, BK))
     Threshold = *GotBound;
 
   switch (H) {
@@ -806,6 +808,4 @@ bool SuspiciousCallArgumentCheck::areNamesSimilar(StringRef Arg,
   llvm_unreachable("Unhandled heuristic kind");
 }
 
-} // namespace readability
-} // namespace tidy
-} // namespace clang
+} // namespace clang::tidy::readability

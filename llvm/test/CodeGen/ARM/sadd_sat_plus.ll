@@ -63,22 +63,22 @@ define i64 @func64(i64 %x, i64 %y, i64 %z) nounwind {
 ; CHECK-T1-NEXT:    adcs r3, r1
 ; CHECK-T1-NEXT:    eors r1, r3
 ; CHECK-T1-NEXT:    bics r1, r2
-; CHECK-T1-NEXT:    asrs r2, r3, #31
+; CHECK-T1-NEXT:    asrs r0, r3, #31
+; CHECK-T1-NEXT:    movs r2, #1
+; CHECK-T1-NEXT:    lsls r2, r2, #31
+; CHECK-T1-NEXT:    eors r2, r0
 ; CHECK-T1-NEXT:    cmp r1, #0
-; CHECK-T1-NEXT:    mov r0, r2
-; CHECK-T1-NEXT:    bmi .LBB1_2
+; CHECK-T1-NEXT:    bpl .LBB1_3
 ; CHECK-T1-NEXT:  @ %bb.1:
-; CHECK-T1-NEXT:    mov r0, r4
+; CHECK-T1-NEXT:    bpl .LBB1_4
 ; CHECK-T1-NEXT:  .LBB1_2:
-; CHECK-T1-NEXT:    cmp r1, #0
-; CHECK-T1-NEXT:    bmi .LBB1_4
-; CHECK-T1-NEXT:  @ %bb.3:
-; CHECK-T1-NEXT:    mov r1, r3
+; CHECK-T1-NEXT:    mov r1, r2
 ; CHECK-T1-NEXT:    pop {r4, pc}
+; CHECK-T1-NEXT:  .LBB1_3:
+; CHECK-T1-NEXT:    mov r0, r4
+; CHECK-T1-NEXT:    bmi .LBB1_2
 ; CHECK-T1-NEXT:  .LBB1_4:
-; CHECK-T1-NEXT:    movs r1, #1
-; CHECK-T1-NEXT:    lsls r1, r1, #31
-; CHECK-T1-NEXT:    eors r2, r1
+; CHECK-T1-NEXT:    mov r2, r3
 ; CHECK-T1-NEXT:    mov r1, r2
 ; CHECK-T1-NEXT:    pop {r4, pc}
 ;
@@ -91,10 +91,9 @@ define i64 @func64(i64 %x, i64 %y, i64 %z) nounwind {
 ; CHECK-T2-NEXT:    eor.w r3, r1, r12
 ; CHECK-T2-NEXT:    eors r1, r2
 ; CHECK-T2-NEXT:    bics r1, r3
-; CHECK-T2-NEXT:    cmp r1, #0
-; CHECK-T2-NEXT:    mov.w r1, #-2147483648
 ; CHECK-T2-NEXT:    it mi
 ; CHECK-T2-NEXT:    asrmi r0, r2, #31
+; CHECK-T2-NEXT:    mov.w r1, #-2147483648
 ; CHECK-T2-NEXT:    it mi
 ; CHECK-T2-NEXT:    eormi.w r2, r1, r2, asr #31
 ; CHECK-T2-NEXT:    mov r1, r2
@@ -108,10 +107,9 @@ define i64 @func64(i64 %x, i64 %y, i64 %z) nounwind {
 ; CHECK-ARM-NEXT:    eor r3, r1, r2
 ; CHECK-ARM-NEXT:    adc r2, r1, r2
 ; CHECK-ARM-NEXT:    eor r1, r1, r2
-; CHECK-ARM-NEXT:    bic r1, r1, r3
-; CHECK-ARM-NEXT:    cmp r1, #0
-; CHECK-ARM-NEXT:    mov r1, #-2147483648
+; CHECK-ARM-NEXT:    bics r1, r1, r3
 ; CHECK-ARM-NEXT:    asrmi r0, r2, #31
+; CHECK-ARM-NEXT:    mov r1, #-2147483648
 ; CHECK-ARM-NEXT:    eormi r2, r1, r2, asr #31
 ; CHECK-ARM-NEXT:    mov r1, r2
 ; CHECK-ARM-NEXT:    bx lr

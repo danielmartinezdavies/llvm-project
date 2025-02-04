@@ -40,6 +40,8 @@ public:
     static bool dtor_called;
     Y() = default;
     Y(int) { TEST_THROW(6);}
+    Y(const Y&) = default;
+    Y& operator=(const Y&) = default;
     ~Y() {dtor_called = true;}
 };
 
@@ -208,16 +210,15 @@ void test_on_test_type() {
     }
 }
 
-constexpr bool test_empty_emplace()
-{
-    optional<const int> opt;
-    auto &v = opt.emplace(42);
-    static_assert( std::is_same_v<const int&, decltype(v)>, "" );
-    assert(*opt == 42);
-    assert(   v == 42);
-    opt.emplace();
-    assert(*opt == 0);
-    return true;
+TEST_CONSTEXPR_CXX20 bool test_empty_emplace() {
+  optional<const int> opt;
+  auto& v = opt.emplace(42);
+  static_assert(std::is_same_v<const int&, decltype(v)>, "");
+  assert(*opt == 42);
+  assert(v == 42);
+  opt.emplace();
+  assert(*opt == 0);
+  return true;
 }
 
 int main(int, char**)

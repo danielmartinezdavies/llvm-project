@@ -31,6 +31,7 @@
 #include "llvm/Support/Casting.h"
 #include "llvm/Support/raw_ostream.h"
 #include <algorithm>
+#include <optional>
 #include <set>
 #include <string>
 
@@ -261,7 +262,7 @@ public:
         SelFirst, AllSpelledTokens.end(), [&](const syntax::Token &Tok) {
           return SM.getFileOffset(Tok.location()) < SelEnd;
         });
-    auto Sel = llvm::makeArrayRef(SelFirst, SelLimit);
+    auto Sel = llvm::ArrayRef(SelFirst, SelLimit);
     // Find which of these are preprocessed to nothing and should be ignored.
     llvm::BitVector PPIgnored(Sel.size(), false);
     for (const syntax::TokenBuffer::Expansion &X :
@@ -395,7 +396,7 @@ private:
           // Implausible if upperbound(Tok) < First.
           if (auto Offset = LastAffectedToken(Tok.location()))
             return *Offset < First;
-          // A prefix of the expanded tokens may be from an an implicit
+          // A prefix of the expanded tokens may be from an implicit
           // inclusion (e.g. preamble patch, or command-line -include).
           return true;
         });
@@ -418,7 +419,7 @@ private:
     if (EndInvalid)
       End = Toks.expandedTokens().end();
 
-    return llvm::makeArrayRef(Start, End);
+    return llvm::ArrayRef(Start, End);
   }
 
   // Hit-test a consecutive range of tokens from a single file ID.
@@ -512,12 +513,12 @@ private:
   }
 
   // Decomposes Loc and returns the offset if the file ID is SelFile.
-  llvm::Optional<unsigned> offsetInSelFile(SourceLocation Loc) const {
+  std::optional<unsigned> offsetInSelFile(SourceLocation Loc) const {
     // Decoding Loc with SM.getDecomposedLoc is relatively expensive.
     // But SourceLocations for a file are numerically contiguous, so we
     // can use cheap integer operations instead.
     if (Loc < SelFileBounds.getBegin() || Loc >= SelFileBounds.getEnd())
-      return llvm::None;
+      return std::nullopt;
     // FIXME: subtracting getRawEncoding() is dubious, move this logic into SM.
     return Loc.getRawEncoding() - SelFileBounds.getBegin().getRawEncoding();
   }
@@ -634,8 +635,12 @@ public:
     if (llvm::isa_and_nonnull<TranslationUnitDecl>(X))
       return Base::TraverseDecl(X); // Already pushed by constructor.
     // Base::TraverseDecl will suppress children, but not this node itself.
-    if (X && X->isImplicit())
-      return true;
+    if (X && X->isImplicit()) {
+      // Most implicit nodes have only implicit children and can be skipped.
+      // However there are exceptions (`void foo(Concept auto x)`), and
+      // the base implementation knows how to find them.
+      return Base::TraverseDecl(X);
+    }
     return traverseNode(X, [&] { return Base::TraverseDecl(X); });
   }
   bool TraverseTypeLoc(TypeLoc X) {
@@ -658,6 +663,9 @@ public:
   }
   bool TraverseAttr(Attr *X) {
     return traverseNode(X, [&] { return Base::TraverseAttr(X); });
+  }
+  bool TraverseConceptReference(ConceptReference *X) {
+    return traverseNode(X, [&] { return Base::TraverseConceptReference(X); });
   }
   // Stmt is the same, but this form allows the data recursion optimization.
   bool dataTraverseStmtPre(Stmt *X) {
@@ -860,7 +868,7 @@ private:
   // is not available to the node's children.
   // Usually empty, but sometimes children cover tokens but shouldn't own them.
   SourceRange earlySourceRange(const DynTypedNode &N) {
-    if (const Decl *D = N.get<Decl>()) {
+    if (const Decl *VD = N.get<VarDecl>()) {
       // We want the name in the var-decl to be claimed by the decl itself and
       // not by any children. Ususally, we don't need this, because source
       // ranges of children are not overlapped with their parent's.
@@ -869,8 +877,20 @@ private:
       //    auto fun = [bar = foo]() { ... }
       //                ~~~~~~~~~   VarDecl
       //                ~~~         |- AutoTypeLoc
-      if (const auto *DD = llvm::dyn_cast<VarDecl>(D))
-        return DD->getLocation();
+      return VD->getLocation();
+    }
+
+    // When referring to a destructor ~Foo(), attribute Foo to the destructor
+    // rather than the TypeLoc nested inside it.
+    // We still traverse the TypeLoc, because it may contain other targeted
+    // things like the T in ~Foo<T>().
+    if (const auto *CDD = N.get<CXXDestructorDecl>())
+      return CDD->getNameInfo().getNamedTypeInfo()->getTypeLoc().getBeginLoc();
+    if (const auto *ME = N.get<MemberExpr>()) {
+      auto NameInfo = ME->getMemberNameInfo();
+      if (NameInfo.getName().getNameKind() ==
+          DeclarationName::CXXDestructorName)
+        return NameInfo.getNamedTypeInfo()->getTypeLoc().getBeginLoc();
     }
 
     return SourceRange();
@@ -1047,7 +1067,7 @@ bool SelectionTree::createEach(ASTContext &AST,
 SelectionTree SelectionTree::createRight(ASTContext &AST,
                                          const syntax::TokenBuffer &Tokens,
                                          unsigned int Begin, unsigned int End) {
-  llvm::Optional<SelectionTree> Result;
+  std::optional<SelectionTree> Result;
   createEach(AST, Tokens, Begin, End, [&](SelectionTree T) {
     Result = std::move(T);
     return true;
@@ -1093,6 +1113,9 @@ const DeclContext &SelectionTree::Node::getDeclContext() const {
           return *DC;
       return *Current->getLexicalDeclContext();
     }
+    if (const auto *LE = CurrentNode->ASTNode.get<LambdaExpr>())
+      if (CurrentNode != this)
+        return *LE->getCallOperator();
   }
   llvm_unreachable("A tree must always be rooted at TranslationUnitDecl.");
 }

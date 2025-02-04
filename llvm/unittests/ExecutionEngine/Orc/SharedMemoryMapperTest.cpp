@@ -7,7 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "OrcTestCommon.h"
-
+#include "llvm/Config/llvm-config.h" // for LLVM_ON_UNIX
 #include "llvm/ExecutionEngine/Orc/MemoryMapper.h"
 #include "llvm/ExecutionEngine/Orc/Shared/OrcRTBridge.h"
 #include "llvm/ExecutionEngine/Orc/TargetProcess/ExecutorSharedMemoryMapperService.h"
@@ -81,7 +81,7 @@ TEST(SharedMemoryMapperTest, MemReserveInitializeDeinitializeRelease) {
         SI.Offset = 0;
         SI.ContentSize = TestString.size() + 1;
         SI.ZeroFillSize = PageSize - SI.ContentSize;
-        SI.Prot = sys::Memory::MF_READ | sys::Memory::MF_WRITE;
+        SI.AG = MemProt::Read | MemProt::Write;
 
         AI.MappingBase = Reservation.Start;
         AI.Segments.push_back(SI);

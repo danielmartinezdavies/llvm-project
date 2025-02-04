@@ -10,19 +10,21 @@
 
 #include "src/__support/CPP/bitset.h"
 #include "src/__support/common.h"
+#include "src/__support/macros/config.h"
 #include <stddef.h>
 
-namespace __llvm_libc {
+namespace LIBC_NAMESPACE_DECL {
 
 LLVM_LIBC_FUNCTION(size_t, strspn, (const char *src, const char *segment)) {
   const char *initial = src;
   cpp::bitset<256> bitset;
 
   for (; *segment; ++segment)
-    bitset.set(*segment);
-  for (; *src && bitset.test(*src); ++src)
+    bitset.set(*reinterpret_cast<const unsigned char *>(segment));
+  for (; *src && bitset.test(*reinterpret_cast<const unsigned char *>(src));
+       ++src)
     ;
   return src - initial;
 }
 
-} // namespace __llvm_libc
+} // namespace LIBC_NAMESPACE_DECL

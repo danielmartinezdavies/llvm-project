@@ -21,27 +21,56 @@
 using namespace lldb;
 using namespace lldb_private;
 
+static DWORD ToTimeout(std::optional<MainLoopWindows::TimePoint> point) {
+  using namespace std::chrono;
+
+  if (!point)
+    return WSA_INFINITE;
+
+  nanoseconds dur = (std::max)(*point - steady_clock::now(), nanoseconds(0));
+  return ceil<milliseconds>(dur).count();
+}
+
+MainLoopWindows::MainLoopWindows() {
+  m_interrupt_event = WSACreateEvent();
+  assert(m_interrupt_event != WSA_INVALID_EVENT);
+}
+
+MainLoopWindows::~MainLoopWindows() {
+  assert(m_read_fds.empty());
+  BOOL result = WSACloseEvent(m_interrupt_event);
+  assert(result == TRUE);
+  UNUSED_IF_ASSERT_DISABLED(result);
+}
+
 llvm::Expected<size_t> MainLoopWindows::Poll() {
-  std::vector<WSAEVENT> read_events;
-  read_events.reserve(m_read_fds.size());
+  std::vector<WSAEVENT> events;
+  events.reserve(m_read_fds.size() + 1);
   for (auto &[fd, info] : m_read_fds) {
     int result = WSAEventSelect(fd, info.event, FD_READ | FD_ACCEPT | FD_CLOSE);
     assert(result == 0);
+    UNUSED_IF_ASSERT_DISABLED(result);
 
-    read_events.push_back(info.event);
+    events.push_back(info.event);
   }
+  events.push_back(m_interrupt_event);
 
-  DWORD result = WSAWaitForMultipleEvents(
-      read_events.size(), read_events.data(), FALSE, WSA_INFINITE, FALSE);
+  DWORD result =
+      WSAWaitForMultipleEvents(events.size(), events.data(), FALSE,
+                               ToTimeout(GetNextWakeupTime()), FALSE);
 
   for (auto &fd : m_read_fds) {
     int result = WSAEventSelect(fd.first, WSA_INVALID_EVENT, 0);
     assert(result == 0);
+    UNUSED_IF_ASSERT_DISABLED(result);
   }
 
-  if (result >= WSA_WAIT_EVENT_0 &&
-      result < WSA_WAIT_EVENT_0 + read_events.size())
+  if (result >= WSA_WAIT_EVENT_0 && result < WSA_WAIT_EVENT_0 + events.size())
     return result - WSA_WAIT_EVENT_0;
+
+  // A timeout is treated as a (premature) signalization of the interrupt event.
+  if (result == WSA_WAIT_TIMEOUT)
+    return events.size() - 1;
 
   return llvm::createStringError(llvm::inconvertibleErrorCode(),
                                  "WSAWaitForMultipleEvents failed");
@@ -51,18 +80,19 @@ MainLoopWindows::ReadHandleUP
 MainLoopWindows::RegisterReadObject(const IOObjectSP &object_sp,
                                     const Callback &callback, Status &error) {
   if (!object_sp || !object_sp->IsValid()) {
-    error.SetErrorString("IO object is not valid.");
+    error = Status::FromErrorString("IO object is not valid.");
     return nullptr;
   }
   if (object_sp->GetFdType() != IOObject::eFDTypeSocket) {
-    error.SetErrorString(
+    error = Status::FromErrorString(
         "MainLoopWindows: non-socket types unsupported on Windows");
     return nullptr;
   }
 
   WSAEVENT event = WSACreateEvent();
   if (event == WSA_INVALID_EVENT) {
-    error.SetErrorStringWithFormat("Cannot create monitoring event.");
+    error =
+        Status::FromErrorStringWithFormat("Cannot create monitoring event.");
     return nullptr;
   }
 
@@ -72,8 +102,9 @@ MainLoopWindows::RegisterReadObject(const IOObjectSP &object_sp,
           .second;
   if (!inserted) {
     WSACloseEvent(event);
-    error.SetErrorStringWithFormat("File descriptor %d already monitored.",
-                                   object_sp->GetWaitableHandle());
+    error = Status::FromErrorStringWithFormat(
+        "File descriptor %d already monitored.",
+        object_sp->GetWaitableHandle());
     return nullptr;
   }
 
@@ -85,6 +116,7 @@ void MainLoopWindows::UnregisterReadObject(IOObject::WaitableHandle handle) {
   assert(it != m_read_fds.end());
   BOOL result = WSACloseEvent(it->second.event);
   assert(result == TRUE);
+  UNUSED_IF_ASSERT_DISABLED(result);
   m_read_fds.erase(it);
 }
 
@@ -99,17 +131,22 @@ Status MainLoopWindows::Run() {
 
   Status error;
 
-  // run until termination or until we run out of things to listen to
-  while (!m_terminate_request && !m_read_fds.empty()) {
-
+  while (!m_terminate_request) {
     llvm::Expected<size_t> signaled_event = Poll();
     if (!signaled_event)
-      return Status(signaled_event.takeError());
+      return Status::FromError(signaled_event.takeError());
 
-    auto &KV = *std::next(m_read_fds.begin(), *signaled_event);
-
-    ProcessReadObject(KV.first);
-    ProcessPendingCallbacks();
+    if (*signaled_event < m_read_fds.size()) {
+      auto &KV = *std::next(m_read_fds.begin(), *signaled_event);
+      WSAResetEvent(KV.second.event);
+      ProcessReadObject(KV.first);
+    } else {
+      assert(*signaled_event == m_read_fds.size());
+      WSAResetEvent(m_interrupt_event);
+    }
+    ProcessCallbacks();
   }
   return Status();
 }
+
+void MainLoopWindows::Interrupt() { WSASetEvent(m_interrupt_event); }

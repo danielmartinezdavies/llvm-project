@@ -7,13 +7,15 @@
 //===----------------------------------------------------------------------===//
 
 #include "SystemZMCTargetDesc.h"
-#include "SystemZInstPrinter.h"
+#include "SystemZGNUInstPrinter.h"
+#include "SystemZHLASMInstPrinter.h"
 #include "SystemZMCAsmInfo.h"
 #include "SystemZTargetStreamer.h"
 #include "TargetInfo/SystemZTargetInfo.h"
 #include "llvm/MC/MCContext.h"
 #include "llvm/MC/MCDwarf.h"
 #include "llvm/MC/MCInst.h"
+#include "llvm/MC/MCInstrAnalysis.h"
 #include "llvm/MC/MCInstrInfo.h"
 #include "llvm/MC/MCRegisterInfo.h"
 #include "llvm/MC/MCStreamer.h"
@@ -186,7 +188,10 @@ static MCInstPrinter *createSystemZMCInstPrinter(const Triple &T,
                                                  const MCAsmInfo &MAI,
                                                  const MCInstrInfo &MII,
                                                  const MCRegisterInfo &MRI) {
-  return new SystemZInstPrinter(MAI, MII, MRI);
+  if (SyntaxVariant == AD_HLASM)
+    return new SystemZHLASMInstPrinter(MAI, MII, MRI);
+
+  return new SystemZGNUInstPrinter(MAI, MII, MRI);
 }
 
 void SystemZTargetStreamer::emitConstantPools() {
@@ -223,17 +228,24 @@ public:
 };
 } // end namespace
 
-static MCTargetStreamer *
-createAsmTargetStreamer(MCStreamer &S,
-                        formatted_raw_ostream &OS,
-                        MCInstPrinter *InstPrint,
-                        bool isVerboseAsm) {
+static MCTargetStreamer *createAsmTargetStreamer(MCStreamer &S,
+                                                 formatted_raw_ostream &OS,
+                                                 MCInstPrinter *InstPrint) {
   return new SystemZTargetAsmStreamer(S, OS);
 }
 
 static MCTargetStreamer *
 createObjectTargetStreamer(MCStreamer &S, const MCSubtargetInfo &STI) {
   return new SystemZTargetELFStreamer(S);
+}
+
+static MCTargetStreamer *
+createNullTargetStreamer(MCStreamer &S) {
+  return new SystemZTargetStreamer(S);
+}
+
+static MCInstrAnalysis *createSystemZMCInstrAnalysis(const MCInstrInfo *Info) {
+  return new MCInstrAnalysis(Info);
 }
 
 extern "C" LLVM_EXTERNAL_VISIBILITY void LLVMInitializeSystemZTargetMC() {
@@ -272,4 +284,12 @@ extern "C" LLVM_EXTERNAL_VISIBILITY void LLVMInitializeSystemZTargetMC() {
   // Register the obj streamer
   TargetRegistry::RegisterObjectTargetStreamer(getTheSystemZTarget(),
                                                createObjectTargetStreamer);
+
+  // Register the null streamer
+  TargetRegistry::RegisterNullTargetStreamer(getTheSystemZTarget(),
+                                             createNullTargetStreamer);
+
+  // Register the MCInstrAnalysis.
+  TargetRegistry::RegisterMCInstrAnalysis(getTheSystemZTarget(),
+                                          createSystemZMCInstrAnalysis);
 }

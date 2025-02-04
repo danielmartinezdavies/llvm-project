@@ -25,7 +25,8 @@
 using namespace clang;
 
 // Returns a desugared version of the QualType, and marks ShouldAKA as true
-// whenever we remove significant sugar from the type.
+// whenever we remove significant sugar from the type. Make sure ShouldAKA
+// is initialized before passing it in.
 QualType clang::desugarForDiagnostic(ASTContext &Context, QualType QT,
                                      bool &ShouldAKA) {
   QualifierCollector QC;
@@ -84,8 +85,7 @@ QualType clang::desugarForDiagnostic(ASTContext &Context, QualType QT,
       QualType SugarRT = FT->getReturnType();
       QualType RT = desugarForDiagnostic(Context, SugarRT, DesugarReturn);
       if (auto nullability = AttributedType::stripOuterNullability(SugarRT)) {
-        RT = Context.getAttributedType(
-            AttributedType::getNullabilityAttrKind(*nullability), RT, RT);
+        RT = Context.getAttributedType(*nullability, RT, RT);
       }
 
       bool DesugarArgument = false;
@@ -96,8 +96,7 @@ QualType clang::desugarForDiagnostic(ASTContext &Context, QualType QT,
           QualType PT = desugarForDiagnostic(Context, SugarPT, DesugarArgument);
           if (auto nullability =
                   AttributedType::stripOuterNullability(SugarPT)) {
-            PT = Context.getAttributedType(
-                AttributedType::getNullabilityAttrKind(*nullability), PT, PT);
+            PT = Context.getAttributedType(*nullability, PT, PT);
           }
           Args.push_back(PT);
         }
@@ -118,8 +117,7 @@ QualType clang::desugarForDiagnostic(ASTContext &Context, QualType QT,
       if (!TST->isTypeAlias()) {
         bool DesugarArgument = false;
         SmallVector<TemplateArgument, 4> Args;
-        for (unsigned I = 0, N = TST->getNumArgs(); I != N; ++I) {
-          const TemplateArgument &Arg = TST->getArg(I);
+        for (const TemplateArgument &Arg : TST->template_arguments()) {
           if (Arg.getKind() == TemplateArgument::Type)
             Args.push_back(desugarForDiagnostic(Context, Arg.getAsType(),
                                                 DesugarArgument));
@@ -228,7 +226,7 @@ break; \
           desugarForDiagnostic(Context, Ty->getBaseType(), ShouldAKA);
       QT = Context.getObjCObjectType(
           BaseType, Ty->getTypeArgsAsWritten(),
-          llvm::makeArrayRef(Ty->qual_begin(), Ty->getNumProtocols()),
+          llvm::ArrayRef(Ty->qual_begin(), Ty->getNumProtocols()),
           Ty->isKindOfTypeAsWritten());
     }
   }
@@ -539,7 +537,7 @@ class TemplateDiff {
   bool ShowColor;
 
   /// FromTemplateType - When single type printing is selected, this is the
-  /// type to be be printed.  When tree printing is selected, this type will
+  /// type to be printed.  When tree printing is selected, this type will
   /// show up first in the tree.
   QualType FromTemplateType;
 
@@ -986,7 +984,7 @@ class TemplateDiff {
         if (isEnd()) return;
 
         // Set to first template argument.  If not a parameter pack, done.
-        TemplateArgument TA = TST->getArg(0);
+        TemplateArgument TA = TST->template_arguments()[0];
         if (TA.getKind() != TemplateArgument::Pack) return;
 
         // Start looking into the parameter pack.
@@ -1007,7 +1005,7 @@ class TemplateDiff {
       /// isEnd - Returns true if the iterator is one past the end.
       bool isEnd() const {
         assert(TST && "InternalIterator is invalid with a null TST.");
-        return Index >= TST->getNumArgs();
+        return Index >= TST->template_arguments().size();
       }
 
       /// &operator++ - Increment the iterator to the next template argument.
@@ -1027,11 +1025,11 @@ class TemplateDiff {
         // Loop until a template argument is found, or the end is reached.
         while (true) {
           // Advance to the next template argument.  Break if reached the end.
-          if (++Index == TST->getNumArgs())
+          if (++Index == TST->template_arguments().size())
             break;
 
           // If the TemplateArgument is not a parameter pack, done.
-          TemplateArgument TA = TST->getArg(Index);
+          TemplateArgument TA = TST->template_arguments()[Index];
           if (TA.getKind() != TemplateArgument::Pack)
             break;
 
@@ -1051,7 +1049,7 @@ class TemplateDiff {
         assert(TST && "InternalIterator is invalid with a null TST.");
         assert(!isEnd() && "Index exceeds number of arguments.");
         if (CurrentTA == EndTA)
-          return TST->getArg(Index);
+          return TST->template_arguments()[Index];
         else
           return *CurrentTA;
       }
@@ -1114,8 +1112,8 @@ class TemplateDiff {
   // These functions build up the template diff tree, including functions to
   // retrieve and compare template arguments.
 
-  static const TemplateSpecializationType *GetTemplateSpecializationType(
-      ASTContext &Context, QualType Ty) {
+  static const TemplateSpecializationType *
+  GetTemplateSpecializationType(ASTContext &Context, QualType Ty) {
     if (const TemplateSpecializationType *TST =
             Ty->getAs<TemplateSpecializationType>())
       return TST;
@@ -1159,7 +1157,7 @@ class TemplateDiff {
     if (!FromArgTST || !ToArgTST)
       return true;
 
-    if (!hasSameTemplate(FromArgTST, ToArgTST))
+    if (!hasSameTemplate(Context, FromArgTST, ToArgTST))
       return true;
 
     return false;
@@ -1215,46 +1213,19 @@ class TemplateDiff {
                                              bool &NeedAddressOf) {
     if (!Iter.isEnd()) {
       switch (Iter->getKind()) {
-        default:
-          llvm_unreachable("unknown ArgumentKind");
-        case TemplateArgument::Integral:
-          Value = Iter->getAsIntegral();
-          HasInt = true;
-          IntType = Iter->getIntegralType();
-          return;
-        case TemplateArgument::Declaration: {
-          VD = Iter->getAsDecl();
-          QualType ArgType = Iter->getParamTypeForDecl();
-          QualType VDType = VD->getType();
-          if (ArgType->isPointerType() &&
-              Context.hasSameType(ArgType->getPointeeType(), VDType))
-            NeedAddressOf = true;
-          return;
-        }
-        case TemplateArgument::NullPtr:
-          IsNullPtr = true;
-          return;
-        case TemplateArgument::Expression:
-          E = Iter->getAsExpr();
-      }
-    } else if (!Default->isParameterPack()) {
-      E = Default->getDefaultArgument();
-    }
-
-    if (!Iter.hasDesugaredTA()) return;
-
-    const TemplateArgument& TA = Iter.getDesugaredTA();
-    switch (TA.getKind()) {
-      default:
-        llvm_unreachable("unknown ArgumentKind");
+      case TemplateArgument::StructuralValue:
+        // FIXME: Diffing of structural values is not implemented.
+        // There is no possible fallback in this case, this will show up
+        // as '(no argument)'.
+        return;
       case TemplateArgument::Integral:
-        Value = TA.getAsIntegral();
+        Value = Iter->getAsIntegral();
         HasInt = true;
-        IntType = TA.getIntegralType();
+        IntType = Iter->getIntegralType();
         return;
       case TemplateArgument::Declaration: {
-        VD = TA.getAsDecl();
-        QualType ArgType = TA.getParamTypeForDecl();
+        VD = Iter->getAsDecl();
+        QualType ArgType = Iter->getParamTypeForDecl();
         QualType VDType = VD->getType();
         if (ArgType->isPointerType() &&
             Context.hasSameType(ArgType->getPointeeType(), VDType))
@@ -1265,13 +1236,62 @@ class TemplateDiff {
         IsNullPtr = true;
         return;
       case TemplateArgument::Expression:
-        // TODO: Sometimes, the desugared template argument Expr differs from
-        // the sugared template argument Expr.  It may be useful in the future
-        // but for now, it is just discarded.
-        if (!E)
-          E = TA.getAsExpr();
-        return;
+        E = Iter->getAsExpr();
+        break;
+      case TemplateArgument::Null:
+      case TemplateArgument::Type:
+      case TemplateArgument::Template:
+      case TemplateArgument::TemplateExpansion:
+        llvm_unreachable("TemplateArgument kind is not expected for NTTP");
+      case TemplateArgument::Pack:
+        llvm_unreachable("TemplateArgument kind should be handled elsewhere");
+      }
+    } else if (!Default->isParameterPack()) {
+      E = Default->getDefaultArgument().getArgument().getAsExpr();
     }
+
+    if (!Iter.hasDesugaredTA())
+      return;
+
+    const TemplateArgument &TA = Iter.getDesugaredTA();
+    switch (TA.getKind()) {
+    case TemplateArgument::StructuralValue:
+      // FIXME: Diffing of structural values is not implemented.
+      //        Just fall back to the expression.
+      return;
+    case TemplateArgument::Integral:
+      Value = TA.getAsIntegral();
+      HasInt = true;
+      IntType = TA.getIntegralType();
+      return;
+    case TemplateArgument::Declaration: {
+      VD = TA.getAsDecl();
+      QualType ArgType = TA.getParamTypeForDecl();
+      QualType VDType = VD->getType();
+      if (ArgType->isPointerType() &&
+          Context.hasSameType(ArgType->getPointeeType(), VDType))
+        NeedAddressOf = true;
+      return;
+    }
+    case TemplateArgument::NullPtr:
+      IsNullPtr = true;
+      return;
+    case TemplateArgument::Expression:
+      // TODO: Sometimes, the desugared template argument Expr differs from
+      // the sugared template argument Expr.  It may be useful in the future
+      // but for now, it is just discarded.
+      if (!E)
+        E = TA.getAsExpr();
+      return;
+    case TemplateArgument::Null:
+    case TemplateArgument::Type:
+    case TemplateArgument::Template:
+    case TemplateArgument::TemplateExpansion:
+      llvm_unreachable("TemplateArgument kind is not expected for NTTP");
+    case TemplateArgument::Pack:
+      llvm_unreachable("TemplateArgument kind should be handled elsewhere");
+    }
+    llvm_unreachable("Unexpected TemplateArgument kind");
   }
 
   /// DiffNonTypes - Handles any template parameters not handled by DiffTypes
@@ -1349,11 +1369,17 @@ class TemplateDiff {
   /// argument info into a tree.
   void DiffTemplate(const TemplateSpecializationType *FromTST,
                     const TemplateSpecializationType *ToTST) {
+    // FIXME: With P3310R0, A TST formed from a DeducedTemplateName might
+    // differ in template arguments which were not written.
     // Begin descent into diffing template tree.
     TemplateParameterList *ParamsFrom =
-        FromTST->getTemplateName().getAsTemplateDecl()->getTemplateParameters();
+        FromTST->getTemplateName()
+            .getAsTemplateDecl(/*IgnoreDeduced=*/true)
+            ->getTemplateParameters();
     TemplateParameterList *ParamsTo =
-        ToTST->getTemplateName().getAsTemplateDecl()->getTemplateParameters();
+        ToTST->getTemplateName()
+            .getAsTemplateDecl(/*IgnoreDeduced=*/true)
+            ->getTemplateParameters();
     unsigned TotalArgs = 0;
     for (TSTiterator FromIter(Context, FromTST), ToIter(Context, ToTST);
          !FromIter.isEnd() || !ToIter.isEnd(); ++TotalArgs) {
@@ -1405,20 +1431,24 @@ class TemplateDiff {
 
   /// hasSameBaseTemplate - Returns true when the base templates are the same,
   /// even if the template arguments are not.
-  static bool hasSameBaseTemplate(const TemplateSpecializationType *FromTST,
+  static bool hasSameBaseTemplate(ASTContext &Context,
+                                  const TemplateSpecializationType *FromTST,
                                   const TemplateSpecializationType *ToTST) {
-    return FromTST->getTemplateName().getAsTemplateDecl()->getCanonicalDecl() ==
-           ToTST->getTemplateName().getAsTemplateDecl()->getCanonicalDecl();
+    return Context.getCanonicalTemplateName(FromTST->getTemplateName(),
+                                            /*IgnoreDeduced=*/true) ==
+           Context.getCanonicalTemplateName(ToTST->getTemplateName(),
+                                            /*IgnoreDeduced=*/true);
   }
 
   /// hasSameTemplate - Returns true if both types are specialized from the
   /// same template declaration.  If they come from different template aliases,
   /// do a parallel ascension search to determine the highest template alias in
   /// common and set the arguments to them.
-  static bool hasSameTemplate(const TemplateSpecializationType *&FromTST,
+  static bool hasSameTemplate(ASTContext &Context,
+                              const TemplateSpecializationType *&FromTST,
                               const TemplateSpecializationType *&ToTST) {
     // Check the top templates if they are the same.
-    if (hasSameBaseTemplate(FromTST, ToTST))
+    if (hasSameBaseTemplate(Context, FromTST, ToTST))
       return true;
 
     // Create vectors of template aliases.
@@ -1433,14 +1463,14 @@ class TemplateDiff {
         ToIter = ToTemplateList.rbegin(), ToEnd = ToTemplateList.rend();
 
     // Check if the lowest template types are the same.  If not, return.
-    if (!hasSameBaseTemplate(*FromIter, *ToIter))
+    if (!hasSameBaseTemplate(Context, *FromIter, *ToIter))
       return false;
 
     // Begin searching up the template aliases.  The bottom most template
     // matches so move up until one pair does not match.  Use the template
     // right before that one.
     for (; FromIter != FromEnd && ToIter != ToEnd; ++FromIter, ++ToIter) {
-      if (!hasSameBaseTemplate(*FromIter, *ToIter))
+      if (!hasSameBaseTemplate(Context, *FromIter, *ToIter))
         break;
     }
 
@@ -1869,11 +1899,17 @@ class TemplateDiff {
 
     E = E->IgnoreImpCasts();
 
-    if (isa<IntegerLiteral>(E)) return false;
+    auto CheckIntegerLiteral = [](Expr *E) {
+      if (auto *TemplateExpr = dyn_cast<SubstNonTypeTemplateParmExpr>(E))
+        E = TemplateExpr->getReplacement();
+      return isa<IntegerLiteral>(E);
+    };
+
+    if (CheckIntegerLiteral(E)) return false;
 
     if (UnaryOperator *UO = dyn_cast<UnaryOperator>(E))
       if (UO->getOpcode() == UO_Minus)
-        if (isa<IntegerLiteral>(UO->getSubExpr()))
+        if (CheckIntegerLiteral(UO->getSubExpr()))
           return false;
 
     if (isa<CXXBoolLiteralExpr>(E))
@@ -1890,10 +1926,11 @@ class TemplateDiff {
         // FIXME: Diffing the APValue would be neat.
         // FIXME: Suppress this and use the full name of the declaration if the
         // parameter is a pointer or reference.
+        TPO->getType().getUnqualifiedType().print(OS, Policy);
         TPO->printAsInit(OS, Policy);
         return;
       }
-      VD->printName(OS);
+      VD->printName(OS, Policy);
       return;
     }
 
@@ -1910,6 +1947,11 @@ class TemplateDiff {
       }
 
       OS << "nullptr";
+      return;
+    }
+
+    if (E) {
+      PrintExpr(E);
       return;
     }
 
@@ -2095,7 +2137,7 @@ public:
       return;
 
     // Different base templates.
-    if (!hasSameTemplate(FromOrigTST, ToOrigTST)) {
+    if (!hasSameTemplate(Context, FromOrigTST, ToOrigTST)) {
       return;
     }
 
@@ -2103,10 +2145,11 @@ public:
     ToQual -= QualType(ToOrigTST, 0).getQualifiers();
 
     // Same base template, but different arguments.
-    Tree.SetTemplateDiff(FromOrigTST->getTemplateName().getAsTemplateDecl(),
-                         ToOrigTST->getTemplateName().getAsTemplateDecl(),
-                         FromQual, ToQual, false /*FromDefault*/,
-                         false /*ToDefault*/);
+    Tree.SetTemplateDiff(
+        FromOrigTST->getTemplateName().getAsTemplateDecl(
+            /*IgnoreDeduced=*/true),
+        ToOrigTST->getTemplateName().getAsTemplateDecl(/*IgnoreDeduced=*/true),
+        FromQual, ToQual, false /*FromDefault*/, false /*ToDefault*/);
 
     DiffTemplate(FromOrigTST, ToOrigTST);
   }

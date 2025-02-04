@@ -1,3 +1,7 @@
+..
+   This work is licensed under a Creative Commons Attribution 3.0 Unported License.
+   SPDX-License-Identifier: CC-BY-3.0
+
 ===============
 Response Guide
 ===============
@@ -185,7 +189,7 @@ taken, but below is a list of possible resolutions:
   violation.
 * A private verbal warning and/or reprimand from the committee to the
   individual(s) involved and request to stop this behavior. This conversation
-  may happen in person, email, by phone, video chat, or IRC.
+  may happen in person, email, by phone, video chat, or Discord.
 * Request that the reportee avoid any interaction with, and physical proximity
   to, another person for the remainder of the event.
 * Refusal of alcoholic beverage purchases by the reportee at LLVM events.
@@ -198,8 +202,7 @@ taken, but below is a list of possible resolutions:
 * Immediately ending any volunteer responsibilities and privileges the reportee
   holds.
 * An imposed suspension (e.g., asking someone to "take a week off" from mailing
-  lists, bug tracker, IRC, Discord, repositories, or other communication
-  forms). 
+  lists, bug tracker, Discord, repositories, or other communication forms). 
 * A permanent or temporary ban from some or all LLVM Project spaces (online or
   in person).
 
@@ -290,11 +293,22 @@ A transparency report consists of 2 parts:
 
 These reports will be published on the LLVM website.
 
+Thanks!
+=======
+
 
 This guide was created and inspired by the following: the `Django Project`_,
 `Carpentries Response Guide`_, and the `Write The Docs Response Guide`_.
 
+License
+=======
+
+All content on this page is licensed under a `Creative Commons Attribution 3.0
+Unported License`_.
+
+
 .. _Django Project: https://www.djangoproject.com/conduct/
 .. _Carpentries Response Guide: https://docs.carpentries.org/topic_folders/policies/enforcement-guidelines.html
 .. _Write The Docs Response Guide: https://www.writethedocs.org/code-of-conduct/#guidelines-for-reporting-incidents
+.. _Creative Commons Attribution 3.0 Unported License: http://creativecommons.org/licenses/by/3.0/
 

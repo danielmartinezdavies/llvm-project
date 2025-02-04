@@ -9,14 +9,11 @@
 #include "ABISysV_ppc.h"
 
 #include "llvm/ADT/STLExtras.h"
-#include "llvm/ADT/Triple.h"
+#include "llvm/TargetParser/Triple.h"
 
 #include "lldb/Core/Module.h"
 #include "lldb/Core/PluginManager.h"
 #include "lldb/Core/Value.h"
-#include "lldb/Core/ValueObjectConstResult.h"
-#include "lldb/Core/ValueObjectMemory.h"
-#include "lldb/Core/ValueObjectRegister.h"
 #include "lldb/Symbol/UnwindPlan.h"
 #include "lldb/Target/Process.h"
 #include "lldb/Target/RegisterContext.h"
@@ -29,6 +26,10 @@
 #include "lldb/Utility/Log.h"
 #include "lldb/Utility/RegisterValue.h"
 #include "lldb/Utility/Status.h"
+#include "lldb/ValueObject/ValueObjectConstResult.h"
+#include "lldb/ValueObject/ValueObjectMemory.h"
+#include "lldb/ValueObject/ValueObjectRegister.h"
+#include <optional>
 
 using namespace lldb;
 using namespace lldb_private;
@@ -113,7 +114,7 @@ enum dwarf_regnums {
 #define DEFINE_GPR(reg, alt, kind1, kind2, kind3, kind4)                       \
   {                                                                            \
     #reg, alt, 8, 0, eEncodingUint, eFormatHex, {kind1, kind2, kind3, kind4 }, \
-                                                 nullptr, nullptr,             \
+                                                 nullptr, nullptr, nullptr,    \
   }
 
 static const RegisterInfo g_register_infos[] = {
@@ -202,10 +203,10 @@ static const RegisterInfo g_register_infos[] = {
      {dwarf_cfa, dwarf_cfa, LLDB_INVALID_REGNUM, LLDB_INVALID_REGNUM},
      nullptr,
      nullptr,
+     nullptr,
      }};
 
-static const uint32_t k_num_register_infos =
-    llvm::array_lengthof(g_register_infos);
+static const uint32_t k_num_register_infos = std::size(g_register_infos);
 
 const lldb_private::RegisterInfo *
 ABISysV_ppc::GetRegisterInfoArray(uint32_t &count) {
@@ -394,7 +395,7 @@ bool ABISysV_ppc::GetArgumentValues(Thread &thread, ValueList &values) const {
     // We currently only support extracting values with Clang QualTypes. Do we
     // care about others?
     CompilerType compiler_type = value->GetCompilerType();
-    llvm::Optional<uint64_t> bit_size = compiler_type.GetBitSize(&thread);
+    std::optional<uint64_t> bit_size = compiler_type.GetBitSize(&thread);
     if (!bit_size)
       return false;
     bool is_signed;
@@ -414,16 +415,12 @@ bool ABISysV_ppc::GetArgumentValues(Thread &thread, ValueList &values) const {
 Status ABISysV_ppc::SetReturnValueObject(lldb::StackFrameSP &frame_sp,
                                          lldb::ValueObjectSP &new_value_sp) {
   Status error;
-  if (!new_value_sp) {
-    error.SetErrorString("Empty value object for return value.");
-    return error;
-  }
+  if (!new_value_sp)
+    return Status::FromErrorString("Empty value object for return value.");
 
   CompilerType compiler_type = new_value_sp->GetCompilerType();
-  if (!compiler_type) {
-    error.SetErrorString("Null clang type for return value.");
-    return error;
-  }
+  if (!compiler_type)
+    return Status::FromErrorString("Null clang type for return value.");
 
   Thread *thread = frame_sp->GetThread().get();
 
@@ -441,12 +438,10 @@ Status ABISysV_ppc::SetReturnValueObject(lldb::StackFrameSP &frame_sp,
     DataExtractor data;
     Status data_error;
     size_t num_bytes = new_value_sp->GetData(data, data_error);
-    if (data_error.Fail()) {
-      error.SetErrorStringWithFormat(
+    if (data_error.Fail())
+      return Status::FromErrorStringWithFormat(
           "Couldn't convert return value to raw data: %s",
           data_error.AsCString());
-      return error;
-    }
     lldb::offset_t offset = 0;
     if (num_bytes <= 8) {
       uint64_t raw_value = data.GetMaxU64(&offset, num_bytes);
@@ -454,18 +449,19 @@ Status ABISysV_ppc::SetReturnValueObject(lldb::StackFrameSP &frame_sp,
       if (reg_ctx->WriteRegisterFromUnsigned(reg_info, raw_value))
         set_it_simple = true;
     } else {
-      error.SetErrorString("We don't support returning longer than 64 bit "
-                           "integer values at present.");
+      error = Status::FromErrorString(
+          "We don't support returning longer than 64 bit "
+          "integer values at present.");
     }
   } else if (compiler_type.IsFloatingPointType(count, is_complex)) {
     if (is_complex)
-      error.SetErrorString(
+      error = Status::FromErrorString(
           "We don't support returning complex values at present");
     else {
-      llvm::Optional<uint64_t> bit_width =
+      std::optional<uint64_t> bit_width =
           compiler_type.GetBitSize(frame_sp.get());
       if (!bit_width) {
-        error.SetErrorString("can't get type size");
+        error = Status::FromErrorString("can't get type size");
         return error;
       }
       if (*bit_width <= 64) {
@@ -473,7 +469,7 @@ Status ABISysV_ppc::SetReturnValueObject(lldb::StackFrameSP &frame_sp,
         Status data_error;
         size_t num_bytes = new_value_sp->GetData(data, data_error);
         if (data_error.Fail()) {
-          error.SetErrorStringWithFormat(
+          error = Status::FromErrorStringWithFormat(
               "Couldn't convert return value to raw data: %s",
               data_error.AsCString());
           return error;
@@ -486,7 +482,7 @@ Status ABISysV_ppc::SetReturnValueObject(lldb::StackFrameSP &frame_sp,
         set_it_simple = true;
       } else {
         // FIXME - don't know how to do 80 bit long doubles yet.
-        error.SetErrorString(
+        error = Status::FromErrorString(
             "We don't support returning float values > 64 bits at present");
       }
     }
@@ -496,8 +492,9 @@ Status ABISysV_ppc::SetReturnValueObject(lldb::StackFrameSP &frame_sp,
     // Okay we've got a structure or something that doesn't fit in a simple
     // register. We should figure out where it really goes, but we don't
     // support this yet.
-    error.SetErrorString("We only support setting simple integer and float "
-                         "return types at present.");
+    error = Status::FromErrorString(
+        "We only support setting simple integer and float "
+        "return types at present.");
   }
 
   return error;
@@ -526,7 +523,7 @@ ValueObjectSP ABISysV_ppc::GetReturnValueObjectSimple(
     if (type_flags & eTypeIsInteger) {
       // Extract the register context so we can read arguments from registers
 
-      llvm::Optional<uint64_t> byte_size =
+      std::optional<uint64_t> byte_size =
           return_compiler_type.GetByteSize(&thread);
       if (!byte_size)
         return return_valobj_sp;
@@ -573,7 +570,7 @@ ValueObjectSP ABISysV_ppc::GetReturnValueObjectSimple(
       if (type_flags & eTypeIsComplex) {
         // Don't handle complex yet.
       } else {
-        llvm::Optional<uint64_t> byte_size =
+        std::optional<uint64_t> byte_size =
             return_compiler_type.GetByteSize(&thread);
         if (byte_size && *byte_size <= sizeof(long double)) {
           const RegisterInfo *f1_info = reg_ctx->GetRegisterInfoByName("f1", 0);
@@ -607,7 +604,7 @@ ValueObjectSP ABISysV_ppc::GetReturnValueObjectSimple(
     return_valobj_sp = ValueObjectConstResult::Create(
         thread.GetStackFrameAtIndex(0).get(), value, ConstString(""));
   } else if (type_flags & eTypeIsVector) {
-    llvm::Optional<uint64_t> byte_size =
+    std::optional<uint64_t> byte_size =
         return_compiler_type.GetByteSize(&thread);
     if (byte_size && *byte_size > 0) {
       const RegisterInfo *altivec_reg = reg_ctx->GetRegisterInfoByName("v2", 0);
@@ -622,7 +619,7 @@ ValueObjectSP ABISysV_ppc::GetReturnValueObjectSimple(
             if (reg_ctx->ReadRegister(altivec_reg, reg_value)) {
               Status error;
               if (reg_value.GetAsMemoryData(
-                      altivec_reg, heap_data_up->GetBytes(),
+                      *altivec_reg, heap_data_up->GetBytes(),
                       heap_data_up->GetByteSize(), byte_order, error)) {
                 DataExtractor data(DataBufferSP(heap_data_up.release()),
                                    byte_order,
@@ -658,7 +655,7 @@ ValueObjectSP ABISysV_ppc::GetReturnValueObjectImpl(
   if (!reg_ctx_sp)
     return return_valobj_sp;
 
-  llvm::Optional<uint64_t> bit_width = return_compiler_type.GetBitSize(&thread);
+  std::optional<uint64_t> bit_width = return_compiler_type.GetBitSize(&thread);
   if (!bit_width)
     return return_valobj_sp;
   if (return_compiler_type.IsAggregateType()) {
@@ -700,7 +697,7 @@ ValueObjectSP ABISysV_ppc::GetReturnValueObjectImpl(
 
         CompilerType field_compiler_type = return_compiler_type.GetFieldAtIndex(
             idx, name, &field_bit_offset, nullptr, nullptr);
-        llvm::Optional<uint64_t> field_bit_width =
+        std::optional<uint64_t> field_bit_width =
             field_compiler_type.GetBitSize(&thread);
         if (!field_bit_width)
           return return_valobj_sp;

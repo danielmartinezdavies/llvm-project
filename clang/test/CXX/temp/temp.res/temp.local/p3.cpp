@@ -1,4 +1,5 @@
-// RUN: %clang_cc1 -verify %s
+// RUN: %clang_cc1 -verify=expected,precxx17 %std_cxx98-14 %s
+// RUN: %clang_cc1 -verify=expected,cxx17 %std_cxx17- %s
 
 template <class T> struct Base {
   // expected-note@-1 2{{member type 'Base<int>' found by ambiguous name lookup}}
@@ -15,8 +16,7 @@ template <class T> struct Derived: Base<int>, Base<char> {
   void g(X0 *t) {
     t->Derived::Base<T>::f();
     t->Base<T>::f();
-    t->Base::f(); // expected-error{{member 'Base' found in multiple base classes of different types}} \
-    // expected-error{{no member named 'f' in 'X0'}}
+    t->Base::f(); // expected-error{{member 'Base' found in multiple base classes of different types}}
   }
 };
 
@@ -26,7 +26,8 @@ namespace PR6717 {
   } // expected-error {{expected ';' after class}}
 
     WebVector(const WebVector<T>& other) { } // expected-error{{undeclared identifier 'T'}} \
-                                                expected-error{{a type specifier is required}}
+                                                precxx17-error{{a type specifier is required}} \
+                                                cxx17-error{{deduction guide declaration without trailing return type}}
 
   template <typename C>
   WebVector<T>& operator=(const C& other) { } // expected-error{{undeclared identifier 'T'}}

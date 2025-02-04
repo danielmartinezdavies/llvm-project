@@ -12,6 +12,7 @@
 
 #include "llvm/AsmParser/Parser.h"
 #include "llvm/AsmParser/LLParser.h"
+#include "llvm/IR/DebugInfoMetadata.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/ModuleSummaryIndex.h"
 #include "llvm/Support/MemoryBuffer.h"
@@ -28,9 +29,9 @@ static bool parseAssemblyInto(MemoryBufferRef F, Module *M,
   std::unique_ptr<MemoryBuffer> Buf = MemoryBuffer::getMemBuffer(F);
   SM.AddNewSourceBuffer(std::move(Buf), SMLoc());
 
-  LLVMContext Context;
+  std::optional<LLVMContext> OptContext;
   return LLParser(F.getBuffer(), SM, Err, M, Index,
-                  M ? M->getContext() : Context, Slots)
+                  M ? M->getContext() : OptContext.emplace(), Slots)
       .Run(UpgradeDebugInfo, DataLayoutCallback);
 }
 
@@ -91,9 +92,10 @@ ParsedModuleAndIndex llvm::parseAssemblyWithIndex(MemoryBufferRef F,
                                                   SMDiagnostic &Err,
                                                   LLVMContext &Context,
                                                   SlotMapping *Slots) {
-  return ::parseAssemblyWithIndex(F, Err, Context, Slots,
-                                  /*UpgradeDebugInfo*/ true,
-                                  [](StringRef) { return None; });
+  return ::parseAssemblyWithIndex(
+      F, Err, Context, Slots,
+      /*UpgradeDebugInfo*/ true,
+      [](StringRef, StringRef) { return std::nullopt; });
 }
 
 static ParsedModuleAndIndex
@@ -150,7 +152,7 @@ static bool parseSummaryIndexAssemblyInto(MemoryBufferRef F,
   // index, but we need to initialize it.
   LLVMContext unusedContext;
   return LLParser(F.getBuffer(), SM, Err, nullptr, &Index, unusedContext)
-      .Run(true, [](StringRef) { return None; });
+      .Run(true, [](StringRef, StringRef) { return std::nullopt; });
 }
 
 std::unique_ptr<ModuleSummaryIndex>
@@ -175,6 +177,12 @@ llvm::parseSummaryIndexAssemblyFile(StringRef Filename, SMDiagnostic &Err) {
   }
 
   return parseSummaryIndexAssembly(FileOrErr.get()->getMemBufferRef(), Err);
+}
+
+std::unique_ptr<ModuleSummaryIndex>
+llvm::parseSummaryIndexAssemblyString(StringRef AsmString, SMDiagnostic &Err) {
+  MemoryBufferRef F(AsmString, "<string>");
+  return parseSummaryIndexAssembly(F, Err);
 }
 
 Constant *llvm::parseConstantValue(StringRef Asm, SMDiagnostic &Err,
@@ -216,4 +224,19 @@ Type *llvm::parseTypeAtBeginning(StringRef Asm, unsigned &Read,
           .parseTypeAtBeginning(Ty, Read, Slots))
     return nullptr;
   return Ty;
+}
+
+DIExpression *llvm::parseDIExpressionBodyAtBeginning(StringRef Asm,
+                                                     unsigned &Read,
+                                                     SMDiagnostic &Err,
+                                                     const Module &M,
+                                                     const SlotMapping *Slots) {
+  SourceMgr SM;
+  std::unique_ptr<MemoryBuffer> Buf = MemoryBuffer::getMemBuffer(Asm);
+  SM.AddNewSourceBuffer(std::move(Buf), SMLoc());
+  MDNode *MD;
+  if (LLParser(Asm, SM, Err, const_cast<Module *>(&M), nullptr, M.getContext())
+          .parseDIExpressionBodyAtBeginning(MD, Read, Slots))
+    return nullptr;
+  return dyn_cast<DIExpression>(MD);
 }

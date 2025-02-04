@@ -52,8 +52,6 @@
 #include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/IntrusiveRefCntPtr.h"
-#include "llvm/ADT/None.h"
-#include "llvm/ADT/Optional.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
@@ -67,6 +65,7 @@
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <optional>
 #include <string>
 #include <tuple>
 #include <type_traits>
@@ -122,7 +121,7 @@ template <typename T> struct TypeListContainsSuperOf<EmptyTypeList, T> {
 template <typename ResultT, typename ArgT,
           ResultT (*Func)(ArrayRef<const ArgT *>)>
 struct VariadicFunction {
-  ResultT operator()() const { return Func(None); }
+  ResultT operator()() const { return Func({}); }
 
   template <typename... ArgsT>
   ResultT operator()(const ArgT &Arg1, const ArgsT &... Args) const {
@@ -162,6 +161,9 @@ inline QualType getUnderlyingType(const FriendDecl &Node) {
 inline QualType getUnderlyingType(const CXXBaseSpecifier &Node) {
   return Node.getType();
 }
+inline QualType getUnderlyingType(const ObjCInterfaceDecl &Node) {
+  return Node.getTypeForDecl()->getPointeeType();
+}
 
 /// Unifies obtaining a `TypeSourceInfo` from different node types.
 template <typename T,
@@ -186,10 +188,6 @@ inline TypeSourceInfo *GetTypeSourceInfo(const BlockDecl &Node) {
 }
 inline TypeSourceInfo *GetTypeSourceInfo(const CXXNewExpr &Node) {
   return Node.getAllocatedTypeSourceInfo();
-}
-inline TypeSourceInfo *
-GetTypeSourceInfo(const ClassTemplateSpecializationDecl &Node) {
-  return Node.getTypeAsWritten();
 }
 
 /// Unifies obtaining the FunctionProtoType pointer from both
@@ -351,8 +349,8 @@ public:
   virtual bool dynMatches(const DynTypedNode &DynNode, ASTMatchFinder *Finder,
                           BoundNodesTreeBuilder *Builder) const = 0;
 
-  virtual llvm::Optional<clang::TraversalKind> TraversalKind() const {
-    return llvm::None;
+  virtual std::optional<clang::TraversalKind> TraversalKind() const {
+    return std::nullopt;
   }
 };
 
@@ -464,7 +462,7 @@ public:
   ///   restricts the node types for \p Kind.
   DynTypedMatcher dynCastTo(const ASTNodeKind Kind) const;
 
-  /// Return a matcher that that points to the same implementation, but sets the
+  /// Return a matcher that points to the same implementation, but sets the
   ///   traversal kind.
   ///
   /// If the traversal kind is already set, then \c TK overrides it.
@@ -483,8 +481,8 @@ public:
 
   /// Bind the specified \p ID to the matcher.
   /// \return A new matcher with the \p ID bound to it if this matcher supports
-  ///   binding. Otherwise, returns an empty \c Optional<>.
-  llvm::Optional<DynTypedMatcher> tryBind(StringRef ID) const;
+  ///   binding. Otherwise, returns an empty \c std::optional<>.
+  std::optional<DynTypedMatcher> tryBind(StringRef ID) const;
 
   /// Returns a unique \p ID for the matcher.
   ///
@@ -536,8 +534,8 @@ public:
   /// Returns the \c TraversalKind respected by calls to `match()`, if any.
   ///
   /// Most matchers will not have a traversal kind set, instead relying on the
-  /// surrounding context. For those, \c llvm::None is returned.
-  llvm::Optional<clang::TraversalKind> getTraversalKind() const {
+  /// surrounding context. For those, \c std::nullopt is returned.
+  std::optional<clang::TraversalKind> getTraversalKind() const {
     return Implementation->TraversalKind();
   }
 
@@ -649,7 +647,7 @@ public:
                                         Builder);
     }
 
-    llvm::Optional<clang::TraversalKind> TraversalKind() const override {
+    std::optional<clang::TraversalKind> TraversalKind() const override {
       return this->InnerMatcher.getTraversalKind();
     }
   };
@@ -1118,6 +1116,11 @@ private:
     return matchesDecl(Node.getDecl(), Finder, Builder);
   }
 
+  bool matchesSpecialized(const ObjCInterfaceDecl &Node, ASTMatchFinder *Finder,
+                          BoundNodesTreeBuilder *Builder) const {
+    return matchesDecl(Node.getCanonicalDecl(), Finder, Builder);
+  }
+
   /// Extracts the operator new of the new call and returns whether the
   /// inner matcher matches on it.
   bool matchesSpecialized(const CXXNewExpr &Node,
@@ -1218,7 +1221,7 @@ using HasDeclarationSupportedTypes =
              ElaboratedType, InjectedClassNameType, LabelStmt, AddrLabelExpr,
              MemberExpr, QualType, RecordType, TagType,
              TemplateSpecializationType, TemplateTypeParmType, TypedefType,
-             UnresolvedUsingType, ObjCIvarRefExpr>;
+             UnresolvedUsingType, ObjCIvarRefExpr, ObjCInterfaceDecl>;
 
 /// A Matcher that allows binding the node it matches to an id.
 ///
@@ -1516,7 +1519,7 @@ public:
                                       Builder);
   }
 
-  llvm::Optional<clang::TraversalKind> TraversalKind() const override {
+  std::optional<clang::TraversalKind> TraversalKind() const override {
     if (auto NestedKind = this->InnerMatcher.getTraversalKind())
       return NestedKind;
     return Traversal;
@@ -1801,7 +1804,7 @@ private:
 ///
 /// Used to implement the \c loc() matcher.
 class TypeLocTypeMatcher : public MatcherInterface<TypeLoc> {
-  DynTypedMatcher InnerMatcher;
+  Matcher<QualType> InnerMatcher;
 
 public:
   explicit TypeLocTypeMatcher(const Matcher<QualType> &InnerMatcher)
@@ -1811,8 +1814,7 @@ public:
                BoundNodesTreeBuilder *Builder) const override {
     if (!Node)
       return false;
-    return this->InnerMatcher.matches(DynTypedNode::create(Node.getType()),
-                                      Finder, Builder);
+    return this->InnerMatcher.matches(Node.getType(), Finder, Builder);
   }
 };
 
@@ -1941,15 +1943,59 @@ getTemplateSpecializationArgs(const ClassTemplateSpecializationDecl &D) {
 }
 
 inline ArrayRef<TemplateArgument>
+getTemplateSpecializationArgs(const VarTemplateSpecializationDecl &D) {
+  return D.getTemplateArgs().asArray();
+}
+
+inline ArrayRef<TemplateArgument>
 getTemplateSpecializationArgs(const TemplateSpecializationType &T) {
-  return llvm::makeArrayRef(T.getArgs(), T.getNumArgs());
+  return T.template_arguments();
 }
 
 inline ArrayRef<TemplateArgument>
 getTemplateSpecializationArgs(const FunctionDecl &FD) {
   if (const auto* TemplateArgs = FD.getTemplateSpecializationArgs())
     return TemplateArgs->asArray();
-  return ArrayRef<TemplateArgument>();
+  return {};
+}
+
+inline ArrayRef<TemplateArgumentLoc>
+getTemplateArgsWritten(const ClassTemplateSpecializationDecl &D) {
+  if (const ASTTemplateArgumentListInfo *Args = D.getTemplateArgsAsWritten())
+    return Args->arguments();
+  return {};
+}
+
+inline ArrayRef<TemplateArgumentLoc>
+getTemplateArgsWritten(const VarTemplateSpecializationDecl &D) {
+  if (const ASTTemplateArgumentListInfo *Args = D.getTemplateArgsAsWritten())
+    return Args->arguments();
+  return {};
+}
+
+inline ArrayRef<TemplateArgumentLoc>
+getTemplateArgsWritten(const FunctionDecl &FD) {
+  if (const auto *Args = FD.getTemplateSpecializationArgsAsWritten())
+    return Args->arguments();
+  return {};
+}
+
+inline ArrayRef<TemplateArgumentLoc>
+getTemplateArgsWritten(const DeclRefExpr &DRE) {
+  if (const auto *Args = DRE.getTemplateArgs())
+    return {Args, DRE.getNumTemplateArgs()};
+  return {};
+}
+
+inline SmallVector<TemplateArgumentLoc>
+getTemplateArgsWritten(const TemplateSpecializationTypeLoc &T) {
+  SmallVector<TemplateArgumentLoc> Args;
+  if (!T.isNull()) {
+    Args.reserve(T.getNumArgs());
+    for (unsigned I = 0; I < T.getNumArgs(); ++I)
+      Args.emplace_back(T.getArgLoc(I));
+  }
+  return Args;
 }
 
 struct NotEqualsBoundNodePredicate {
@@ -1966,27 +2012,27 @@ template <typename Ty, typename Enable = void> struct GetBodyMatcher {
 };
 
 template <typename Ty>
-struct GetBodyMatcher<Ty, typename std::enable_if<
-                              std::is_base_of<FunctionDecl, Ty>::value>::type> {
+struct GetBodyMatcher<
+    Ty, std::enable_if_t<std::is_base_of<FunctionDecl, Ty>::value>> {
   static const Stmt *get(const Ty &Node) {
     return Node.doesThisDeclarationHaveABody() ? Node.getBody() : nullptr;
   }
 };
 
 template <typename NodeType>
-inline Optional<BinaryOperatorKind>
+inline std::optional<BinaryOperatorKind>
 equivalentBinaryOperator(const NodeType &Node) {
   return Node.getOpcode();
 }
 
 template <>
-inline Optional<BinaryOperatorKind>
+inline std::optional<BinaryOperatorKind>
 equivalentBinaryOperator<CXXOperatorCallExpr>(const CXXOperatorCallExpr &Node) {
   if (Node.getNumArgs() != 2)
-    return None;
+    return std::nullopt;
   switch (Node.getOperator()) {
   default:
-    return None;
+    return std::nullopt;
   case OO_ArrowStar:
     return BO_PtrMemI;
   case OO_Star:
@@ -2055,20 +2101,20 @@ equivalentBinaryOperator<CXXOperatorCallExpr>(const CXXOperatorCallExpr &Node) {
 }
 
 template <typename NodeType>
-inline Optional<UnaryOperatorKind>
+inline std::optional<UnaryOperatorKind>
 equivalentUnaryOperator(const NodeType &Node) {
   return Node.getOpcode();
 }
 
 template <>
-inline Optional<UnaryOperatorKind>
+inline std::optional<UnaryOperatorKind>
 equivalentUnaryOperator<CXXOperatorCallExpr>(const CXXOperatorCallExpr &Node) {
   if (Node.getNumArgs() != 1 && Node.getOperator() != OO_PlusPlus &&
       Node.getOperator() != OO_MinusMinus)
-    return None;
+    return std::nullopt;
   switch (Node.getOperator()) {
   default:
-    return None;
+    return std::nullopt;
   case OO_Plus:
     return UO_Plus;
   case OO_Minus:
@@ -2084,13 +2130,13 @@ equivalentUnaryOperator<CXXOperatorCallExpr>(const CXXOperatorCallExpr &Node) {
   case OO_PlusPlus: {
     const auto *FD = Node.getDirectCallee();
     if (!FD)
-      return None;
+      return std::nullopt;
     return FD->getNumParams() > 0 ? UO_PostInc : UO_PreInc;
   }
   case OO_MinusMinus: {
     const auto *FD = Node.getDirectCallee();
     if (!FD)
-      return None;
+      return std::nullopt;
     return FD->getNumParams() > 0 ? UO_PostDec : UO_PreDec;
   }
   case OO_Coawait:
@@ -2173,28 +2219,31 @@ CompoundStmtMatcher<StmtExpr>::get(const StmtExpr &Node) {
 /// location (in the chain of expansions) at which \p MacroName was
 /// expanded. Since the macro may have been expanded inside a series of
 /// expansions, that location may itself be a MacroID.
-llvm::Optional<SourceLocation>
-getExpansionLocOfMacro(StringRef MacroName, SourceLocation Loc,
-                       const ASTContext &Context);
+std::optional<SourceLocation> getExpansionLocOfMacro(StringRef MacroName,
+                                                     SourceLocation Loc,
+                                                     const ASTContext &Context);
 
-inline Optional<StringRef> getOpName(const UnaryOperator &Node) {
+inline std::optional<StringRef> getOpName(const UnaryOperator &Node) {
   return Node.getOpcodeStr(Node.getOpcode());
 }
-inline Optional<StringRef> getOpName(const BinaryOperator &Node) {
+inline std::optional<StringRef> getOpName(const BinaryOperator &Node) {
   return Node.getOpcodeStr();
 }
 inline StringRef getOpName(const CXXRewrittenBinaryOperator &Node) {
   return Node.getOpcodeStr();
 }
-inline Optional<StringRef> getOpName(const CXXOperatorCallExpr &Node) {
+inline std::optional<StringRef> getOpName(const CXXOperatorCallExpr &Node) {
   auto optBinaryOpcode = equivalentBinaryOperator(Node);
   if (!optBinaryOpcode) {
     auto optUnaryOpcode = equivalentUnaryOperator(Node);
     if (!optUnaryOpcode)
-      return None;
+      return std::nullopt;
     return UnaryOperator::getOpcodeStr(*optUnaryOpcode);
   }
   return BinaryOperator::getOpcodeStr(*optBinaryOpcode);
+}
+inline StringRef getOpName(const CXXFoldExpr &Node) {
+  return BinaryOperator::getOpcodeStr(Node.getOperator());
 }
 
 /// Matches overloaded operators with a specific name.
@@ -2217,26 +2266,26 @@ public:
       : SingleNodeMatcherInterface<T>(), Names(std::move(Names)) {}
 
   bool matchesNode(const T &Node) const override {
-    Optional<StringRef> OptOpName = getOpName(Node);
+    std::optional<StringRef> OptOpName = getOpName(Node);
     return OptOpName && llvm::is_contained(Names, *OptOpName);
   }
 
 private:
-  static Optional<StringRef> getOpName(const UnaryOperator &Node) {
+  static std::optional<StringRef> getOpName(const UnaryOperator &Node) {
     return Node.getOpcodeStr(Node.getOpcode());
   }
-  static Optional<StringRef> getOpName(const BinaryOperator &Node) {
+  static std::optional<StringRef> getOpName(const BinaryOperator &Node) {
     return Node.getOpcodeStr();
   }
   static StringRef getOpName(const CXXRewrittenBinaryOperator &Node) {
     return Node.getOpcodeStr();
   }
-  static Optional<StringRef> getOpName(const CXXOperatorCallExpr &Node) {
+  static std::optional<StringRef> getOpName(const CXXOperatorCallExpr &Node) {
     auto optBinaryOpcode = equivalentBinaryOperator(Node);
     if (!optBinaryOpcode) {
       auto optUnaryOpcode = equivalentUnaryOperator(Node);
       if (!optUnaryOpcode)
-        return None;
+        return std::nullopt;
       return UnaryOperator::getOpcodeStr(*optUnaryOpcode);
     }
     return BinaryOperator::getOpcodeStr(*optBinaryOpcode);
@@ -2291,6 +2340,14 @@ MatchTemplateArgLocAt(const TemplateSpecializationTypeLoc &Node,
                       internal::BoundNodesTreeBuilder *Builder) {
   return !Node.isNull() && Index < Node.getNumArgs() &&
          InnerMatcher.matches(Node.getArgLoc(Index), Finder, Builder);
+}
+
+inline std::string getDependentName(const DependentScopeDeclRefExpr &node) {
+  return node.getDeclName().getAsString();
+}
+
+inline std::string getDependentName(const DependentNameType &node) {
+  return node.getIdentifier()->getName().str();
 }
 
 } // namespace internal

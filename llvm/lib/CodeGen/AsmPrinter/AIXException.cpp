@@ -14,6 +14,7 @@
 #include "llvm/CodeGen/AsmPrinter.h"
 #include "llvm/CodeGen/MachineModuleInfo.h"
 #include "llvm/CodeGen/TargetLoweringObjectFileImpl.h"
+#include "llvm/IR/Module.h"
 #include "llvm/MC/MCSectionXCOFF.h"
 #include "llvm/MC/MCStreamer.h"
 #include "llvm/Target/TargetLoweringObjectFile.h"
@@ -21,9 +22,7 @@
 
 namespace llvm {
 
-AIXException::AIXException(AsmPrinter *A) : DwarfCFIExceptionBase(A) {}
-
-void AIXException::markFunctionEnd() { endFragment(); }
+AIXException::AIXException(AsmPrinter *A) : EHStreamer(A) {}
 
 void AIXException::emitExceptionInfoTable(const MCSymbol *LSDA,
                                           const MCSymbol *PerSym) {
@@ -62,7 +61,7 @@ void AIXException::emitExceptionInfoTable(const MCSymbol *LSDA,
   const unsigned PointerSize = DL.getPointerSize();
 
   // Add necessary paddings in 64 bit mode.
-  Asm->OutStreamer->emitValueToAlignment(PointerSize);
+  Asm->OutStreamer->emitValueToAlignment(Align(PointerSize));
 
   // LSDA location.
   Asm->OutStreamer->emitValue(MCSymbolRefExpr::create(LSDA, Asm->OutContext),

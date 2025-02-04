@@ -17,13 +17,12 @@
 
 #include "mlir/IR/Block.h"
 #include "mlir/Support/LLVM.h"
-#include "mlir/Support/LogicalResult.h"
+#include "mlir/Transforms/RegionUtils.h"
+#include <optional>
 
 namespace mlir {
-class AffineForOp;
 class AffineMap;
 class LoopLikeOpInterface;
-struct MemRefRegion;
 class OpBuilder;
 class Value;
 class ValueRange;
@@ -36,6 +35,10 @@ namespace scf {
 class ForOp;
 class ParallelOp;
 } // namespace scf
+
+namespace affine {
+class AffineForOp;
+struct MemRefRegion;
 
 /// Unrolls this for operation completely if the trip count is known to be
 /// constant. Returns failure otherwise.
@@ -102,7 +105,8 @@ void getTileableBands(func::FuncOp f,
                       std::vector<SmallVector<AffineForOp, 6>> *bands);
 
 /// Tiles the specified band of perfectly nested loops creating tile-space loops
-/// and intra-tile loops. A band is a contiguous set of loops.
+/// and intra-tile loops. A band is a contiguous set of loops. This utility
+/// doesn't check for the validity of tiling itself, but just performs it.
 LogicalResult
 tilePerfectlyNested(MutableArrayRef<AffineForOp> input,
                     ArrayRef<unsigned> tileSizes,
@@ -132,7 +136,7 @@ bool isValidLoopInterchangePermutation(ArrayRef<AffineForOp> loops,
 /// to inner. Returns the position in `inputNest` of the AffineForOp that
 /// becomes the new outermost loop of this nest. This method always succeeds,
 /// asserts out on invalid input / specifications.
-unsigned permuteLoops(MutableArrayRef<AffineForOp> inputNest,
+unsigned permuteLoops(ArrayRef<AffineForOp> inputNest,
                       ArrayRef<unsigned> permMap);
 
 // Sinks all sequential loops to the innermost levels (while preserving
@@ -182,17 +186,19 @@ struct AffineCopyOptions {
 /// available for processing this block range. When 'filterMemRef' is specified,
 /// copies are only generated for the provided MemRef. Returns success if the
 /// explicit copying succeeded for all memrefs on which affine load/stores were
-/// encountered.
+/// encountered. For memrefs for whose element types a size in bytes can't be
+/// computed (`index` type), their capacity is not accounted for and the
+/// `fastMemCapacityBytes` copy option would be non-functional in such cases.
 LogicalResult affineDataCopyGenerate(Block::iterator begin, Block::iterator end,
                                      const AffineCopyOptions &copyOptions,
-                                     Optional<Value> filterMemRef,
+                                     std::optional<Value> filterMemRef,
                                      DenseSet<Operation *> &copyNests);
 
 /// A convenience version of affineDataCopyGenerate for all ops in the body of
 /// an AffineForOp.
 LogicalResult affineDataCopyGenerate(AffineForOp forOp,
                                      const AffineCopyOptions &copyOptions,
-                                     Optional<Value> filterMemRef,
+                                     std::optional<Value> filterMemRef,
                                      DenseSet<Operation *> &copyNests);
 
 /// Result for calling generateCopyForMemRegion.
@@ -292,6 +298,15 @@ LogicalResult
 separateFullTiles(MutableArrayRef<AffineForOp> nest,
                   SmallVectorImpl<AffineForOp> *fullTileNest = nullptr);
 
+/// Walk an affine.for to find a band to coalesce.
+LogicalResult coalescePerfectlyNestedAffineLoops(AffineForOp op);
+
+/// Count the number of loops surrounding `operand` such that operand could be
+/// hoisted above.
+/// Stop counting at the first loop over which the operand cannot be hoisted.
+/// This counts any LoopLikeOpInterface, not just affine.for.
+int64_t numEnclosingInvariantLoops(OpOperand &operand);
+} // namespace affine
 } // namespace mlir
 
 #endif // MLIR_DIALECT_AFFINE_LOOPUTILS_H

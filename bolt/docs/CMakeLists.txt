@@ -79,6 +79,7 @@ if (LLVM_ENABLE_DOXYGEN)
     COMMAND ${DOXYGEN_EXECUTABLE} ${CMAKE_CURRENT_BINARY_DIR}/doxygen.cfg
     WORKING_DIRECTORY ${CMAKE_CURRENT_BINARY_DIR}
     COMMENT "Generating bolt doxygen documentation." VERBATIM)
+  set_target_properties(doxygen-bolt PROPERTIES FOLDER "BOLT/Docs")
 
   if (LLVM_BUILD_DOCS)
     add_dependencies(doxygen doxygen-bolt)
@@ -96,9 +97,6 @@ if (LLVM_ENABLE_SPHINX)
   if (SPHINX_FOUND)
     if (${SPHINX_OUTPUT_HTML})
       add_sphinx_target(html bolt)
-    endif()
-    if (${SPHINX_OUTPUT_MAN})
-      add_sphinx_target(man bolt)
     endif()
   endif()
 endif()

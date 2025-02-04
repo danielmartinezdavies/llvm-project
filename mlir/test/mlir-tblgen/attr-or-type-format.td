@@ -1,14 +1,18 @@
-// RUN: mlir-tblgen -gen-attrdef-defs -I %S/../../include %s | FileCheck %s --check-prefix=ATTR
-// RUN: mlir-tblgen -gen-typedef-defs -I %S/../../include %s | FileCheck %s --check-prefix=TYPE
+// RUN: sed 's/DEFAULT_TYPE_PARSER/0/' %s | mlir-tblgen -gen-attrdef-defs -attrdefs-dialect=TestDialect -I %S/../../include | FileCheck %s --check-prefix=ATTR
+// RUN: sed 's/DEFAULT_TYPE_PARSER/0/' %s | mlir-tblgen -gen-typedef-defs -typedefs-dialect=TestDialect -I %S/../../include | FileCheck %s --check-prefix=TYPE
+// RUN: sed 's/DEFAULT_TYPE_PARSER/1/' %s | mlir-tblgen -gen-typedef-defs -typedefs-dialect=TestDialect -I %S/../../include | FileCheck %s --check-prefix=TYPE --check-prefix=DEFAULT_TYPE_PARSER
 
 include "mlir/IR/AttrTypeBase.td"
+include "mlir/IR/BuiltinAttributes.td"
+include "mlir/IR/EnumAttr.td"
 include "mlir/IR/OpBase.td"
 
 /// Test that attribute and type printers and parsers are correctly generated.
 def Test_Dialect : Dialect {
   let name = "TestDialect";
   let cppNamespace = "::test";
-  let useDefaultTypePrinterParser = 0;
+  let useDefaultTypePrinterParser = DEFAULT_TYPE_PARSER;
+  let isExtensible = 1;
 }
 
 class TestAttr<string name> : AttrDef<Test_Dialect, name>;
@@ -166,7 +170,7 @@ def AttrC : TestAttr<"TestF"> {
 
 // ATTR-LABEL: Attribute TestGAttr::parse
 // ATTR: if (odsType)
-// ATTR:   if (auto reqType = odsType.dyn_cast<::mlir::Type>())
+// ATTR:   if (auto reqType = ::llvm::dyn_cast<::mlir::Type>(odsType))
 // ATTR:     _result_type = reqType
 // ATTR: TestGAttr::get
 // ATTR-NEXT: *_result_a
@@ -175,6 +179,40 @@ def AttrD : TestAttr<"TestG"> {
   let parameters = (ins "int":$a, AttributeSelfTypeParameter<"">:$type);
   let mnemonic = "attr_d";
   let assemblyFormat = "$a";
+}
+
+// Check that the self-type parameter can be referenced without being bound.
+
+// ATTR-LABEL: Attribute TestHAttr::parse
+// ATTR: _result_type = reqType
+// ATTR: parseUseType(odsParser,
+// ATTR-NEXT: *_result_type
+
+// ATTR-LABEL: void TestHAttr::print
+// ATTR: printUseType(odsPrinter,
+// ATTR-NEXT: getType()
+
+def AttrE : TestAttr<"TestH"> {
+  let parameters = (ins AttributeSelfTypeParameter<"">:$type);
+  let mnemonic = "attr_e";
+  let assemblyFormat = "custom<UseType>(ref($type))";
+}
+
+def TestEnum : I32EnumAttr<"TestEnum", "TestEnumType", [
+  I32EnumAttrCase<"first", 0>,
+  I32EnumAttrCase<"second", 1>
+]> {
+  let genSpecializedAttr = 0;
+}
+
+// ATTR-LABEL: TestEnumAttr::parse
+// ATTR: parseFoo(odsParser,
+// ATTR-NEXT: _result_value
+// ATTR-LABEL: TestEnumAttr::print
+// ATTR: printFoo(odsPrinter,
+// ATTR-NEXT: getValue()
+def EnumAttrA : EnumAttr<Test_Dialect, TestEnum, "EnumAttrA"> {
+  let assemblyFormat = "custom<Foo>($value)";
 }
 
 /// Test type parser and printer that mix variables and struct are generated
@@ -421,11 +459,11 @@ def TypeD : TestType<"TestF"> {
 // TYPE: ::mlir::Type TestGType::parse(::mlir::AsmParser &odsParser) {
 // TYPE:   if (::mlir::failed(_result_a))
 // TYPE:     return {};
-// TYPE:   if (::mlir::succeeded(_result_a) && *_result_a)
+// TYPE:   if (::mlir::succeeded(_result_a) && !((*_result_a) == int()))
 // TYPE:     if (odsParser.parseComma())
 // TYPE:       return {};
 
-// TYPE: if ((getA()))
+// TYPE: if (!(getA() == int()))
 // TYPE:   odsPrinter.printStrippedAttrOrType(getA());
 // TYPE: odsPrinter << ", ";
 // TYPE: odsPrinter.printStrippedAttrOrType(getB());
@@ -445,7 +483,7 @@ def TypeE : TestType<"TestG"> {
 // TYPE:     return {};
 
 // TYPE: void TestHType::print(::mlir::AsmPrinter &odsPrinter) const {
-// TYPE:   if ((getA())) {
+// TYPE:   if (!(getA() == int())) {
 // TYPE:     odsPrinter << "a = ";
 // TYPE:     odsPrinter.printStrippedAttrOrType(getA());
 // TYPE:     odsPrinter << ", ";
@@ -488,9 +526,9 @@ def TypeG : TestType<"TestI"> {
 // TYPE:     return {};
 
 // TYPE: void TestJType::print(::mlir::AsmPrinter &odsPrinter) const {
-// TYPE:   if ((getB())) {
+// TYPE:   if (!(getB() == int())) {
 // TYPE:     odsPrinter << "(";
-// TYPE:     if ((getB()))
+// TYPE:     if (!(getB() == int()))
 // TYPE:       odsPrinter.printStrippedAttrOrType(getB());
 // TYPE:     odsPrinter << ")";
 // TYPE:   } else {
@@ -508,7 +546,7 @@ def TypeH : TestType<"TestJ"> {
 // TYPE:   _result_a.value_or(10)
 
 // TYPE: void TestKType::print(::mlir::AsmPrinter &odsPrinter) const {
-// TYPE:   if ((getA() && !(getA() == 10)))
+// TYPE:   if (!(getA() == 10))
 
 def TypeI : TestType<"TestK"> {
   let parameters = (ins DefaultValuedParameter<"int", "10">:$a);
@@ -558,7 +596,7 @@ def TypeK : TestType<"TestM"> {
 
 // TYPE-LABEL: ::mlir::Type TestNType::parse
 // TYPE: parseFoo(
-// TYPE-NEXT: _result_a,
+// TYPE-NEXT: ::mlir::detail::unwrapForCustomParse(_result_a),
 // TYPE-NEXT: 1);
 
 // TYPE-LABEL: void TestNType::print
@@ -571,3 +609,135 @@ def TypeL : TestType<"TestN"> {
   let mnemonic = "type_l";
   let assemblyFormat = [{ custom<Foo>($a, "1") }];
 }
+
+// TYPE-LABEL: ::mlir::Type TestOType::parse
+// TYPE: if (odsParser.parseOptionalQuestion())
+// TYPE: _result_a =
+// TYPE: else
+
+// TYPE-LABEL: void TestOType::print
+// TYPE: if (!(!(getA() == int())))
+// TYPE: odsPrinter << ' ' << "?"
+// TYPE: else
+// TYPE: odsPrinter.printStrippedAttrOrType(getA())
+
+def TypeM : TestType<"TestO"> {
+  let parameters = (ins OptionalParameter<"int">:$a);
+  let mnemonic = "type_m";
+  let assemblyFormat = "(`?`) : ($a^)?";
+}
+
+// TYPE-LABEL: ::mlir::Type TestPType::parse
+// TYPE: if (odsParser.parseOptionalQuestion())
+// TYPE: bool _seen_a
+// TYPE: bool _seen_b
+// TYPE: _loop_body(_paramKey))
+// TYPE: else {
+// TYPE-NEXT: }
+
+// TYPE-LABEL: void TestPType::print
+// TYPE: if (!(!(getA() == int()) || !(getB() == int())))
+// TYPE-NEXT: odsPrinter << "?"
+
+def TypeN : TestType<"TestP"> {
+  let parameters = (ins OptionalParameter<"int">:$a,
+                        OptionalParameter<"int">:$b);
+  let mnemonic = "type_n";
+  let assemblyFormat = "`<` (`?`) : (struct($a, $b)^)? `>`";
+}
+
+// TYPE-LABEL: TestQType::parse
+// TYPE: if (auto result = [&]() -> ::mlir::OptionalParseResult {
+// TYPE:     auto odsCustomResult = parseAB(odsParser
+// TYPE:     if (!odsCustomResult.has_value()) return {};
+// TYPE:     if (::mlir::failed(*odsCustomResult)) return ::mlir::failure();
+// TYPE:   return ::mlir::success();
+// TYPE: }(); result.has_value() && ::mlir::failed(*result)) {
+// TYPE:   return {};
+// TYPE: } else if (result.has_value()) {
+// TYPE:   // Parse literal 'y'
+// TYPE: } else {
+// TYPE:   // Parse literal 'x'
+def TypeO : TestType<"TestQ"> {
+  let parameters = (ins OptionalParameter<"int">:$a);
+  let mnemonic = "type_o";
+  let assemblyFormat = "(custom<AB>($a)^ `x`) : (`y`)?";
+}
+
+// Test attr / type verification.
+
+// TYPE: ::llvm::LogicalResult TestPType::verifyInvariantsImpl(::llvm::function_ref<::mlir::InFlightDiagnostic()> emitError, ::mlir::Type a) {
+// TYPE:   if (!(((a.isSignlessInteger(16))) || ((a.isSignlessInteger(32))))) {
+// TYPE:     emitError() << "failed to verify 'a': 16-bit signless integer or 32-bit signless integer";
+// TYPE:     return ::mlir::failure();
+// TYPE:   }
+// TYPE:   return ::mlir::success();
+// TYPE: }
+
+// TYPE: ::llvm::LogicalResult TestPType::verifyInvariants(::llvm::function_ref<::mlir::InFlightDiagnostic()> emitError, ::mlir::Type a) {
+// TYPE:   if (::mlir::failed(verifyInvariantsImpl(emitError, a)))
+// TYPE:     return ::mlir::failure();
+// TYPE:   if (::mlir::failed(verify(emitError, a)))
+// TYPE:     return ::mlir::failure();
+// TYPE:   return ::mlir::success();
+// TYPE: }
+
+def TypeP : TestType<"TestP"> {
+  let parameters = (ins AnyTypeOf<[I16, I32]>:$a);
+  let mnemonic = "type_p";
+  let genVerifyDecl = 1;
+  let assemblyFormat = "$a";
+}
+
+// ATTR: ::llvm::LogicalResult TestRAttr::verifyInvariantsImpl(::llvm::function_ref<::mlir::InFlightDiagnostic()> emitError, ::mlir::IntegerType a) {
+// ATTR:   if (!((a.isSignlessInteger(32)))) {
+// ATTR:     emitError() << "failed to verify 'a': 32-bit signless integer";
+// ATTR:     return ::mlir::failure();
+// ATTR:   }
+// ATTR:   return ::mlir::success();
+// ATTR: }
+
+// ATTR: ::llvm::LogicalResult TestRAttr::verifyInvariants(::llvm::function_ref<::mlir::InFlightDiagnostic()> emitError, ::mlir::IntegerType a) {
+// ATTR:   if (::mlir::failed(verifyInvariantsImpl(emitError, a)))
+// ATTR:     return ::mlir::failure();
+// ATTR:   if (::mlir::failed(verify(emitError, a)))
+// ATTR:     return ::mlir::failure();
+// ATTR:   return ::mlir::success();
+// ATTR: }
+
+def AttrR : TestAttr<"TestR"> {
+  let parameters = (ins I32:$a);
+  let mnemonic = "attr_r";
+  let genVerifyDecl = 1;
+  let assemblyFormat = "$a";
+}
+
+// TYPE: ::llvm::LogicalResult TestSType::verifyInvariantsImpl(::llvm::function_ref<::mlir::InFlightDiagnostic()> emitError, ::mlir::ArrayAttr a) {
+// TYPE:   if (!((::llvm::isa<::mlir::ArrayAttr>(a)))) {
+// TYPE:     emitError() << "failed to verify 'a': A collection of other Attribute values";
+// TYPE:     return ::mlir::failure();
+// TYPE:   }
+// TYPE:   return ::mlir::success();
+// TYPE: }
+
+// TYPE: ::llvm::LogicalResult TestSType::verifyInvariants(::llvm::function_ref<::mlir::InFlightDiagnostic()> emitError, ::mlir::ArrayAttr a) {
+// TYPE:   if (::mlir::failed(verifyInvariantsImpl(emitError, a)))
+// TYPE:     return ::mlir::failure();
+// TYPE:   if (::mlir::failed(verify(emitError, a)))
+// TYPE:     return ::mlir::failure();
+// TYPE:   return ::mlir::success();
+// TYPE: }
+
+def TypeS : TestType<"TestS"> {
+  // TODO: Support attribute constraints as parameters.
+  let parameters = (ins Builtin_ArrayAttr:$a);
+  let mnemonic = "type_s";
+  let genVerifyDecl = 1;
+  let assemblyFormat = "$a";
+}
+
+// DEFAULT_TYPE_PARSER: TestDialect::parseType(::mlir::DialectAsmParser &parser)
+// DEFAULT_TYPE_PARSER: auto parseResult = parseOptionalDynamicType(mnemonic, parser, genType);
+// DEFAULT_TYPE_PARSER: if (parseResult.has_value()) {
+// DEFAULT_TYPE_PARSER:   if (::mlir::succeeded(parseResult.value()))
+// DEFAULT_TYPE_PARSER:     return genType;

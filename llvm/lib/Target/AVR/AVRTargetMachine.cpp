@@ -14,14 +14,15 @@
 
 #include "llvm/CodeGen/Passes.h"
 #include "llvm/CodeGen/TargetPassConfig.h"
-#include "llvm/IR/LegacyPassManager.h"
-#include "llvm/IR/Module.h"
 #include "llvm/MC/TargetRegistry.h"
 
 #include "AVR.h"
+#include "AVRMachineFunctionInfo.h"
 #include "AVRTargetObjectFile.h"
 #include "MCTargetDesc/AVRMCTargetDesc.h"
 #include "TargetInfo/AVRTargetInfo.h"
+
+#include <optional>
 
 namespace llvm {
 
@@ -37,19 +38,19 @@ static StringRef getCPU(StringRef CPU) {
   return CPU;
 }
 
-static Reloc::Model getEffectiveRelocModel(Optional<Reloc::Model> RM) {
+static Reloc::Model getEffectiveRelocModel(std::optional<Reloc::Model> RM) {
   return RM.value_or(Reloc::Static);
 }
 
 AVRTargetMachine::AVRTargetMachine(const Target &T, const Triple &TT,
                                    StringRef CPU, StringRef FS,
                                    const TargetOptions &Options,
-                                   Optional<Reloc::Model> RM,
-                                   Optional<CodeModel::Model> CM,
-                                   CodeGenOpt::Level OL, bool JIT)
-    : LLVMTargetMachine(T, AVRDataLayout, TT, getCPU(CPU), FS, Options,
-                        getEffectiveRelocModel(RM),
-                        getEffectiveCodeModel(CM, CodeModel::Small), OL),
+                                   std::optional<Reloc::Model> RM,
+                                   std::optional<CodeModel::Model> CM,
+                                   CodeGenOptLevel OL, bool JIT)
+    : CodeGenTargetMachineImpl(T, AVRDataLayout, TT, getCPU(CPU), FS, Options,
+                               getEffectiveRelocModel(RM),
+                               getEffectiveCodeModel(CM, CodeModel::Small), OL),
       SubTarget(TT, std::string(getCPU(CPU)), std::string(FS), *this) {
   this->TLOF = std::make_unique<AVRTargetObjectFile>();
   initAsmInfo();
@@ -93,6 +94,7 @@ extern "C" LLVM_EXTERNAL_VISIBILITY void LLVMInitializeAVRTarget() {
   auto &PR = *PassRegistry::getPassRegistry();
   initializeAVRExpandPseudoPass(PR);
   initializeAVRShiftExpandPass(PR);
+  initializeAVRDAGToDAGISelLegacyPass(PR);
 }
 
 const AVRSubtarget *AVRTargetMachine::getSubtargetImpl() const {
@@ -101,6 +103,13 @@ const AVRSubtarget *AVRTargetMachine::getSubtargetImpl() const {
 
 const AVRSubtarget *AVRTargetMachine::getSubtargetImpl(const Function &) const {
   return &SubTarget;
+}
+
+MachineFunctionInfo *AVRTargetMachine::createMachineFunctionInfo(
+    BumpPtrAllocator &Allocator, const Function &F,
+    const TargetSubtargetInfo *STI) const {
+  return AVRMachineFunctionInfo::create<AVRMachineFunctionInfo>(Allocator, F,
+                                                                STI);
 }
 
 //===----------------------------------------------------------------------===//

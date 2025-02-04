@@ -30,13 +30,15 @@
 #include "clang/StaticAnalyzer/Core/PathSensitive/SymExpr.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/FoldingSet.h"
-#include "llvm/ADT/Optional.h"
 #include "llvm/ADT/PointerIntPair.h"
+#include "llvm/ADT/iterator_range.h"
 #include "llvm/Support/Allocator.h"
 #include "llvm/Support/Casting.h"
+#include "llvm/Support/ErrorHandling.h"
 #include <cassert>
 #include <cstdint>
 #include <limits>
+#include <optional>
 #include <string>
 #include <utility>
 
@@ -98,11 +100,13 @@ public:
 #define REGION(Id, Parent) Id ## Kind,
 #define REGION_RANGE(Id, First, Last) BEGIN_##Id = First, END_##Id = Last,
 #include "clang/StaticAnalyzer/Core/PathSensitive/Regions.def"
+#undef REGION
+#undef REGION_RANGE
   };
 
 private:
   const Kind kind;
-  mutable Optional<RegionOffset> cachedOffset;
+  mutable std::optional<RegionOffset> cachedOffset;
 
 protected:
   MemRegion(Kind k) : kind(k) {}
@@ -135,8 +139,6 @@ public:
   /// goes up the base chain looking for the first symbolic base region.
   /// It might return null.
   const SymbolicRegion *getSymbolicBase() const;
-
-  bool hasGlobalsOrParametersStorage() const;
 
   bool hasStackStorage() const;
 
@@ -171,6 +173,8 @@ public:
   virtual void printPrettyAsExpr(raw_ostream &os) const;
 
   Kind getKind() const { return kind; }
+
+  StringRef getKindStr() const;
 
   template<typename RegionTy> const RegionTy* getAs() const;
   template <typename RegionTy>
@@ -340,7 +344,7 @@ public:
 };
 
 /// The region containing globals which can be modified by calls to
-/// "internally" defined functions - (for now just) functions other then system
+/// "internally" defined functions - (for now just) functions other than system
 /// calls.
 class GlobalInternalSpaceRegion : public NonStaticGlobalSpaceRegion {
   friend class MemRegionManager;
@@ -739,6 +743,11 @@ public:
       ++OriginalR;
       return *this;
     }
+
+    // This isn't really a conventional iterator.
+    // We just implement the deref as a no-op for now to make range-based for
+    // loops work.
+    const referenced_vars_iterator &operator*() const { return *this; }
   };
 
   /// Return the original region for a captured region, if
@@ -747,6 +756,7 @@ public:
 
   referenced_vars_iterator referenced_vars_begin() const;
   referenced_vars_iterator referenced_vars_end() const;
+  llvm::iterator_range<referenced_vars_iterator> referenced_vars() const;
 
   void dumpToStream(raw_ostream &os) const override;
 
@@ -776,7 +786,7 @@ class SymbolicRegion : public SubRegion {
       : SubRegion(sreg, SymbolicRegionKind), sym(s) {
     // Because pointer arithmetic is represented by ElementRegion layers,
     // the base symbol here should not contain any arithmetic.
-    assert(s && isa<SymbolData>(s));
+    assert(isa_and_nonnull<SymbolData>(s));
     assert(s->getType()->isAnyPointerType() ||
            s->getType()->isReferenceType() ||
            s->getType()->isBlockPointerType());
@@ -787,6 +797,18 @@ class SymbolicRegion : public SubRegion {
 public:
   /// It might return null.
   SymbolRef getSymbol() const { return sym; }
+
+  /// Gets the type of the wrapped symbol.
+  /// This type might not be accurate at all times - it's just our best guess.
+  /// Consider these cases:
+  ///   void foo(void *data, char *str, base *obj) {...}
+  /// The type of the pointee of `data` is of course not `void`, yet that's our
+  /// best guess. `str` might point to any object and `obj` might point to some
+  /// derived instance. `TypedRegions` other hand are representing the cases
+  /// when we actually know their types.
+  QualType getPointeeStaticType() const {
+    return sym->getType()->getPointeeType();
+  }
 
   bool isBoundable() const override { return true; }
 
@@ -999,7 +1021,7 @@ public:
   }
 };
 
-/// ParamVarRegion - Represents a region for paremters. Only parameters of the
+/// ParamVarRegion - Represents a region for parameters. Only parameters of the
 /// function in the current stack frame are represented as `ParamVarRegion`s.
 /// Parameters of top-level analyzed functions as well as captured paremeters
 /// by lambdas and blocks are repesented as `VarRegion`s.
@@ -1184,7 +1206,7 @@ class ElementRegion : public TypedValueRegion {
       : TypedValueRegion(sReg, ElementRegionKind), ElementType(elementType),
         Index(Idx) {
     assert((!isa<nonloc::ConcreteInt>(Idx) ||
-            Idx.castAs<nonloc::ConcreteInt>().getValue().isSigned()) &&
+            Idx.castAs<nonloc::ConcreteInt>().getValue()->isSigned()) &&
            "The index must be signed");
     assert(!elementType.isNull() && !elementType->isVoidType() &&
            "Invalid region type!");
@@ -1221,8 +1243,7 @@ class CXXTempObjectRegion : public TypedValueRegion {
   CXXTempObjectRegion(Expr const *E, MemSpaceRegion const *sReg)
       : TypedValueRegion(sReg, CXXTempObjectRegionKind), Ex(E) {
     assert(E);
-    assert(isa<StackLocalsSpaceRegion>(sReg) ||
-           isa<GlobalInternalSpaceRegion>(sReg));
+    assert(isa<StackLocalsSpaceRegion>(sReg));
   }
 
   static void ProfileRegion(llvm::FoldingSetNodeID &ID,
@@ -1232,6 +1253,9 @@ public:
   LLVM_ATTRIBUTE_RETURNS_NONNULL
   const Expr *getExpr() const { return Ex; }
 
+  LLVM_ATTRIBUTE_RETURNS_NONNULL
+  const StackFrameContext *getStackFrame() const;
+
   QualType getValueType() const override { return Ex->getType(); }
 
   void dumpToStream(raw_ostream &os) const override;
@@ -1240,6 +1264,45 @@ public:
 
   static bool classof(const MemRegion* R) {
     return R->getKind() == CXXTempObjectRegionKind;
+  }
+};
+
+// C++ temporary object that have lifetime extended to lifetime of the
+// variable. Usually they represent temporary bounds to reference variables.
+class CXXLifetimeExtendedObjectRegion : public TypedValueRegion {
+  friend class MemRegionManager;
+
+  Expr const *Ex;
+  ValueDecl const *ExD;
+
+  CXXLifetimeExtendedObjectRegion(Expr const *E, ValueDecl const *D,
+                                  MemSpaceRegion const *sReg)
+      : TypedValueRegion(sReg, CXXLifetimeExtendedObjectRegionKind), Ex(E),
+        ExD(D) {
+    assert(E);
+    assert(D);
+    assert((isa<StackLocalsSpaceRegion, GlobalInternalSpaceRegion>(sReg)));
+  }
+
+  static void ProfileRegion(llvm::FoldingSetNodeID &ID, Expr const *E,
+                            ValueDecl const *D, const MemRegion *sReg);
+
+public:
+  LLVM_ATTRIBUTE_RETURNS_NONNULL
+  const Expr *getExpr() const { return Ex; }
+  LLVM_ATTRIBUTE_RETURNS_NONNULL
+  const ValueDecl *getExtendingDecl() const { return ExD; }
+  /// It might return null.
+  const StackFrameContext *getStackFrame() const;
+
+  QualType getValueType() const override { return Ex->getType(); }
+
+  void dumpToStream(raw_ostream &os) const override;
+
+  void Profile(llvm::FoldingSetNodeID &ID) const override;
+
+  static bool classof(const MemRegion *R) {
+    return R->getKind() == CXXLifetimeExtendedObjectRegionKind;
   }
 };
 
@@ -1445,7 +1508,7 @@ public:
   ///  associated element type, index, and super region.
   const ElementRegion *getElementRegion(QualType elementType, NonLoc Idx,
                                         const SubRegion *superRegion,
-                                        ASTContext &Ctx);
+                                        const ASTContext &Ctx);
 
   const ElementRegion *getElementRegionWithSuper(const ElementRegion *ER,
                                                  const SubRegion *superRegion) {
@@ -1474,6 +1537,19 @@ public:
 
   const CXXTempObjectRegion *getCXXTempObjectRegion(Expr const *Ex,
                                                     LocationContext const *LC);
+
+  /// Create a CXXLifetimeExtendedObjectRegion for temporaries which are
+  /// lifetime-extended by local references.
+  const CXXLifetimeExtendedObjectRegion *
+  getCXXLifetimeExtendedObjectRegion(Expr const *Ex, ValueDecl const *VD,
+                                     LocationContext const *LC);
+
+  /// Create a CXXLifetimeExtendedObjectRegion for temporaries which are
+  /// lifetime-extended by *static* references.
+  /// This differs from \ref getCXXLifetimeExtendedObjectRegion(Expr const *,
+  /// ValueDecl const *, LocationContext const *) in the super-region used.
+  const CXXLifetimeExtendedObjectRegion *
+  getCXXStaticLifetimeExtendedObjectRegion(const Expr *Ex, ValueDecl const *VD);
 
   /// Create a CXXBaseObjectRegion with the given base class for region
   /// \p Super.
@@ -1512,11 +1588,6 @@ public:
   const BlockDataRegion *getBlockDataRegion(const BlockCodeRegion *bc,
                                             const LocationContext *lc,
                                             unsigned blockCount);
-
-  /// Create a CXXTempObjectRegion for temporaries which are lifetime-extended
-  /// by static references. This differs from getCXXTempObjectRegion in the
-  /// super-region used.
-  const CXXTempObjectRegion *getCXXStaticTempObjectRegion(const Expr *Ex);
 
 private:
   template <typename RegionTy, typename SuperTy,

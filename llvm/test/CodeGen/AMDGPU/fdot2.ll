@@ -1,10 +1,11 @@
-; RUN: llc -march=amdgcn -mcpu=gfx900 -denormal-fp-math-f32=preserve-sign -enable-unsafe-fp-math -verify-machineinstrs < %s | FileCheck %s  -check-prefixes=GCN,GFX900
-; RUN: llc -march=amdgcn -mcpu=gfx906 -denormal-fp-math-f32=preserve-sign -enable-unsafe-fp-math -verify-machineinstrs < %s | FileCheck %s  -check-prefixes=GCN,GCN-DL-UNSAFE,GFX906-DL-UNSAFE
-; RUN: llc -march=amdgcn -mcpu=gfx1011 -denormal-fp-math-f32=preserve-sign -enable-unsafe-fp-math -verify-machineinstrs < %s | FileCheck %s  -check-prefixes=GCN,GCN-DL-UNSAFE,GFX10-DL-UNSAFE,GFX10-CONTRACT
-; RUN: llc -march=amdgcn -mcpu=gfx1012 -denormal-fp-math-f32=preserve-sign -enable-unsafe-fp-math -verify-machineinstrs < %s | FileCheck %s  -check-prefixes=GCN,GCN-DL-UNSAFE,GFX10-DL-UNSAFE,GFX10-CONTRACT
-; RUN: llc -march=amdgcn -mcpu=gfx906 -denormal-fp-math-f32=preserve-sign -verify-machineinstrs < %s | FileCheck %s  -check-prefixes=GCN,GFX906
-; RUN: llc -march=amdgcn -mcpu=gfx906 -denormal-fp-math=preserve-sign -fp-contract=fast -verify-machineinstrs < %s | FileCheck %s  -check-prefixes=GCN,GFX906-CONTRACT
-; RUN: llc -march=amdgcn -mcpu=gfx906 -denormal-fp-math=ieee -fp-contract=fast -verify-machineinstrs < %s | FileCheck %s  -check-prefixes=GCN,GFX906-DENORM-CONTRACT
+; RUN: llc -mtriple=amdgcn -mcpu=gfx900 -denormal-fp-math-f32=preserve-sign -enable-unsafe-fp-math -verify-machineinstrs < %s | FileCheck %s  -check-prefixes=GCN,GFX900
+; RUN: llc -mtriple=amdgcn -mcpu=gfx906 -denormal-fp-math-f32=preserve-sign -enable-unsafe-fp-math -verify-machineinstrs < %s | FileCheck %s  -check-prefixes=GCN,GCN-DL-UNSAFE,GFX906-DL-UNSAFE
+; RUN: llc -mtriple=amdgcn -mcpu=gfx1011 -denormal-fp-math-f32=preserve-sign -enable-unsafe-fp-math -verify-machineinstrs < %s | FileCheck %s  -check-prefixes=GCN,GCN-DL-UNSAFE,GFX10-DL-UNSAFE,GFX10-CONTRACT
+; RUN: llc -mtriple=amdgcn -mcpu=gfx1012 -denormal-fp-math-f32=preserve-sign -enable-unsafe-fp-math -verify-machineinstrs < %s | FileCheck %s  -check-prefixes=GCN,GCN-DL-UNSAFE,GFX10-DL-UNSAFE,GFX10-CONTRACT
+; RUN: llc -mtriple=amdgcn -mcpu=gfx906 -denormal-fp-math-f32=preserve-sign -verify-machineinstrs < %s | FileCheck %s  -check-prefixes=GCN,GFX906
+; RUN: llc -mtriple=amdgcn -mcpu=gfx906 -denormal-fp-math=preserve-sign -fp-contract=fast -verify-machineinstrs < %s | FileCheck %s  -check-prefixes=GCN,GFX906-CONTRACT
+; RUN: llc -mtriple=amdgcn -mcpu=gfx906 -denormal-fp-math=ieee -fp-contract=fast -verify-machineinstrs < %s | FileCheck %s  -check-prefixes=GCN,GFX906-DENORM-CONTRACT
+; RUN: llc -mtriple=amdgcn -mcpu=gfx906 -denormal-fp-math-f32=preserve-sign -enable-unsafe-fp-math -mattr="+dot7-insts,-dot10-insts" -verify-machineinstrs < %s | FileCheck %s  -check-prefixes=GCN,GFX906-DOT10-DISABLED
 ; (fadd (fmul S1.x, S2.x), (fadd (fmul (S1.y, S2.y), z))) -> (fdot2 S1, S2, z)
 
 ; Tests to make sure fdot2 is not generated when vector elements of dot-product expressions
@@ -21,12 +22,13 @@
 
 ; GFX906-CONTRACT: v_mac_f16_e32
 ; GFX906-DENORM-CONTRACT: v_fma_f16
-define amdgpu_kernel void @dotproduct_f16(<2 x half> addrspace(1)* %src1,
-                                          <2 x half> addrspace(1)* %src2,
-                                          half addrspace(1)* nocapture %dst) {
+; GFX906-DOT10-DISABLED: v_fma_f16
+define amdgpu_kernel void @dotproduct_f16(ptr addrspace(1) %src1,
+                                          ptr addrspace(1) %src2,
+                                          ptr addrspace(1) nocapture %dst) {
 entry:
-  %src1.vec = load <2 x half>, <2 x half> addrspace(1)* %src1
-  %src2.vec = load <2 x half>, <2 x half> addrspace(1)* %src2
+  %src1.vec = load <2 x half>, ptr addrspace(1) %src1
+  %src2.vec = load <2 x half>, ptr addrspace(1) %src2
 
   %src1.el1 = extractelement <2 x half> %src1.vec, i64 0
   %src2.el1 = extractelement <2 x half> %src2.vec, i64 0
@@ -36,16 +38,19 @@ entry:
 
   %mul2 = fmul half %src1.el2, %src2.el2
   %mul1 = fmul half %src1.el1, %src2.el1
-  %acc = load half, half addrspace(1)* %dst, align 2
+  %acc = load half, ptr addrspace(1) %dst, align 2
   %acc1 = fadd half %mul2, %acc
   %acc2 = fadd half %mul1, %acc1
-  store half %acc2, half addrspace(1)* %dst, align 2
+  store half %acc2, ptr addrspace(1) %dst, align 2
   ret void
 }
 
 
-; We only want to generate fdot2 if vector element of dot product is converted from f16 to f32
-; and the vectors are of type <2 x half>
+; We only want to generate fdot2 if:
+; - vector element of dot product is converted from f16 to f32, and
+; - the vectors are of type <2 x half>, and
+; - "dot10-insts" is enabled
+
 ; GCN-LABEL: {{^}}dotproduct_f16_f32
 ; GFX900: v_mad_mix_f32
 ; GFX900: v_mad_mix_f32
@@ -54,17 +59,18 @@ entry:
 ; GFX906: v_mac_f32_e32
 
 ; GFX906-DL-UNSAFE: v_dot2_f32_f16
-; GFX10-DL-UNSAFE: v_dot2c_f32_f16_e32
+; GFX10-DL-UNSAFE: v_dot2c_f32_f16
 
 ; GFX906-CONTRACT: v_dot2_f32_f16
 
 ; GFX906-DENORM-CONTRACT: v_dot2_f32_f16
-define amdgpu_kernel void @dotproduct_f16_f32(<2 x half> addrspace(1)* %src1,
-                                              <2 x half> addrspace(1)* %src2,
-                                              float addrspace(1)* nocapture %dst) {
+; GFX906-DOT10-DISABLED: v_fma_mix_f32
+define amdgpu_kernel void @dotproduct_f16_f32(ptr addrspace(1) %src1,
+                                              ptr addrspace(1) %src2,
+                                              ptr addrspace(1) nocapture %dst) {
 entry:
-  %src1.vec = load <2 x half>, <2 x half> addrspace(1)* %src1
-  %src2.vec = load <2 x half>, <2 x half> addrspace(1)* %src2
+  %src1.vec = load <2 x half>, ptr addrspace(1) %src1
+  %src2.vec = load <2 x half>, ptr addrspace(1) %src2
 
   %src1.el1 = extractelement <2 x half> %src1.vec, i64 0
   %csrc1.el1 = fpext half %src1.el1 to float
@@ -78,15 +84,18 @@ entry:
 
   %mul2 = fmul float %csrc1.el2, %csrc2.el2
   %mul1 = fmul float %csrc1.el1, %csrc2.el1
-  %acc = load float, float addrspace(1)* %dst, align 4
+  %acc = load float, ptr addrspace(1) %dst, align 4
   %acc1 = fadd float %mul2, %acc
   %acc2 = fadd float %mul1, %acc1
-  store float %acc2, float addrspace(1)* %dst, align 4
+  store float %acc2, ptr addrspace(1) %dst, align 4
   ret void
 }
 
-; We only want to generate fdot2 if vector element of dot product is converted from f16 to f32
-; and the vectors are of type <2 x half>
+; We only want to generate fdot2 if:
+; - vector element of dot product is converted from f16 to f32, and
+; - the vectors are of type <2 x half>, and
+; - "dot10-insts" is enabled
+
 ; GCN-LABEL: {{^}}dotproduct_diffvecorder
 ; GFX900: v_mad_mix_f32
 ; GFX900: v_mad_mix_f32
@@ -95,16 +104,17 @@ entry:
 ; GFX906: v_mac_f32_e32
 
 ; GFX906-DL-UNSAFE: v_dot2_f32_f16
-; GFX10-DL-UNSAFE: v_dot2c_f32_f16_e32
+; GFX10-DL-UNSAFE: v_dot2c_f32_f16
 
 ; GFX906-CONTRACT: v_dot2_f32_f16
 ; GFX906-DENORM-CONTRACT: v_dot2_f32_f16
-define amdgpu_kernel void @dotproduct_diffvecorder(<2 x half> addrspace(1)* %src1,
-                                                   <2 x half> addrspace(1)* %src2,
-                                                   float addrspace(1)* nocapture %dst) {
+; GFX906-DOT10-DISABLED: v_fma_mix_f32
+define amdgpu_kernel void @dotproduct_diffvecorder(ptr addrspace(1) %src1,
+                                                   ptr addrspace(1) %src2,
+                                                   ptr addrspace(1) nocapture %dst) {
 entry:
-  %src1.vec = load <2 x half>, <2 x half> addrspace(1)* %src1
-  %src2.vec = load <2 x half>, <2 x half> addrspace(1)* %src2
+  %src1.vec = load <2 x half>, ptr addrspace(1) %src1
+  %src2.vec = load <2 x half>, ptr addrspace(1) %src2
 
   %src1.el1 = extractelement <2 x half> %src1.vec, i64 0
   %csrc1.el1 = fpext half %src1.el1 to float
@@ -118,10 +128,10 @@ entry:
 
   %mul2 = fmul float %csrc2.el2, %csrc1.el2
   %mul1 = fmul float %csrc1.el1, %csrc2.el1
-  %acc = load float, float addrspace(1)* %dst, align 4
+  %acc = load float, ptr addrspace(1) %dst, align 4
   %acc1 = fadd float %mul2, %acc
   %acc2 = fadd float %mul1, %acc1
-  store float %acc2, float addrspace(1)* %dst, align 4
+  store float %acc2, ptr addrspace(1) %dst, align 4
   ret void
 }
 
@@ -136,12 +146,13 @@ entry:
 
 ; GFX906-CONTRACT: v_fma_mix_f32
 ; GFX906-DENORM-CONTRACT: v_fma_mix_f32
-define amdgpu_kernel void @dotproduct_v4f16(<4 x half> addrspace(1)* %src1,
-                                            <4 x half> addrspace(1)* %src2,
-                                            float addrspace(1)* nocapture %dst) {
+; GFX906-DOT10-DISABLED: v_fma_mix_f32
+define amdgpu_kernel void @dotproduct_v4f16(ptr addrspace(1) %src1,
+                                            ptr addrspace(1) %src2,
+                                            ptr addrspace(1) nocapture %dst) {
 entry:
-  %src1.vec = load <4 x half>, <4 x half> addrspace(1)* %src1
-  %src2.vec = load <4 x half>, <4 x half> addrspace(1)* %src2
+  %src1.vec = load <4 x half>, ptr addrspace(1) %src1
+  %src2.vec = load <4 x half>, ptr addrspace(1) %src2
 
   %src1.el1 = extractelement <4 x half> %src1.vec, i64 0
   %csrc1.el1 = fpext half %src1.el1 to float
@@ -155,10 +166,10 @@ entry:
 
   %mul2 = fmul float %csrc1.el2, %csrc2.el2
   %mul1 = fmul float %csrc1.el1, %csrc2.el1
-  %acc = load float, float addrspace(1)* %dst, align 4
+  %acc = load float, ptr addrspace(1) %dst, align 4
   %acc1 = fadd float %mul2, %acc
   %acc2 = fadd float %mul1, %acc1
-  store float %acc2, float addrspace(1)* %dst, align 4
+  store float %acc2, ptr addrspace(1) %dst, align 4
   ret void
 }
 
@@ -173,12 +184,13 @@ entry:
 
 ; GFX906-CONTRACT: v_fma_mix_f32
 ; GFX906-DENORM-CONTRACT: v_fma_mix_f32
-define amdgpu_kernel void @NotAdotproduct(<2 x half> addrspace(1)* %src1,
-                                          <2 x half> addrspace(1)* %src2,
-                                          float addrspace(1)* nocapture %dst) {
+; GFX906-DOT10-DISABLED: v_fma_mix_f32
+define amdgpu_kernel void @NotAdotproduct(ptr addrspace(1) %src1,
+                                          ptr addrspace(1) %src2,
+                                          ptr addrspace(1) nocapture %dst) {
 entry:
-  %src1.vec = load <2 x half>, <2 x half> addrspace(1)* %src1
-  %src2.vec = load <2 x half>, <2 x half> addrspace(1)* %src2
+  %src1.vec = load <2 x half>, ptr addrspace(1) %src1
+  %src2.vec = load <2 x half>, ptr addrspace(1) %src2
 
   %src1.el1 = extractelement <2 x half> %src1.vec, i64 0
   %csrc1.el1 = fpext half %src1.el1 to float
@@ -192,10 +204,10 @@ entry:
 
   %mul2 = fmul float %csrc1.el2, %csrc1.el1
   %mul1 = fmul float %csrc2.el1, %csrc2.el2
-  %acc = load float, float addrspace(1)* %dst, align 4
+  %acc = load float, ptr addrspace(1) %dst, align 4
   %acc1 = fadd float %mul2, %acc
   %acc2 = fadd float %mul1, %acc1
-  store float %acc2, float addrspace(1)* %dst, align 4
+  store float %acc2, ptr addrspace(1) %dst, align 4
   ret void
 }
 
@@ -210,12 +222,13 @@ entry:
 
 ; GFX906-CONTRACT: v_fma_mix_f32
 ; GFX906-DENORM-CONTRACT: v_fma_mix_f32
-define amdgpu_kernel void @Diff_Idx_NotAdotproduct(<2 x half> addrspace(1)* %src1,
-                                                   <2 x half> addrspace(1)* %src2,
-                                                   float addrspace(1)* nocapture %dst) {
+; GFX906-DOT10-DISABLED: v_fma_mix_f32
+define amdgpu_kernel void @Diff_Idx_NotAdotproduct(ptr addrspace(1) %src1,
+                                                   ptr addrspace(1) %src2,
+                                                   ptr addrspace(1) nocapture %dst) {
 entry:
-  %src1.vec = load <2 x half>, <2 x half> addrspace(1)* %src1
-  %src2.vec = load <2 x half>, <2 x half> addrspace(1)* %src2
+  %src1.vec = load <2 x half>, ptr addrspace(1) %src1
+  %src2.vec = load <2 x half>, ptr addrspace(1) %src2
 
   %src1.el1 = extractelement <2 x half> %src1.vec, i64 0
   %csrc1.el1 = fpext half %src1.el1 to float
@@ -229,9 +242,9 @@ entry:
 
   %mul2 = fmul float %csrc1.el2, %csrc2.el1
   %mul1 = fmul float %csrc1.el1, %csrc2.el2
-  %acc = load float, float addrspace(1)* %dst, align 4
+  %acc = load float, ptr addrspace(1) %dst, align 4
   %acc1 = fadd float %mul2, %acc
   %acc2 = fadd float %mul1, %acc1
-  store float %acc2, float addrspace(1)* %dst, align 4
+  store float %acc2, ptr addrspace(1) %dst, align 4
   ret void
 }

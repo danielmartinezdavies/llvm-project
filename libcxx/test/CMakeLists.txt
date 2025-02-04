@@ -1,179 +1,110 @@
-macro(pythonize_bool var)
-  if (${var})
-    set(${var} True)
-  else()
-    set(${var} False)
-  endif()
-endmacro()
+include(HandleLitArguments)
+add_subdirectory(tools)
 
-set(LIBCXX_LIT_VARIANT "libcxx" CACHE STRING
-    "Configuration variant to use for LIT.")
-
-set(LIBCXX_TEST_LINKER_FLAGS "" CACHE STRING
-    "Additonal linker flags to pass when compiling the tests")
-set(LIBCXX_TEST_COMPILER_FLAGS "" CACHE STRING
-    "Additonal linker flags to pass when compiling the tests")
-
-# The tests shouldn't link to any ABI library when it has been linked into
-# libc++ statically or via a linker script.
-if (LIBCXX_ENABLE_STATIC_ABI_LIBRARY OR LIBCXX_ENABLE_ABI_LINKER_SCRIPT)
-  set(LIBCXX_CXXABI_FOR_TESTS "none")
-else()
-  set(LIBCXX_CXXABI_FOR_TESTS "${LIBCXX_CXX_ABI}")
+# Install the library at a fake location so we can run the test suite against it.
+# This ensures that we run the test suite against a setup that matches what we ship
+# in production as closely as possible (in terms of file paths, rpaths, etc).
+set(LIBCXX_TESTING_INSTALL_PREFIX "${LIBCXX_BINARY_DIR}/test-suite-install")
+if (LIBCXX_CXX_ABI STREQUAL "libcxxabi")
+  add_custom_target(install-cxxabi-test-suite-prefix
+                        DEPENDS cxxabi-headers
+                                cxxabi
+                        COMMAND ${CMAKE_COMMAND} -E make_directory "${LIBCXX_TESTING_INSTALL_PREFIX}"
+                        COMMAND "${CMAKE_COMMAND}"
+                                -DCMAKE_INSTALL_COMPONENT=cxxabi-headers
+                                -DCMAKE_INSTALL_PREFIX="${LIBCXX_TESTING_INSTALL_PREFIX}"
+                                -P "${CMAKE_BINARY_DIR}/cmake_install.cmake"
+                        COMMAND "${CMAKE_COMMAND}"
+                                -DCMAKE_INSTALL_COMPONENT=cxxabi
+                                -DCMAKE_INSTALL_PREFIX="${LIBCXX_TESTING_INSTALL_PREFIX}"
+                                -P "${CMAKE_BINARY_DIR}/cmake_install.cmake")
+  add_dependencies(cxx-test-depends install-cxxabi-test-suite-prefix)
 endif()
 
-# The tests shouldn't link to libunwind if we have a linker script which
-# already does so.
-if (LIBCXX_ENABLE_ABI_LINKER_SCRIPT)
-  set(LIBCXXABI_USE_LLVM_UNWINDER OFF)
+if (LIBCXXABI_USE_LLVM_UNWINDER AND TARGET unwind)
+  add_custom_target(install-unwind-test-suite-prefix
+  DEPENDS unwind-headers
+          unwind
+  COMMAND ${CMAKE_COMMAND} -E make_directory "${LIBCXX_TESTING_INSTALL_PREFIX}"
+  COMMAND "${CMAKE_COMMAND}"
+          -DCMAKE_INSTALL_COMPONENT=unwind-headers
+          -DCMAKE_INSTALL_PREFIX="${LIBCXX_TESTING_INSTALL_PREFIX}"
+          -P "${CMAKE_BINARY_DIR}/cmake_install.cmake"
+  COMMAND "${CMAKE_COMMAND}"
+          -DCMAKE_INSTALL_COMPONENT=unwind
+          -DCMAKE_INSTALL_PREFIX="${LIBCXX_TESTING_INSTALL_PREFIX}"
+          -P "${CMAKE_BINARY_DIR}/cmake_install.cmake")
+  add_dependencies(cxx-test-depends install-unwind-test-suite-prefix)
 endif()
 
-# TODO: Clients using those options should switch to from-scratch Lit configuration files.
-option(LIBCXX_LINK_TESTS_WITH_SHARED_LIBCXXABI
-       "Whether the libc++ tests should link with the shared libc++abi library"
-       ${LIBCXXABI_ENABLE_SHARED})
-
-option(LIBCXX_LINK_TESTS_WITH_SHARED_LIBCXX
-       "Whether the libc++ tests should link with the shared libc++ library"
-       ${LIBCXX_ENABLE_SHARED})
-
-if(DEFINED LIBCXXABI_ENABLE_SHARED
-   AND LIBCXX_LINK_TESTS_WITH_SHARED_LIBCXXABI
-   AND NOT LIBCXXABI_ENABLE_SHARED)
-  message(FATAL_ERROR "LIBCXX_LINK_TESTS_WITH_SHARED_LIBCXXABI being ON requires LIBCXXABI_ENABLE_SHARED to be ON")
-endif()
-
-if(DEFINED LIBCXXABI_ENABLE_STATIC
-   AND NOT LIBCXX_LINK_TESTS_WITH_SHARED_LIBCXXABI
-   AND NOT LIBCXXABI_ENABLE_STATIC)
-  message(FATAL_ERROR "LIBCXX_LINK_TESTS_WITH_SHARED_LIBCXXABI being OFF requires LIBCXXABI_ENABLE_STATIC to be ON")
-endif()
-
-if(LIBCXX_INCLUDE_TESTS AND LIBCXX_LINK_TESTS_WITH_SHARED_LIBCXX AND NOT LIBCXX_ENABLE_SHARED)
-  message(FATAL_ERROR "LIBCXX_LINK_TESTS_WITH_SHARED_LIBCXX being ON requires LIBCXX_ENABLE_SHARED to be ON")
-endif()
-
-if(LIBCXX_INCLUDE_TESTS AND NOT LIBCXX_LINK_TESTS_WITH_SHARED_LIBCXX AND NOT LIBCXX_ENABLE_STATIC)
-  message(FATAL_ERROR "LIBCXX_LINK_TESTS_WITH_SHARED_LIBCXX being OFF requires LIBCXX_ENABLE_STATIC to be ON")
-endif()
-
-pythonize_bool(LIBCXX_ENABLE_SHARED)
-pythonize_bool(LIBCXX_LINK_TESTS_WITH_SHARED_LIBCXX)
-pythonize_bool(LIBCXX_LINK_TESTS_WITH_SHARED_LIBCXXABI)
-pythonize_bool(LIBCXX_ENABLE_FILESYSTEM)
-pythonize_bool(LIBCXX_GENERATE_COVERAGE)
-pythonize_bool(LIBCXXABI_ENABLE_SHARED)
-pythonize_bool(LIBCXXABI_USE_LLVM_UNWINDER)
-pythonize_bool(LIBCXX_USE_COMPILER_RT)
-pythonize_bool(LIBCXX_HAS_ATOMIC_LIB)
-pythonize_bool(LIBCXX_HAVE_CXX_ATOMICS_WITH_LIB)
-pythonize_bool(LIBCXX_BUILD_EXTERNAL_THREAD_LIBRARY)
-pythonize_bool(LIBCXX_DEBUG_BUILD)
-pythonize_bool(LIBCXX_ENABLE_PARALLEL_ALGORITHMS)
-
-# By default, libcxx and libcxxabi share a library directory.
-if (NOT LIBCXX_CXX_ABI_LIBRARY_PATH)
-  set(LIBCXX_CXX_ABI_LIBRARY_PATH "${LIBCXX_LIBRARY_DIR}" CACHE PATH
-      "The path to libc++abi library.")
-endif()
-
-set(LIBCXX_TARGET_INFO "libcxx.test.target_info.LocalTI" CACHE STRING
-    "TargetInfo to use when setting up test environment.")
-set(LIBCXX_EXECUTOR "\\\"${Python3_EXECUTABLE}\\\" ${CMAKE_CURRENT_LIST_DIR}/../utils/run.py" CACHE STRING
-    "Executor to use when running tests.")
+add_custom_target(install-cxx-test-suite-prefix
+                      DEPENDS cxx-headers
+                              cxx
+                              cxx_experimental
+                              cxx-modules
+                      COMMAND ${CMAKE_COMMAND} -E make_directory "${LIBCXX_TESTING_INSTALL_PREFIX}"
+                      COMMAND "${CMAKE_COMMAND}"
+                              -DCMAKE_INSTALL_COMPONENT=cxx-headers
+                              -DCMAKE_INSTALL_PREFIX="${LIBCXX_TESTING_INSTALL_PREFIX}"
+                              -P "${CMAKE_BINARY_DIR}/cmake_install.cmake"
+                      COMMAND "${CMAKE_COMMAND}"
+                              -DCMAKE_INSTALL_COMPONENT=cxx-modules
+                              -DCMAKE_INSTALL_PREFIX="${LIBCXX_TESTING_INSTALL_PREFIX}"
+                              -P "${CMAKE_BINARY_DIR}/cmake_install.cmake"
+                      COMMAND "${CMAKE_COMMAND}"
+                              -DCMAKE_INSTALL_COMPONENT=cxx
+                              -DCMAKE_INSTALL_PREFIX="${LIBCXX_TESTING_INSTALL_PREFIX}"
+                              -P "${LIBCXX_BINARY_DIR}/cmake_install.cmake")
+add_dependencies(cxx-test-depends install-cxx-test-suite-prefix)
 
 set(AUTO_GEN_COMMENT "## Autogenerated by libcxx configuration.\n# Do not edit!")
 set(SERIALIZED_LIT_PARAMS "# Lit parameters serialized here for llvm-lit to pick them up\n")
 
-macro(serialize_lit_param param value)
-  string(APPEND SERIALIZED_LIT_PARAMS "config.${param} = ${value}\n")
-endmacro()
+serialize_lit_string_param(SERIALIZED_LIT_PARAMS compiler "${CMAKE_CXX_COMPILER}")
+
+if (LIBCXX_INCLUDE_BENCHMARKS)
+  add_subdirectory(benchmarks)
+  set(_libcxx_benchmark_mode "dry-run")
+else()
+  serialize_lit_string_param(SERIALIZED_LIT_PARAMS enable_benchmarks "no")
+  set(_libcxx_benchmark_mode "no")
+endif()
 
 if (NOT LIBCXX_ENABLE_EXCEPTIONS)
-  serialize_lit_param(enable_exceptions False)
+  serialize_lit_param(SERIALIZED_LIT_PARAMS enable_exceptions False)
 endif()
 
 if (NOT LIBCXX_ENABLE_RTTI)
-  serialize_lit_param(enable_rtti False)
+  serialize_lit_param(SERIALIZED_LIT_PARAMS enable_rtti False)
 endif()
 
-if (LIBCXX_ENABLE_ASSERTIONS)
-  serialize_lit_param(enable_assertions True)
-endif()
+serialize_lit_string_param(SERIALIZED_LIT_PARAMS hardening_mode "${LIBCXX_HARDENING_MODE}")
 
 if (CMAKE_CXX_COMPILER_TARGET)
-  serialize_lit_param(target_triple "\"${CMAKE_CXX_COMPILER_TARGET}\"")
+  serialize_lit_string_param(SERIALIZED_LIT_PARAMS target_triple "${CMAKE_CXX_COMPILER_TARGET}")
 else()
-  serialize_lit_param(target_triple "\"${LLVM_DEFAULT_TARGET_TRIPLE}\"")
+  serialize_lit_string_param(SERIALIZED_LIT_PARAMS target_triple "${LLVM_DEFAULT_TARGET_TRIPLE}")
 endif()
 
 if (LLVM_USE_SANITIZER)
-  serialize_lit_param(use_sanitizer "\"${LLVM_USE_SANITIZER}\"")
+  serialize_lit_string_param(SERIALIZED_LIT_PARAMS use_sanitizer "${LLVM_USE_SANITIZER}")
 endif()
 
-foreach(param IN LISTS LIBCXX_TEST_PARAMS)
-  string(REGEX REPLACE "(.+)=(.+)" "\\1" name "${param}")
-  string(REGEX REPLACE "(.+)=(.+)" "\\2" value "${param}")
-  serialize_lit_param("${name}" "\"${value}\"")
-endforeach()
+serialize_lit_params_list(SERIALIZED_LIT_PARAMS LIBCXX_TEST_PARAMS)
 
-if (NOT DEFINED LIBCXX_TEST_DEPS)
-  message(FATAL_ERROR "Expected LIBCXX_TEST_DEPS to be defined")
-endif()
+include(AddLLVM) # for configure_lit_site_cfg and add_lit_testsuite
 
-if (LIBCXX_INCLUDE_TESTS)
-  include(AddLLVM) # for configure_lit_site_cfg and add_lit_testsuite
+configure_file("${CMAKE_CURRENT_SOURCE_DIR}/configs/cmake-bridge.cfg.in"
+                "${CMAKE_CURRENT_BINARY_DIR}/cmake-bridge.cfg"
+                @ONLY)
 
-  configure_file("${CMAKE_CURRENT_SOURCE_DIR}/configs/cmake-bridge.cfg.in"
-                 "${CMAKE_CURRENT_BINARY_DIR}/cmake-bridge.cfg"
-                 @ONLY)
+configure_lit_site_cfg(
+  "${LIBCXX_TEST_CONFIG}"
+  ${CMAKE_CURRENT_BINARY_DIR}/lit.site.cfg
+  MAIN_CONFIG "${CMAKE_CURRENT_SOURCE_DIR}/lit.cfg.py")
 
-  configure_lit_site_cfg(
-    "${LIBCXX_TEST_CONFIG}"
-    ${CMAKE_CURRENT_BINARY_DIR}/lit.site.cfg
-    MAIN_CONFIG "${CMAKE_CURRENT_SOURCE_DIR}/lit.cfg.py")
-
-  add_custom_target(cxx-test-depends
-    DEPENDS cxx ${LIBCXX_TEST_DEPS}
-    COMMENT "Builds dependencies required to run the test suite.")
-
-  add_lit_testsuite(check-cxx
-    "Running libcxx tests"
-    ${CMAKE_CURRENT_BINARY_DIR}
-    DEPENDS cxx-test-depends)
-endif()
-
-if (LIBCXX_GENERATE_COVERAGE)
-  include(CodeCoverage)
-  set(output_dir "${CMAKE_CURRENT_BINARY_DIR}/coverage")
-  set(capture_dirs
-      "${LIBCXX_LIB_CMAKEFILES_DIR}/cxx_objects.dir/"
-      "${LIBCXX_LIB_CMAKEFILES_DIR}/cxx.dir/"
-      "${LIBCXX_LIB_CMAKEFILES_DIR}/cxx_experimental.dir/"
-      "${CMAKE_CURRENT_BINARY_DIR}")
-  set(extract_dirs "${LIBCXX_SOURCE_DIR}/include;${LIBCXX_SOURCE_DIR}/src")
-  setup_lcov_test_target_coverage("cxx" "${output_dir}" "${capture_dirs}" "${extract_dirs}")
-endif()
-
-if (LIBCXX_CONFIGURE_IDE)
-  # Create dummy targets for each of the tests in the test suite, this allows
-  # IDE's such as CLion to correctly highlight the tests because it knows
-  # roughly what include paths/compile flags/macro definitions are needed.
-  include_directories(support)
-  file(GLOB_RECURSE LIBCXX_TESTS ${CMAKE_CURRENT_SOURCE_DIR}/*.pass.cpp)
-  file(GLOB LIBCXX_TEST_HEADERS ${CMAKE_CURRENT_SOURCE_DIR}/support/*)
-  file(GLOB_RECURSE LIBCXX_HEADERS ${CMAKE_CURRENT_SOURCE_DIR}/../include/*)
-  add_executable(libcxx_test_objects EXCLUDE_FROM_ALL
-          ${LIBCXX_TESTS} ${LIBCXX_TEST_HEADERS} ${LIBCXX_HEADERS})
-  add_dependencies(libcxx_test_objects cxx)
-
-  split_list(LIBCXX_COMPILE_FLAGS)
-  split_list(LIBCXX_LINK_FLAGS)
-
-  set_target_properties(libcxx_test_objects
-          PROPERTIES
-            COMPILE_FLAGS "${LIBCXX_COMPILE_FLAGS}"
-            LINK_FLAGS "${LIBCXX_LINK_FLAGS}"
-            EXCLUDE_FROM_ALL ON
-  )
-endif()
+add_lit_testsuite(check-cxx
+  "Running libcxx tests"
+  ${CMAKE_CURRENT_BINARY_DIR}
+  PARAMS enable_benchmarks="${_libcxx_benchmark_mode}"
+  DEPENDS cxx-test-depends)

@@ -1,4 +1,4 @@
-// RUN: %check_clang_tidy %s misc-redundant-expression %t -- -- -fno-delayed-template-parsing
+// RUN: %check_clang_tidy %s misc-redundant-expression %t -- -- -fno-delayed-template-parsing -Wno-array-compare-cxx26
 
 typedef __INT64_TYPE__ I64;
 
@@ -842,4 +842,24 @@ int TestAssignSideEffect(int i) {
     return 1;
 
   return 2;
+}
+
+namespace PR63096 {
+
+struct alignas(sizeof(int)) X {
+  int x;
+};
+
+static_assert(alignof(X) == sizeof(X));
+static_assert(sizeof(X) == sizeof(X));
+// CHECK-MESSAGES: :[[@LINE-1]]:25: warning: both sides of operator are equivalent
+
+}
+
+namespace PR35857 {
+  void test() {
+    int x = 0;
+    int y = 0;
+    decltype(x + y - (x + y)) z = 10;
+  }
 }

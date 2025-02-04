@@ -34,6 +34,7 @@
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/Statistic.h"
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/Analysis/AliasAnalysis.h"
 #include "llvm/Analysis/AssumptionCache.h"
 #include "llvm/Analysis/Loads.h"
@@ -67,10 +68,12 @@
 #include "isl/options.h"
 #include "isl/set.h"
 #include <cassert>
+#include <numeric>
 
 using namespace llvm;
 using namespace polly;
 
+#include "polly/Support/PollyDebug.h"
 #define DEBUG_TYPE "polly-scops"
 
 STATISTIC(AssumptionsAliasing, "Number of aliasing assumptions taken.");
@@ -212,7 +215,7 @@ static const ScopArrayInfo *identifyBasePtrOriginSAI(Scop *S, Value *BasePtr) {
 
   ScalarEvolution &SE = *S->getSE();
 
-  auto *OriginBaseSCEV =
+  const SCEV *OriginBaseSCEV =
       SE.getPointerBase(SE.getSCEV(BasePtrLI->getPointerOperand()));
   if (!OriginBaseSCEV)
     return nullptr;
@@ -292,7 +295,7 @@ void ScopArrayInfo::updateElementType(Type *NewElementType) {
   if (NewElementSize % OldElementSize == 0 && NewElementSize < OldElementSize) {
     ElementType = NewElementType;
   } else {
-    auto GCD = GreatestCommonDivisor64(NewElementSize, OldElementSize);
+    auto GCD = std::gcd((uint64_t)NewElementSize, (uint64_t)OldElementSize);
     ElementType = IntegerType::get(ElementType->getContext(), GCD);
   }
 }
@@ -530,6 +533,9 @@ MemoryAccess::getReductionOperatorStr(MemoryAccess::ReductionType RT) {
   case MemoryAccess::RT_NONE:
     llvm_unreachable("Requested a reduction operator string for a memory "
                      "access which isn't a reduction");
+  case MemoryAccess::RT_BOTTOM:
+    llvm_unreachable("Requested a reduction operator string for a internal "
+                     "reduction type!");
   case MemoryAccess::RT_ADD:
     return "+";
   case MemoryAccess::RT_MUL:
@@ -707,11 +713,11 @@ void MemoryAccess::computeBoundsOnAccessRelation(unsigned ElementSize) {
   if (!Ptr || !SE->isSCEVable(Ptr->getType()))
     return;
 
-  auto *PtrSCEV = SE->getSCEV(Ptr);
+  const SCEV *PtrSCEV = SE->getSCEV(Ptr);
   if (isa<SCEVCouldNotCompute>(PtrSCEV))
     return;
 
-  auto *BasePtrSCEV = SE->getPointerBase(PtrSCEV);
+  const SCEV *BasePtrSCEV = SE->getPointerBase(PtrSCEV);
   if (BasePtrSCEV && !isa<SCEVCouldNotCompute>(BasePtrSCEV))
     PtrSCEV = SE->getMinusSCEV(PtrSCEV, BasePtrSCEV);
 
@@ -912,10 +918,15 @@ isl::id MemoryAccess::getId() const { return Id; }
 
 raw_ostream &polly::operator<<(raw_ostream &OS,
                                MemoryAccess::ReductionType RT) {
-  if (RT == MemoryAccess::RT_NONE)
+  switch (RT) {
+  case MemoryAccess::RT_NONE:
+  case MemoryAccess::RT_BOTTOM:
     OS << "NONE";
-  else
+    break;
+  default:
     OS << MemoryAccess::getReductionOperatorStr(RT);
+    break;
+  }
   return OS;
 }
 
@@ -1373,10 +1384,10 @@ public:
   }
 
   const SCEV *visitAddRecExpr(const SCEVAddRecExpr *E) {
-    auto *Start = visit(E->getStart());
-    auto *AddRec = SE.getAddRecExpr(SE.getConstant(E->getType(), 0),
-                                    visit(E->getStepRecurrence(SE)),
-                                    E->getLoop(), SCEV::FlagAnyWrap);
+    const SCEV *Start = visit(E->getStart());
+    const SCEV *AddRec = SE.getAddRecExpr(SE.getConstant(E->getType(), 0),
+                                          visit(E->getStepRecurrence(SE)),
+                                          E->getLoop(), SCEV::FlagAnyWrap);
     return SE.getAddExpr(Start, AddRec);
   }
 
@@ -1598,7 +1609,7 @@ Scop::Scop(Region &R, ScalarEvolution &ScalarEvolution, LoopInfo &LI,
            DominatorTree &DT, ScopDetection::DetectionContext &DC,
            OptimizationRemarkEmitter &ORE, int ID)
     : IslCtx(isl_ctx_alloc(), isl_ctx_free), SE(&ScalarEvolution), DT(&DT),
-      R(R), name(None), HasSingleExitEdge(R.getExitingBlock()), DC(DC),
+      R(R), name(std::nullopt), HasSingleExitEdge(R.getExitingBlock()), DC(DC),
       ORE(ORE), Affinator(this, LI), ID(ID) {
 
   // Options defaults that are different from ISL's.
@@ -1645,9 +1656,7 @@ void Scop::removeFromStmtMap(ScopStmt &Stmt) {
   } else {
     auto StmtMapIt = StmtMap.find(Stmt.getBasicBlock());
     if (StmtMapIt != StmtMap.end())
-      StmtMapIt->second.erase(std::remove(StmtMapIt->second.begin(),
-                                          StmtMapIt->second.end(), &Stmt),
-                              StmtMapIt->second.end());
+      llvm::erase(StmtMapIt->second, &Stmt);
     for (Instruction *Inst : Stmt.getInstructions())
       InstStmtMap.erase(Inst);
   }
@@ -1809,11 +1818,9 @@ std::pair<std::string, std::string> Scop::getEntryExitStr() const {
   raw_string_ostream EntryStr(EntryName);
 
   R.getEntry()->printAsOperand(EntryStr, false);
-  EntryStr.str();
 
   if (R.getExit()) {
     R.getExit()->printAsOperand(ExitStr, false);
-    ExitStr.str();
   } else
     ExitName = "FunctionExit";
 
@@ -2042,7 +2049,7 @@ void Scop::intersectDefinedBehavior(isl::set Set, AssumptionSign Sign) {
 }
 
 void Scop::invalidate(AssumptionKind Kind, DebugLoc Loc, BasicBlock *BB) {
-  LLVM_DEBUG(dbgs() << "Invalidate SCoP because of reason " << Kind << "\n");
+  POLLY_DEBUG(dbgs() << "Invalidate SCoP because of reason " << Kind << "\n");
   addAssumption(Kind, isl::set::empty(getParamSpace()), Loc, AS_ASSUMPTION, BB);
 }
 
@@ -2422,15 +2429,13 @@ void Scop::removeAccessData(MemoryAccess *Access) {
     ValueDefAccs.erase(Access->getAccessValue());
   } else if (Access->isOriginalValueKind() && Access->isRead()) {
     auto &Uses = ValueUseAccs[Access->getScopArrayInfo()];
-    auto NewEnd = std::remove(Uses.begin(), Uses.end(), Access);
-    Uses.erase(NewEnd, Uses.end());
+    llvm::erase(Uses, Access);
   } else if (Access->isOriginalPHIKind() && Access->isRead()) {
     PHINode *PHI = cast<PHINode>(Access->getAccessInstruction());
     PHIReadAccs.erase(PHI);
   } else if (Access->isOriginalAnyPHIKind() && Access->isWrite()) {
     auto &Incomings = PHIIncomingAccs[Access->getScopArrayInfo()];
-    auto NewEnd = std::remove(Incomings.begin(), Incomings.end(), Access);
-    Incomings.erase(NewEnd, Incomings.end());
+    llvm::erase(Incomings, Access);
   }
 }
 

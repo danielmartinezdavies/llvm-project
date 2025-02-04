@@ -1,7 +1,7 @@
 // This test checks that orbis-ld is used for PS4 linker all the time, and
 // prospero-lld is used for PS5 linker. Specifying -fuse-ld causes an error.
 
-// REQUIRES: system-windows, x86-registered-target
+// REQUIRES: system-windows
 
 // RUN: mkdir -p %t
 // RUN: touch %t/orbis-ld.exe
@@ -20,9 +20,9 @@
 // CHECK-PS5-LINKER: \\prospero-lld
 // SHARED: "--shared"
 
-// RUN: env "PATH=%t;%PATH%;" %clang -target x86_64-scei-ps4 %s -fuse-ld=gold -### 2>&1 \
+// RUN: env "PATH=%t;%PATH%;" not %clang --target=x86_64-scei-ps4 %s -fuse-ld=gold -### 2>&1 \
 // RUN:   | FileCheck --check-prefix=ERROR %s
-// RUN: env "PATH=%t;%PATH%;" %clang -target x86_64-sie-ps5 %s -fuse-ld=gold -### 2>&1 \
+// RUN: env "PATH=%t;%PATH%;" not %clang --target=x86_64-sie-ps5 %s -fuse-ld=gold -### 2>&1 \
 // RUN:   | FileCheck --check-prefix=ERROR %s
 
 // ERROR: error: unsupported option '-fuse-ld' for target 'x86_64-{{(scei|sie)}}-ps{{[45]}}'

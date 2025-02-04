@@ -50,6 +50,8 @@ template <typename A> bool IsActuallyConstant(const A &);
 extern template bool IsActuallyConstant(const Expr<SomeType> &);
 extern template bool IsActuallyConstant(const Expr<SomeInteger> &);
 extern template bool IsActuallyConstant(const Expr<SubscriptInteger> &);
+extern template bool IsActuallyConstant(
+    const std::optional<Expr<SubscriptInteger>> &);
 
 // Checks whether an expression is an object designator with
 // constant addressing and no vector-valued subscript.
@@ -75,31 +77,58 @@ std::optional<Expr<SomeType>> NonPointerInitializationExpr(const Symbol &,
 // specification expressions.
 
 template <typename A>
-void CheckSpecificationExpr(
-    const A &, const semantics::Scope &, FoldingContext &);
-extern template void CheckSpecificationExpr(
-    const Expr<SomeType> &x, const semantics::Scope &, FoldingContext &);
-extern template void CheckSpecificationExpr(
-    const Expr<SomeInteger> &x, const semantics::Scope &, FoldingContext &);
+void CheckSpecificationExpr(const A &, const semantics::Scope &,
+    FoldingContext &, bool forElementalFunctionResult);
+extern template void CheckSpecificationExpr(const Expr<SomeType> &x,
+    const semantics::Scope &, FoldingContext &,
+    bool forElementalFunctionResult);
+extern template void CheckSpecificationExpr(const Expr<SomeInteger> &x,
+    const semantics::Scope &, FoldingContext &,
+    bool forElementalFunctionResult);
 extern template void CheckSpecificationExpr(const Expr<SubscriptInteger> &x,
-    const semantics::Scope &, FoldingContext &);
+    const semantics::Scope &, FoldingContext &,
+    bool forElementalFunctionResult);
 extern template void CheckSpecificationExpr(
     const std::optional<Expr<SomeType>> &x, const semantics::Scope &,
-    FoldingContext &);
+    FoldingContext &, bool forElementalFunctionResult);
 extern template void CheckSpecificationExpr(
     const std::optional<Expr<SomeInteger>> &x, const semantics::Scope &,
-    FoldingContext &);
+    FoldingContext &, bool forElementalFunctionResult);
 extern template void CheckSpecificationExpr(
     const std::optional<Expr<SubscriptInteger>> &x, const semantics::Scope &,
-    FoldingContext &);
+    FoldingContext &, bool forElementalFunctionResult);
 
-// Simple contiguity (9.5.4)
-template <typename A> bool IsSimplyContiguous(const A &, FoldingContext &);
-extern template bool IsSimplyContiguous(
+// Contiguity & "simple contiguity" (9.5.4)
+template <typename A>
+std::optional<bool> IsContiguous(const A &, FoldingContext &);
+extern template std::optional<bool> IsContiguous(
     const Expr<SomeType> &, FoldingContext &);
+extern template std::optional<bool> IsContiguous(
+    const ArrayRef &, FoldingContext &);
+extern template std::optional<bool> IsContiguous(
+    const Substring &, FoldingContext &);
+extern template std::optional<bool> IsContiguous(
+    const Component &, FoldingContext &);
+extern template std::optional<bool> IsContiguous(
+    const ComplexPart &, FoldingContext &);
+extern template std::optional<bool> IsContiguous(
+    const CoarrayRef &, FoldingContext &);
+extern template std::optional<bool> IsContiguous(
+    const Symbol &, FoldingContext &);
+static inline std::optional<bool> IsContiguous(
+    const SymbolRef &s, FoldingContext &c) {
+  return IsContiguous(s.get(), c);
+}
+template <typename A>
+bool IsSimplyContiguous(const A &x, FoldingContext &context) {
+  return IsContiguous(x, context).value_or(false);
+}
 
 template <typename A> bool IsErrorExpr(const A &);
 extern template bool IsErrorExpr(const Expr<SomeType> &);
+
+std::optional<parser::Message> CheckStatementFunction(
+    const Symbol &, const Expr<SomeType> &, FoldingContext &);
 
 } // namespace Fortran::evaluate
 #endif

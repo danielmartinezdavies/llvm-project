@@ -13,24 +13,35 @@
 #ifndef MLIR_DIALECT_NVGPU_NVGPUDIALECT_H_
 #define MLIR_DIALECT_NVGPU_NVGPUDIALECT_H_
 
+#include "mlir/Bytecode/BytecodeOpInterface.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/Dialect.h"
 #include "mlir/IR/OpDefinition.h"
+#include "mlir/Interfaces/InferTypeOpInterface.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 
-namespace mlir {
-namespace nvgpu {
+#include "mlir/Dialect/NVGPU/IR/NVGPUEnums.h.inc"
 
-/// Device-side token storage type. There is only one type of device-side token.
-class DeviceAsyncTokenType
-    : public Type::TypeBase<DeviceAsyncTokenType, Type, TypeStorage> {
-public:
-  // Used for generic hooks in TypeBase.
-  using Base::Base;
-};
+constexpr int kWarpSize = 32;
 
-} // namespace nvgpu
-} // namespace mlir
+/// M size of wgmma.mma_async instruction
+constexpr int kWgmmaSizeM = 64;
+
+/// Maximum TMA tile dimension (tensorRank) must be non-zero and less than or
+/// equal to the maximum supported dimensionality of 5.
+constexpr unsigned kMaxTMATensorDimension = 5;
+/// Maximum TMA tile size (boxDim), which specifies number of elements
+/// to be traversed along each of the kMaxTMATensorDimension (tensorRank)
+/// dimensions, must be non-zero and less than or equal to 256.
+constexpr unsigned kMaxTMADimension = 256;
+/// Last dimension of 2D+ TMA must be 128 bytes
+constexpr unsigned kMaxTMALastdimByte = 128;
+
+#define GET_ATTRDEF_CLASSES
+#include "mlir/Dialect/NVGPU/IR/NVGPUAttrDefs.h.inc"
+
+#define GET_TYPEDEF_CLASSES
+#include "mlir/Dialect/NVGPU/IR/NVGPUTypes.h.inc"
 
 #include "mlir/Dialect/NVGPU/IR/NVGPUDialect.h.inc"
 

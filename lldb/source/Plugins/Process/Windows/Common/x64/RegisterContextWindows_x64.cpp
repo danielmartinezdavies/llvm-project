@@ -29,7 +29,7 @@ using namespace lldb_private;
   #reg, alt, 8, 0, eEncodingUint, eFormatHexUppercase,                         \
       {dwarf_##reg##_x86_64, dwarf_##reg##_x86_64, generic,                    \
         LLDB_INVALID_REGNUM, lldb_##reg##_x86_64 },                            \
-        nullptr, nullptr,                                                      \
+        nullptr, nullptr, nullptr,                                             \
 }
 
 #define DEFINE_GPR_BIN(reg, alt) #reg, alt, 8, 0, eEncodingUint, eFormatBinary
@@ -37,14 +37,14 @@ using namespace lldb_private;
   #reg, NULL, 16, 0, eEncodingUint, eFormatVectorOfUInt64,                     \
   {dwarf_##reg##_x86_64, dwarf_##reg##_x86_64, LLDB_INVALID_REGNUM,            \
    LLDB_INVALID_REGNUM, lldb_##reg##_x86_64},                                  \
-  nullptr, nullptr
+  nullptr, nullptr, nullptr,
 
 #define DEFINE_GPR_PSEUDO_32(reg)                                              \
 {                                                                              \
   #reg, nullptr, 4, 0, eEncodingUint, eFormatHexUppercase,                     \
       {LLDB_INVALID_REGNUM, LLDB_INVALID_REGNUM, LLDB_INVALID_REGNUM,          \
         LLDB_INVALID_REGNUM, lldb_##reg##_x86_64 },                            \
-        nullptr, nullptr                                                       \
+        nullptr, nullptr, nullptr,                                             \
 }
 
 #define DEFINE_GPR_PSEUDO_16(reg)                                              \
@@ -52,7 +52,7 @@ using namespace lldb_private;
   #reg, nullptr, 2, 0, eEncodingUint, eFormatHexUppercase,                     \
       {LLDB_INVALID_REGNUM, LLDB_INVALID_REGNUM, LLDB_INVALID_REGNUM,          \
         LLDB_INVALID_REGNUM, lldb_##reg##_x86_64 },                            \
-        nullptr, nullptr                                                       \
+        nullptr, nullptr, nullptr,                                             \
 }
 
 #define DEFINE_GPR_PSEUDO_8(reg)                                               \
@@ -60,7 +60,7 @@ using namespace lldb_private;
   #reg, nullptr, 1, 0, eEncodingUint, eFormatHexUppercase,                     \
       {LLDB_INVALID_REGNUM, LLDB_INVALID_REGNUM, LLDB_INVALID_REGNUM,          \
         LLDB_INVALID_REGNUM, lldb_##reg##_x86_64 },                            \
-        nullptr, nullptr                                                       \
+        nullptr, nullptr, nullptr,                                             \
 }
 
 namespace {
@@ -163,12 +163,6 @@ enum RegisterIndex {
 
 // Array of all register information supported by Windows x86
 RegisterInfo g_register_infos[] = {
-    //  Macro auto defines most stuff     eh_frame                  DWARF
-    //  GENERIC
-    //  GDB                  LLDB                  VALUE REGS    INVALIDATE REGS
-    //  ================================  =========================
-    //  ======================  =========================
-    //  ===================  =================     ==========    ===============
     DEFINE_GPR(rax, nullptr, LLDB_INVALID_REGNUM),
     DEFINE_GPR(rbx, nullptr, LLDB_INVALID_REGNUM),
     DEFINE_GPR(rcx, nullptr, LLDB_REGNUM_GENERIC_ARG1),
@@ -190,6 +184,7 @@ RegisterInfo g_register_infos[] = {
         DEFINE_GPR_BIN(eflags, "flags"),
         {LLDB_INVALID_REGNUM, LLDB_INVALID_REGNUM, LLDB_REGNUM_GENERIC_FLAGS,
          LLDB_INVALID_REGNUM, lldb_rflags_x86_64},
+        nullptr,
         nullptr,
         nullptr,
     },
@@ -262,7 +257,7 @@ RegisterInfo g_register_infos[] = {
     {DEFINE_FPU_XMM(xmm14)},
     {DEFINE_FPU_XMM(xmm15)}};
 
-static size_t k_num_register_infos = llvm::array_lengthof(g_register_infos);
+static size_t k_num_register_infos = std::size(g_register_infos);
 
 // Array of lldb register numbers used to define the set of all General Purpose
 // Registers
@@ -303,10 +298,10 @@ uint32_t g_fpu_reg_indices[] = {
 };
 
 RegisterSet g_register_sets[] = {
-    {"General Purpose Registers", "gpr",
-     llvm::array_lengthof(g_gpr_reg_indices), g_gpr_reg_indices},
-    {"Floating Point Registers", "fpu",
-     llvm::array_lengthof(g_fpu_reg_indices), g_fpu_reg_indices}};
+    {"General Purpose Registers", "gpr", std::size(g_gpr_reg_indices),
+     g_gpr_reg_indices},
+    {"Floating Point Registers", "fpu", std::size(g_fpu_reg_indices),
+     g_fpu_reg_indices}};
 }
 
 // Constructors and Destructors
@@ -317,7 +312,7 @@ RegisterContextWindows_x64::RegisterContextWindows_x64(
 RegisterContextWindows_x64::~RegisterContextWindows_x64() {}
 
 size_t RegisterContextWindows_x64::GetRegisterCount() {
-  return llvm::array_lengthof(g_register_infos);
+  return std::size(g_register_infos);
 }
 
 const RegisterInfo *
@@ -328,7 +323,7 @@ RegisterContextWindows_x64::GetRegisterInfoAtIndex(size_t reg) {
 }
 
 size_t RegisterContextWindows_x64::GetRegisterSetCount() {
-  return llvm::array_lengthof(g_register_sets);
+  return std::size(g_register_sets);
 }
 
 const RegisterSet *RegisterContextWindows_x64::GetRegisterSet(size_t reg_set) {

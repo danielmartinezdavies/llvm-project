@@ -11,8 +11,8 @@
 //===----------------------------------------------------------------------===//
 
 #include "bolt/Passes/FrameAnalysis.h"
+#include "bolt/Core/CallGraphWalker.h"
 #include "bolt/Core/ParallelUtilities.h"
-#include "bolt/Passes/CallGraphWalker.h"
 #include "llvm/MC/MCRegisterInfo.h"
 #include "llvm/Support/Timer.h"
 #include <fstream>
@@ -56,20 +56,11 @@ bool shouldFrameOptimize(const llvm::bolt::BinaryFunction &Function) {
     FrameOptFunctionNamesFile = "";
   }
 
-  bool IsValid = true;
-  if (!FrameOptFunctionNames.empty()) {
-    IsValid = false;
-    for (std::string &Name : FrameOptFunctionNames) {
-      if (Function.hasName(Name)) {
-        IsValid = true;
-        break;
-      }
-    }
-  }
-  if (!IsValid)
-    return false;
-
-  return IsValid;
+  if (FrameOptFunctionNames.empty())
+    return true;
+  return llvm::any_of(FrameOptFunctionNames, [&](std::string &Name) {
+    return Function.hasName(Name);
+  });
 }
 } // namespace opts
 
@@ -133,7 +124,7 @@ class FrameAccessAnalysis {
     if (IsIndexed || (!FIE.Size && (FIE.IsLoad || FIE.IsStore))) {
       LLVM_DEBUG(dbgs() << "Giving up on indexed memory access/unknown size\n");
       LLVM_DEBUG(dbgs() << "Blame insn: ");
-      LLVM_DEBUG(BC.printInstruction(outs(), Inst, 0, &BF, true, false, false));
+      LLVM_DEBUG(BC.printInstruction(dbgs(), Inst, 0, &BF, true, false, false));
       LLVM_DEBUG(Inst.dump());
       return false;
     }
@@ -361,7 +352,7 @@ bool FrameAnalysis::updateArgsTouchedFor(const BinaryFunction &BF, MCInst &Inst,
     // offset specially after an epilogue, where tailcalls happen. It should be
     // -8.
     for (std::pair<int64_t, uint8_t> Elem : Iter->second) {
-      if (ArgsTouchedMap[&BF].find(Elem) == ArgsTouchedMap[&BF].end()) {
+      if (!llvm::is_contained(ArgsTouchedMap[&BF], Elem)) {
         ArgsTouchedMap[&BF].emplace(Elem);
         Changed = true;
       }
@@ -570,22 +561,18 @@ FrameAnalysis::FrameAnalysis(BinaryContext &BC, BinaryFunctionCallGraph &CG)
     NamedRegionTimer T1("clearspt", "clear spt", "FA", "FA breakdown",
                         opts::TimeFA);
     clearSPTMap();
-
-    // Clean up memory allocated for annotation values
-    if (!opts::NoThreads)
-      for (MCPlusBuilder::AllocatorIdTy Id : SPTAllocatorsId)
-        BC.MIB->freeValuesAllocator(Id);
   }
 }
 
 void FrameAnalysis::printStats() {
-  outs() << "BOLT-INFO: FRAME ANALYSIS: " << NumFunctionsNotOptimized
-         << " function(s) were not optimized.\n"
-         << "BOLT-INFO: FRAME ANALYSIS: " << NumFunctionsFailedRestoreFI
-         << " function(s) "
-         << format("(%.1lf%% dyn cov)",
+  BC.outs() << "BOLT-INFO: FRAME ANALYSIS: " << NumFunctionsNotOptimized
+            << " function(s) were not optimized.\n"
+            << "BOLT-INFO: FRAME ANALYSIS: " << NumFunctionsFailedRestoreFI
+            << " function(s) "
+            << format(
+                   "(%.1lf%% dyn cov)",
                    (100.0 * CountFunctionsFailedRestoreFI / CountDenominator))
-         << " could not have its frame indices restored.\n";
+            << " could not have its frame indices restored.\n";
 }
 
 void FrameAnalysis::clearSPTMap() {

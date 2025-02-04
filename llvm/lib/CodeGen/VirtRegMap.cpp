@@ -16,11 +16,12 @@
 //===----------------------------------------------------------------------===//
 
 #include "llvm/CodeGen/VirtRegMap.h"
-#include "LiveDebugVariables.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/Statistic.h"
+#include "llvm/CodeGen/LiveDebugVariables.h"
 #include "llvm/CodeGen/LiveInterval.h"
 #include "llvm/CodeGen/LiveIntervals.h"
+#include "llvm/CodeGen/LiveRegMatrix.h"
 #include "llvm/CodeGen/LiveStacks.h"
 #include "llvm/CodeGen/MachineBasicBlock.h"
 #include "llvm/CodeGen/MachineFrameInfo.h"
@@ -56,11 +57,12 @@ STATISTIC(NumIdCopies,   "Number of identity moves eliminated after rewriting");
 //  VirtRegMap implementation
 //===----------------------------------------------------------------------===//
 
-char VirtRegMap::ID = 0;
+char VirtRegMapWrapperLegacy::ID = 0;
 
-INITIALIZE_PASS(VirtRegMap, "virtregmap", "Virtual Register Map", false, false)
+INITIALIZE_PASS(VirtRegMapWrapperLegacy, "virtregmap", "Virtual Register Map",
+                false, true)
 
-bool VirtRegMap::runOnMachineFunction(MachineFunction &mf) {
+void VirtRegMap::init(MachineFunction &mf) {
   MRI = &mf.getRegInfo();
   TII = mf.getSubtarget().getInstrInfo();
   TRI = mf.getSubtarget().getRegisterInfo();
@@ -72,7 +74,6 @@ bool VirtRegMap::runOnMachineFunction(MachineFunction &mf) {
   Virt2ShapeMap.clear();
 
   grow();
-  return false;
 }
 
 void VirtRegMap::grow() {
@@ -82,14 +83,16 @@ void VirtRegMap::grow() {
   Virt2SplitMap.resize(NumRegs);
 }
 
-void VirtRegMap::assignVirt2Phys(Register virtReg, MCPhysReg physReg) {
-  assert(virtReg.isVirtual() && Register::isPhysicalRegister(physReg));
-  assert(Virt2PhysMap[virtReg.id()] == NO_PHYS_REG &&
+void VirtRegMap::assignVirt2Phys(Register virtReg, MCRegister physReg) {
+  assert(virtReg.isVirtual() && physReg.isPhysical());
+  assert(!Virt2PhysMap[virtReg] &&
          "attempt to assign physical register to already mapped "
          "virtual register");
-  assert(!getRegInfo().isReserved(physReg) &&
+  assert((!getRegInfo().isReserved(physReg) ||
+          MF->getProperties().hasProperty(
+              MachineFunctionProperties::Property::FailedRegAlloc)) &&
          "Attempt to map virtReg to a reserved physReg");
-  Virt2PhysMap[virtReg.id()] = physReg;
+  Virt2PhysMap[virtReg] = physReg;
 }
 
 unsigned VirtRegMap::createSpillSlot(const TargetRegisterClass *RC) {
@@ -116,37 +119,37 @@ bool VirtRegMap::hasPreferredPhys(Register VirtReg) const {
 }
 
 bool VirtRegMap::hasKnownPreference(Register VirtReg) const {
-  std::pair<unsigned, unsigned> Hint = MRI->getRegAllocationHint(VirtReg);
-  if (Register::isPhysicalRegister(Hint.second))
+  std::pair<unsigned, Register> Hint = MRI->getRegAllocationHint(VirtReg);
+  if (Hint.second.isPhysical())
     return true;
-  if (Register::isVirtualRegister(Hint.second))
+  if (Hint.second.isVirtual())
     return hasPhys(Hint.second);
   return false;
 }
 
 int VirtRegMap::assignVirt2StackSlot(Register virtReg) {
   assert(virtReg.isVirtual());
-  assert(Virt2StackSlotMap[virtReg.id()] == NO_STACK_SLOT &&
+  assert(Virt2StackSlotMap[virtReg] == NO_STACK_SLOT &&
          "attempt to assign stack slot to already spilled register");
   const TargetRegisterClass* RC = MF->getRegInfo().getRegClass(virtReg);
-  return Virt2StackSlotMap[virtReg.id()] = createSpillSlot(RC);
+  return Virt2StackSlotMap[virtReg] = createSpillSlot(RC);
 }
 
 void VirtRegMap::assignVirt2StackSlot(Register virtReg, int SS) {
   assert(virtReg.isVirtual());
-  assert(Virt2StackSlotMap[virtReg.id()] == NO_STACK_SLOT &&
+  assert(Virt2StackSlotMap[virtReg] == NO_STACK_SLOT &&
          "attempt to assign stack slot to already spilled register");
   assert((SS >= 0 ||
           (SS >= MF->getFrameInfo().getObjectIndexBegin())) &&
          "illegal fixed frame index");
-  Virt2StackSlotMap[virtReg.id()] = SS;
+  Virt2StackSlotMap[virtReg] = SS;
 }
 
 void VirtRegMap::print(raw_ostream &OS, const Module*) const {
   OS << "********** REGISTER MAP **********\n";
   for (unsigned i = 0, e = MRI->getNumVirtRegs(); i != e; ++i) {
-    unsigned Reg = Register::index2VirtReg(i);
-    if (Virt2PhysMap[Reg] != (unsigned)VirtRegMap::NO_PHYS_REG) {
+    Register Reg = Register::index2VirtReg(i);
+    if (Virt2PhysMap[Reg]) {
       OS << '[' << printReg(Reg, TRI) << " -> "
          << printReg(Virt2PhysMap[Reg], TRI) << "] "
          << TRI->getRegClassName(MRI->getRegClass(Reg)) << "\n";
@@ -154,7 +157,7 @@ void VirtRegMap::print(raw_ostream &OS, const Module*) const {
   }
 
   for (unsigned i = 0, e = MRI->getNumVirtRegs(); i != e; ++i) {
-    unsigned Reg = Register::index2VirtReg(i);
+    Register Reg = Register::index2VirtReg(i);
     if (Virt2StackSlotMap[Reg] != VirtRegMap::NO_STACK_SLOT) {
       OS << '[' << printReg(Reg, TRI) << " -> fi#" << Virt2StackSlotMap[Reg]
          << "] " << TRI->getRegClassName(MRI->getRegClass(Reg)) << "\n";
@@ -169,6 +172,22 @@ LLVM_DUMP_METHOD void VirtRegMap::dump() const {
 }
 #endif
 
+AnalysisKey VirtRegMapAnalysis::Key;
+
+PreservedAnalyses
+VirtRegMapPrinterPass::run(MachineFunction &MF,
+                           MachineFunctionAnalysisManager &MFAM) {
+  OS << MFAM.getResult<VirtRegMapAnalysis>(MF);
+  return PreservedAnalyses::all();
+}
+
+VirtRegMap VirtRegMapAnalysis::run(MachineFunction &MF,
+                                   MachineFunctionAnalysisManager &MAM) {
+  VirtRegMap VRM;
+  VRM.init(MF);
+  return VRM;
+}
+
 //===----------------------------------------------------------------------===//
 //                              VirtRegRewriter
 //===----------------------------------------------------------------------===//
@@ -181,14 +200,15 @@ LLVM_DUMP_METHOD void VirtRegMap::dump() const {
 namespace {
 
 class VirtRegRewriter : public MachineFunctionPass {
-  MachineFunction *MF;
-  const TargetRegisterInfo *TRI;
-  const TargetInstrInfo *TII;
-  MachineRegisterInfo *MRI;
-  SlotIndexes *Indexes;
-  LiveIntervals *LIS;
-  VirtRegMap *VRM;
-  LiveDebugVariables *DebugVars;
+  MachineFunction *MF = nullptr;
+  const TargetRegisterInfo *TRI = nullptr;
+  const TargetInstrInfo *TII = nullptr;
+  MachineRegisterInfo *MRI = nullptr;
+  SlotIndexes *Indexes = nullptr;
+  LiveIntervals *LIS = nullptr;
+  LiveRegMatrix *LRM = nullptr;
+  VirtRegMap *VRM = nullptr;
+  LiveDebugVariables *DebugVars = nullptr;
   DenseSet<Register> RewriteRegs;
   bool ClearVirtRegs;
 
@@ -199,6 +219,9 @@ class VirtRegRewriter : public MachineFunctionPass {
   void handleIdentityCopy(MachineInstr &MI);
   void expandCopyBundle(MachineInstr &MI) const;
   bool subRegLiveThrough(const MachineInstr &MI, MCRegister SuperPhysReg) const;
+  LaneBitmask liveOutUndefPhiLanesForUndefSubregDef(
+      const LiveInterval &LI, const MachineBasicBlock &MBB, unsigned SubReg,
+      MCRegister PhysReg, const MachineInstr &MI) const;
 
 public:
   static char ID;
@@ -228,27 +251,29 @@ char &llvm::VirtRegRewriterID = VirtRegRewriter::ID;
 
 INITIALIZE_PASS_BEGIN(VirtRegRewriter, "virtregrewriter",
                       "Virtual Register Rewriter", false, false)
-INITIALIZE_PASS_DEPENDENCY(SlotIndexes)
-INITIALIZE_PASS_DEPENDENCY(LiveIntervals)
-INITIALIZE_PASS_DEPENDENCY(LiveDebugVariables)
-INITIALIZE_PASS_DEPENDENCY(LiveStacks)
-INITIALIZE_PASS_DEPENDENCY(VirtRegMap)
+INITIALIZE_PASS_DEPENDENCY(SlotIndexesWrapperPass)
+INITIALIZE_PASS_DEPENDENCY(LiveIntervalsWrapperPass)
+INITIALIZE_PASS_DEPENDENCY(LiveDebugVariablesWrapperLegacy)
+INITIALIZE_PASS_DEPENDENCY(LiveRegMatrixWrapperLegacy)
+INITIALIZE_PASS_DEPENDENCY(LiveStacksWrapperLegacy)
+INITIALIZE_PASS_DEPENDENCY(VirtRegMapWrapperLegacy)
 INITIALIZE_PASS_END(VirtRegRewriter, "virtregrewriter",
                     "Virtual Register Rewriter", false, false)
 
 void VirtRegRewriter::getAnalysisUsage(AnalysisUsage &AU) const {
   AU.setPreservesCFG();
-  AU.addRequired<LiveIntervals>();
-  AU.addPreserved<LiveIntervals>();
-  AU.addRequired<SlotIndexes>();
-  AU.addPreserved<SlotIndexes>();
-  AU.addRequired<LiveDebugVariables>();
-  AU.addRequired<LiveStacks>();
-  AU.addPreserved<LiveStacks>();
-  AU.addRequired<VirtRegMap>();
+  AU.addRequired<LiveIntervalsWrapperPass>();
+  AU.addPreserved<LiveIntervalsWrapperPass>();
+  AU.addRequired<SlotIndexesWrapperPass>();
+  AU.addPreserved<SlotIndexesWrapperPass>();
+  AU.addRequired<LiveDebugVariablesWrapperLegacy>();
+  AU.addRequired<LiveStacksWrapperLegacy>();
+  AU.addPreserved<LiveStacksWrapperLegacy>();
+  AU.addRequired<VirtRegMapWrapperLegacy>();
+  AU.addRequired<LiveRegMatrixWrapperLegacy>();
 
   if (!ClearVirtRegs)
-    AU.addPreserved<LiveDebugVariables>();
+    AU.addPreserved<LiveDebugVariablesWrapperLegacy>();
 
   MachineFunctionPass::getAnalysisUsage(AU);
 }
@@ -258,10 +283,11 @@ bool VirtRegRewriter::runOnMachineFunction(MachineFunction &fn) {
   TRI = MF->getSubtarget().getRegisterInfo();
   TII = MF->getSubtarget().getInstrInfo();
   MRI = &MF->getRegInfo();
-  Indexes = &getAnalysis<SlotIndexes>();
-  LIS = &getAnalysis<LiveIntervals>();
-  VRM = &getAnalysis<VirtRegMap>();
-  DebugVars = getAnalysisIfAvailable<LiveDebugVariables>();
+  Indexes = &getAnalysis<SlotIndexesWrapperPass>().getSI();
+  LIS = &getAnalysis<LiveIntervalsWrapperPass>().getLIS();
+  LRM = &getAnalysis<LiveRegMatrixWrapperLegacy>().getLRM();
+  VRM = &getAnalysis<VirtRegMapWrapperLegacy>().getVRM();
+  DebugVars = &getAnalysis<LiveDebugVariablesWrapperLegacy>().getLDV();
   LLVM_DEBUG(dbgs() << "********** REWRITE VIRTUAL REGISTERS **********\n"
                     << "********** Function: " << MF->getName() << '\n');
   LLVM_DEBUG(VRM->dump());
@@ -275,7 +301,7 @@ bool VirtRegRewriter::runOnMachineFunction(MachineFunction &fn) {
   // Rewrite virtual registers.
   rewrite();
 
-  if (DebugVars && ClearVirtRegs) {
+  if (ClearVirtRegs) {
     // Write out new DBG_VALUE instructions.
 
     // We only do this if ClearVirtRegs is specified since this should be the
@@ -311,8 +337,8 @@ void VirtRegRewriter::addLiveInsForSubRanges(const LiveInterval &LI,
   }
 
   // Check all mbb start positions between First and Last while
-  // simulatenously advancing an iterator for each subrange.
-  for (SlotIndexes::MBBIndexIterator MBBI = Indexes->findMBBIndex(First);
+  // simultaneously advancing an iterator for each subrange.
+  for (SlotIndexes::MBBIndexIterator MBBI = Indexes->getMBBLowerBound(First);
        MBBI != Indexes->MBBIndexEnd() && MBBI->first <= Last; ++MBBI) {
     SlotIndex MBBBegin = MBBI->first;
     // Advance all subrange iterators so that their end position is just
@@ -347,8 +373,8 @@ void VirtRegRewriter::addMBBLiveIns() {
       continue;
     // This is a virtual register that is live across basic blocks. Its
     // assigned PhysReg must be marked as live-in to those blocks.
-    Register PhysReg = VRM->getPhys(VirtReg);
-    if (PhysReg == VirtRegMap::NO_PHYS_REG) {
+    MCRegister PhysReg = VRM->getPhys(VirtReg);
+    if (!PhysReg) {
       // There may be no physical register assigned if only some register
       // classes were already allocated.
       assert(!ClearVirtRegs && "Unmapped virtual register");
@@ -363,7 +389,7 @@ void VirtRegRewriter::addMBBLiveIns() {
       // sorted by slot indexes.
       SlotIndexes::MBBIndexIterator I = Indexes->MBBIndexBegin();
       for (const auto &Seg : LI) {
-        I = Indexes->advanceMBBIndex(I, Seg.start);
+        I = Indexes->getMBBLowerBound(I, Seg.start);
         for (; I != Indexes->MBBIndexEnd() && I->first < Seg.end; ++I) {
           MachineBasicBlock *MBB = I->second;
           MBB->addLiveIn(PhysReg);
@@ -475,7 +501,7 @@ void VirtRegRewriter::expandCopyBundle(MachineInstr &MI) const {
     // clobbering.
     for (int E = MIs.size(), PrevE = E; E > 1; PrevE = E) {
       for (int I = E; I--; )
-        if (!anyRegsAlias(MIs[I], makeArrayRef(MIs).take_front(E), TRI)) {
+        if (!anyRegsAlias(MIs[I], ArrayRef(MIs).take_front(E), TRI)) {
           if (I + 1 != E)
             std::swap(MIs[I], MIs[E - 1]);
           --E;
@@ -514,8 +540,8 @@ bool VirtRegRewriter::subRegLiveThrough(const MachineInstr &MI,
   SlotIndex MIIndex = LIS->getInstructionIndex(MI);
   SlotIndex BeforeMIUses = MIIndex.getBaseIndex();
   SlotIndex AfterMIDefs = MIIndex.getBoundaryIndex();
-  for (MCRegUnitIterator Unit(SuperPhysReg, TRI); Unit.isValid(); ++Unit) {
-    const LiveRange &UnitRange = LIS->getRegUnit(*Unit);
+  for (MCRegUnit Unit : TRI->regunits(SuperPhysReg)) {
+    const LiveRange &UnitRange = LIS->getRegUnit(Unit);
     // If the regunit is live both before and after MI,
     // we assume it is live through.
     // Generally speaking, this is not true, because something like
@@ -530,6 +556,40 @@ bool VirtRegRewriter::subRegLiveThrough(const MachineInstr &MI,
       return true;
   }
   return false;
+}
+
+/// Compute a lanemask for undef lanes which need to be preserved out of the
+/// defining block for a register assignment for a subregister def. \p PhysReg
+/// is assigned to \p LI, which is the main range.
+LaneBitmask VirtRegRewriter::liveOutUndefPhiLanesForUndefSubregDef(
+    const LiveInterval &LI, const MachineBasicBlock &MBB, unsigned SubReg,
+    MCRegister PhysReg, const MachineInstr &MI) const {
+  LaneBitmask UndefMask = ~TRI->getSubRegIndexLaneMask(SubReg);
+  LaneBitmask LiveOutUndefLanes;
+
+  for (const LiveInterval::SubRange &SR : LI.subranges()) {
+    // Figure out which lanes are undef live into a successor.
+    LaneBitmask NeedImpDefLanes = UndefMask & SR.LaneMask;
+    if (NeedImpDefLanes.any() && !LIS->isLiveOutOfMBB(SR, &MBB)) {
+      for (const MachineBasicBlock *Succ : MBB.successors()) {
+        if (LIS->isLiveInToMBB(SR, Succ))
+          LiveOutUndefLanes |= NeedImpDefLanes;
+      }
+    }
+  }
+
+  SlotIndex MIIndex = LIS->getInstructionIndex(MI);
+  SlotIndex BeforeMIUses = MIIndex.getBaseIndex();
+  LaneBitmask InterferingLanes =
+      LRM->checkInterferenceLanes(BeforeMIUses, MIIndex.getRegSlot(), PhysReg);
+  LiveOutUndefLanes &= ~InterferingLanes;
+
+  LLVM_DEBUG(if (LiveOutUndefLanes.any()) {
+    dbgs() << "Need live out undef defs for " << printReg(PhysReg)
+           << LiveOutUndefLanes << " from " << printMBBReference(MBB) << '\n';
+  });
+
+  return LiveOutUndefLanes;
 }
 
 void VirtRegRewriter::rewrite() {
@@ -551,13 +611,16 @@ void VirtRegRewriter::rewrite() {
           continue;
         Register VirtReg = MO.getReg();
         MCRegister PhysReg = VRM->getPhys(VirtReg);
-        if (PhysReg == VirtRegMap::NO_PHYS_REG)
+        if (!PhysReg)
           continue;
 
         assert(Register(PhysReg).isPhysical());
 
         RewriteRegs.insert(PhysReg);
-        assert(!MRI->isReserved(PhysReg) && "Reserved register assignment");
+        assert((!MRI->isReserved(PhysReg) ||
+                MF->getProperties().hasProperty(
+                    MachineFunctionProperties::Property::FailedRegAlloc)) &&
+               "Reserved register assignment");
 
         // Preserve semantics of sub-register operands.
         unsigned SubReg = MO.getSubReg();
@@ -586,6 +649,32 @@ void VirtRegRewriter::rewrite() {
                 MO.setIsUndef(true);
             } else if (!MO.isDead()) {
               assert(MO.isDef());
+              if (MO.isUndef()) {
+                const LiveInterval &LI = LIS->getInterval(VirtReg);
+
+                LaneBitmask LiveOutUndefLanes =
+                    liveOutUndefPhiLanesForUndefSubregDef(LI, *MBBI, SubReg,
+                                                          PhysReg, MI);
+                if (LiveOutUndefLanes.any()) {
+                  SmallVector<unsigned, 16> CoveringIndexes;
+
+                  // TODO: Just use one super register def if none of the lanes
+                  // are needed?
+                  if (!TRI->getCoveringSubRegIndexes(MRI->getRegClass(VirtReg),
+                                                     LiveOutUndefLanes,
+                                                     CoveringIndexes))
+                    llvm_unreachable(
+                        "cannot represent required subregister defs");
+
+                  // Try to represent the minimum needed live out def as a
+                  // sequence of subregister defs.
+                  //
+                  // FIXME: It would be better if we could directly represent
+                  // liveness with a lanemask instead of spamming operands.
+                  for (unsigned SubIdx : CoveringIndexes)
+                    SuperDefs.push_back(TRI->getSubReg(PhysReg, SubIdx));
+                }
+              }
             }
           }
 
@@ -633,9 +722,8 @@ void VirtRegRewriter::rewrite() {
     // Don't bother maintaining accurate LiveIntervals for registers which were
     // already allocated.
     for (Register PhysReg : RewriteRegs) {
-      for (MCRegUnitIterator Units(PhysReg, TRI); Units.isValid();
-           ++Units) {
-        LIS->removeRegUnit(*Units);
+      for (MCRegUnit Unit : TRI->regunits(PhysReg)) {
+        LIS->removeRegUnit(Unit);
       }
     }
   }

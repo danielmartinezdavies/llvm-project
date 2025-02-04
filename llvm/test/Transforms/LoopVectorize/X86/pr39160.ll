@@ -1,10 +1,10 @@
-; RUN: opt -loop-vectorize -S < %s 2>&1 | FileCheck %s
+; RUN: opt -passes=loop-vectorize -S < %s 2>&1 | FileCheck %s
 
 target datalayout = "e-m:e-i64:64-f80:128-n8:16:32:64-S128-ni:1"
 target triple = "x86_64-unknown-linux-gnu"
 
 ; Make sure that we can compile the test without crash.
-define void @barney() {
+define void @barney(ptr %dst, i1 %arg) {
 
 ; CHECK-LABEL: @barney(
 ; CHECK:       middle.block:
@@ -28,13 +28,13 @@ bb19:                                             ; preds = %bb36, %bb5
   br label %bb50
 
 bb33:                                             ; preds = %bb62
-  br i1 undef, label %bb18, label %bb36
+  br i1 %arg, label %bb18, label %bb36
 
 bb36:                                             ; preds = %bb33
   br label %bb19
 
 bb46:                                             ; preds = %bb50
-  br i1 undef, label %bb48, label %bb59
+  br i1 %arg, label %bb48, label %bb59
 
 bb48:                                             ; preds = %bb46
   %tmp49 = add i32 %tmp52, 14
@@ -43,6 +43,8 @@ bb48:                                             ; preds = %bb46
 bb50:                                             ; preds = %bb50, %bb19
   %tmp52 = phi i32 [ %tmp55, %bb50 ], [ %tmp22, %bb19 ]
   %tmp53 = phi i64 [ %tmp56, %bb50 ], [ 1, %bb19 ]
+  %gep = getelementptr inbounds i8, ptr %dst, i64 %tmp53
+  store i8 1, ptr %gep
   %tmp54 = add i32 %tmp52, 12
   %tmp55 = add i32 %tmp52, 13
   %tmp56 = add nuw nsw i64 %tmp53, 1
@@ -64,7 +66,7 @@ bb68:                                             ; preds = %bb62
   br label %bb62
 }
 
-define i32 @foo(i32 addrspace(1)* %p) {
+define i32 @foo(ptr addrspace(1) %p) {
 
 ; CHECK-LABEL: foo
 ; CHECK:       middle.block:
@@ -88,7 +90,7 @@ inner:                                            ; preds = %inner, %outer
   br i1 %5, label %inner, label %outer_latch
 
 outer_latch:                                      ; preds = %inner
-  store atomic i32 %2, i32 addrspace(1)* %p unordered, align 4
+  store atomic i32 %2, ptr addrspace(1) %p unordered, align 4
   %iv.next = add nuw nsw i64 %iv, 1
   %6 = icmp ugt i64 %iv, 63
   br i1 %6, label %exit, label %outer

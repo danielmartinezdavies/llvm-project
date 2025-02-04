@@ -48,7 +48,7 @@ module module1
  type :: derived1
   !REF: /module1/abstract1
   !DEF: /module1/derived1/p1 NOPASS, POINTER (Function) ProcEntity REAL(4)
-  !DEF: /module1/nested1 PUBLIC (Function) Subprogram REAL(4)
+  !DEF: /module1/nested1 PUBLIC, PURE (Function) Subprogram REAL(4)
   procedure(abstract1), pointer, nopass :: p1 => nested1
   !REF: /module1/explicit1
   !DEF: /module1/derived1/p2 NOPASS, POINTER (Function) ProcEntity REAL(4)
@@ -81,7 +81,7 @@ contains
 
  !REF: /module1/nested1
  !DEF: /module1/nested1/x INTENT(IN) ObjectEntity REAL(4)
- real function nested1(x)
+ pure real function nested1(x)
   !REF: /module1/nested1/x
   real, intent(in) :: x
   !DEF: /module1/nested1/nested1 ObjectEntity REAL(4)
@@ -130,9 +130,9 @@ contains
  end function nested5
 end module module1
 
-!DEF: /explicit1 ELEMENTAL (Function) Subprogram REAL(4)
+!DEF: /explicit1 (Function) Subprogram REAL(4)
 !DEF: /explicit1/x INTENT(IN) ObjectEntity REAL(4)
-real elemental function explicit1(x)
+real function explicit1(x)
  !REF: /explicit1/x
  real, intent(in) :: x
  !DEF: /explicit1/explicit1 ObjectEntity REAL(4)
@@ -150,14 +150,13 @@ integer function logical(x)
  logical = x+3.
 end function logical
 
-!DEF: /tan (Function) Subprogram REAL(4)
+!DEF: /tan (Function) Subprogram CHARACTER(1_8,1)
 !DEF: /tan/x INTENT(IN) ObjectEntity REAL(4)
-real function tan(x)
+character*1 function tan(x)
  !REF: /tan/x
  real, intent(in) :: x
- !DEF: /tan/tan ObjectEntity REAL(4)
- !REF: /tan/x
- tan = x+5.
+ !DEF: /tan/tan ObjectEntity CHARACTER(1_8,1)
+ tan = "?"
 end function tan
 
 !DEF: /main MainProgram

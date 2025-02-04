@@ -13,6 +13,7 @@
 #ifndef MLIR_TABLEGEN_CODEGENHELPERS_H
 #define MLIR_TABLEGEN_CODEGENHELPERS_H
 
+#include "mlir/TableGen/Constraint.h"
 #include "mlir/TableGen/Dialect.h"
 #include "mlir/TableGen/Format.h"
 #include "llvm/ADT/DenseMap.h"
@@ -98,8 +99,14 @@ private:
 ///
 class StaticVerifierFunctionEmitter {
 public:
+  /// Create a constraint uniquer with a unique prefix derived from the record
+  /// keeper with an optional tag.
   StaticVerifierFunctionEmitter(raw_ostream &os,
-                                const llvm::RecordKeeper &records);
+                                const llvm::RecordKeeper &records,
+                                StringRef tag = "");
+
+  /// Collect and unique all the constraints used by operations.
+  void collectOpConstraints(ArrayRef<const llvm::Record *> opDefs);
 
   /// Collect and unique all compatible type, attribute, successor, and region
   /// constraints from the operations in the file and emit them at the top of
@@ -107,7 +114,7 @@ public:
   ///
   /// Constraints that do not meet the restriction that they can only reference
   /// `$_self` and `$_op` are not uniqued.
-  void emitOpConstraints(ArrayRef<llvm::Record *> opDefs, bool emitDecl);
+  void emitOpConstraints(ArrayRef<const llvm::Record *> opDefs);
 
   /// Unique all compatible type and attribute constraints from a pattern file
   /// and emit them at the top of the generated file.
@@ -135,15 +142,16 @@ public:
   ///
   ///   LogicalResult(Operation *op, Attribute attr, StringRef attrName);
   ///
-  /// If a uniqued constraint was not found, this function returns None. The
-  /// uniqued constraints cannot be used in the context of an OpAdaptor.
+  /// If a uniqued constraint was not found, this function returns std::nullopt.
+  /// The uniqued constraints cannot be used in the context of an OpAdaptor.
   ///
   /// Pattern constraints have the form:
   ///
   ///   LogicalResult(PatternRewriter &rewriter, Operation *op, Attribute attr,
   ///                 StringRef failureStr);
   ///
-  Optional<StringRef> getAttrConstraintFn(const Constraint &constraint) const;
+  std::optional<StringRef>
+  getAttrConstraintFn(const Constraint &constraint) const;
 
   /// Get the name of the static function used for the given successor
   /// constraint. These functions are in the form:
@@ -175,8 +183,6 @@ private:
   /// Emit pattern constraints.
   void emitPatternConstraints();
 
-  /// Collect and unique all the constraints used by operations.
-  void collectOpConstraints(ArrayRef<llvm::Record *> opDefs);
   /// Collect and unique all pattern constraints.
   void collectPatternConstraints(ArrayRef<DagLeaf> constraints);
 
@@ -228,8 +234,8 @@ struct stringifier<Twine> {
   static std::string apply(const Twine &twine) { return twine.str(); }
 };
 template <typename OptionalT>
-struct stringifier<Optional<OptionalT>> {
-  static std::string apply(Optional<OptionalT> optional) {
+struct stringifier<std::optional<OptionalT>> {
+  static std::string apply(std::optional<OptionalT> optional) {
     return optional ? stringifier<OptionalT>::apply(*optional) : std::string();
   }
 };

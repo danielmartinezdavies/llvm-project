@@ -10,6 +10,8 @@
 
 // <vector>
 
+#include <cstddef>
+#include <memory>
 #include <vector>
 
 #include "test_macros.h"
@@ -22,14 +24,15 @@ struct MyAlloc {
     using value_type = T;
     MyAlloc() = default;
     template<class U> MyAlloc(const MyAlloc<U>&) {}
-    T *allocate(int n) { return std::allocator<T>().allocate(n); }
-    void deallocate(T *p, int n) { return std::allocator<T>().deallocate(p, n); }
+    T *allocate(std::size_t n) { return std::allocator<T>().allocate(n); }
+    void deallocate(T *p, std::size_t n) { return std::allocator<T>().deallocate(p, n); }
 };
 
 int main(int, char**)
 {
     std::vector<bool, MyAlloc<bool>> vb;
-    std::vector<bool, MyAlloc<bool>> wb(100);
+    // std::fill_n triggers ADL because __bit_iterator has the container type as a template argument
+    // std::vector<bool, MyAlloc<bool>> wb(100);
 
     std::vector<int, MyAlloc<int>> v;
     std::vector<int, MyAlloc<int>> w(100);

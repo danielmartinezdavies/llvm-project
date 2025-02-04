@@ -18,6 +18,7 @@
 /*  Constant               Value
     __cpp_lib_execution    201603L [C++17]
                            201902L [C++20]
+    __cpp_lib_senders      202406L [C++26]
 */
 
 #include <execution>
@@ -29,10 +30,18 @@
 #   error "__cpp_lib_execution should not be defined before c++17"
 # endif
 
+# ifdef __cpp_lib_senders
+#   error "__cpp_lib_senders should not be defined before c++26"
+# endif
+
 #elif TEST_STD_VER == 14
 
 # ifdef __cpp_lib_execution
 #   error "__cpp_lib_execution should not be defined before c++17"
+# endif
+
+# ifdef __cpp_lib_senders
+#   error "__cpp_lib_senders should not be defined before c++26"
 # endif
 
 #elif TEST_STD_VER == 17
@@ -50,6 +59,10 @@
 #   endif
 # endif
 
+# ifdef __cpp_lib_senders
+#   error "__cpp_lib_senders should not be defined before c++26"
+# endif
+
 #elif TEST_STD_VER == 20
 
 # if !defined(_LIBCPP_VERSION)
@@ -65,14 +78,18 @@
 #   endif
 # endif
 
-#elif TEST_STD_VER > 20
+# ifdef __cpp_lib_senders
+#   error "__cpp_lib_senders should not be defined before c++26"
+# endif
+
+#elif TEST_STD_VER == 23
 
 # if !defined(_LIBCPP_VERSION)
 #   ifndef __cpp_lib_execution
-#     error "__cpp_lib_execution should be defined in c++2b"
+#     error "__cpp_lib_execution should be defined in c++23"
 #   endif
 #   if __cpp_lib_execution != 201902L
-#     error "__cpp_lib_execution should have the value 201902L in c++2b"
+#     error "__cpp_lib_execution should have the value 201902L in c++23"
 #   endif
 # else // _LIBCPP_VERSION
 #   ifdef __cpp_lib_execution
@@ -80,5 +97,37 @@
 #   endif
 # endif
 
-#endif // TEST_STD_VER > 20
+# ifdef __cpp_lib_senders
+#   error "__cpp_lib_senders should not be defined before c++26"
+# endif
+
+#elif TEST_STD_VER > 23
+
+# if !defined(_LIBCPP_VERSION)
+#   ifndef __cpp_lib_execution
+#     error "__cpp_lib_execution should be defined in c++26"
+#   endif
+#   if __cpp_lib_execution != 201902L
+#     error "__cpp_lib_execution should have the value 201902L in c++26"
+#   endif
+# else // _LIBCPP_VERSION
+#   ifdef __cpp_lib_execution
+#     error "__cpp_lib_execution should not be defined because it is unimplemented in libc++!"
+#   endif
+# endif
+
+# if !defined(_LIBCPP_VERSION)
+#   ifndef __cpp_lib_senders
+#     error "__cpp_lib_senders should be defined in c++26"
+#   endif
+#   if __cpp_lib_senders != 202406L
+#     error "__cpp_lib_senders should have the value 202406L in c++26"
+#   endif
+# else // _LIBCPP_VERSION
+#   ifdef __cpp_lib_senders
+#     error "__cpp_lib_senders should not be defined because it is unimplemented in libc++!"
+#   endif
+# endif
+
+#endif // TEST_STD_VER > 23
 

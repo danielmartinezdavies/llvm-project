@@ -11,13 +11,15 @@
 
 #include "mlir/IR/OpDefinition.h"
 #include "llvm/Support/Compiler.h"
+#include <optional>
 
 namespace mlir {
 
 class AffineExpr;
-class BlockAndValueMapping;
+class IRMapping;
 class UnknownLoc;
 class FileLineColLoc;
+class FileLineColRange;
 class Type;
 class PrimitiveType;
 class IntegerType;
@@ -61,6 +63,7 @@ public:
   // Types.
   FloatType getBF16Type();
   FloatType getF16Type();
+  FloatType getTF32Type();
   FloatType getF32Type();
   FloatType getF64Type();
   FloatType getF80Type();
@@ -69,7 +72,10 @@ public:
   IndexType getIndexType();
 
   IntegerType getI1Type();
+  IntegerType getI2Type();
+  IntegerType getI4Type();
   IntegerType getI8Type();
+  IntegerType getI16Type();
   IntegerType getI32Type();
   IntegerType getI64Type();
   IntegerType getIntegerType(unsigned width);
@@ -107,7 +113,10 @@ public:
   // Returns a 0-valued attribute of the given `type`. This function only
   // supports boolean, integer, and 16-/32-/64-bit float types, and vector or
   // ranked tensor of them. Returns null attribute otherwise.
-  Attribute getZeroAttr(Type type);
+  TypedAttr getZeroAttr(Type type);
+  // Returns a 1-valued attribute of the given `type`.
+  // Type constraints are the same as `getZeroAttr`.
+  TypedAttr getOneAttr(Type type);
 
   // Convenience methods for fixed types.
   FloatAttr getF16FloatAttr(float value);
@@ -129,6 +138,9 @@ public:
   DenseIntElementsAttr getI32VectorAttr(ArrayRef<int32_t> values);
   DenseIntElementsAttr getI64VectorAttr(ArrayRef<int64_t> values);
   DenseIntElementsAttr getIndexVectorAttr(ArrayRef<int64_t> values);
+
+  DenseFPElementsAttr getF32VectorAttr(ArrayRef<float> values);
+  DenseFPElementsAttr getF64VectorAttr(ArrayRef<double> values);
 
   /// Tensor-typed DenseIntElementsAttr getters. `values` can be empty.
   /// These are generally preferable for representing general lists of integers
@@ -192,6 +204,7 @@ protected:
 /// automatically inserted at an insertion point. The builder is copyable.
 class OpBuilder : public Builder {
 public:
+  class InsertPoint;
   struct Listener;
 
   /// Create a builder with the given context.
@@ -202,7 +215,7 @@ public:
   explicit OpBuilder(Region *region, Listener *listener = nullptr)
       : OpBuilder(region->getContext(), listener) {
     if (!region->empty())
-      setInsertionPoint(&region->front(), region->front().begin());
+      setInsertionPointToStart(&region->front());
   }
   explicit OpBuilder(Region &region, Listener *listener = nullptr)
       : OpBuilder(&region, listener) {}
@@ -245,18 +258,56 @@ public:
   // Listeners
   //===--------------------------------------------------------------------===//
 
+  /// Base class for listeners.
+  struct ListenerBase {
+    /// The kind of listener.
+    enum class Kind {
+      /// OpBuilder::Listener or user-derived class.
+      OpBuilderListener = 0,
+
+      /// RewriterBase::Listener or user-derived class.
+      RewriterBaseListener = 1
+    };
+
+    Kind getKind() const { return kind; }
+
+  protected:
+    ListenerBase(Kind kind) : kind(kind) {}
+
+  private:
+    const Kind kind;
+  };
+
   /// This class represents a listener that may be used to hook into various
   /// actions within an OpBuilder.
-  struct Listener {
-    virtual ~Listener();
+  struct Listener : public ListenerBase {
+    Listener() : ListenerBase(ListenerBase::Kind::OpBuilderListener) {}
 
-    /// Notification handler for when an operation is inserted into the builder.
-    /// `op` is the operation that was inserted.
-    virtual void notifyOperationInserted(Operation *op) {}
+    virtual ~Listener() = default;
 
-    /// Notification handler for when a block is created using the builder.
-    /// `block` is the block that was created.
-    virtual void notifyBlockCreated(Block *block) {}
+    /// Notify the listener that the specified operation was inserted.
+    ///
+    /// * If the operation was moved, then `previous` is the previous location
+    ///   of the op.
+    /// * If the operation was unlinked before it was inserted, then `previous`
+    ///   is empty.
+    ///
+    /// Note: Creating an (unlinked) op does not trigger this notification.
+    virtual void notifyOperationInserted(Operation *op, InsertPoint previous) {}
+
+    /// Notify the listener that the specified block was inserted.
+    ///
+    /// * If the block was moved, then `previous` and `previousIt` are the
+    ///   previous location of the block.
+    /// * If the block was unlinked before it was inserted, then `previous`
+    ///   is "nullptr".
+    ///
+    /// Note: Creating an (unlinked) block does not trigger this notification.
+    virtual void notifyBlockInserted(Block *block, Region *previous,
+                                     Region::iterator previousIt) {}
+
+  protected:
+    Listener(Kind kind) : ListenerBase(kind) {}
   };
 
   /// Sets the listener of this builder to the one provided.
@@ -369,7 +420,7 @@ public:
     if (Operation *op = val.getDefiningOp()) {
       setInsertionPointAfter(op);
     } else {
-      auto blockArg = val.cast<BlockArgument>();
+      auto blockArg = llvm::cast<BlockArgument>(val);
       setInsertionPointToStart(blockArg.getOwner());
     }
   }
@@ -385,7 +436,7 @@ public:
   }
 
   /// Return the block the current insertion point belongs to.  Note that the
-  /// the insertion point is not necessarily the end of the block.
+  /// insertion point is not necessarily the end of the block.
   Block *getInsertionBlock() const { return block; }
 
   /// Returns the current insertion point of the builder.
@@ -403,15 +454,15 @@ public:
   /// 'parent'. `locs` contains the locations of the inserted arguments, and
   /// should match the size of `argTypes`.
   Block *createBlock(Region *parent, Region::iterator insertPt = {},
-                     TypeRange argTypes = llvm::None,
-                     ArrayRef<Location> locs = llvm::None);
+                     TypeRange argTypes = std::nullopt,
+                     ArrayRef<Location> locs = std::nullopt);
 
   /// Add new block with 'argTypes' arguments and set the insertion point to the
   /// end of it. The block is placed before 'insertBefore'. `locs` contains the
   /// locations of the inserted arguments, and should match the size of
   /// `argTypes`.
-  Block *createBlock(Block *insertBefore, TypeRange argTypes = llvm::None,
-                     ArrayRef<Location> locs = llvm::None);
+  Block *createBlock(Block *insertBefore, TypeRange argTypes = std::nullopt,
+                     ArrayRef<Location> locs = std::nullopt);
 
   //===--------------------------------------------------------------------===//
   // Operation Creation
@@ -434,13 +485,13 @@ private:
   /// Helper for sanity checking preconditions for create* methods below.
   template <typename OpT>
   RegisteredOperationName getCheckRegisteredInfo(MLIRContext *ctx) {
-    Optional<RegisteredOperationName> opName =
-        RegisteredOperationName::lookup(OpT::getOperationName(), ctx);
+    std::optional<RegisteredOperationName> opName =
+        RegisteredOperationName::lookup(TypeID::get<OpT>(), ctx);
     if (LLVM_UNLIKELY(!opName)) {
       llvm::report_fatal_error(
           "Building op `" + OpT::getOperationName() +
-          "` but it isn't registered in this MLIRContext: the dialect may not "
-          "be loaded or this operation isn't registered by the dialect. See "
+          "` but it isn't known in this MLIRContext: the dialect may not "
+          "be loaded or this operation hasn't been added by the dialect. See "
           "also https://mlir.llvm.org/getting_started/Faq/"
           "#registered-loaded-dependent-whats-up-with-dialects-management");
     }
@@ -462,28 +513,36 @@ public:
 
   /// Create an operation of specific op type at the current insertion point,
   /// and immediately try to fold it. This functions populates 'results' with
-  /// the results after folding the operation.
+  /// the results of the operation.
   template <typename OpTy, typename... Args>
   void createOrFold(SmallVectorImpl<Value> &results, Location location,
                     Args &&...args) {
-    // Create the operation without using 'create' as we don't want to
-    // insert it yet.
+    // Create the operation without using 'create' as we want to control when
+    // the listener is notified.
     OperationState state(location,
                          getCheckRegisteredInfo<OpTy>(location.getContext()));
     OpTy::build(*this, state, std::forward<Args>(args)...);
     Operation *op = Operation::create(state);
+    if (block)
+      block->getOperations().insert(insertPoint, op);
 
-    // Fold the operation. If successful destroy it, otherwise insert it.
-    if (succeeded(tryFold(op, results)))
-      op->destroy();
-    else
-      insert(op);
+    // Attempt to fold the operation.
+    if (succeeded(tryFold(op, results)) && !results.empty()) {
+      // Erase the operation, if the fold removed the need for this operation.
+      // Note: The fold already populated the results in this case.
+      op->erase();
+      return;
+    }
+
+    ResultRange opResults = op->getResults();
+    results.assign(opResults.begin(), opResults.end());
+    if (block && listener)
+      listener->notifyOperationInserted(op, /*previous=*/{});
   }
 
   /// Overload to create or fold a single result operation.
   template <typename OpTy, typename... Args>
-  typename std::enable_if<OpTy::template hasTrait<OpTrait::OneResult>(),
-                          Value>::type
+  std::enable_if_t<OpTy::template hasTrait<OpTrait::OneResult>(), Value>
   createOrFold(Location location, Args &&...args) {
     SmallVector<Value, 1> results;
     createOrFold<OpTy>(results, location, std::forward<Args>(args)...);
@@ -492,8 +551,7 @@ public:
 
   /// Overload to create or fold a zero result operation.
   template <typename OpTy, typename... Args>
-  typename std::enable_if<OpTy::template hasTrait<OpTrait::ZeroResults>(),
-                          OpTy>::type
+  std::enable_if_t<OpTy::template hasTrait<OpTrait::ZeroResults>(), OpTy>
   createOrFold(Location location, Args &&...args) {
     auto op = create<OpTy>(location, std::forward<Args>(args)...);
     SmallVector<Value, 0> unused;
@@ -505,7 +563,8 @@ public:
   }
 
   /// Attempts to fold the given operation and places new results within
-  /// 'results'. Returns success if the operation was folded, failure otherwise.
+  /// `results`. Returns success if the operation was folded, failure otherwise.
+  /// If the fold was in-place, `results` will not be filled.
   /// Note: This function does not erase the operation on a successful fold.
   LogicalResult tryFold(Operation *op, SmallVectorImpl<Value> &results);
 
@@ -514,13 +573,13 @@ public:
   /// ( leaving them alone if no entry is present).  Replaces references to
   /// cloned sub-operations to the corresponding operation that is copied,
   /// and adds those mappings to the map.
-  Operation *clone(Operation &op, BlockAndValueMapping &mapper);
+  Operation *clone(Operation &op, IRMapping &mapper);
   Operation *clone(Operation &op);
 
   /// Creates a deep copy of this operation but keep the operation regions
   /// empty. Operands are remapped using `mapper` (if present), and `mapper` is
   /// updated to contain the results.
-  Operation *cloneWithoutRegions(Operation &op, BlockAndValueMapping &mapper) {
+  Operation *cloneWithoutRegions(Operation &op, IRMapping &mapper) {
     return insert(op.cloneWithoutRegions(mapper));
   }
   Operation *cloneWithoutRegions(Operation &op) {
@@ -531,14 +590,26 @@ public:
     return cast<OpT>(cloneWithoutRegions(*op.getOperation()));
   }
 
+  /// Clone the blocks that belong to "region" before the given position in
+  /// another region "parent". The two regions must be different. The caller is
+  /// responsible for creating or updating the operation transferring flow of
+  /// control to the region and passing it the correct block arguments.
+  void cloneRegionBefore(Region &region, Region &parent,
+                         Region::iterator before, IRMapping &mapping);
+  void cloneRegionBefore(Region &region, Region &parent,
+                         Region::iterator before);
+  void cloneRegionBefore(Region &region, Block *before);
+
+protected:
+  /// The optional listener for events of this builder.
+  Listener *listener;
+
 private:
   /// The current block this builder is inserting into.
   Block *block = nullptr;
   /// The insertion point within the block that this builder is inserting
   /// before.
   Block::iterator insertPoint;
-  /// The optional listener for events of this builder.
-  Listener *listener;
 };
 
 } // namespace mlir

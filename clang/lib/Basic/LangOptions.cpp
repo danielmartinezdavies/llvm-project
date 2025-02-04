@@ -29,6 +29,14 @@ void LangOptions::resetNonModularOptions() {
   Name = static_cast<unsigned>(Default);
 #include "clang/Basic/LangOptions.def"
 
+  // Reset "benign" options with implied values (Options.td ImpliedBy relations)
+  // rather than their defaults. This avoids unexpected combinations and
+  // invocations that cannot be round-tripped to arguments.
+  // FIXME: we should derive this automatically from ImpliedBy in tablegen.
+  AllowFPReassoc = UnsafeFPMath;
+  NoHonorInfs = FastMath;
+  NoHonorNaNs = FastMath;
+
   // These options do not affect AST generation.
   NoSanitizeFiles.clear();
   XRayAlwaysInstrumentFiles.clear();
@@ -40,7 +48,7 @@ void LangOptions::resetNonModularOptions() {
 
 bool LangOptions::isNoBuiltinFunc(StringRef FuncName) const {
   for (unsigned i = 0, e = NoBuiltinFuncs.size(); i != e; ++i)
-    if (FuncName.equals(NoBuiltinFuncs[i]))
+    if (FuncName == NoBuiltinFuncs[i])
       return true;
   return false;
 }
@@ -103,18 +111,21 @@ void LangOptions::setLangDefaults(LangOptions &Opts, Language Lang,
   Opts.C99 = Std.isC99();
   Opts.C11 = Std.isC11();
   Opts.C17 = Std.isC17();
-  Opts.C2x = Std.isC2x();
+  Opts.C23 = Std.isC23();
+  Opts.C2y = Std.isC2y();
   Opts.CPlusPlus = Std.isCPlusPlus();
   Opts.CPlusPlus11 = Std.isCPlusPlus11();
   Opts.CPlusPlus14 = Std.isCPlusPlus14();
   Opts.CPlusPlus17 = Std.isCPlusPlus17();
   Opts.CPlusPlus20 = Std.isCPlusPlus20();
-  Opts.CPlusPlus2b = Std.isCPlusPlus2b();
+  Opts.CPlusPlus23 = Std.isCPlusPlus23();
+  Opts.CPlusPlus26 = Std.isCPlusPlus26();
   Opts.GNUMode = Std.isGNUMode();
   Opts.GNUCVersion = 0;
   Opts.HexFloats = Std.hasHexFloats();
   Opts.WChar = Std.isCPlusPlus();
   Opts.Digraphs = Std.hasDigraphs();
+  Opts.RawStringLiterals = Std.hasRawStringLiterals();
 
   Opts.HLSL = Lang == Language::HLSL;
   if (Opts.HLSL && Opts.IncludeDefaultHeader)
@@ -148,6 +159,8 @@ void LangOptions::setLangDefaults(LangOptions &Opts, Language Lang,
     Opts.HLSLVersion = (unsigned)LangOptions::HLSL_2021;
   else if (LangStd == LangStandard::lang_hlsl202x)
     Opts.HLSLVersion = (unsigned)LangOptions::HLSL_202x;
+  else if (LangStd == LangStandard::lang_hlsl202y)
+    Opts.HLSLVersion = (unsigned)LangOptions::HLSL_202y;
 
   // OpenCL has some additional defaults.
   if (Opts.OpenCL) {
@@ -190,13 +203,13 @@ void LangOptions::setLangDefaults(LangOptions &Opts, Language Lang,
     Opts.setDefaultFPContractMode(LangOptions::FPM_Fast);
   }
 
-  Opts.RenderScript = Lang == Language::RenderScript;
-
-  // OpenCL, C++ and C2x have bool, true, false keywords.
-  Opts.Bool = Opts.OpenCL || Opts.CPlusPlus || Opts.C2x;
+  // OpenCL, C++ and C23 have bool, true, false keywords.
+  Opts.Bool = Opts.OpenCL || Opts.CPlusPlus || Opts.C23;
 
   // OpenCL and HLSL have half keyword
   Opts.Half = Opts.OpenCL || Opts.HLSL;
+
+  Opts.PreserveVec3Type = Opts.HLSL;
 }
 
 FPOptions FPOptions::defaultWithoutTrailingStorage(const LangOptions &LO) {

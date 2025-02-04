@@ -44,6 +44,7 @@ C2x_KEYWORD(true);
 C2x_KEYWORD(false);
 C2x_KEYWORD(static_assert);
 C2x_KEYWORD(typeof);
+C2x_KEYWORD(typeof_unqual);
 C2x_KEYWORD(thread_local);
 C2x_KEYWORD(alignas);
 C2x_KEYWORD(alignof);
@@ -92,12 +93,13 @@ void has_static_assert();
   int restrict; // c89-warning {{'restrict' is a keyword in C99}}
   int inline;  // c89-warning {{'inline' is a keyword in C99}}
 
-  int bool; // c89-warning {{'bool' is a keyword in C2x}}
-  char true; // c89-warning {{'true' is a keyword in C2x}}
-  char false; // c89-warning {{'false' is a keyword in C2x}}
-  float alignof; // c89-warning {{'alignof' is a keyword in C2x}}
-  int typeof; // c89-warning {{'typeof' is a keyword in C2x}}
-  int alignas; // c89-warning {{'alignas' is a keyword in C2x}}
-  int static_assert; // c89-warning {{'static_assert' is a keyword in C2x}}
+  int bool; // c89-warning {{'bool' is a keyword in C23}}
+  char true; // c89-warning {{'true' is a keyword in C23}}
+  char false; // c89-warning {{'false' is a keyword in C23}}
+  float alignof; // c89-warning {{'alignof' is a keyword in C23}}
+  int typeof; // c89-warning {{'typeof' is a keyword in C23}}
+  int typeof_unqual; // c89-warning {{'typeof_unqual' is a keyword in C23}}
+  int alignas; // c89-warning {{'alignas' is a keyword in C23}}
+  int static_assert; // c89-warning {{'static_assert' is a keyword in C23}}
 
 #endif

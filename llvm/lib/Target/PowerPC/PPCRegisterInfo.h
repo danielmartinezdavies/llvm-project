@@ -65,9 +65,10 @@ public:
   /// for a given imm form load/store opcode \p ImmFormOpcode.
   /// FIXME: move this to PPCInstrInfo class.
   unsigned getMappedIdxOpcForImmOpc(unsigned ImmOpcode) const {
-    if (!ImmToIdxMap.count(ImmOpcode))
+    auto It = ImmToIdxMap.find(ImmOpcode);
+    if (It == ImmToIdxMap.end())
       return PPC::INSTRUCTION_LIST_END;
-    return ImmToIdxMap.find(ImmOpcode)->second;
+    return It->second;
   }
 
   /// getPointerRegClass - Return the register class to use to hold pointers.
@@ -137,6 +138,11 @@ public:
   void lowerACCRestore(MachineBasicBlock::iterator II,
                        unsigned FrameIndex) const;
 
+  void lowerWACCSpilling(MachineBasicBlock::iterator II,
+                         unsigned FrameIndex) const;
+  void lowerWACCRestore(MachineBasicBlock::iterator II,
+                        unsigned FrameIndex) const;
+
   void lowerQuadwordSpilling(MachineBasicBlock::iterator II,
                              unsigned FrameIndex) const;
   void lowerQuadwordRestore(MachineBasicBlock::iterator II,
@@ -147,7 +153,7 @@ public:
 
   bool hasReservedSpillSlot(const MachineFunction &MF, Register Reg,
                             int &FrameIdx) const override;
-  void eliminateFrameIndex(MachineBasicBlock::iterator II, int SPAdj,
+  bool eliminateFrameIndex(MachineBasicBlock::iterator II, int SPAdj,
                            unsigned FIOperandNum,
                            RegScavenger *RS = nullptr) const override;
 
@@ -166,29 +172,6 @@ public:
   // Base pointer (stack realignment) support.
   Register getBaseRegister(const MachineFunction &MF) const;
   bool hasBasePointer(const MachineFunction &MF) const;
-
-  /// stripRegisterPrefix - This method strips the character prefix from a
-  /// register name so that only the number is left.  Used by for linux asm.
-  static const char *stripRegisterPrefix(const char *RegName) {
-    switch (RegName[0]) {
-      case 'a':
-        if (RegName[1] == 'c' && RegName[2] == 'c')
-          return RegName + 3;
-      break;
-      case 'r':
-      case 'f':
-      case 'v':
-        if (RegName[1] == 's') {
-          if (RegName[2] == 'p')
-            return RegName + 3;
-          return RegName + 2;
-        }
-        return RegName + 1;
-      case 'c': if (RegName[1] == 'r') return RegName + 2;
-    }
-
-    return RegName;
-  }
 
   bool isNonallocatableRegisterCalleeSave(MCRegister Reg) const override {
     return Reg == PPC::LR || Reg == PPC::LR8;

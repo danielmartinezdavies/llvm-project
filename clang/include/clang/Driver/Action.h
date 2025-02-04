@@ -58,10 +58,8 @@ public:
     OffloadClass,
     PreprocessJobClass,
     PrecompileJobClass,
-    HeaderModulePrecompileJobClass,
     ExtractAPIJobClass,
     AnalyzeJobClass,
-    MigrateJobClass,
     CompileJobClass,
     BackendJobClass,
     AssembleJobClass,
@@ -76,9 +74,10 @@ public:
     OffloadPackagerJobClass,
     LinkerWrapperJobClass,
     StaticLibJobClass,
+    BinaryAnalyzeJobClass,
 
     JobClassFirst = PreprocessJobClass,
-    JobClassLast = StaticLibJobClass
+    JobClassLast = BinaryAnalyzeJobClass
   };
 
   // The offloading kind determines if this action is binded to a particular
@@ -94,6 +93,7 @@ public:
     OFK_Cuda = 0x02,
     OFK_OpenMP = 0x04,
     OFK_HIP = 0x08,
+    OFK_SYCL = 0x10,
   };
 
   static const char *getClassName(ActionClass AC);
@@ -296,10 +296,15 @@ public:
     OffloadKindList DeviceOffloadKinds;
 
   public:
-    /// Add a action along with the associated toolchain, bound arch, and
+    /// Add an action along with the associated toolchain, bound arch, and
     /// offload kind.
     void add(Action &A, const ToolChain &TC, const char *BoundArch,
              OffloadKind OKind);
+
+    /// Add an action along with the associated toolchain, bound arch, and
+    /// offload kinds.
+    void add(Action &A, const ToolChain &TC, const char *BoundArch,
+             unsigned OffloadKindMask);
 
     /// Get each of the individual arrays.
     const ActionList &getActions() const { return DeviceActions; }
@@ -426,29 +431,8 @@ public:
   PrecompileJobAction(Action *Input, types::ID OutputType);
 
   static bool classof(const Action *A) {
-    return A->getKind() == PrecompileJobClass ||
-           A->getKind() == HeaderModulePrecompileJobClass;
+    return A->getKind() == PrecompileJobClass;
   }
-};
-
-class HeaderModulePrecompileJobAction : public PrecompileJobAction {
-  void anchor() override;
-
-  const char *ModuleName;
-
-public:
-  HeaderModulePrecompileJobAction(Action *Input, types::ID OutputType,
-                                  const char *ModuleName);
-
-  static bool classof(const Action *A) {
-    return A->getKind() == HeaderModulePrecompileJobClass;
-  }
-
-  void addModuleHeaderInput(Action *Input) {
-    getInputs().push_back(Input);
-  }
-
-  const char *getModuleName() const { return ModuleName; }
 };
 
 class ExtractAPIJobAction : public JobAction {
@@ -472,17 +456,6 @@ public:
 
   static bool classof(const Action *A) {
     return A->getKind() == AnalyzeJobClass;
-  }
-};
-
-class MigrateJobAction : public JobAction {
-  void anchor() override;
-
-public:
-  MigrateJobAction(Action *Input, types::ID OutputType);
-
-  static bool classof(const Action *A) {
-    return A->getKind() == MigrateJobClass;
   }
 };
 
@@ -688,6 +661,17 @@ public:
 
   static bool classof(const Action *A) {
     return A->getKind() == StaticLibJobClass;
+  }
+};
+
+class BinaryAnalyzeJobAction : public JobAction {
+  void anchor() override;
+
+public:
+  BinaryAnalyzeJobAction(Action *Input, types::ID Type);
+
+  static bool classof(const Action *A) {
+    return A->getKind() == BinaryAnalyzeJobClass;
   }
 };
 

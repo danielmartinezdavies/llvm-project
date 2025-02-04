@@ -1,4 +1,4 @@
-//===-- RISCVSubtarget.h - Define Subtarget for the RISCV -------*- C++ -*-===//
+//===-- RISCVSubtarget.h - Define Subtarget for the RISC-V ------*- C++ -*-===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -6,13 +6,14 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// This file declares the RISCV specific subclass of TargetSubtargetInfo.
+// This file declares the RISC-V specific subclass of TargetSubtargetInfo.
 //
 //===----------------------------------------------------------------------===//
 
 #ifndef LLVM_LIB_TARGET_RISCV_RISCVSUBTARGET_H
 #define LLVM_LIB_TARGET_RISCV_RISCVSUBTARGET_H
 
+#include "GISel/RISCVRegisterBankInfo.h"
 #include "MCTargetDesc/RISCVBaseInfo.h"
 #include "RISCVFrameLowering.h"
 #include "RISCVISelLowering.h"
@@ -20,11 +21,14 @@
 #include "llvm/CodeGen/GlobalISel/CallLowering.h"
 #include "llvm/CodeGen/GlobalISel/InstructionSelector.h"
 #include "llvm/CodeGen/GlobalISel/LegalizerInfo.h"
-#include "llvm/CodeGen/RegisterBankInfo.h"
-#include "llvm/CodeGen/SelectionDAGTargetInfo.h"
+#include "llvm/CodeGen/MachineScheduler.h"
 #include "llvm/CodeGen/TargetSubtargetInfo.h"
 #include "llvm/IR/DataLayout.h"
 #include "llvm/Target/TargetMachine.h"
+#include <bitset>
+
+#define GET_RISCV_MACRO_FUSION_PRED_DECL
+#include "RISCVGenMacroFusion.inc"
 
 #define GET_SUBTARGETINFO_HEADER
 #include "RISCVGenSubtargetInfo.inc"
@@ -32,87 +36,76 @@
 namespace llvm {
 class StringRef;
 
+namespace RISCVTuneInfoTable {
+
+struct RISCVTuneInfo {
+  const char *Name;
+  uint8_t PrefFunctionAlignment;
+  uint8_t PrefLoopAlignment;
+
+  // Information needed by LoopDataPrefetch.
+  uint16_t CacheLineSize;
+  uint16_t PrefetchDistance;
+  uint16_t MinPrefetchStride;
+  unsigned MaxPrefetchIterationsAhead;
+
+  unsigned MinimumJumpTableEntries;
+
+  // Tail duplication threshold at -O3.
+  unsigned TailDupAggressiveThreshold;
+
+  unsigned MaxStoresPerMemsetOptSize;
+  unsigned MaxStoresPerMemset;
+
+  unsigned MaxGluedStoresPerMemcpy;
+  unsigned MaxStoresPerMemcpyOptSize;
+  unsigned MaxStoresPerMemcpy;
+
+  unsigned MaxStoresPerMemmoveOptSize;
+  unsigned MaxStoresPerMemmove;
+
+  unsigned MaxLoadsPerMemcmpOptSize;
+  unsigned MaxLoadsPerMemcmp;
+
+  // The direction of PostRA scheduling.
+  MISched::Direction PostRASchedDirection;
+};
+
+#define GET_RISCVTuneInfoTable_DECL
+#include "RISCVGenSearchableTables.inc"
+} // namespace RISCVTuneInfoTable
+
 class RISCVSubtarget : public RISCVGenSubtargetInfo {
 public:
+  // clang-format off
   enum RISCVProcFamilyEnum : uint8_t {
     Others,
     SiFive7,
+    VentanaVeyron,
+    MIPSP8700,
   };
-
+  // clang-format on
 private:
   virtual void anchor();
 
   RISCVProcFamilyEnum RISCVProcFamily = Others;
 
-  bool HasStdExtM = false;
-  bool HasStdExtA = false;
-  bool HasStdExtF = false;
-  bool HasStdExtD = false;
-  bool HasStdExtC = false;
-  bool HasStdExtZihintpause = false;
-  bool HasStdExtZihintntl = false;
-  bool HasStdExtZba = false;
-  bool HasStdExtZbb = false;
-  bool HasStdExtZbc = false;
-  bool HasStdExtZbe = false;
-  bool HasStdExtZbf = false;
-  bool HasStdExtZbm = false;
-  bool HasStdExtZbp = false;
-  bool HasStdExtZbr = false;
-  bool HasStdExtZbs = false;
-  bool HasStdExtZbt = false;
-  bool HasStdExtZca = false;
-  bool HasStdExtV = false;
-  bool HasStdExtZve32x = false;
-  bool HasStdExtZve32f = false;
-  bool HasStdExtZve64x = false;
-  bool HasStdExtZve64f = false;
-  bool HasStdExtZve64d = false;
-  bool HasStdExtZvfh = false;
-  bool HasStdExtZfhmin = false;
-  bool HasStdExtZfh = false;
-  bool HasStdExtZfinx = false;
-  bool HasStdExtZdinx = false;
-  bool HasStdExtZhinxmin = false;
-  bool HasStdExtZhinx = false;
-  bool HasStdExtZbkb = false;
-  bool HasStdExtZbkc = false;
-  bool HasStdExtZbkx = false;
-  bool HasStdExtZknd = false;
-  bool HasStdExtZkne = false;
-  bool HasStdExtZknh = false;
-  bool HasStdExtZksed = false;
-  bool HasStdExtZksh = false;
-  bool HasStdExtZkr = false;
-  bool HasStdExtZkn = false;
-  bool HasStdExtZks = false;
-  bool HasStdExtZkt = false;
-  bool HasStdExtZk = false;
-  bool HasStdExtZicbom = false;
-  bool HasStdExtZicboz = false;
-  bool HasStdExtZicbop = false;
-  bool HasStdExtZmmul = false;
-  bool HasRV32 = false;
-  bool HasRV64 = false;
-  bool IsRV32E = false;
-  bool EnableLinkerRelax = false;
-  bool EnableRVCHintInstrs = true;
-  bool EnableDefaultUnroll = true;
-  bool EnableSaveRestore = false;
-  bool EnableUnalignedScalarMem = false;
-  bool HasLUIADDIFusion = false;
-  bool HasForcedAtomics = false;
-  unsigned XLen = 32;
+#define GET_SUBTARGETINFO_MACRO(ATTRIBUTE, DEFAULT, GETTER) \
+  bool ATTRIBUTE = DEFAULT;
+#include "RISCVGenSubtargetInfo.inc"
+
   unsigned ZvlLen = 0;
-  MVT XLenVT = MVT::i32;
+  unsigned RVVVectorBitsMin;
+  unsigned RVVVectorBitsMax;
   uint8_t MaxInterleaveFactor = 2;
   RISCVABI::ABI TargetABI = RISCVABI::ABI_Unknown;
   std::bitset<RISCV::NUM_TARGET_REGS> UserReservedRegister;
+  const RISCVTuneInfoTable::RISCVTuneInfo *TuneInfo;
+
   RISCVFrameLowering FrameLowering;
   RISCVInstrInfo InstrInfo;
   RISCVRegisterInfo RegInfo;
   RISCVTargetLowering TLInfo;
-  SelectionDAGTargetInfo TSInfo;
 
   /// Initializes using the passed in CPU and feature strings so that we can
   /// use initializer lists for subtarget initialization.
@@ -125,7 +118,10 @@ private:
 public:
   // Initializes the data members to match that of the specified triple.
   RISCVSubtarget(const Triple &TT, StringRef CPU, StringRef TuneCPU,
-                 StringRef FS, StringRef ABIName, const TargetMachine &TM);
+                 StringRef FS, StringRef ABIName, unsigned RVVVectorBitsMin,
+                 unsigned RVVVectorLMULMax, const TargetMachine &TM);
+
+  ~RISCVSubtarget() override;
 
   // Parses features string setting specified subtarget options. The
   // definition of this function is auto-generated by tblgen.
@@ -141,68 +137,59 @@ public:
   const RISCVTargetLowering *getTargetLowering() const override {
     return &TLInfo;
   }
-  const SelectionDAGTargetInfo *getSelectionDAGInfo() const override {
-    return &TSInfo;
-  }
+
   bool enableMachineScheduler() const override { return true; }
 
-  /// Returns RISCV processor family.
+  bool enablePostRAScheduler() const override { return UsePostRAScheduler; }
+
+  Align getPrefFunctionAlignment() const {
+    return Align(TuneInfo->PrefFunctionAlignment);
+  }
+  Align getPrefLoopAlignment() const {
+    return Align(TuneInfo->PrefLoopAlignment);
+  }
+
+  /// Returns RISC-V processor family.
   /// Avoid this function! CPU specifics should be kept local to this class
   /// and preferably modeled with SubtargetFeatures or properties in
   /// initializeProperties().
   RISCVProcFamilyEnum getProcFamily() const { return RISCVProcFamily; }
 
-  bool hasStdExtM() const { return HasStdExtM; }
-  bool hasStdExtA() const { return HasStdExtA; }
-  bool hasStdExtF() const { return HasStdExtF; }
-  bool hasStdExtD() const { return HasStdExtD; }
-  bool hasStdExtC() const { return HasStdExtC; }
-  bool hasStdExtV() const { return HasStdExtV; }
-  bool hasStdExtZihintpause() const { return HasStdExtZihintpause; }
-  bool hasStdExtZihintntl() const { return HasStdExtZihintntl; }
-  bool hasStdExtZba() const { return HasStdExtZba; }
-  bool hasStdExtZbb() const { return HasStdExtZbb; }
-  bool hasStdExtZbc() const { return HasStdExtZbc; }
-  bool hasStdExtZbe() const { return HasStdExtZbe; }
-  bool hasStdExtZbf() const { return HasStdExtZbf; }
-  bool hasStdExtZbm() const { return HasStdExtZbm; }
-  bool hasStdExtZbp() const { return HasStdExtZbp; }
-  bool hasStdExtZbr() const { return HasStdExtZbr; }
-  bool hasStdExtZbs() const { return HasStdExtZbs; }
-  bool hasStdExtZbt() const { return HasStdExtZbt; }
-  bool hasStdExtZca() const { return HasStdExtZca; }
+#define GET_SUBTARGETINFO_MACRO(ATTRIBUTE, DEFAULT, GETTER) \
+  bool GETTER() const { return ATTRIBUTE; }
+#include "RISCVGenSubtargetInfo.inc"
+
+  bool hasStdExtCOrZca() const { return HasStdExtC || HasStdExtZca; }
+  bool hasStdExtCOrZcd() const { return HasStdExtC || HasStdExtZcd; }
+  bool hasStdExtCOrZcfOrZce() const {
+    return HasStdExtC || HasStdExtZcf || HasStdExtZce;
+  }
   bool hasStdExtZvl() const { return ZvlLen != 0; }
-  bool hasStdExtZvfh() const { return HasStdExtZvfh; }
-  bool hasStdExtZfhmin() const { return HasStdExtZfhmin; }
-  bool hasStdExtZfh() const { return HasStdExtZfh; }
-  bool hasStdExtZfinx() const { return HasStdExtZfinx; }
-  bool hasStdExtZdinx() const { return HasStdExtZdinx; }
-  bool hasStdExtZhinxmin() const { return HasStdExtZhinxmin; }
-  bool hasStdExtZhinx() const { return HasStdExtZhinx; }
-  bool hasStdExtZbkb() const { return HasStdExtZbkb; }
-  bool hasStdExtZbkc() const { return HasStdExtZbkc; }
-  bool hasStdExtZbkx() const { return HasStdExtZbkx; }
-  bool hasStdExtZknd() const { return HasStdExtZknd; }
-  bool hasStdExtZkne() const { return HasStdExtZkne; }
-  bool hasStdExtZknh() const { return HasStdExtZknh; }
-  bool hasStdExtZksed() const { return HasStdExtZksed; }
-  bool hasStdExtZksh() const { return HasStdExtZksh; }
-  bool hasStdExtZkr() const { return HasStdExtZkr; }
-  bool hasStdExtZicbom() const { return HasStdExtZicbom; }
-  bool hasStdExtZicboz() const { return HasStdExtZicboz; }
-  bool hasStdExtZicbop() const { return HasStdExtZicbop; }
-  bool hasStdExtZmmul() const { return HasStdExtZmmul; }
-  bool is64Bit() const { return HasRV64; }
-  bool isRV32E() const { return IsRV32E; }
-  bool enableLinkerRelax() const { return EnableLinkerRelax; }
-  bool enableRVCHintInstrs() const { return EnableRVCHintInstrs; }
-  bool enableDefaultUnroll() const { return EnableDefaultUnroll; }
-  bool enableSaveRestore() const { return EnableSaveRestore; }
-  bool enableUnalignedScalarMem() const { return EnableUnalignedScalarMem; }
-  bool hasLUIADDIFusion() const { return HasLUIADDIFusion; }
-  bool hasForcedAtomics() const { return HasForcedAtomics; }
-  MVT getXLenVT() const { return XLenVT; }
-  unsigned getXLen() const { return XLen; }
+  bool hasStdExtFOrZfinx() const { return HasStdExtF || HasStdExtZfinx; }
+  bool hasStdExtDOrZdinx() const { return HasStdExtD || HasStdExtZdinx; }
+  bool hasStdExtZfhOrZhinx() const { return HasStdExtZfh || HasStdExtZhinx; }
+  bool hasStdExtZfhminOrZhinxmin() const {
+    return HasStdExtZfhmin || HasStdExtZhinxmin;
+  }
+  bool hasHalfFPLoadStoreMove() const {
+    return HasStdExtZfhmin || HasStdExtZfbfmin;
+  }
+
+  bool hasConditionalMoveFusion() const {
+    // Do we support fusing a branch+mv or branch+c.mv as a conditional move.
+    return (hasConditionalCompressedMoveFusion() && hasStdExtCOrZca()) ||
+           hasShortForwardBranchOpt();
+  }
+
+  bool is64Bit() const { return IsRV64; }
+  MVT getXLenVT() const {
+    return is64Bit() ? MVT::i64 : MVT::i32;
+  }
+  unsigned getXLen() const {
+    return is64Bit() ? 64 : 32;
+  }
+  bool useLoadStorePairs() const;
+  bool useCCMovInsn() const;
   unsigned getFLen() const {
     if (HasStdExtD)
       return 64;
@@ -212,46 +199,104 @@ public:
 
     return 0;
   }
-  unsigned getELEN() const {
+  unsigned getELen() const {
     assert(hasVInstructions() && "Expected V extension");
     return hasVInstructionsI64() ? 64 : 32;
   }
   unsigned getRealMinVLen() const {
     unsigned VLen = getMinRVVVectorSizeInBits();
-    return VLen == 0 ? getArchMinVLen() : VLen;
+    return VLen == 0 ? ZvlLen : VLen;
   }
   unsigned getRealMaxVLen() const {
     unsigned VLen = getMaxRVVVectorSizeInBits();
-    return VLen == 0 ? getArchMaxVLen() : VLen;
+    return VLen == 0 ? 65536 : VLen;
   }
+  // If we know the exact VLEN, return it.  Otherwise, return std::nullopt.
+  std::optional<unsigned> getRealVLen() const {
+    unsigned Min = getRealMinVLen();
+    if (Min != getRealMaxVLen())
+      return std::nullopt;
+    return Min;
+  }
+
+  /// If the ElementCount or TypeSize \p X is scalable and VScale (VLEN) is
+  /// exactly known, returns \p X converted to a fixed quantity. Otherwise
+  /// returns \p X unmodified.
+  template <typename Quantity> Quantity expandVScale(Quantity X) const {
+    if (auto VLen = getRealVLen(); VLen && X.isScalable()) {
+      const unsigned VScale = *VLen / RISCV::RVVBitsPerBlock;
+      X = Quantity::getFixed(X.getKnownMinValue() * VScale);
+    }
+    return X;
+  }
+
   RISCVABI::ABI getTargetABI() const { return TargetABI; }
-  bool isRegisterReservedByUser(Register i) const {
+  bool isSoftFPABI() const {
+    return TargetABI == RISCVABI::ABI_LP64 ||
+           TargetABI == RISCVABI::ABI_ILP32 ||
+           TargetABI == RISCVABI::ABI_ILP32E;
+  }
+  bool isRegisterReservedByUser(Register i) const override {
     assert(i < RISCV::NUM_TARGET_REGS && "Register out of range");
     return UserReservedRegister[i];
   }
 
-  bool hasMacroFusion() const { return hasLUIADDIFusion(); }
+  // XRay support - require D and C extensions.
+  bool isXRaySupported() const override { return hasStdExtD() && hasStdExtC(); }
 
   // Vector codegen related methods.
   bool hasVInstructions() const { return HasStdExtZve32x; }
   bool hasVInstructionsI64() const { return HasStdExtZve64x; }
-  bool hasVInstructionsF16() const { return HasStdExtZvfh && HasStdExtZfh; }
-  // FIXME: Consider Zfinx in the future
-  bool hasVInstructionsF32() const { return HasStdExtZve32f && HasStdExtF; }
-  // FIXME: Consider Zdinx in the future
-  bool hasVInstructionsF64() const { return HasStdExtZve64d && HasStdExtD; }
+  bool hasVInstructionsF16Minimal() const { return HasStdExtZvfhmin; }
+  bool hasVInstructionsF16() const { return HasStdExtZvfh; }
+  bool hasVInstructionsBF16Minimal() const { return HasStdExtZvfbfmin; }
+  bool hasVInstructionsF32() const { return HasStdExtZve32f; }
+  bool hasVInstructionsF64() const { return HasStdExtZve64d; }
   // F16 and F64 both require F32.
   bool hasVInstructionsAnyF() const { return hasVInstructionsF32(); }
+  bool hasVInstructionsFullMultiply() const { return HasStdExtV; }
   unsigned getMaxInterleaveFactor() const {
     return hasVInstructions() ? MaxInterleaveFactor : 1;
   }
 
+  bool hasOptimizedSegmentLoadStore(unsigned NF) const {
+    switch (NF) {
+    case 2:
+      return hasOptimizedNF2SegmentLoadStore();
+    case 3:
+      return hasOptimizedNF3SegmentLoadStore();
+    case 4:
+      return hasOptimizedNF4SegmentLoadStore();
+    case 5:
+      return hasOptimizedNF5SegmentLoadStore();
+    case 6:
+      return hasOptimizedNF6SegmentLoadStore();
+    case 7:
+      return hasOptimizedNF7SegmentLoadStore();
+    case 8:
+      return hasOptimizedNF8SegmentLoadStore();
+    default:
+      llvm_unreachable("Unexpected NF");
+    }
+  }
+
+  // Returns VLEN divided by DLEN. Where DLEN is the datapath width of the
+  // vector hardware implementation which may be less than VLEN.
+  unsigned getDLenFactor() const {
+    if (DLenFactor2)
+      return 2;
+    return 1;
+  }
+
 protected:
+  // SelectionDAGISel related APIs.
+  std::unique_ptr<const SelectionDAGTargetInfo> TSInfo;
+
   // GlobalISel related APIs.
-  std::unique_ptr<CallLowering> CallLoweringInfo;
-  std::unique_ptr<InstructionSelector> InstSelector;
-  std::unique_ptr<LegalizerInfo> Legalizer;
-  std::unique_ptr<RegisterBankInfo> RegBankInfo;
+  mutable std::unique_ptr<CallLowering> CallLoweringInfo;
+  mutable std::unique_ptr<InstructionSelector> InstSelector;
+  mutable std::unique_ptr<LegalizerInfo> Legalizer;
+  mutable std::unique_ptr<RISCVRegisterBankInfo> RegBankInfo;
 
   // Return the known range for the bit length of RVV data registers as set
   // at the command line. A value of 0 means nothing is known about that particular
@@ -260,16 +305,15 @@ protected:
   unsigned getMaxRVVVectorSizeInBits() const;
   unsigned getMinRVVVectorSizeInBits() const;
 
-  // Return the known range for the bit length of RVV data registers as indicated
-  // by -march and -mattr.
-  unsigned getArchMinVLen() const { return ZvlLen; }
-  unsigned getArchMaxVLen() const { return 65536; }
-
 public:
+  const SelectionDAGTargetInfo *getSelectionDAGInfo() const override;
   const CallLowering *getCallLowering() const override;
   InstructionSelector *getInstructionSelector() const override;
   const LegalizerInfo *getLegalizerInfo() const override;
-  const RegisterBankInfo *getRegBankInfo() const override;
+  const RISCVRegisterBankInfo *getRegBankInfo() const override;
+
+  bool isTargetAndroid() const { return getTargetTriple().isAndroid(); }
+  bool isTargetFuchsia() const { return getTargetTriple().isOSFuchsia(); }
 
   bool useConstantPoolForLargeInts() const;
 
@@ -282,8 +326,67 @@ public:
 
   bool enableSubRegLiveness() const override;
 
-  void getPostRAMutations(std::vector<std::unique_ptr<ScheduleDAGMutation>>
-                              &Mutations) const override;
+  bool enableMachinePipeliner() const override;
+
+  bool useDFAforSMS() const override { return false; }
+
+  bool useAA() const override;
+
+  unsigned getCacheLineSize() const override {
+    return TuneInfo->CacheLineSize;
+  };
+  unsigned getPrefetchDistance() const override {
+    return TuneInfo->PrefetchDistance;
+  };
+  unsigned getMinPrefetchStride(unsigned NumMemAccesses,
+                                unsigned NumStridedMemAccesses,
+                                unsigned NumPrefetches,
+                                bool HasCall) const override {
+    return TuneInfo->MinPrefetchStride;
+  };
+  unsigned getMaxPrefetchIterationsAhead() const override {
+    return TuneInfo->MaxPrefetchIterationsAhead;
+  };
+
+  unsigned getMinimumJumpTableEntries() const;
+
+  unsigned getTailDupAggressiveThreshold() const {
+    return TuneInfo->TailDupAggressiveThreshold;
+  }
+
+  unsigned getMaxStoresPerMemset(bool OptSize) const {
+    return OptSize ? TuneInfo->MaxStoresPerMemsetOptSize
+                   : TuneInfo->MaxStoresPerMemset;
+  }
+
+  unsigned getMaxGluedStoresPerMemcpy() const {
+    return TuneInfo->MaxGluedStoresPerMemcpy;
+  }
+
+  unsigned getMaxStoresPerMemcpy(bool OptSize) const {
+    return OptSize ? TuneInfo->MaxStoresPerMemcpyOptSize
+                   : TuneInfo->MaxStoresPerMemcpy;
+  }
+
+  unsigned getMaxStoresPerMemmove(bool OptSize) const {
+    return OptSize ? TuneInfo->MaxStoresPerMemmoveOptSize
+                   : TuneInfo->MaxStoresPerMemmove;
+  }
+
+  unsigned getMaxLoadsPerMemcmp(bool OptSize) const {
+    return OptSize ? TuneInfo->MaxLoadsPerMemcmpOptSize
+                   : TuneInfo->MaxLoadsPerMemcmp;
+  }
+
+  MISched::Direction getPostRASchedDirection() const {
+    return TuneInfo->PostRASchedDirection;
+  }
+
+  void overrideSchedPolicy(MachineSchedPolicy &Policy,
+                           unsigned NumRegionInstrs) const override;
+
+  void overridePostRASchedPolicy(MachineSchedPolicy &Policy,
+                                 unsigned NumRegionInstrs) const override;
 };
 } // End llvm namespace
 

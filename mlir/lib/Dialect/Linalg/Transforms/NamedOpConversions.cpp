@@ -10,14 +10,20 @@
 // canonicalizations of named ops.
 //
 //===----------------------------------------------------------------------===//
-#include "PassDetail.h"
-#include "mlir/Dialect/Linalg/IR/Linalg.h"
+
 #include "mlir/Dialect/Linalg/Passes.h"
+
+#include "mlir/Dialect/Linalg/IR/Linalg.h"
 #include "mlir/Dialect/Linalg/Transforms/Transforms.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
-
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/TypeSwitch.h"
+
+namespace mlir {
+#define GEN_PASS_DEF_LINALGNAMEDOPCONVERSIONPASS
+#include "mlir/Dialect/Linalg/Passes.h.inc"
+} // namespace mlir
 
 using namespace mlir;
 using namespace mlir::linalg;
@@ -33,14 +39,14 @@ matchAndReplaceDepthwiseConv(Operation *operation, Value input, Value kernel,
   Location loc = operation->getLoc();
   auto linalgOp = dyn_cast<LinalgOp>(operation);
   // Exit out on the memref version of this operation.
-  if (!linalgOp || !linalgOp.hasTensorSemantics())
+  if (!linalgOp || !linalgOp.hasPureTensorSemantics())
     return failure();
 
   auto result = operation->getResult(0);
 
-  auto kernelTy = kernel.getType().dyn_cast<RankedTensorType>();
-  auto initTy = init.getType().dyn_cast<RankedTensorType>();
-  auto resultTy = result.getType().template dyn_cast<RankedTensorType>();
+  auto kernelTy = dyn_cast<RankedTensorType>(kernel.getType());
+  auto initTy = dyn_cast<RankedTensorType>(init.getType());
+  auto resultTy = dyn_cast<RankedTensorType>(result.getType());
   if (!kernelTy || !initTy || !resultTy)
     return failure();
 
@@ -67,28 +73,30 @@ matchAndReplaceDepthwiseConv(Operation *operation, Value input, Value kernel,
   auto collapsedInit = rewriter.create<tensor::CollapseShapeOp>(
       loc, newInitTy, init, collapsedInitDims);
 
-  Value newConv;
-  if (isa<DepthwiseConv2DNhwcHwcmOp>(operation)) {
-    newConv = rewriter
-                  .create<DepthwiseConv2DNhwcHwcOp>(
-                      loc, newInitTy, ValueRange{input, collapsedKernel},
-                      ValueRange{collapsedInit}, stride, dilation)
-                  .getResult(0);
-  } else if (isa<DepthwiseConv2DNhwcHwcmQOp>(operation)) {
-    newConv =
-        rewriter
-            .create<DepthwiseConv2DNhwcHwcQOp>(
+  SmallVector<NamedAttribute> preservedAttrs;
+  Operation *newConv =
+      TypeSwitch<Operation *, Operation *>(operation)
+          .Case<DepthwiseConv2DNhwcHwcmOp>([&](auto op) {
+            preservedAttrs = getPrunedAttributeList(op);
+            return rewriter.create<DepthwiseConv2DNhwcHwcOp>(
+                loc, newInitTy, ValueRange{input, collapsedKernel},
+                ValueRange{collapsedInit}, stride, dilation);
+          })
+          .Case<DepthwiseConv2DNhwcHwcmQOp>([&](auto op) {
+            preservedAttrs = getPrunedAttributeList(op);
+            return rewriter.create<DepthwiseConv2DNhwcHwcQOp>(
                 loc, newInitTy, ValueRange{input, collapsedKernel, iZp, kZp},
-                ValueRange{collapsedInit}, stride, dilation)
-            .getResult(0);
-  }
-
+                ValueRange{collapsedInit}, stride, dilation);
+          })
+          .Default([](Operation *op) { return nullptr; });
   if (!newConv)
     return failure();
+  for (auto attr : preservedAttrs)
+    newConv->setAttr(attr.getName(), attr.getValue());
 
   // Expand dimensions back out to
   rewriter.replaceOpWithNewOp<tensor::ExpandShapeOp>(
-      operation, resultTy, newConv, collapsedInitDims);
+      operation, resultTy, newConv->getResult(0), collapsedInitDims);
   return success();
 }
 
@@ -100,9 +108,9 @@ struct SimplifyDepthwiseConvOp
   LogicalResult matchAndRewrite(DepthwiseConv2DNhwcHwcmOp op,
                                 PatternRewriter &rewriter) const override {
     Operation *operation = op.getOperation();
-    Value input = op.getInputOperand(0)->get();
-    Value kernel = op.getInputOperand(1)->get();
-    Value init = op.getOutputOperand(0)->get();
+    Value input = op.getDpsInputOperand(0)->get();
+    Value kernel = op.getDpsInputOperand(1)->get();
+    Value init = op.getDpsInitOperand(0)->get();
 
     auto stride = op.getStrides();
     auto dilation = op.getDilations();
@@ -120,11 +128,11 @@ struct SimplifyDepthwiseConvQOp
   LogicalResult matchAndRewrite(DepthwiseConv2DNhwcHwcmQOp op,
                                 PatternRewriter &rewriter) const override {
     Operation *operation = op.getOperation();
-    Value input = op.getInputOperand(0)->get();
-    Value kernel = op.getInputOperand(1)->get();
-    Value iZp = op.getInputOperand(2)->get();
-    Value kZp = op.getInputOperand(3)->get();
-    Value init = op.getOutputOperand(0)->get();
+    Value input = op.getDpsInputOperand(0)->get();
+    Value kernel = op.getDpsInputOperand(1)->get();
+    Value iZp = op.getDpsInputOperand(2)->get();
+    Value kZp = op.getDpsInputOperand(3)->get();
+    Value init = op.getDpsInitOperand(0)->get();
 
     auto stride = op.getStrides();
     auto dilation = op.getDilations();
@@ -135,15 +143,16 @@ struct SimplifyDepthwiseConvQOp
 };
 
 struct LinalgNamedOpConversionPass
-    : public LinalgNamedOpConversionBase<LinalgNamedOpConversionPass> {
-  LinalgNamedOpConversionPass() = default;
-  LinalgNamedOpConversionPass(const LinalgNamedOpConversionPass &) = default;
+    : public impl::LinalgNamedOpConversionPassBase<
+          LinalgNamedOpConversionPass> {
+  using impl::LinalgNamedOpConversionPassBase<
+      LinalgNamedOpConversionPass>::LinalgNamedOpConversionPassBase;
 
   void runOnOperation() override {
     Operation *op = getOperation();
     RewritePatternSet patterns(op->getContext());
     populateLinalgNamedOpConversionPatterns(patterns);
-    if (failed(applyPatternsAndFoldGreedily(op, std::move(patterns))))
+    if (failed(applyPatternsGreedily(op, std::move(patterns))))
       return signalPassFailure();
   }
 };
@@ -153,8 +162,4 @@ void mlir::linalg::populateLinalgNamedOpConversionPatterns(
     RewritePatternSet &patterns) {
   patterns.add<SimplifyDepthwiseConvOp, SimplifyDepthwiseConvQOp>(
       patterns.getContext());
-}
-
-std::unique_ptr<Pass> mlir::createLinalgNamedOpConversionPass() {
-  return std::make_unique<LinalgNamedOpConversionPass>();
 }

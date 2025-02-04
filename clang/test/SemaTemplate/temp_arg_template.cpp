@@ -1,34 +1,39 @@
-// RUN: %clang_cc1 -fsyntax-only -verify %s
-// RUN: %clang_cc1 -fsyntax-only -verify -std=c++98 %s
-// RUN: %clang_cc1 -fsyntax-only -verify -std=c++11 %s
+// RUN: %clang_cc1 -fsyntax-only -verify=expected,precxx17 %std_cxx98-14 %s
+// RUN: %clang_cc1 -fsyntax-only -verify=expected,cxx17 -std=c++17 %s
 
-template<template<typename T> class X> struct A; // expected-note 2{{previous template template parameter is here}}
+template<template<typename T> class X> struct A; // #A
+// expected-note@-1 2{{previous template template parameter is here}}
 
 template<template<typename T, int I> class X> struct B; // expected-note{{previous template template parameter is here}}
 
-template<template<int I> class X> struct C;  // expected-note 2{{previous non-type template parameter with type 'int' is here}}
+template<template<int I> class X> struct C;
+// expected-error@-1 {{conversion from 'int' to 'const int &' in converted constant expression would bind reference to a temporary}}
+// expected-note@-2 {{previous template template parameter is here}}
 
-template<class> struct X; // expected-note{{too few template parameters in template template argument}}
-template<int N> struct Y; // expected-note{{template parameter has a different kind in template argument}}
-template<long N> struct Ylong; // expected-note{{template non-type parameter has a different type 'long' in template argument}}
-template<const int &N> struct Yref; // expected-note{{template non-type parameter has a different type 'const int &' in template argument}}
+template<class> struct X; // expected-note {{template is declared here}}
+template<int N> struct Y; // expected-note {{template parameter is declared here}}
+template<long N> struct Ylong;
+template<const int &N> struct Yref; // expected-note {{template parameter is declared here}}
 
 namespace N {
   template<class> struct Z;
 }
-template<class, class> struct TooMany; // expected-note{{too many template parameters in template template argument}}
+template<class, class> struct TooMany; // expected-note{{template is declared here}}
 
 
 A<X> *a1;
 A<N::Z> *a2;
 A< ::N::Z> *a3;
 
-A<Y> *a4; // expected-error{{template template argument has different template parameters than its corresponding template template parameter}}
-A<TooMany> *a5; // expected-error{{template template argument has different template parameters than its corresponding template template parameter}}
-B<X> *a6; // expected-error{{template template argument has different template parameters than its corresponding template template parameter}}
+A<Y> *a4; // expected-error@#A {{template argument for non-type template parameter must be an expression}}
+          // expected-note@-1 {{different template parameters}}
+A<TooMany> *a5; // expected-error {{too few template arguments for class template 'TooMany'}}
+                // expected-note@-1 {{different template parameters}}
+B<X> *a6; // expected-error {{too many template arguments for class template 'X'}}
+          // expected-note@-1 {{different template parameters}}
 C<Y> *a7;
-C<Ylong> *a8; // expected-error{{template template argument has different template parameters than its corresponding template template parameter}}
-C<Yref> *a9; // expected-error{{template template argument has different template parameters than its corresponding template template parameter}}
+C<Ylong> *a8;
+C<Yref> *a9; // expected-note {{different template parameters}}
 
 template<typename T> void f(int);
 
@@ -42,7 +47,8 @@ A<::N::Z> *a10;
 
 // Do not do a digraph correction here.
 A<: :N::Z> *a11;  // expected-error{{expected expression}} \
-                     expected-error{{a type specifier is required for all declarations}}
+                     precxx17-error{{a type specifier is required for all declarations}} \
+                     cxx17-error{{expected unqualified-id}}
 
 // PR7807
 namespace N {
@@ -103,8 +109,9 @@ void foo() {
 
 namespace CheckDependentNonTypeParamTypes {
   template<template<typename T, typename U, T v> class X> struct A {
+    // expected-note@-1 {{previous template template parameter is here}}
     void f() {
-      X<int, void*, 3> x; // expected-error {{does not refer to any declaration}}
+      X<int, void*, 3> x;
     }
     void g() {
       X<int, long, 3> x;
@@ -123,15 +130,16 @@ namespace CheckDependentNonTypeParamTypes {
     }
   };
 
-  template<typename T, typename U, U v> struct B { // expected-note {{parameter}}
+  template<typename T, typename U, U v> struct B {
+    // expected-error@-1 {{conflicting deduction 'U' against 'T' for parameter}}
     static const U value = v;
   };
 
   // FIXME: This should probably be rejected, but the rules are at best unclear.
-  A<B> ab;
+  A<B> ab; // expected-note {{different template parameters}}
 
   void use() {
-    ab.f(); // expected-note {{instantiation of}}
+    ab.f();
     ab.g();
     ab.h();
   }

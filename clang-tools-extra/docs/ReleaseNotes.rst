@@ -43,8 +43,6 @@ infrastructure are described first, followed by tool-specific sections.
 Major New Features
 ------------------
 
-...
-
 Improvements to clangd
 ----------------------
 
@@ -66,6 +64,9 @@ Hover
 Code completion
 ^^^^^^^^^^^^^^^
 
+Code actions
+^^^^^^^^^^^^
+
 Signature help
 ^^^^^^^^^^^^^^
 
@@ -81,17 +82,8 @@ Miscellaneous
 Improvements to clang-doc
 -------------------------
 
-- The default executor was changed to standalone to match other tools.
-
 Improvements to clang-query
 ---------------------------
-
-The improvements are...
-
-Improvements to clang-rename
-----------------------------
-
-The improvements are...
 
 Improvements to clang-tidy
 --------------------------
@@ -99,54 +91,21 @@ Improvements to clang-tidy
 New checks
 ^^^^^^^^^^
 
-- New :doc:`cppcoreguidelines-avoid-const-or-ref-data-members
-  <clang-tidy/checks/cppcoreguidelines/avoid-const-or-ref-data-members>` check.
-
-  Warns when a struct or class uses const or reference (lvalue or rvalue) data members.
-
 New check aliases
 ^^^^^^^^^^^^^^^^^
-
-- New alias :doc:`cert-msc54-cpp
-  <clang-tidy/checks/cert/msc54-cpp>` to
-  :doc:`bugprone-signal-handler
-  <clang-tidy/checks/bugprone/signal-handler>` was added.
-
 
 Changes in existing checks
 ^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-- New :doc:`grppi-test
-  <clang-tidy/checks/grppi-test>` check.
-
-  FIXME: add release notes.
-
-- New :doc:`readability-function-cognitive-complexity
-  <clang-tidy/checks/readability-function-cognitive-complexity>` check.
-
-- Improved :doc:`bugprone-signal-handler
-  <clang-tidy/checks/bugprone/signal-handler>` check. Partial
-  support for C++14 signal handler rules was added. Bug report generation was
-  improved.
-
-- Fixed a false positive in :doc:`cppcoreguidelines-pro-type-member-init
-  <clang-tidy/checks/cppcoreguidelines/pro-type-member-init>` when warnings
-  would be emitted for uninitialized members of an anonymous union despite
-  there being an initializer for one of the other members.
-  
-- Improved `modernize-use-emplace <clang-tidy/checks/modernize/use-emplace.html>`_ check.
-
-  The check now supports detecting inefficient invocations of ``push`` and
-  ``push_front`` on STL-style containers and replacing them with ``emplace``
-  or ``emplace_front``.
-
-- Improved `modernize-use-equals-default <clang-tidy/checks/modernize/use-equals-default.html>`_ check.
-
-  The check now skips unions since in this case a default constructor with empty body
-  is not equivalent to the explicitly defaulted one.
+- Improved :doc:`bugprone-unsafe-functions
+  <clang-tidy/checks/bugprone/unsafe-functions>` check to allow specifying
+  additional C++ member functions to match.
 
 Removed checks
 ^^^^^^^^^^^^^^
+
+Miscellaneous
+^^^^^^^^^^^^^
 
 Improvements to include-fixer
 -----------------------------

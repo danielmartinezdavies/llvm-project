@@ -14,8 +14,6 @@
 #define MLIR_TARGET_LLVMIR_IMPORT_H
 
 #include "mlir/IR/OwningOpRef.h"
-#include "mlir/Support/LLVM.h"
-#include "llvm/ADT/StringRef.h"
 #include <memory>
 
 // Forward-declare LLVM classes.
@@ -30,13 +28,24 @@ class DataLayoutSpecInterface;
 class MLIRContext;
 class ModuleOp;
 
-/// Convert the given LLVM module into MLIR's LLVM dialect.  The LLVM context is
-/// extracted from the registered LLVM IR dialect. In case of error, report it
-/// to the error handler registered with the MLIR context, if any (obtained from
-/// the MLIR module), and return `{}`.
+/// Translates the LLVM module into an MLIR module living in the given context.
+/// The translation supports operations from any dialect that has a registered
+/// implementation of the LLVMImportDialectInterface. It returns nullptr if the
+/// translation fails and reports errors using the error handler registered with
+/// the MLIR context.
+/// The `emitExpensiveWarnings` option controls if expensive
+/// but uncritical diagnostics should be emitted.
+/// The `dropDICompositeTypeElements` option controls if DICompositeTypes should
+/// be imported without elements. If set, the option avoids the recursive
+/// traversal of composite type debug information, which can be expensive for
+/// adversarial inputs.
+/// The `loadAllDialects` flag (default on) will load all dialects in the
+/// context.
 OwningOpRef<ModuleOp>
 translateLLVMIRToModule(std::unique_ptr<llvm::Module> llvmModule,
-                        MLIRContext *context);
+                        MLIRContext *context, bool emitExpensiveWarnings = true,
+                        bool dropDICompositeTypeElements = false,
+                        bool loadAllDialects = true);
 
 /// Translate the given LLVM data layout into an MLIR equivalent using the DLTI
 /// dialect.

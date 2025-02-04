@@ -10,7 +10,6 @@ include "llvm/Target/Target.td"
 
 def R600InstrInfo : InstrInfo {
   let guessInstructionProperties = 1;
-  let noNamedPositionallyEncodedOperands = 1;
 }
 
 def R600 : Target {
@@ -36,6 +35,7 @@ include "R600Schedule.td"
 include "R600Processors.td"
 include "R600InstrInfo.td"
 include "AMDGPUInstrInfo.td"
+include "AMDGPUPredicateControl.td"
 include "AMDGPUInstructions.td"
 include "R600Instructions.td"
 include "R700Instructions.td"

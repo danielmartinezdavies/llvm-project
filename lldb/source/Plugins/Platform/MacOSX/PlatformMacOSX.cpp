@@ -15,8 +15,10 @@
 #include "PlatformRemoteAppleBridge.h"
 #include "PlatformRemoteAppleTV.h"
 #include "PlatformRemoteAppleWatch.h"
+#include "PlatformRemoteAppleXR.h"
 #endif
 #include "lldb/Breakpoint/BreakpointLocation.h"
+#include "lldb/Core/Debugger.h"
 #include "lldb/Core/Module.h"
 #include "lldb/Core/ModuleList.h"
 #include "lldb/Core/ModuleSpec.h"
@@ -52,6 +54,7 @@ void PlatformMacOSX::Initialize() {
   PlatformRemoteAppleTV::Initialize();
   PlatformRemoteAppleWatch::Initialize();
   PlatformRemoteAppleBridge::Initialize();
+  PlatformRemoteAppleXR::Initialize();
 #endif
 
   if (g_initialize_count++ == 0) {
@@ -74,6 +77,7 @@ void PlatformMacOSX::Terminate() {
   }
 
 #if defined(__APPLE__)
+  PlatformRemoteAppleXR::Terminate();
   PlatformRemoteAppleBridge::Terminate();
   PlatformRemoteAppleWatch::Terminate();
   PlatformRemoteAppleTV::Terminate();
@@ -123,8 +127,15 @@ ConstString PlatformMacOSX::GetSDKDirectory(lldb_private::Target &target) {
   }
 
   // Use the default SDK as a fallback.
-  FileSpec fspec(
-      HostInfo::GetXcodeSDKPath(lldb_private::XcodeSDK::GetAnyMacOS()));
+  auto sdk_path_or_err =
+      HostInfo::GetSDKRoot(HostInfo::SDKOptions{XcodeSDK::GetAnyMacOS()});
+  if (!sdk_path_or_err) {
+    Debugger::ReportError("Error while searching for Xcode SDK: " +
+                          toString(sdk_path_or_err.takeError()));
+    return {};
+  }
+
+  FileSpec fspec(*sdk_path_or_err);
   if (fspec) {
     if (FileSystem::Instance().Exists(fspec))
       return ConstString(fspec.GetPath());

@@ -15,10 +15,10 @@
 #define LLVM_ADT_SMALLVECTOR_H
 
 #include "llvm/Support/Compiler.h"
-#include "llvm/Support/type_traits.h"
 #include <algorithm>
 #include <cassert>
 #include <cstddef>
+#include <cstdint>
 #include <cstdlib>
 #include <cstring>
 #include <functional>
@@ -61,12 +61,13 @@ protected:
 
   SmallVectorBase() = delete;
   SmallVectorBase(void *FirstEl, size_t TotalCapacity)
-      : BeginX(FirstEl), Capacity(TotalCapacity) {}
+      : BeginX(FirstEl), Capacity(static_cast<Size_T>(TotalCapacity)) {}
 
   /// This is a helper for \a grow() that's out of line to reduce code
   /// duplication.  This function will report a fatal error if it can't grow at
   /// least to \p MinSize.
-  void *mallocForGrow(size_t MinSize, size_t TSize, size_t &NewCapacity);
+  void *mallocForGrow(void *FirstEl, size_t MinSize, size_t TSize,
+                      size_t &NewCapacity);
 
   /// This is an implementation of the grow() method which only works
   /// on POD-like data types and is out of line to reduce code duplication.
@@ -85,8 +86,18 @@ protected:
   ///
   /// This does not construct or destroy any elements in the vector.
   void set_size(size_t N) {
-    assert(N <= capacity());
-    Size = N;
+    assert(N <= capacity()); // implies no overflow in assignment
+    Size = static_cast<Size_T>(N);
+  }
+
+  /// Set the array data pointer to \p Begin and capacity to \p N.
+  ///
+  /// This does not construct or destroy any elements in the vector.
+  //  This does not clean up any existing allocation.
+  void set_allocation_range(void *Begin, size_t N) {
+    assert(N <= SizeTypeMax());
+    BeginX = Begin;
+    Capacity = static_cast<Size_T>(N);
   }
 };
 
@@ -110,6 +121,7 @@ class SmallVectorTemplateCommon
     : public SmallVectorBase<SmallVectorSizeType<T>> {
   using Base = SmallVectorBase<SmallVectorSizeType<T>>;
 
+protected:
   /// Find the address of the first element.  For this pointer math to be valid
   /// with small-size of 0 for T with lots of alignment, it's important that
   /// SmallVectorStorage is properly-aligned even for small-size of 0.
@@ -120,7 +132,6 @@ class SmallVectorTemplateCommon
   }
   // Space after 'FirstEl' is clobbered, do not add any instance vars after it.
 
-protected:
   SmallVectorTemplateCommon(size_t Size) : Base(getFirstEl(), Size) {}
 
   void grow_pod(size_t MinSize, size_t TSize) {
@@ -335,8 +346,7 @@ protected:
   /// constructing elements as needed.
   template<typename It1, typename It2>
   static void uninitialized_move(It1 I, It1 E, It2 Dest) {
-    std::uninitialized_copy(std::make_move_iterator(I),
-                            std::make_move_iterator(E), Dest);
+    std::uninitialized_move(I, E, Dest);
   }
 
   /// Copy the range [I, E) onto the uninitialized memory starting with "Dest",
@@ -353,11 +363,7 @@ protected:
 
   /// Create a new allocation big enough for \p MinSize and pass back its size
   /// in \p NewCapacity. This is the first section of \a grow().
-  T *mallocForGrow(size_t MinSize, size_t &NewCapacity) {
-    return static_cast<T *>(
-        SmallVectorBase<SmallVectorSizeType<T>>::mallocForGrow(
-            MinSize, sizeof(T), NewCapacity));
-  }
+  T *mallocForGrow(size_t MinSize, size_t &NewCapacity);
 
   /// Move existing elements over to the new allocation \p NewElts, the middle
   /// section of \a grow().
@@ -431,6 +437,14 @@ void SmallVectorTemplateBase<T, TriviallyCopyable>::grow(size_t MinSize) {
   takeAllocationForGrow(NewElts, NewCapacity);
 }
 
+template <typename T, bool TriviallyCopyable>
+T *SmallVectorTemplateBase<T, TriviallyCopyable>::mallocForGrow(
+    size_t MinSize, size_t &NewCapacity) {
+  return static_cast<T *>(
+      SmallVectorBase<SmallVectorSizeType<T>>::mallocForGrow(
+          this->getFirstEl(), MinSize, sizeof(T), NewCapacity));
+}
+
 // Define this out-of-line to dissuade the C++ compiler from inlining it.
 template <typename T, bool TriviallyCopyable>
 void SmallVectorTemplateBase<T, TriviallyCopyable>::moveElementsForGrow(
@@ -450,8 +464,7 @@ void SmallVectorTemplateBase<T, TriviallyCopyable>::takeAllocationForGrow(
   if (!this->isSmall())
     free(this->begin());
 
-  this->BeginX = NewElts;
-  this->Capacity = NewCapacity;
+  this->set_allocation_range(NewElts, NewCapacity);
 }
 
 /// SmallVectorTemplateBase<TriviallyCopyable = true> - This is where we put
@@ -469,8 +482,7 @@ protected:
 
   /// Either const T& or T, depending on whether it's cheap enough to take
   /// parameters by value.
-  using ValueParamT =
-      typename std::conditional<TakesParamByValue, T, const T &>::type;
+  using ValueParamT = std::conditional_t<TakesParamByValue, T, const T &>;
 
   SmallVectorTemplateBase(size_t Size) : SmallVectorTemplateCommon<T>(Size) {}
 
@@ -498,8 +510,8 @@ protected:
   template <typename T1, typename T2>
   static void uninitialized_copy(
       T1 *I, T1 *E, T2 *Dest,
-      std::enable_if_t<std::is_same<typename std::remove_const<T1>::type,
-                                    T2>::value> * = nullptr) {
+      std::enable_if_t<std::is_same<std::remove_const_t<T1>, T2>::value> * =
+          nullptr) {
     // Use memcpy for PODs iterated by pointers (which includes SmallVector
     // iterators): std::uninitialized_copy optimizes to memmove, but we can
     // use memcpy here. Note that I and E are iterators and thus might be
@@ -585,15 +597,15 @@ protected:
     RHS.resetToSmall();
   }
 
-public:
-  SmallVectorImpl(const SmallVectorImpl &) = delete;
-
   ~SmallVectorImpl() {
     // Subclass has already destructed this vector's elements.
     // If this wasn't grown from the inline copy, deallocate the old space.
     if (!this->isSmall())
       free(this->begin());
   }
+
+public:
+  SmallVectorImpl(const SmallVectorImpl &) = delete;
 
   void clear() {
     this->destroy_range(this->begin(), this->end());
@@ -1190,7 +1202,12 @@ public:
     this->destroy_range(this->begin(), this->end());
   }
 
-  explicit SmallVector(size_t Size, const T &Value = T())
+  explicit SmallVector(size_t Size)
+    : SmallVectorImpl<T>(N) {
+    this->resize(Size);
+  }
+
+  SmallVector(size_t Size, const T &Value)
     : SmallVectorImpl<T>(N) {
     this->assign(Size, Value);
   }
@@ -1272,8 +1289,8 @@ inline size_t capacity_in_bytes(const SmallVector<T, N> &X) {
 
 template <typename RangeType>
 using ValueTypeFromRangeType =
-    typename std::remove_const<typename std::remove_reference<
-        decltype(*std::begin(std::declval<RangeType &>()))>::type>::type;
+    std::remove_const_t<std::remove_reference_t<decltype(*std::begin(
+        std::declval<RangeType &>()))>>;
 
 /// Given a range of type R, iterate the entire range and return a
 /// SmallVector with elements of the vector.  This is useful, for example,
@@ -1295,6 +1312,12 @@ SmallVector<Out, Size> to_vector_of(R &&Range) {
 template <typename Out, typename R> SmallVector<Out> to_vector_of(R &&Range) {
   return {std::begin(Range), std::end(Range)};
 }
+
+// Explicit instantiations
+extern template class llvm::SmallVectorBase<uint32_t>;
+#if SIZE_MAX > UINT32_MAX
+extern template class llvm::SmallVectorBase<uint64_t>;
+#endif
 
 } // end namespace llvm
 

@@ -26,7 +26,7 @@ framework module FW_Private {
 [{
   "file": "DIR/from_tu.m",
   "directory": "DIR",
-  "command": "clang -fmodules -fmodules-cache-path=DIR/cache -iframework DIR/frameworks -c DIR/from_tu.m -o DIR/from_tu.o"
+  "command": "clang -fmodules -fmodules-cache-path=DIR/cache -F DIR/frameworks -c DIR/from_tu.m -o DIR/from_tu.o"
 }]
 //--- from_tu.m
 #include "FW/FW.h"
@@ -44,9 +44,14 @@ framework module FW_Private {
 // CHECK_TU:            ],
 // CHECK_TU-NEXT:       "context-hash": "{{.*}}",
 // CHECK_TU-NEXT:       "file-deps": [
-// CHECK_TU-NEXT:         "[[PREFIX]]/frameworks/FW.framework/Headers/FW.h",
 // CHECK_TU-NEXT:         "[[PREFIX]]/frameworks/FW.framework/Modules/module.modulemap",
-// CHECK_TU-NEXT:         "[[PREFIX]]/frameworks/FW.framework/Modules/module.private.modulemap"
+// CHECK_TU-NEXT:         "[[PREFIX]]/frameworks/FW.framework/Headers/FW.h"
+// CHECK_TU-NEXT:       ],
+// CHECK_TU-NEXT:       "link-libraries": [
+// CHECK_TU-NEXT:         {
+// CHECK_TU-NEXT:           "isFramework": true,
+// CHECK_TU-NEXT:           "link-name": "FW"
+// CHECK_TU-NEXT:         }
 // CHECK_TU-NEXT:       ],
 // CHECK_TU-NEXT:       "name": "FW"
 // CHECK_TU-NEXT:     },
@@ -57,17 +62,22 @@ framework module FW_Private {
 // CHECK_TU:            ],
 // CHECK_TU-NEXT:       "context-hash": "{{.*}}",
 // CHECK_TU-NEXT:       "file-deps": [
-// CHECK_TU-NEXT:         "[[PREFIX]]/frameworks/FW.framework/Modules/module.modulemap",
 // CHECK_TU-NEXT:         "[[PREFIX]]/frameworks/FW.framework/Modules/module.private.modulemap",
 // CHECK_TU-NEXT:         "[[PREFIX]]/frameworks/FW.framework/PrivateHeaders/FW_Private.h",
 // CHECK_TU-NEXT:         "[[PREFIX]]/frameworks/FW.framework/PrivateHeaders/One.h"
+// CHECK_TU-NEXT:       ],
+// CHECK_TU-NEXT:       "link-libraries": [
+// CHECK_TU-NEXT:         {
+// CHECK_TU-NEXT:           "isFramework": true,
+// CHECK_TU-NEXT:           "link-name": "FW"
+// CHECK_TU-NEXT:         }
 // CHECK_TU-NEXT:       ],
 // CHECK_TU-NEXT:       "name": "FW_Private"
 // CHECK_TU-NEXT:     }
 // CHECK_TU-NEXT:   ],
 // CHECK_TU-NEXT:   "translation-units": [
 // CHECK_TU-NEXT:     {
-// CHECK_TU-NEXT:       "clang-context-hash": "{{.*}}",
+// CHECK_TU:            "clang-context-hash": "{{.*}}",
 // CHECK_TU-NEXT:       "clang-module-deps": [
 // CHECK_TU-NEXT:         {
 // CHECK_TU-NEXT:           "context-hash": "{{.*}}",
@@ -82,14 +92,12 @@ framework module FW_Private {
 // CHECK_TU:              "-fmodule-file={{.*}}/FW-{{.*}}.pcm"
 // CHECK_TU:              "-fmodule-file={{.*}}/FW_Private-{{.*}}.pcm"
 // CHECK_TU:            ],
-// CHECK_TU-NEXT:       "file-deps": [
+// CHECK_TU:            "file-deps": [
 // CHECK_TU-NEXT:         "[[PREFIX]]/from_tu.m",
 // CHECK_TU-NEXT:         "[[PREFIX]]/frameworks/FW.framework/PrivateHeaders/Two.h"
 // CHECK_TU-NEXT:       ],
 // CHECK_TU-NEXT:       "input-file": "[[PREFIX]]/from_tu.m"
 // CHECK_TU-NEXT:     }
-// CHECK_TU-NEXT:   ]
-// CHECK_TU-NEXT: }
 
 // RUN: %deps-to-rsp %t/from_tu_result.json --module-name=FW > %t/FW.cc1.rsp
 // RUN: %deps-to-rsp %t/from_tu_result.json --module-name=FW_Private > %t/FW_Private.cc1.rsp
@@ -104,7 +112,7 @@ framework module FW_Private {
 [{
   "file": "DIR/from_module.m",
   "directory": "DIR",
-  "command": "clang -fmodules -fmodules-cache-path=DIR/cache -iframework DIR/frameworks -c DIR/from_module.m -o DIR/from_module.o"
+  "command": "clang -fmodules -fmodules-cache-path=DIR/cache -F DIR/frameworks -c DIR/from_module.m -o DIR/from_module.o"
 }]
 //--- module.modulemap
 module Mod { header "Mod.h" }
@@ -126,9 +134,14 @@ module Mod { header "Mod.h" }
 // CHECK_MODULE:            ],
 // CHECK_MODULE-NEXT:       "context-hash": "{{.*}}",
 // CHECK_MODULE-NEXT:       "file-deps": [
-// CHECK_MODULE-NEXT:         "[[PREFIX]]/frameworks/FW.framework/Headers/FW.h",
 // CHECK_MODULE-NEXT:         "[[PREFIX]]/frameworks/FW.framework/Modules/module.modulemap",
-// CHECK_MODULE-NEXT:         "[[PREFIX]]/frameworks/FW.framework/Modules/module.private.modulemap"
+// CHECK_MODULE-NEXT:         "[[PREFIX]]/frameworks/FW.framework/Headers/FW.h"
+// CHECK_MODULE-NEXT:       ],
+// CHECK_MODULE-NEXT:       "link-libraries": [
+// CHECK_MODULE-NEXT:         {
+// CHECK_MODULE-NEXT:           "isFramework": true,
+// CHECK_MODULE-NEXT:           "link-name": "FW"
+// CHECK_MODULE-NEXT:         }
 // CHECK_MODULE-NEXT:       ],
 // CHECK_MODULE-NEXT:       "name": "FW"
 // CHECK_MODULE-NEXT:     },
@@ -139,10 +152,15 @@ module Mod { header "Mod.h" }
 // CHECK_MODULE:            ],
 // CHECK_MODULE-NEXT:       "context-hash": "{{.*}}",
 // CHECK_MODULE-NEXT:       "file-deps": [
-// CHECK_MODULE-NEXT:         "[[PREFIX]]/frameworks/FW.framework/Modules/module.modulemap",
 // CHECK_MODULE-NEXT:         "[[PREFIX]]/frameworks/FW.framework/Modules/module.private.modulemap",
 // CHECK_MODULE-NEXT:         "[[PREFIX]]/frameworks/FW.framework/PrivateHeaders/FW_Private.h",
 // CHECK_MODULE-NEXT:         "[[PREFIX]]/frameworks/FW.framework/PrivateHeaders/One.h"
+// CHECK_MODULE-NEXT:       ],
+// CHECK_MODULE-NEXT:       "link-libraries": [
+// CHECK_MODULE-NEXT:         {
+// CHECK_MODULE-NEXT:           "isFramework": true,
+// CHECK_MODULE-NEXT:           "link-name": "FW"
+// CHECK_MODULE-NEXT:         }
 // CHECK_MODULE-NEXT:       ],
 // CHECK_MODULE-NEXT:       "name": "FW_Private"
 // CHECK_MODULE-NEXT:     },
@@ -164,18 +182,19 @@ module Mod { header "Mod.h" }
 // CHECK_MODULE:            ],
 // CHECK_MODULE-NEXT:       "context-hash": "{{.*}}",
 // CHECK_MODULE-NEXT:       "file-deps": [
-// CHECK_MODULE-NEXT:         "[[PREFIX]]/Mod.h"
+// CHECK_MODULE-NEXT:         "[[PREFIX]]/module.modulemap"
+// CHECK_MODULE-NEXT:         "[[PREFIX]]/Mod.h",
 // CHECK_MODULE-NEXT:         "[[PREFIX]]/frameworks/FW.framework/Modules/module.modulemap",
 // CHECK_MODULE-NEXT:         "[[PREFIX]]/frameworks/FW.framework/Modules/module.private.modulemap",
-// CHECK_MODULE-NEXT:         "[[PREFIX]]/frameworks/FW.framework/PrivateHeaders/Two.h",
-// CHECK_MODULE-NEXT:         "[[PREFIX]]/module.modulemap"
+// CHECK_MODULE-NEXT:         "[[PREFIX]]/frameworks/FW.framework/PrivateHeaders/Two.h"
 // CHECK_MODULE-NEXT:       ],
+// CHECK_MODULE-NEXT:       "link-libraries": [],
 // CHECK_MODULE-NEXT:       "name": "Mod"
 // CHECK_MODULE-NEXT:     }
 // CHECK_MODULE-NEXT:   ],
 // CHECK_MODULE-NEXT:   "translation-units": [
 // CHECK_MODULE-NEXT:     {
-// CHECK_MODULE-NEXT:       "clang-context-hash": "{{.*}}",
+// CHECK_MODULE:            "clang-context-hash": "{{.*}}",
 // CHECK_MODULE-NEXT:       "clang-module-deps": [
 // CHECK_MODULE-NEXT:         {
 // CHECK_MODULE-NEXT:           "context-hash": "{{.*}}",
@@ -184,13 +203,11 @@ module Mod { header "Mod.h" }
 // CHECK_MODULE-NEXT:       ],
 // CHECK_MODULE-NEXT:       "command-line": [
 // CHECK_MODULE:            ],
-// CHECK_MODULE-NEXT:       "file-deps": [
+// CHECK_MODULE:            "file-deps": [
 // CHECK_MODULE-NEXT:         "[[PREFIX]]/from_module.m"
 // CHECK_MODULE-NEXT:       ],
 // CHECK_MODULE-NEXT:       "input-file": "[[PREFIX]]/from_module.m"
 // CHECK_MODULE-NEXT:     }
-// CHECK_MODULE-NEXT:   ]
-// CHECK_MODULE-NEXT: }
 
 // RUN: %deps-to-rsp %t/from_module_result.json --module-name=FW > %t/FW.cc1.rsp
 // RUN: %deps-to-rsp %t/from_module_result.json --module-name=FW_Private > %t/FW_Private.cc1.rsp

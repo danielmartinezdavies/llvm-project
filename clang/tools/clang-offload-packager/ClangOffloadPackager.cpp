@@ -14,8 +14,9 @@
 
 #include "clang/Basic/Version.h"
 
-#include "llvm/Object/Binary.h"
-#include "llvm/Object/ObjectFile.h"
+#include "llvm/ADT/StringExtras.h"
+#include "llvm/BinaryFormat/Magic.h"
+#include "llvm/Object/ArchiveWriter.h"
 #include "llvm/Object/OffloadBinary.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/FileOutputBuffer.h"
@@ -50,6 +51,14 @@ static cl::list<std::string>
                  cl::value_desc("<key>=<value>,..."),
                  cl::cat(ClangOffloadPackagerCategory));
 
+static cl::opt<bool>
+    CreateArchive("archive",
+                  cl::desc("Write extracted files to a static archive"),
+                  cl::cat(ClangOffloadPackagerCategory));
+
+/// Path of the current binary.
+static const char *PackagerExecutable;
+
 static void PrintVersion(raw_ostream &OS) {
   OS << clang::getClangToolFullVersion("clang-offload-packager") << '\n';
 }
@@ -70,6 +79,18 @@ static DenseMap<StringRef, StringRef> getImageArguments(StringRef Image,
   return Args;
 }
 
+static Error writeFile(StringRef Filename, StringRef Data) {
+  Expected<std::unique_ptr<FileOutputBuffer>> OutputOrErr =
+      FileOutputBuffer::create(Filename, Data.size());
+  if (!OutputOrErr)
+    return OutputOrErr.takeError();
+  std::unique_ptr<FileOutputBuffer> Output = std::move(*OutputOrErr);
+  llvm::copy(Data, Output->getBufferStart());
+  if (Error E = Output->commit())
+    return E;
+  return Error::success();
+}
+
 static Error bundleImages() {
   SmallVector<char, 1024> BinaryData;
   raw_svector_ostream OS(BinaryData);
@@ -83,67 +104,42 @@ static Error bundleImages() {
           inconvertibleErrorCode(),
           "'file' and 'triple' are required image arguments");
 
-    OffloadBinary::OffloadingImage ImageBinary{};
-    std::unique_ptr<llvm::MemoryBuffer> DeviceImage;
-    for (const auto &[Key, Value] : Args) {
-      if (Key == "file") {
-        llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>> ObjectOrErr =
-            llvm::MemoryBuffer::getFileOrSTDIN(Value);
-        if (std::error_code EC = ObjectOrErr.getError())
-          return errorCodeToError(EC);
+    // Permit using multiple instances of `file` in a single string.
+    for (auto &File : llvm::split(Args["file"], ",")) {
+      OffloadBinary::OffloadingImage ImageBinary{};
+      std::unique_ptr<llvm::MemoryBuffer> DeviceImage;
 
-        // Clang uses the '.o' suffix for LTO bitcode.
-        if (identify_magic((*ObjectOrErr)->getBuffer()) == file_magic::bitcode)
-          ImageBinary.TheImageKind = object::IMG_Bitcode;
-        else
-          ImageBinary.TheImageKind =
-              getImageKind(sys::path::extension(Value).drop_front());
-        ImageBinary.Image = std::move(*ObjectOrErr);
-      } else if (Key == "kind") {
-        ImageBinary.TheOffloadKind = getOffloadKind(Value);
-      } else {
-        ImageBinary.StringData[Key] = Value;
+      llvm::ErrorOr<std::unique_ptr<llvm::MemoryBuffer>> ObjectOrErr =
+          llvm::MemoryBuffer::getFileOrSTDIN(File);
+      if (std::error_code EC = ObjectOrErr.getError())
+        return errorCodeToError(EC);
+
+      // Clang uses the '.o' suffix for LTO bitcode.
+      if (identify_magic((*ObjectOrErr)->getBuffer()) == file_magic::bitcode)
+        ImageBinary.TheImageKind = object::IMG_Bitcode;
+      else
+        ImageBinary.TheImageKind =
+            getImageKind(sys::path::extension(File).drop_front());
+      ImageBinary.Image = std::move(*ObjectOrErr);
+      for (const auto &[Key, Value] : Args) {
+        if (Key == "kind") {
+          ImageBinary.TheOffloadKind = getOffloadKind(Value);
+        } else if (Key != "file") {
+          ImageBinary.StringData[Key] = Value;
+        }
       }
+      llvm::SmallString<0> Buffer = OffloadBinary::write(ImageBinary);
+      if (Buffer.size() % OffloadBinary::getAlignment() != 0)
+        return createStringError(inconvertibleErrorCode(),
+                                 "Offload binary has invalid size alignment");
+      OS << Buffer;
     }
-    std::unique_ptr<MemoryBuffer> Buffer = OffloadBinary::write(ImageBinary);
-    if (Buffer->getBufferSize() % OffloadBinary::getAlignment() != 0)
-      return createStringError(inconvertibleErrorCode(),
-                               "Offload binary has invalid size alignment");
-    OS << Buffer->getBuffer();
   }
 
-  Expected<std::unique_ptr<FileOutputBuffer>> OutputOrErr =
-      FileOutputBuffer::create(OutputFile, BinaryData.size());
-  if (!OutputOrErr)
-    return OutputOrErr.takeError();
-  std::unique_ptr<FileOutputBuffer> Output = std::move(*OutputOrErr);
-  std::copy(BinaryData.begin(), BinaryData.end(), Output->getBufferStart());
-  if (Error E = Output->commit())
+  if (Error E = writeFile(OutputFile,
+                          StringRef(BinaryData.begin(), BinaryData.size())))
     return E;
   return Error::success();
-}
-
-static Expected<SmallVector<std::unique_ptr<OffloadBinary>>>
-extractOffloadFiles(MemoryBufferRef Contents) {
-  if (identify_magic(Contents.getBuffer()) != file_magic::offload_binary)
-    return createStringError(inconvertibleErrorCode(),
-                             "Input buffer not an offloading binary");
-  SmallVector<std::unique_ptr<OffloadBinary>> Binaries;
-  uint64_t Offset = 0;
-  // There could be multiple offloading binaries stored at this section.
-  while (Offset < Contents.getBuffer().size()) {
-    std::unique_ptr<MemoryBuffer> Buffer =
-        MemoryBuffer::getMemBuffer(Contents.getBuffer().drop_front(Offset), "",
-                                   /*RequiresNullTerminator*/ false);
-    auto BinaryOrErr = OffloadBinary::create(*Buffer);
-    if (!BinaryOrErr)
-      return BinaryOrErr.takeError();
-
-    Offset += (*BinaryOrErr)->getSize();
-    Binaries.emplace_back(std::move(*BinaryOrErr));
-  }
-
-  return std::move(Binaries);
 }
 
 static Error unbundleImages() {
@@ -159,9 +155,9 @@ static Error unbundleImages() {
     Buffer = MemoryBuffer::getMemBufferCopy(Buffer->getBuffer(),
                                             Buffer->getBufferIdentifier());
 
-  auto BinariesOrErr = extractOffloadFiles(*Buffer);
-  if (!BinariesOrErr)
-    return BinariesOrErr.takeError();
+  SmallVector<OffloadFile> Binaries;
+  if (Error Err = extractOffloadBinaries(*Buffer, Binaries))
+    return Err;
 
   // Try to extract each device image specified by the user from the input file.
   for (StringRef Image : DeviceImages) {
@@ -169,8 +165,9 @@ static Error unbundleImages() {
     StringSaver Saver(Alloc);
     auto Args = getImageArguments(Image, Saver);
 
-    for (uint64_t I = 0, E = BinariesOrErr->size(); I != E; ++I) {
-      const auto &Binary = (*BinariesOrErr)[I];
+    SmallVector<const OffloadBinary *> Extracted;
+    for (const OffloadFile &File : Binaries) {
+      const auto *Binary = File.getBinary();
       // We handle the 'file' and 'kind' identifiers differently.
       bool Match = llvm::all_of(Args, [&](auto &Arg) {
         const auto [Key, Value] = Arg;
@@ -180,27 +177,45 @@ static Error unbundleImages() {
           return Binary->getOffloadKind() == getOffloadKind(Value);
         return Binary->getString(Key) == Value;
       });
-      if (!Match)
-        continue;
+      if (Match)
+        Extracted.push_back(Binary);
+    }
 
-      // If the user did not provide a filename derive one from the input and
-      // image.
-      StringRef Filename =
-          !Args.count("file")
-              ? Saver.save(sys::path::stem(InputFile) + "-" +
-                           Binary->getTriple() + "-" + Binary->getArch() + "." +
-                           std::to_string(I) + "." +
-                           getImageKindName(Binary->getImageKind()))
-              : Args["file"];
+    if (Extracted.empty())
+      continue;
 
-      Expected<std::unique_ptr<FileOutputBuffer>> OutputOrErr =
-          FileOutputBuffer::create(Filename, Binary->getImage().size());
-      if (!OutputOrErr)
-        return OutputOrErr.takeError();
-      std::unique_ptr<FileOutputBuffer> Output = std::move(*OutputOrErr);
-      llvm::copy(Binary->getImage(), Output->getBufferStart());
-      if (Error E = Output->commit())
+    if (CreateArchive) {
+      if (!Args.count("file"))
+        return createStringError(inconvertibleErrorCode(),
+                                 "Image must have a 'file' argument.");
+
+      SmallVector<NewArchiveMember> Members;
+      for (const OffloadBinary *Binary : Extracted)
+        Members.emplace_back(MemoryBufferRef(
+            Binary->getImage(),
+            Binary->getMemoryBufferRef().getBufferIdentifier()));
+
+      if (Error E = writeArchive(
+              Args["file"], Members, SymtabWritingMode::NormalSymtab,
+              Archive::getDefaultKind(), true, false, nullptr))
         return E;
+    } else if (Args.count("file")) {
+      if (Extracted.size() > 1)
+        WithColor::warning(errs(), PackagerExecutable)
+            << "Multiple inputs match to a single file, '" << Args["file"]
+            << "'\n";
+      if (Error E = writeFile(Args["file"], Extracted.back()->getImage()))
+        return E;
+    } else {
+      uint64_t Idx = 0;
+      for (const OffloadBinary *Binary : Extracted) {
+        StringRef Filename =
+            Saver.save(sys::path::stem(InputFile) + "-" + Binary->getTriple() +
+                       "-" + Binary->getArch() + "." + std::to_string(Idx++) +
+                       "." + getImageKindName(Binary->getImageKind()));
+        if (Error E = writeFile(Filename, Binary->getImage()))
+          return E;
+      }
     }
   }
 
@@ -222,6 +237,7 @@ int main(int argc, const char **argv) {
     return EXIT_SUCCESS;
   }
 
+  PackagerExecutable = argv[0];
   auto reportError = [argv](Error E) {
     logAllUnhandledErrors(std::move(E), WithColor::error(errs(), argv[0]));
     return EXIT_FAILURE;

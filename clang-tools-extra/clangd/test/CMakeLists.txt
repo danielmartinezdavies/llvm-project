@@ -2,6 +2,7 @@ set(CLANGD_TEST_DEPS
   clangd
   ClangdTests
   clangd-indexer
+  split-file
   # No tests for it, but we should still make sure they build.
   dexp
   )
@@ -27,6 +28,13 @@ configure_lit_site_cfg(
   MAIN_CONFIG
   ${CMAKE_CURRENT_SOURCE_DIR}/lit.cfg.py
   )
+
+# Copy an empty compile_flags.txt to make sure tests don't pick up arbitrary
+# commands from parents.
+file(
+  TOUCH
+  ${CMAKE_CURRENT_BINARY_DIR}/compile_flags.txt
+)
 
 add_lit_testsuite(check-clangd "Running the Clangd regression tests"
   # clangd doesn't put unittest configs in test/unit like every other project.

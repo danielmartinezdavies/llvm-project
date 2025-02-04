@@ -15,10 +15,13 @@
 #define MLIR_TRANSFORMS_PASSES_H
 
 #include "mlir/Pass/Pass.h"
+#include "mlir/Pass/PassManager.h"
+#include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "mlir/Transforms/LocationSnapshot.h"
 #include "mlir/Transforms/ViewOpGraph.h"
 #include "llvm/Support/Debug.h"
 #include <limits>
+#include <memory>
 
 namespace mlir {
 
@@ -27,6 +30,23 @@ class GreedyRewriteConfig;
 //===----------------------------------------------------------------------===//
 // Passes
 //===----------------------------------------------------------------------===//
+
+#define GEN_PASS_DECL_CANONICALIZER
+#define GEN_PASS_DECL_CONTROLFLOWSINK
+#define GEN_PASS_DECL_CSE
+#define GEN_PASS_DECL_INLINER
+#define GEN_PASS_DECL_LOOPINVARIANTCODEMOTION
+#define GEN_PASS_DECL_MEM2REG
+#define GEN_PASS_DECL_PRINTIRPASS
+#define GEN_PASS_DECL_PRINTOPSTATS
+#define GEN_PASS_DECL_SROA
+#define GEN_PASS_DECL_STRIPDEBUGINFO
+#define GEN_PASS_DECL_SCCP
+#define GEN_PASS_DECL_SYMBOLDCE
+#define GEN_PASS_DECL_SYMBOLPRIVATIZE
+#define GEN_PASS_DECL_TOPOLOGICALSORT
+#define GEN_PASS_DECL_COMPOSITEFIXEDPOINTPASS
+#include "mlir/Transforms/Passes.h.inc"
 
 /// Creates an instance of the Canonicalizer pass, configured with default
 /// settings (which can be overridden by pass options on the command line).
@@ -42,8 +62,8 @@ std::unique_ptr<Pass> createCanonicalizerPass();
 /// set to their type name.
 std::unique_ptr<Pass>
 createCanonicalizerPass(const GreedyRewriteConfig &config,
-                        ArrayRef<std::string> disabledPatterns = llvm::None,
-                        ArrayRef<std::string> enabledPatterns = llvm::None);
+                        ArrayRef<std::string> disabledPatterns = std::nullopt,
+                        ArrayRef<std::string> enabledPatterns = std::nullopt);
 
 /// Creates a pass to perform control-flow sinking.
 std::unique_ptr<Pass> createControlFlowSinkPass();
@@ -51,9 +71,18 @@ std::unique_ptr<Pass> createControlFlowSinkPass();
 /// Creates a pass to perform common sub expression elimination.
 std::unique_ptr<Pass> createCSEPass();
 
+/// Creates a pass to print IR on the debug stream.
+std::unique_ptr<Pass> createPrintIRPass(const PrintIRPassOptions & = {});
+
+/// Creates a pass that generates IR to verify ops at runtime.
+std::unique_ptr<Pass> createGenerateRuntimeVerificationPass();
+
 /// Creates a loop invariant code motion pass that hoists loop invariant
 /// instructions out of the loop.
 std::unique_ptr<Pass> createLoopInvariantCodeMotionPass();
+
+/// Creates a pass that hoists loop-invariant subset ops.
+std::unique_ptr<Pass> createLoopInvariantSubsetHoistingPass();
 
 /// Creates a pass to strip debug information from a function.
 std::unique_ptr<Pass> createStripDebugInfoPass();
@@ -83,6 +112,9 @@ std::unique_ptr<Pass>
 createInlinerPass(llvm::StringMap<OpPassManager> opPipelines,
                   std::function<void(OpPassManager &)> defaultPipelineBuilder);
 
+/// Creates an optimization pass to remove dead values.
+std::unique_ptr<Pass> createRemoveDeadValuesPass();
+
 /// Creates a pass which performs sparse conditional constant propagation over
 /// nested operations.
 std::unique_ptr<Pass> createSCCPPass();
@@ -100,6 +132,12 @@ createSymbolPrivatizePass(ArrayRef<std::string> excludeSymbols = {});
 /// topologically such that, as much as possible, users of values appear after
 /// their producers.
 std::unique_ptr<Pass> createTopologicalSortPass();
+
+/// Create composite pass, which runs provided set of passes until fixed point
+/// or maximum number of iterations reached.
+std::unique_ptr<Pass> createCompositeFixedPointPass(
+    std::string name, llvm::function_ref<void(OpPassManager &)> populateFunc,
+    int maxIterations = 10);
 
 //===----------------------------------------------------------------------===//
 // Registration

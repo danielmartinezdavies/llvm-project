@@ -28,10 +28,16 @@ class MDNode;
 class MemoryLocation;
 
 /// A simple AA result that uses TBAA metadata to answer queries.
-class TypeBasedAAResult : public AAResultBase<TypeBasedAAResult> {
-  friend AAResultBase<TypeBasedAAResult>;
+class TypeBasedAAResult : public AAResultBase {
+  /// True if type sanitizer is enabled. When TypeSanitizer is used, don't use
+  /// TBAA information for alias analysis as  this might cause us to remove
+  /// memory accesses that we need to verify at runtime.
+  bool UsingTypeSanitizer;
 
 public:
+  TypeBasedAAResult(bool UsingTypeSanitizer)
+      : UsingTypeSanitizer(UsingTypeSanitizer) {}
+
   /// Handle invalidation events from the new pass manager.
   ///
   /// By definition, this result is stateless and so remains valid.
@@ -41,11 +47,12 @@ public:
   }
 
   AliasResult alias(const MemoryLocation &LocA, const MemoryLocation &LocB,
-                    AAQueryInfo &AAQI);
-  bool pointsToConstantMemory(const MemoryLocation &Loc, AAQueryInfo &AAQI,
-                              bool OrLocal);
-  FunctionModRefBehavior getModRefBehavior(const CallBase *Call);
-  FunctionModRefBehavior getModRefBehavior(const Function *F);
+                    AAQueryInfo &AAQI, const Instruction *CtxI);
+  ModRefInfo getModRefInfoMask(const MemoryLocation &Loc, AAQueryInfo &AAQI,
+                               bool IgnoreLocals);
+
+  MemoryEffects getMemoryEffects(const CallBase *Call, AAQueryInfo &AAQI);
+  MemoryEffects getMemoryEffects(const Function *F);
   ModRefInfo getModRefInfo(const CallBase *Call, const MemoryLocation &Loc,
                            AAQueryInfo &AAQI);
   ModRefInfo getModRefInfo(const CallBase *Call1, const CallBase *Call2,
@@ -53,6 +60,10 @@ public:
 
 private:
   bool Aliases(const MDNode *A, const MDNode *B) const;
+
+  /// Returns true if TBAA metadata should be used, that is if TBAA is enabled
+  /// and type sanitizer is not used.
+  bool shouldUseTBAA() const;
 };
 
 /// Analysis pass providing a never-invalidated alias analysis result.

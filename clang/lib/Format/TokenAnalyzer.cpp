@@ -84,7 +84,7 @@ Environment::Environment(StringRef Code, StringRef FileName,
       NextStartColumn(NextStartColumn), LastStartColumn(LastStartColumn) {}
 
 TokenAnalyzer::TokenAnalyzer(const Environment &Env, const FormatStyle &Style)
-    : Style(Style), Env(Env),
+    : Style(Style), LangOpts(getFormattingLangOpts(Style)), Env(Env),
       AffectedRangeMgr(Env.getSourceManager(), Env.getCharRanges()),
       UnwrappedLines(1),
       Encoding(encoding::detectEncoding(
@@ -97,18 +97,19 @@ TokenAnalyzer::TokenAnalyzer(const Environment &Env, const FormatStyle &Style)
                           << "\n");
 }
 
-std::pair<tooling::Replacements, unsigned> TokenAnalyzer::process() {
+std::pair<tooling::Replacements, unsigned>
+TokenAnalyzer::process(bool SkipAnnotation) {
   tooling::Replacements Result;
   llvm::SpecificBumpPtrAllocator<FormatToken> Allocator;
-  IdentifierTable IdentTable(getFormattingLangOpts(Style));
+  IdentifierTable IdentTable(LangOpts);
   FormatTokenLexer Lex(Env.getSourceManager(), Env.getFileID(),
                        Env.getFirstStartColumn(), Style, Encoding, Allocator,
-
                        IdentTable);
   ArrayRef<FormatToken *> Toks(Lex.lex());
-  SmallVector<FormatToken *, 10> Tokens(Toks.begin(), Toks.end());
-  UnwrappedLineParser Parser(Style, Lex.getKeywords(),
-                             Env.getFirstStartColumn(), Tokens, *this);
+  SmallVector<FormatToken *, 10> Tokens(Toks);
+  UnwrappedLineParser Parser(Env.getSourceManager(), Style, Lex.getKeywords(),
+                             Env.getFirstStartColumn(), Tokens, *this,
+                             Allocator, IdentTable);
   Parser.parse();
   assert(UnwrappedLines.back().empty());
   unsigned Penalty = 0;
@@ -121,7 +122,8 @@ std::pair<tooling::Replacements, unsigned> TokenAnalyzer::process() {
     TokenAnnotator Annotator(Style, Lex.getKeywords());
     for (const UnwrappedLine &Line : Lines) {
       AnnotatedLines.push_back(new AnnotatedLine(Line));
-      Annotator.annotate(*AnnotatedLines.back());
+      if (!SkipAnnotation)
+        Annotator.annotate(*AnnotatedLines.back());
     }
 
     std::pair<tooling::Replacements, unsigned> RunResult =

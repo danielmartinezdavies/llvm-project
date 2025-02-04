@@ -47,9 +47,9 @@ const Instruction *InstructionPrecedenceTracking::getFirstSpecialInstruction(
     validate(BB);
 #endif
 
-  if (FirstSpecialInsts.find(BB) == FirstSpecialInsts.end()) {
+  if (!FirstSpecialInsts.contains(BB)) {
     fill(BB);
-    assert(FirstSpecialInsts.find(BB) != FirstSpecialInsts.end() && "Must be!");
+    assert(FirstSpecialInsts.contains(BB) && "Must be!");
   }
   return FirstSpecialInsts[BB];
 }
@@ -115,8 +115,9 @@ void InstructionPrecedenceTracking::insertInstructionTo(const Instruction *Inst,
 void InstructionPrecedenceTracking::removeInstruction(const Instruction *Inst) {
   auto *BB = Inst->getParent();
   assert(BB && "must be called before instruction is actually removed");
-  if (FirstSpecialInsts.count(BB) && FirstSpecialInsts[BB] == Inst)
-    FirstSpecialInsts.erase(BB);
+  auto It = FirstSpecialInsts.find(BB);
+  if (It != FirstSpecialInsts.end() && It->second == Inst)
+    FirstSpecialInsts.erase(It);
 }
 
 void InstructionPrecedenceTracking::removeUsersOf(const Instruction *Inst) {

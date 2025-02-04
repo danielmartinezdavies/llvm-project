@@ -1,7 +1,7 @@
 // RUN: mlir-opt -allow-unregistered-dialect %s -split-input-file -verify-diagnostics
 
 func.func @elementsattr_non_tensor_type() -> () {
-  "foo"(){bar = dense<[4]> : i32} : () -> () // expected-error {{elements literal must be a ranked tensor or vector type}}
+  "foo"(){bar = dense<[4]> : i32} : () -> () // expected-error {{elements literal must be a shaped type}}
 }
 
 // -----
@@ -45,7 +45,8 @@ func.func @elementsattr_floattype1() -> () {
 // -----
 
 func.func @elementsattr_floattype2() -> () {
-  // expected-error@+1 {{expected floating-point elements, but parsed integer}}
+  // expected-error@below {{unexpected decimal integer literal for a floating point value}}
+  // expected-note@below {{add a trailing dot to make the literal a float}}
   "foo"(){bar = dense<[4]> : tensor<1xf32>} : () -> ()
 }
 
@@ -138,21 +139,22 @@ func.func @float_in_int_tensor() {
 // -----
 
 func.func @float_in_bool_tensor() {
-  // expected-error @+1 {{expected integer elements, but parsed floating-point}}
+  // expected-error@below {{expected integer elements, but parsed floating-point}}
   "foo"() {bar = dense<[true, 42.0]> : tensor<2xi1>} : () -> ()
 }
 
 // -----
 
 func.func @decimal_int_in_float_tensor() {
-  // expected-error @+1 {{expected floating-point elements, but parsed integer}}
+  // expected-error@below {{unexpected decimal integer literal for a floating point value}}
+  // expected-note@below {{add a trailing dot to make the literal a float}}
   "foo"() {bar = dense<[42, 42.0]> : tensor<2xf32>} : () -> ()
 }
 
 // -----
 
 func.func @bool_in_float_tensor() {
-  // expected-error @+1 {{expected floating-point elements, but parsed integer}}
+  // expected-error @+1 {{expected floating point literal}}
   "foo"() {bar = dense<[42.0, true]> : tensor<2xf32>} : () -> ()
 }
 
@@ -521,3 +523,71 @@ func.func @duplicate_dictionary_attr_key() {
 
 // expected-error@+1 {{`dense_resource` expected a shaped type}}
 #attr = dense_resource<resource> : i32
+
+// -----
+
+// expected-error@below {{expected '<' after 'array'}}
+#attr = array
+
+// -----
+
+// expected-error@below {{expected integer or float type}}
+#attr = array<vector<i32>>
+
+// -----
+
+// expected-error@below {{element type bitwidth must be a multiple of 8}}
+#attr = array<i7>
+
+// -----
+
+// expected-error@below {{expected ':' after dense array type}}
+#attr = array<i8)
+
+// -----
+
+// expected-error@below {{expected '>' to close an array attribute}}
+#attr = array<i8: 1)
+
+// -----
+
+// expected-error@below {{expected '[' after 'distinct'}}
+#attr = distinct<
+
+// -----
+
+// expected-error@below {{expected distinct ID}}
+#attr = distinct[i8
+
+// -----
+
+// expected-error@below {{expected an unsigned 64-bit integer}}
+#attr = distinct[0xAAAABBBBEEEEFFFF1]
+
+// -----
+
+// expected-error@below {{expected ']' to close distinct ID}}
+#attr = distinct[8)
+
+// -----
+
+// expected-error@below {{expected '<' after distinct ID}}
+#attr = distinct[8](
+
+// -----
+
+// expected-error@below {{expected attribute}}
+#attr = distinct[8]<attribute
+
+// -----
+
+// expected-error@below {{expected '>' to close distinct attribute}}
+#attr = distinct[8]<@foo]
+
+// -----
+
+#attr = distinct[0]<42 : i32>
+// expected-error@below {{referenced attribute does not match previous definition: 42 : i32}}
+#attr1 = distinct[0]<43 : i32>
+
+// -----

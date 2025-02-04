@@ -62,16 +62,16 @@ define void @test_mixed(ptr addrspace(1) %a, ptr addrspace(1) %b, ptr addrspace(
 ; CHECK-NEXT:    .cfi_offset %rbx, -32
 ; CHECK-NEXT:    .cfi_offset %r14, -24
 ; CHECK-NEXT:    .cfi_offset %r15, -16
-; CHECK-NEXT:    movq %rdx, %r14
-; CHECK-NEXT:    movq %rsi, %r15
-; CHECK-NEXT:    movq %rdi, %rbx
+; CHECK-NEXT:    movq %rdx, %rbx
+; CHECK-NEXT:    movq %rsi, %r14
+; CHECK-NEXT:    movq %rdi, %r15
 ; CHECK-NEXT:    callq func@PLT
 ; CHECK-NEXT:  .Ltmp1:
-; CHECK-NEXT:    movq %rbx, %rdi
+; CHECK-NEXT:    movq %r15, %rdi
 ; CHECK-NEXT:    xorl %esi, %esi
-; CHECK-NEXT:    movq %r15, %rdx
+; CHECK-NEXT:    movq %r14, %rdx
 ; CHECK-NEXT:    xorl %ecx, %ecx
-; CHECK-NEXT:    movq %r14, %r8
+; CHECK-NEXT:    movq %rbx, %r8
 ; CHECK-NEXT:    callq consume5@PLT
 ; CHECK-NEXT:    popq %rbx
 ; CHECK-NEXT:    .cfi_def_cfa_offset 24
@@ -244,12 +244,11 @@ define i1 @test_cross_bb(ptr addrspace(1) %a, i1 %external_cond) gc "statepoint-
 ; CHECK:       # %bb.0: # %entry
 ; CHECK-NEXT:    pushq %rbp
 ; CHECK-NEXT:    .cfi_def_cfa_offset 16
-; CHECK-NEXT:    pushq %r14
-; CHECK-NEXT:    .cfi_def_cfa_offset 24
 ; CHECK-NEXT:    pushq %rbx
+; CHECK-NEXT:    .cfi_def_cfa_offset 24
+; CHECK-NEXT:    pushq %rax
 ; CHECK-NEXT:    .cfi_def_cfa_offset 32
-; CHECK-NEXT:    .cfi_offset %rbx, -32
-; CHECK-NEXT:    .cfi_offset %r14, -24
+; CHECK-NEXT:    .cfi_offset %rbx, -24
 ; CHECK-NEXT:    .cfi_offset %rbp, -16
 ; CHECK-NEXT:    movl %esi, %ebp
 ; CHECK-NEXT:    movq %rdi, %rbx
@@ -258,17 +257,17 @@ define i1 @test_cross_bb(ptr addrspace(1) %a, i1 %external_cond) gc "statepoint-
 ; CHECK-NEXT:    testb $1, %bpl
 ; CHECK-NEXT:    je .LBB7_2
 ; CHECK-NEXT:  # %bb.1: # %left
-; CHECK-NEXT:    movl %eax, %r14d
 ; CHECK-NEXT:    movq %rbx, %rdi
+; CHECK-NEXT:    movl %eax, %ebx
 ; CHECK-NEXT:    callq consume@PLT
-; CHECK-NEXT:    movl %r14d, %eax
+; CHECK-NEXT:    movl %ebx, %eax
 ; CHECK-NEXT:    jmp .LBB7_3
 ; CHECK-NEXT:  .LBB7_2: # %right
 ; CHECK-NEXT:    movb $1, %al
 ; CHECK-NEXT:  .LBB7_3: # %right
-; CHECK-NEXT:    popq %rbx
+; CHECK-NEXT:    addq $8, %rsp
 ; CHECK-NEXT:    .cfi_def_cfa_offset 24
-; CHECK-NEXT:    popq %r14
+; CHECK-NEXT:    popq %rbx
 ; CHECK-NEXT:    .cfi_def_cfa_offset 16
 ; CHECK-NEXT:    popq %rbp
 ; CHECK-NEXT:    .cfi_def_cfa_offset 8
@@ -353,18 +352,18 @@ define void @test_limit(ptr addrspace(1) %a, ptr addrspace(1) %b, ptr addrspace(
 ; CHECK-NEXT:    .cfi_offset %r12, -32
 ; CHECK-NEXT:    .cfi_offset %r14, -24
 ; CHECK-NEXT:    .cfi_offset %r15, -16
-; CHECK-NEXT:    movq %r8, %r14
-; CHECK-NEXT:    movq %rcx, %r15
-; CHECK-NEXT:    movq %rdx, %r12
-; CHECK-NEXT:    movq %rsi, %rbx
+; CHECK-NEXT:    movq %r8, %rbx
+; CHECK-NEXT:    movq %rcx, %r14
+; CHECK-NEXT:    movq %rdx, %r15
+; CHECK-NEXT:    movq %rsi, %r12
 ; CHECK-NEXT:    movq %rdi, (%rsp)
 ; CHECK-NEXT:    callq func@PLT
 ; CHECK-NEXT:  .Ltmp11:
 ; CHECK-NEXT:    movq (%rsp), %rdi
-; CHECK-NEXT:    movq %rbx, %rsi
-; CHECK-NEXT:    movq %r12, %rdx
-; CHECK-NEXT:    movq %r15, %rcx
-; CHECK-NEXT:    movq %r14, %r8
+; CHECK-NEXT:    movq %r12, %rsi
+; CHECK-NEXT:    movq %r15, %rdx
+; CHECK-NEXT:    movq %r14, %rcx
+; CHECK-NEXT:    movq %rbx, %r8
 ; CHECK-NEXT:    callq consume5@PLT
 ; CHECK-NEXT:    addq $8, %rsp
 ; CHECK-NEXT:    .cfi_def_cfa_offset 40

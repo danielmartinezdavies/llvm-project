@@ -17,14 +17,11 @@
 #include "ARMMachineFunctionInfo.h"
 #include "ARMTargetMachine.h"
 #include "ARMTargetObjectFile.h"
-#include "MCTargetDesc/ARMAddressingModes.h"
 #include "MCTargetDesc/ARMInstPrinter.h"
 #include "MCTargetDesc/ARMMCExpr.h"
 #include "TargetInfo/ARMTargetInfo.h"
-#include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallString.h"
 #include "llvm/BinaryFormat/COFF.h"
-#include "llvm/CodeGen/MachineFunctionPass.h"
 #include "llvm/CodeGen/MachineJumpTableInfo.h"
 #include "llvm/CodeGen/MachineModuleInfoImpls.h"
 #include "llvm/IR/Constants.h"
@@ -45,7 +42,6 @@
 #include "llvm/Support/ARMBuildAttributes.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
-#include "llvm/Support/TargetParser.h"
 #include "llvm/Support/raw_ostream.h"
 #include "llvm/Target/TargetMachine.h"
 using namespace llvm;
@@ -138,13 +134,13 @@ bool ARMAsmPrinter::runOnMachineFunction(MachineFunction &MF) {
   else if (F.hasOptSize())
     // For small size, but speed and debugging illusion preserved
     OptimizationGoal = 3;
-  else if (TM.getOptLevel() == CodeGenOpt::Aggressive)
+  else if (TM.getOptLevel() == CodeGenOptLevel::Aggressive)
     // Aggressively for speed, small size and debug illusion sacrificed
     OptimizationGoal = 2;
-  else if (TM.getOptLevel() > CodeGenOpt::None)
+  else if (TM.getOptLevel() > CodeGenOptLevel::None)
     // For speed, but small size and good debug illusion preserved
     OptimizationGoal = 1;
-  else // TM.getOptLevel() == CodeGenOpt::None
+  else // TM.getOptLevel() == CodeGenOptLevel::None
     // For good debugging, but speed and small size preserved
     OptimizationGoal = 5;
 
@@ -155,9 +151,9 @@ bool ARMAsmPrinter::runOnMachineFunction(MachineFunction &MF) {
     OptimizationGoals = 0;
 
   if (Subtarget->isTargetCOFF()) {
-    bool Internal = F.hasInternalLinkage();
-    COFF::SymbolStorageClass Scl = Internal ? COFF::IMAGE_SYM_CLASS_STATIC
-                                            : COFF::IMAGE_SYM_CLASS_EXTERNAL;
+    bool Local = F.hasLocalLinkage();
+    COFF::SymbolStorageClass Scl =
+        Local ? COFF::IMAGE_SYM_CLASS_STATIC : COFF::IMAGE_SYM_CLASS_EXTERNAL;
     int Type = COFF::IMAGE_SYM_DTYPE_FUNCTION << COFF::SCT_COMPLEX_TYPE_SHIFT;
 
     OutStreamer->beginCOFFSymbolDef(CurrentFnSym);
@@ -201,6 +197,15 @@ void ARMAsmPrinter::PrintSymbolOperand(const MachineOperand &MO,
     O << ":lower16:";
   else if (TF & ARMII::MO_HI16)
     O << ":upper16:";
+  else if (TF & ARMII::MO_LO_0_7)
+    O << ":lower0_7:";
+  else if (TF & ARMII::MO_LO_8_15)
+    O << ":lower8_15:";
+  else if (TF & ARMII::MO_HI_0_7)
+    O << ":upper0_7:";
+  else if (TF & ARMII::MO_HI_8_15)
+    O << ":upper8_15:";
+
   GetARMGVSymbol(MO.getGlobal(), TF)->print(O, MAI);
   printOffset(MO.getOffset(), O);
 }
@@ -213,7 +218,7 @@ void ARMAsmPrinter::printOperand(const MachineInstr *MI, int OpNum,
   default: llvm_unreachable("<unknown operand type>");
   case MachineOperand::MO_Register: {
     Register Reg = MO.getReg();
-    assert(Register::isPhysicalRegister(Reg));
+    assert(Reg.isPhysical());
     assert(!MO.getSubReg() && "Subregs should be eliminated!");
     if(ARM::GPRPairRegClass.contains(Reg)) {
       const MachineFunction &MF = *MI->getParent()->getParent();
@@ -230,6 +235,14 @@ void ARMAsmPrinter::printOperand(const MachineInstr *MI, int OpNum,
       O << ":lower16:";
     else if (TF == ARMII::MO_HI16)
       O << ":upper16:";
+    else if (TF == ARMII::MO_LO_0_7)
+      O << ":lower0_7:";
+    else if (TF == ARMII::MO_LO_8_15)
+      O << ":lower8_15:";
+    else if (TF == ARMII::MO_HI_0_7)
+      O << ":upper0_7:";
+    else if (TF == ARMII::MO_HI_8_15)
+      O << ":upper8_15:";
     O << MO.getImm();
     break;
   }
@@ -288,11 +301,11 @@ bool ARMAsmPrinter::PrintAsmOperand(const MachineInstr *MI, unsigned OpNum,
         const TargetRegisterInfo *TRI = MF->getSubtarget().getRegisterInfo();
         // Find the 'd' register that has this 's' register as a sub-register,
         // and determine the lane number.
-        for (MCSuperRegIterator SR(Reg, TRI); SR.isValid(); ++SR) {
-          if (!ARM::DPRRegClass.contains(*SR))
+        for (MCPhysReg SR : TRI->superregs(Reg)) {
+          if (!ARM::DPRRegClass.contains(SR))
             continue;
-          bool Lane0 = TRI->getSubReg(*SR, ARM::ssub_0) == Reg;
-          O << ARMInstPrinter::getRegisterName(*SR) << (Lane0 ? "[0]" : "[1]");
+          bool Lane0 = TRI->getSubReg(SR, ARM::ssub_0) == Reg;
+          O << ARMInstPrinter::getRegisterName(SR) << (Lane0 ? "[0]" : "[1]");
           return false;
         }
       }
@@ -346,25 +359,26 @@ bool ARMAsmPrinter::PrintAsmOperand(const MachineInstr *MI, unsigned OpNum,
       const MachineOperand &FlagsOP = MI->getOperand(OpNum - 1);
       if (!FlagsOP.isImm())
         return true;
-      unsigned Flags = FlagsOP.getImm();
+      InlineAsm::Flag F(FlagsOP.getImm());
 
       // This operand may not be the one that actually provides the register. If
       // it's tied to a previous one then we should refer instead to that one
       // for registers and their classes.
       unsigned TiedIdx;
-      if (InlineAsm::isUseOperandTiedToDef(Flags, TiedIdx)) {
+      if (F.isUseOperandTiedToDef(TiedIdx)) {
         for (OpNum = InlineAsm::MIOp_FirstOperand; TiedIdx; --TiedIdx) {
           unsigned OpFlags = MI->getOperand(OpNum).getImm();
-          OpNum += InlineAsm::getNumOperandRegisters(OpFlags) + 1;
+          const InlineAsm::Flag F(OpFlags);
+          OpNum += F.getNumOperandRegisters() + 1;
         }
-        Flags = MI->getOperand(OpNum).getImm();
+        F = InlineAsm::Flag(MI->getOperand(OpNum).getImm());
 
         // Later code expects OpNum to be pointing at the register rather than
         // the flags.
         OpNum += 1;
       }
 
-      unsigned NumVals = InlineAsm::getNumOperandRegisters(Flags);
+      const unsigned NumVals = F.getNumOperandRegisters();
       unsigned RC;
       bool FirstHalf;
       const ARMBaseTargetMachine &ATM =
@@ -379,7 +393,7 @@ bool ARMAsmPrinter::PrintAsmOperand(const MachineInstr *MI, unsigned OpNum,
         // ExtraCode[0] == 'R'.
         FirstHalf = !ATM.isLittleEndian();
       const TargetRegisterInfo *TRI = MF->getSubtarget().getRegisterInfo();
-      if (InlineAsm::hasRegClassConstraint(Flags, RC) &&
+      if (F.hasRegClassConstraint(RC) &&
           ARM::GPRPairRegClass.hasSubClassEq(TRI->getRegClass(RC))) {
         if (NumVals != 1)
           return true;
@@ -467,7 +481,7 @@ bool ARMAsmPrinter::PrintAsmMemoryOperand(const MachineInstr *MI,
 }
 
 static bool isThumb(const MCSubtargetInfo& STI) {
-  return STI.getFeatureBits()[ARM::ModeThumb];
+  return STI.hasFeature(ARM::ModeThumb);
 }
 
 void ARMAsmPrinter::emitInlineAsmEnd(const MCSubtargetInfo &StartInfo,
@@ -764,7 +778,7 @@ void ARMAsmPrinter::emitAttributes() {
 
     auto *PACValue = mdconst::extract_or_null<ConstantInt>(
         SourceModule->getModuleFlag("sign-return-address"));
-    if (PACValue && PACValue->getZExtValue() == 1) {
+    if (PACValue && PACValue->isOne()) {
       // If "+pacbti" is used as an architecture extension,
       // Tag_PAC_extension is emitted in
       // ARMTargetStreamer::emitTargetAttributes().
@@ -777,7 +791,7 @@ void ARMAsmPrinter::emitAttributes() {
 
     auto *BTIValue = mdconst::extract_or_null<ConstantInt>(
         SourceModule->getModuleFlag("branch-target-enforcement"));
-    if (BTIValue && BTIValue->getZExtValue() == 1) {
+    if (BTIValue && BTIValue->isOne()) {
       // If "+pacbti" is used as an architecture extension,
       // Tag_BTI_extension is emitted in
       // ARMTargetStreamer::emitTargetAttributes().
@@ -1070,7 +1084,7 @@ void ARMAsmPrinter::emitJumpTableTBInst(const MachineInstr *MI,
   OutStreamer->emitDataRegion(OffsetWidth == 1 ? MCDR_DataRegionJT8
                                                : MCDR_DataRegionJT16);
 
-  for (auto MBB : JTBBs) {
+  for (auto *MBB : JTBBs) {
     const MCExpr *MBBSymbolExpr = MCSymbolRefExpr::create(MBB->getSymbol(),
                                                           OutContext);
     // Otherwise it's an offset from the dispatch instruction. Construct an
@@ -1102,6 +1116,50 @@ void ARMAsmPrinter::emitJumpTableTBInst(const MachineInstr *MI,
   emitAlignment(Align(2));
 }
 
+std::tuple<const MCSymbol *, uint64_t, const MCSymbol *,
+           codeview::JumpTableEntrySize>
+ARMAsmPrinter::getCodeViewJumpTableInfo(int JTI,
+                                        const MachineInstr *BranchInstr,
+                                        const MCSymbol *BranchLabel) const {
+  codeview::JumpTableEntrySize EntrySize;
+  const MCSymbol *BaseLabel;
+  uint64_t BaseOffset = 0;
+  switch (BranchInstr->getOpcode()) {
+  case ARM::BR_JTadd:
+  case ARM::BR_JTr:
+  case ARM::tBR_JTr:
+    // Word relative to the jump table address.
+    EntrySize = codeview::JumpTableEntrySize::UInt32;
+    BaseLabel = GetARMJTIPICJumpTableLabel(JTI);
+    break;
+  case ARM::tTBH_JT:
+  case ARM::t2TBH_JT:
+    // half-word shifted left, relative to *after* the branch instruction.
+    EntrySize = codeview::JumpTableEntrySize::UInt16ShiftLeft;
+    BranchLabel = GetCPISymbol(BranchInstr->getOperand(3).getImm());
+    BaseLabel = BranchLabel;
+    BaseOffset = 4;
+    break;
+  case ARM::tTBB_JT:
+  case ARM::t2TBB_JT:
+    // byte shifted left, relative to *after* the branch instruction.
+    EntrySize = codeview::JumpTableEntrySize::UInt8ShiftLeft;
+    BranchLabel = GetCPISymbol(BranchInstr->getOperand(3).getImm());
+    BaseLabel = BranchLabel;
+    BaseOffset = 4;
+    break;
+  case ARM::t2BR_JT:
+    // Direct jump.
+    BaseLabel = nullptr;
+    EntrySize = codeview::JumpTableEntrySize::Pointer;
+    break;
+  default:
+    llvm_unreachable("Unknown jump table instruction");
+  }
+
+  return std::make_tuple(BaseLabel, BaseOffset, BranchLabel, EntrySize);
+}
+
 void ARMAsmPrinter::EmitUnwindingInstruction(const MachineInstr *MI) {
   assert(MI->getFlag(MachineInstr::FrameSetup) &&
       "Only instruction which are involved into frame setup code are allowed");
@@ -1125,10 +1183,24 @@ void ARMAsmPrinter::EmitUnwindingInstruction(const MachineInstr *MI) {
   case ARM::tLDRpci:
   case ARM::t2MOVi16:
   case ARM::t2MOVTi16:
+  case ARM::tMOVi8:
+  case ARM::tADDi8:
+  case ARM::tLSLri:
     // special cases:
     // 1) for Thumb1 code we sometimes materialize the constant via constpool
     //    load.
-    // 2) for Thumb2 execute only code we materialize the constant via
+    // 2) for Thumb1 execute only code we materialize the constant via the
+    // following pattern:
+    //        movs    r3, #:upper8_15:<const>
+    //        lsls    r3, #8
+    //        adds    r3, #:upper0_7:<const>
+    //        lsls    r3, #8
+    //        adds    r3, #:lower8_15:<const>
+    //        lsls    r3, #8
+    //        adds    r3, #:lower0_7:<const>
+    //    So we need to special-case MOVS, ADDS and LSLS, and keep track of
+    //    where we are in the sequence with the simplest of state machines.
+    // 3) for Thumb2 execute only code we materialize the constant via
     //    immediate constants in 2 separate instructions (MOVW/MOVT).
     SrcReg = ~0U;
     DstReg = MI->getOperand(0).getReg();
@@ -1145,7 +1217,7 @@ void ARMAsmPrinter::EmitUnwindingInstruction(const MachineInstr *MI) {
     assert(DstReg == ARM::SP &&
            "Only stack pointer as a destination reg is supported");
 
-    SmallVector<unsigned, 4> RegList;
+    SmallVector<MCRegister, 4> RegList;
     // Skip src & dst reg, and pred ops.
     unsigned StartOp = 2 + 2;
     // Use all the operands.
@@ -1237,6 +1309,10 @@ void ARMAsmPrinter::EmitUnwindingInstruction(const MachineInstr *MI) {
       default:
         MI->print(errs());
         llvm_unreachable("Unsupported opcode for unwinding information");
+      case ARM::tLDRspi:
+        // Used to restore LR in a prologue which uses it as a temporary, has
+        // no effect on unwind tables.
+        return;
       case ARM::MOVr:
       case ARM::tMOVr:
         Offset = 0;
@@ -1319,6 +1395,23 @@ void ARMAsmPrinter::EmitUnwindingInstruction(const MachineInstr *MI) {
         Offset = MI->getOperand(2).getImm();
         AFI->EHPrologueOffsetInRegs[DstReg] |= (Offset << 16);
         break;
+      case ARM::tMOVi8:
+        Offset = MI->getOperand(2).getImm();
+        AFI->EHPrologueOffsetInRegs[DstReg] = Offset;
+        break;
+      case ARM::tLSLri:
+        assert(MI->getOperand(3).getImm() == 8 &&
+               "The shift amount is not equal to 8");
+        assert(MI->getOperand(2).getReg() == MI->getOperand(0).getReg() &&
+               "The source register is not equal to the destination register");
+        AFI->EHPrologueOffsetInRegs[DstReg] <<= 8;
+        break;
+      case ARM::tADDi8:
+        assert(MI->getOperand(2).getReg() == MI->getOperand(0).getReg() &&
+               "The source register is not equal to the destination register");
+        Offset = MI->getOperand(3).getImm();
+        AFI->EHPrologueOffsetInRegs[DstReg] += Offset;
+        break;
       case ARM::t2PAC:
       case ARM::t2PACBTI:
         AFI->EHPrologueRemappedRegs[ARM::R12] = ARM::RA_AUTH_CODE;
@@ -1356,8 +1449,10 @@ void ARMAsmPrinter::emitInstruction(const MachineInstr *MI) {
     EmitUnwindingInstruction(MI);
 
   // Do any auto-generated pseudo lowerings.
-  if (emitPseudoExpansionLowering(*OutStreamer, MI))
+  if (MCInst OutInst; lowerPseudoInstExpansion(MI, OutInst)) {
+    EmitToStreamer(*OutStreamer, OutInst);
     return;
+  }
 
   assert(!convertAddSubFlagsOpcode(MI->getOpcode()) &&
          "Pseudo flag setting opcode should be expanded early");
@@ -1792,7 +1887,7 @@ void ARMAsmPrinter::emitInstruction(const MachineInstr *MI) {
       // FIXME: Ideally we could vary the LDRB index based on the padding
       // between the sequence and jump table, however that relies on MCExprs
       // for load indexes which are currently not supported.
-      OutStreamer->emitCodeAlignment(4, &getSubtargetInfo());
+      OutStreamer->emitCodeAlignment(Align(4), &getSubtargetInfo());
       EmitToStreamer(*OutStreamer, MCInstBuilder(ARM::tADDhirr)
                                        .addReg(Idx)
                                        .addReg(Idx)

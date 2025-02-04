@@ -1,12 +1,15 @@
 // RUN: %clang_cc1 -fsyntax-only -std=c2x -verify %s
 
+// This is the latest version of nodiscard that we support.
+_Static_assert(__has_c_attribute(nodiscard) == 202003L);
+
 struct [[nodiscard]] S1 { // ok
   int i;
 };
 struct [[nodiscard, nodiscard]] S2 { // ok
   int i;
 };
-struct [[nodiscard("Wrong")]] S3 { // FIXME: may need an extension warning.
+struct [[nodiscard("Wrong")]] S3 {
   int i;
 };
 
@@ -28,10 +31,10 @@ enum E2 get_e(void);
 [[nodiscard]] int get_i(void);
 
 void f2(void) {
-  get_s(); // expected-warning {{ignoring return value of function declared with 'nodiscard' attribute}}
-  get_s3(); // expected-warning {{ignoring return value of function declared with 'nodiscard' attribute: Wrong}}
+  get_s(); // expected-warning {{ignoring return value of type 'S4' declared with 'nodiscard' attribute}}
+  get_s3(); // expected-warning {{ignoring return value of type 'S3' declared with 'nodiscard' attribute: Wrong}}
   get_i(); // expected-warning {{ignoring return value of function declared with 'nodiscard' attribute}}
-  get_e(); // expected-warning {{ignoring return value of function declared with 'nodiscard' attribute}}
+  get_e(); // expected-warning {{ignoring return value of type 'E2' declared with 'nodiscard' attribute}}
 
   // Okay, warnings are not encouraged
   (void)get_s();
@@ -47,7 +50,13 @@ struct [[nodiscard]] error_info{
 struct error_info enable_missile_safety_mode(void);
 void launch_missiles(void);
 void test_missiles(void) {
-  enable_missile_safety_mode(); // expected-warning {{ignoring return value of function declared with 'nodiscard'}}
+  enable_missile_safety_mode(); // expected-warning {{ignoring return value of type 'error_info' declared with 'nodiscard'}}
   launch_missiles();
 }
 
+[[nodiscard]] int f3();
+
+void GH104391() {
+#define M (unsigned int) f3()
+  M; // expected-warning {{ignoring return value of function declared with 'nodiscard' attribute}}
+}

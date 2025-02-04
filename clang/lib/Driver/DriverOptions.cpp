@@ -7,49 +7,46 @@
 //===----------------------------------------------------------------------===//
 
 #include "clang/Driver/Options.h"
-#include "llvm/ADT/STLExtras.h"
 #include "llvm/Option/OptTable.h"
-#include "llvm/Option/Option.h"
 #include <cassert>
 
 using namespace clang::driver;
 using namespace clang::driver::options;
 using namespace llvm::opt;
 
-#define PREFIX(NAME, VALUE) static const char *const NAME[] = VALUE;
+#define OPTTABLE_STR_TABLE_CODE
 #include "clang/Driver/Options.inc"
-#undef PREFIX
+#undef OPTTABLE_STR_TABLE_CODE
 
-static const OptTable::Info InfoTable[] = {
-#define OPTION(PREFIX, NAME, ID, KIND, GROUP, ALIAS, ALIASARGS, FLAGS, PARAM,  \
-               HELPTEXT, METAVAR, VALUES)                                      \
-  {PREFIX, NAME,  HELPTEXT,    METAVAR,     OPT_##ID,  Option::KIND##Class,    \
-   PARAM,  FLAGS, OPT_##GROUP, OPT_##ALIAS, ALIASARGS, VALUES},
+#define OPTTABLE_VALUES_CODE
+#include "clang/Driver/Options.inc"
+#undef OPTTABLE_VALUES_CODE
+
+#define OPTTABLE_PREFIXES_TABLE_CODE
+#include "clang/Driver/Options.inc"
+#undef OPTTABLE_PREFIXES_TABLE_CODE
+
+#define OPTTABLE_PREFIXES_UNION_CODE
+#include "clang/Driver/Options.inc"
+#undef OPTTABLE_PREFIXES_UNION_CODE
+
+static constexpr OptTable::Info InfoTable[] = {
+#define OPTION(...) LLVM_CONSTRUCT_OPT_INFO(__VA_ARGS__),
 #include "clang/Driver/Options.inc"
 #undef OPTION
 };
 
 namespace {
 
-class DriverOptTable : public OptTable {
+class DriverOptTable : public PrecomputedOptTable {
 public:
   DriverOptTable()
-    : OptTable(InfoTable) {}
+      : PrecomputedOptTable(OptionStrTable, OptionPrefixesTable, InfoTable,
+                            OptionPrefixesUnion) {}
 };
-
 }
 
 const llvm::opt::OptTable &clang::driver::getDriverOptTable() {
-  static const DriverOptTable *Table = []() {
-    auto Result = std::make_unique<DriverOptTable>();
-    // Options.inc is included in DriverOptions.cpp, and calls OptTable's
-    // addValues function.
-    // Opt is a variable used in the code fragment in Options.inc.
-    OptTable &Opt = *Result;
-#define OPTTABLE_ARG_INIT
-#include "clang/Driver/Options.inc"
-#undef OPTTABLE_ARG_INIT
-    return Result.release();
-  }();
-  return *Table;
+  static DriverOptTable Table;
+  return Table;
 }

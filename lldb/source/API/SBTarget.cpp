@@ -37,12 +37,10 @@
 #include "lldb/Core/Disassembler.h"
 #include "lldb/Core/Module.h"
 #include "lldb/Core/ModuleSpec.h"
+#include "lldb/Core/PluginManager.h"
 #include "lldb/Core/SearchFilter.h"
 #include "lldb/Core/Section.h"
 #include "lldb/Core/StructuredDataImpl.h"
-#include "lldb/Core/ValueObjectConstResult.h"
-#include "lldb/Core/ValueObjectList.h"
-#include "lldb/Core/ValueObjectVariable.h"
 #include "lldb/Host/Host.h"
 #include "lldb/Symbol/DeclVendor.h"
 #include "lldb/Symbol/ObjectFile.h"
@@ -62,6 +60,9 @@
 #include "lldb/Utility/FileSpec.h"
 #include "lldb/Utility/ProcessInfo.h"
 #include "lldb/Utility/RegularExpression.h"
+#include "lldb/ValueObject/ValueObjectConstResult.h"
+#include "lldb/ValueObject/ValueObjectList.h"
+#include "lldb/ValueObject/ValueObjectVariable.h"
 
 #include "Commands/CommandObjectBreakpoint.h"
 #include "lldb/Interpreter/CommandReturnObject.h"
@@ -84,8 +85,9 @@ static Status AttachToProcess(ProcessAttachInfo &attach_info, Target &target) {
       // listener, so if a valid listener is supplied, we need to error out to
       // let the client know.
       if (attach_info.GetListener())
-        return Status("process is connected and already has a listener, pass "
-                      "empty listener");
+        return Status::FromErrorString(
+            "process is connected and already has a listener, pass "
+            "empty listener");
     }
   }
 
@@ -146,7 +148,7 @@ SBModule SBTarget::GetModuleAtIndexFromEvent(const uint32_t idx,
 const char *SBTarget::GetBroadcasterClassName() {
   LLDB_INSTRUMENT();
 
-  return Target::GetStaticBroadcasterClass().AsCString();
+  return ConstString(Target::GetStaticBroadcasterClass()).AsCString();
 }
 
 bool SBTarget::IsValid() const {
@@ -198,17 +200,31 @@ SBDebugger SBTarget::GetDebugger() const {
 
 SBStructuredData SBTarget::GetStatistics() {
   LLDB_INSTRUMENT_VA(this);
+  SBStatisticsOptions options;
+  return GetStatistics(options);
+}
+
+SBStructuredData SBTarget::GetStatistics(SBStatisticsOptions options) {
+  LLDB_INSTRUMENT_VA(this);
 
   SBStructuredData data;
   TargetSP target_sp(GetSP());
   if (!target_sp)
     return data;
   std::string json_str =
-      llvm::formatv("{0:2}",
-          DebuggerStats::ReportStatistics(target_sp->GetDebugger(),
-                                          target_sp.get())).str();
+      llvm::formatv("{0:2}", DebuggerStats::ReportStatistics(
+                                 target_sp->GetDebugger(), target_sp.get(),
+                                 options.ref()))
+          .str();
   data.m_impl_up->SetObjectSP(StructuredData::ParseJSON(json_str));
   return data;
+}
+
+void SBTarget::ResetStatistics() {
+  LLDB_INSTRUMENT_VA(this);
+  TargetSP target_sp(GetSP());
+  if (target_sp)
+    DebuggerStats::ResetStatistics(target_sp->GetDebugger(), target_sp.get());
 }
 
 void SBTarget::SetCollectingStats(bool v) {
@@ -434,7 +450,8 @@ lldb::SBProcess SBTarget::Attach(SBAttachInfo &sb_attach_info, SBError &error) {
 
   if (target_sp) {
     ProcessAttachInfo &attach_info = sb_attach_info.ref();
-    if (attach_info.ProcessIDIsValid() && !attach_info.UserIDIsValid()) {
+    if (attach_info.ProcessIDIsValid() && !attach_info.UserIDIsValid() &&
+        !attach_info.IsScriptedProcess()) {
       PlatformSP platform_sp = target_sp->GetPlatform();
       // See if we can pre-verify if a process exists or not
       if (platform_sp && platform_sp->IsConnected()) {
@@ -443,7 +460,7 @@ lldb::SBProcess SBTarget::Attach(SBAttachInfo &sb_attach_info, SBError &error) {
         if (platform_sp->GetProcessInfo(attach_pid, instance_info)) {
           attach_info.SetUserID(instance_info.GetEffectiveUserID());
         } else {
-          error.ref().SetErrorStringWithFormat(
+          error.ref() = Status::FromErrorStringWithFormat(
               "no process found with process ID %" PRIu64, attach_pid);
           return sb_process;
         }
@@ -652,15 +669,14 @@ size_t SBTarget::ReadMemory(const SBAddress addr, void *buf, size_t size,
                             lldb::SBError &error) {
   LLDB_INSTRUMENT_VA(this, addr, buf, size, error);
 
-  SBError sb_error;
   size_t bytes_read = 0;
   TargetSP target_sp(GetSP());
   if (target_sp) {
     std::lock_guard<std::recursive_mutex> guard(target_sp->GetAPIMutex());
     bytes_read =
-        target_sp->ReadMemory(addr.ref(), buf, size, sb_error.ref(), true);
+        target_sp->ReadMemory(addr.ref(), buf, size, error.ref(), true);
   } else {
-    sb_error.SetErrorString("invalid target");
+    error.SetErrorString("invalid target");
   }
 
   return bytes_read;
@@ -1116,8 +1132,8 @@ bool SBTarget::FindBreakpointsByName(const char *name,
     llvm::Expected<std::vector<BreakpointSP>> expected_vector =
         target_sp->GetBreakpointList().FindBreakpointsByName(name);
     if (!expected_vector) {
-      LLDB_LOG(GetLog(LLDBLog::Breakpoints), "invalid breakpoint name: {}",
-               llvm::toString(expected_vector.takeError()));
+      LLDB_LOG_ERROR(GetLog(LLDBLog::Breakpoints), expected_vector.takeError(),
+                     "invalid breakpoint name: {0}");
       return false;
     }
     for (BreakpointSP bkpt_sp : *expected_vector) {
@@ -1138,7 +1154,7 @@ void SBTarget::GetBreakpointNames(SBStringList &names) {
 
     std::vector<std::string> name_vec;
     target_sp->GetBreakpointNames(name_vec);
-    for (auto name : name_vec)
+    for (const auto &name : name_vec)
       names.AppendString(name.c_str());
   }
 }
@@ -1320,34 +1336,46 @@ SBWatchpoint SBTarget::FindWatchpointByID(lldb::watch_id_t wp_id) {
 }
 
 lldb::SBWatchpoint SBTarget::WatchAddress(lldb::addr_t addr, size_t size,
-                                          bool read, bool write,
+                                          bool read, bool modify,
                                           SBError &error) {
   LLDB_INSTRUMENT_VA(this, addr, size, read, write, error);
+
+  SBWatchpointOptions options;
+  options.SetWatchpointTypeRead(read);
+  options.SetWatchpointTypeWrite(eWatchpointWriteTypeOnModify);
+  return WatchpointCreateByAddress(addr, size, options, error);
+}
+
+lldb::SBWatchpoint
+SBTarget::WatchpointCreateByAddress(lldb::addr_t addr, size_t size,
+                                    SBWatchpointOptions options,
+                                    SBError &error) {
+  LLDB_INSTRUMENT_VA(this, addr, size, options, error);
 
   SBWatchpoint sb_watchpoint;
   lldb::WatchpointSP watchpoint_sp;
   TargetSP target_sp(GetSP());
-  if (target_sp && (read || write) && addr != LLDB_INVALID_ADDRESS &&
-      size > 0) {
+  uint32_t watch_type = 0;
+  if (options.GetWatchpointTypeRead())
+    watch_type |= LLDB_WATCH_TYPE_READ;
+  if (options.GetWatchpointTypeWrite() == eWatchpointWriteTypeAlways)
+    watch_type |= LLDB_WATCH_TYPE_WRITE;
+  if (options.GetWatchpointTypeWrite() == eWatchpointWriteTypeOnModify)
+    watch_type |= LLDB_WATCH_TYPE_MODIFY;
+  if (watch_type == 0) {
+    error.SetErrorString("Can't create a watchpoint that is neither read nor "
+                         "write nor modify.");
+    return sb_watchpoint;
+  }
+  if (target_sp && addr != LLDB_INVALID_ADDRESS && size > 0) {
     std::lock_guard<std::recursive_mutex> guard(target_sp->GetAPIMutex());
-    uint32_t watch_type = 0;
-    if (read)
-      watch_type |= LLDB_WATCH_TYPE_READ;
-    if (write)
-      watch_type |= LLDB_WATCH_TYPE_WRITE;
-    if (watch_type == 0) {
-      error.SetErrorString(
-          "Can't create a watchpoint that is neither read nor write.");
-      return sb_watchpoint;
-    }
-
     // Target::CreateWatchpoint() is thread safe.
     Status cw_error;
     // This API doesn't take in a type, so we can't figure out what it is.
     CompilerType *type = nullptr;
     watchpoint_sp =
         target_sp->CreateWatchpoint(addr, size, type, watch_type, cw_error);
-    error.SetError(cw_error);
+    error.SetError(std::move(cw_error));
     sb_watchpoint.SetSP(watchpoint_sp);
   }
 
@@ -1476,28 +1504,29 @@ lldb::SBModule SBTarget::AddModule(const char *path, const char *triple,
                                    const char *uuid_cstr, const char *symfile) {
   LLDB_INSTRUMENT_VA(this, path, triple, uuid_cstr, symfile);
 
-  lldb::SBModule sb_module;
   TargetSP target_sp(GetSP());
-  if (target_sp) {
-    ModuleSpec module_spec;
-    if (path)
-      module_spec.GetFileSpec().SetFile(path, FileSpec::Style::native);
+  if (!target_sp)
+    return {};
 
-    if (uuid_cstr)
-      module_spec.GetUUID().SetFromStringRef(uuid_cstr);
+  ModuleSpec module_spec;
+  if (path)
+    module_spec.GetFileSpec().SetFile(path, FileSpec::Style::native);
 
-    if (triple)
-      module_spec.GetArchitecture() = Platform::GetAugmentedArchSpec(
-          target_sp->GetPlatform().get(), triple);
-    else
-      module_spec.GetArchitecture() = target_sp->GetArchitecture();
+  if (uuid_cstr)
+    module_spec.GetUUID().SetFromStringRef(uuid_cstr);
 
-    if (symfile)
-      module_spec.GetSymbolFileSpec().SetFile(symfile, FileSpec::Style::native);
+  if (triple)
+    module_spec.GetArchitecture() =
+        Platform::GetAugmentedArchSpec(target_sp->GetPlatform().get(), triple);
+  else
+    module_spec.GetArchitecture() = target_sp->GetArchitecture();
 
-    sb_module.SetSP(target_sp->GetOrCreateModule(module_spec, true /* notify */));
-  }
-  return sb_module;
+  if (symfile)
+    module_spec.GetSymbolFileSpec().SetFile(symfile, FileSpec::Style::native);
+
+  SBModuleSpec sb_modulespec(module_spec);
+
+  return AddModule(sb_modulespec);
 }
 
 lldb::SBModule SBTarget::AddModule(const SBModuleSpec &module_spec) {
@@ -1505,9 +1534,27 @@ lldb::SBModule SBTarget::AddModule(const SBModuleSpec &module_spec) {
 
   lldb::SBModule sb_module;
   TargetSP target_sp(GetSP());
-  if (target_sp)
+  if (target_sp) {
     sb_module.SetSP(target_sp->GetOrCreateModule(*module_spec.m_opaque_up,
                                                  true /* notify */));
+    if (!sb_module.IsValid() && module_spec.m_opaque_up->GetUUID().IsValid()) {
+      Status error;
+      if (PluginManager::DownloadObjectAndSymbolFile(*module_spec.m_opaque_up,
+                                                     error,
+                                                     /* force_lookup */ true)) {
+        if (FileSystem::Instance().Exists(
+                module_spec.m_opaque_up->GetFileSpec())) {
+          sb_module.SetSP(target_sp->GetOrCreateModule(*module_spec.m_opaque_up,
+                                                       true /* notify */));
+        }
+      }
+    }
+  }
+  // If the target hasn't initialized any architecture yet, use the
+  // binary's architecture.
+  if (sb_module.IsValid() && !target_sp->GetArchitecture().IsValid() &&
+      sb_module.GetSP()->GetArchitecture().IsValid())
+    target_sp->SetArchitecture(sb_module.GetSP()->GetArchitecture());
   return sb_module;
 }
 
@@ -1577,27 +1624,47 @@ const char *SBTarget::GetTriple() {
   LLDB_INSTRUMENT_VA(this);
 
   TargetSP target_sp(GetSP());
-  if (target_sp) {
-    std::string triple(target_sp->GetArchitecture().GetTriple().str());
-    // Unique the string so we don't run into ownership issues since the const
-    // strings put the string into the string pool once and the strings never
-    // comes out
-    ConstString const_triple(triple.c_str());
-    return const_triple.GetCString();
-  }
-  return nullptr;
+  if (!target_sp)
+    return nullptr;
+
+  std::string triple(target_sp->GetArchitecture().GetTriple().str());
+  // Unique the string so we don't run into ownership issues since the const
+  // strings put the string into the string pool once and the strings never
+  // comes out
+  ConstString const_triple(triple.c_str());
+  return const_triple.GetCString();
 }
 
 const char *SBTarget::GetABIName() {
   LLDB_INSTRUMENT_VA(this);
-  
+
   TargetSP target_sp(GetSP());
-  if (target_sp) {
-    std::string abi_name(target_sp->GetABIName().str());
-    ConstString const_name(abi_name.c_str());
-    return const_name.GetCString();
-  }
-  return nullptr;
+  if (!target_sp)
+    return nullptr;
+
+  std::string abi_name(target_sp->GetABIName().str());
+  ConstString const_name(abi_name.c_str());
+  return const_name.GetCString();
+}
+
+const char *SBTarget::GetLabel() const {
+  LLDB_INSTRUMENT_VA(this);
+
+  TargetSP target_sp(GetSP());
+  if (!target_sp)
+    return nullptr;
+
+  return ConstString(target_sp->GetLabel().data()).AsCString();
+}
+
+SBError SBTarget::SetLabel(const char *label) {
+  LLDB_INSTRUMENT_VA(this, label);
+
+  TargetSP target_sp(GetSP());
+  if (!target_sp)
+    return Status::FromErrorString("Couldn't get internal target object.");
+
+  return Status::FromError(target_sp->SetLabel(label));
 }
 
 uint32_t SBTarget::GetDataByteSize() {
@@ -1729,6 +1796,11 @@ lldb::SBSymbolContextList SBTarget::FindGlobalFunctions(const char *name,
         target_sp->GetImages().FindFunctions(RegularExpression(name_ref),
                                              function_options, *sb_sc_list);
         break;
+      case eMatchTypeRegexInsensitive:
+        target_sp->GetImages().FindFunctions(
+            RegularExpression(name_ref, llvm::Regex::RegexFlags::IgnoreCase),
+            function_options, *sb_sc_list);
+        break;
       case eMatchTypeStartsWith:
         regexstr = llvm::Regex::escape(name) + ".*";
         target_sp->GetImages().FindFunctions(RegularExpression(regexstr),
@@ -1751,22 +1823,14 @@ lldb::SBType SBTarget::FindFirstType(const char *typename_cstr) {
   TargetSP target_sp(GetSP());
   if (typename_cstr && typename_cstr[0] && target_sp) {
     ConstString const_typename(typename_cstr);
-    SymbolContext sc;
-    const bool exact_match = false;
-
-    const ModuleList &module_list = target_sp->GetImages();
-    size_t count = module_list.GetSize();
-    for (size_t idx = 0; idx < count; idx++) {
-      ModuleSP module_sp(module_list.GetModuleAtIndex(idx));
-      if (module_sp) {
-        TypeSP type_sp(
-            module_sp->FindFirstType(sc, const_typename, exact_match));
-        if (type_sp)
-          return SBType(type_sp);
-      }
-    }
-
-    // Didn't find the type in the symbols; Try the loaded language runtimes
+    TypeQuery query(const_typename.GetStringRef(),
+                    TypeQueryOptions::e_find_one);
+    TypeResults results;
+    target_sp->GetImages().FindTypes(/*search_first=*/nullptr, query, results);
+    TypeSP type_sp = results.GetFirstType();
+    if (type_sp)
+      return SBType(type_sp);
+    // Didn't find the type in the symbols; Try the loaded language runtimes.
     if (auto process_sp = target_sp->GetProcessSP()) {
       for (auto *runtime : process_sp->GetLanguageRuntimes()) {
         if (auto vendor = runtime->GetDeclVendor()) {
@@ -1777,9 +1841,9 @@ lldb::SBType SBTarget::FindFirstType(const char *typename_cstr) {
       }
     }
 
-    // No matches, search for basic typename matches
-    for (auto *type_system : target_sp->GetScratchTypeSystems())
-      if (auto type = type_system->GetBuiltinTypeByName(const_typename))
+    // No matches, search for basic typename matches.
+    for (auto type_system_sp : target_sp->GetScratchTypeSystems())
+      if (auto type = type_system_sp->GetBuiltinTypeByName(const_typename))
         return SBType(type);
   }
 
@@ -1791,8 +1855,8 @@ SBType SBTarget::GetBasicType(lldb::BasicType type) {
 
   TargetSP target_sp(GetSP());
   if (target_sp) {
-    for (auto *type_system : target_sp->GetScratchTypeSystems())
-      if (auto compiler_type = type_system->GetBasicTypeFromAST(type))
+    for (auto type_system_sp : target_sp->GetScratchTypeSystems())
+      if (auto compiler_type = type_system_sp->GetBasicTypeFromAST(type))
         return SBType(compiler_type);
   }
   return SBType();
@@ -1806,17 +1870,11 @@ lldb::SBTypeList SBTarget::FindTypes(const char *typename_cstr) {
   if (typename_cstr && typename_cstr[0] && target_sp) {
     ModuleList &images = target_sp->GetImages();
     ConstString const_typename(typename_cstr);
-    bool exact_match = false;
-    TypeList type_list;
-    llvm::DenseSet<SymbolFile *> searched_symbol_files;
-    images.FindTypes(nullptr, const_typename, exact_match, UINT32_MAX,
-                     searched_symbol_files, type_list);
-
-    for (size_t idx = 0; idx < type_list.GetSize(); idx++) {
-      TypeSP type_sp(type_list.GetTypeAtIndex(idx));
-      if (type_sp)
-        sb_type_list.Append(SBType(type_sp));
-    }
+    TypeQuery query(typename_cstr);
+    TypeResults results;
+    images.FindTypes(nullptr, query, results);
+    for (const TypeSP &type_sp : results.GetTypeMap().Types())
+      sb_type_list.Append(SBType(type_sp));
 
     // Try the loaded language runtimes
     if (auto process_sp = target_sp->GetProcessSP()) {
@@ -1832,9 +1890,9 @@ lldb::SBTypeList SBTarget::FindTypes(const char *typename_cstr) {
 
     if (sb_type_list.GetSize() == 0) {
       // No matches, search for basic typename matches
-      for (auto *type_system : target_sp->GetScratchTypeSystems())
+      for (auto type_system_sp : target_sp->GetScratchTypeSystems())
         if (auto compiler_type =
-                type_system->GetBuiltinTypeByName(const_typename))
+                type_system_sp->GetBuiltinTypeByName(const_typename))
           sb_type_list.Append(SBType(compiler_type));
     }
   }
@@ -1890,8 +1948,13 @@ SBValueList SBTarget::FindGlobalVariables(const char *name,
       target_sp->GetImages().FindGlobalVariables(RegularExpression(name_ref),
                                                  max_matches, variable_list);
       break;
+    case eMatchTypeRegexInsensitive:
+      target_sp->GetImages().FindGlobalVariables(
+          RegularExpression(name_ref, llvm::Regex::IgnoreCase), max_matches,
+          variable_list);
+      break;
     case eMatchTypeStartsWith:
-      regexstr = llvm::Regex::escape(name) + ".*";
+      regexstr = "^" + llvm::Regex::escape(name) + ".*";
       target_sp->GetImages().FindGlobalVariables(RegularExpression(regexstr),
                                                  max_matches, variable_list);
       break;
@@ -1957,11 +2020,37 @@ lldb::SBInstructionList SBTarget::ReadInstructions(lldb::SBAddress base_addr,
                                 error, force_live_memory, &load_addr);
       const bool data_from_file = load_addr == LLDB_INVALID_ADDRESS;
       sb_instructions.SetDisassembler(Disassembler::DisassembleBytes(
-          target_sp->GetArchitecture(), nullptr, flavor_string, *addr_ptr,
+          target_sp->GetArchitecture(), nullptr, target_sp->GetDisassemblyCPU(),
+          target_sp->GetDisassemblyFeatures(), flavor_string, *addr_ptr,
           data.GetBytes(), bytes_read, count, data_from_file));
     }
   }
 
+  return sb_instructions;
+}
+
+lldb::SBInstructionList SBTarget::ReadInstructions(lldb::SBAddress start_addr,
+                                                   lldb::SBAddress end_addr,
+                                                   const char *flavor_string) {
+  LLDB_INSTRUMENT_VA(this, start_addr, end_addr, flavor_string);
+
+  SBInstructionList sb_instructions;
+
+  TargetSP target_sp(GetSP());
+  if (target_sp) {
+    lldb::addr_t start_load_addr = start_addr.GetLoadAddress(*this);
+    lldb::addr_t end_load_addr = end_addr.GetLoadAddress(*this);
+    if (end_load_addr > start_load_addr) {
+      lldb::addr_t size = end_load_addr - start_load_addr;
+
+      AddressRange range(start_load_addr, size);
+      const bool force_live_memory = true;
+      sb_instructions.SetDisassembler(Disassembler::DisassembleRange(
+          target_sp->GetArchitecture(), nullptr, flavor_string,
+          target_sp->GetDisassemblyCPU(), target_sp->GetDisassemblyFeatures(),
+          *target_sp, range, force_live_memory));
+    }
+  }
   return sb_instructions;
 }
 
@@ -1991,8 +2080,9 @@ SBTarget::GetInstructionsWithFlavor(lldb::SBAddress base_addr,
     const bool data_from_file = true;
 
     sb_instructions.SetDisassembler(Disassembler::DisassembleBytes(
-        target_sp->GetArchitecture(), nullptr, flavor_string, addr, buf, size,
-        UINT32_MAX, data_from_file));
+        target_sp->GetArchitecture(), nullptr, flavor_string,
+        target_sp->GetDisassemblyCPU(), target_sp->GetDisassemblyFeatures(),
+        addr, buf, size, UINT32_MAX, data_from_file));
   }
 
   return sb_instructions;
@@ -2091,6 +2181,18 @@ SBError SBTarget::ClearSectionLoadAddress(lldb::SBSection section) {
 SBError SBTarget::SetModuleLoadAddress(lldb::SBModule module,
                                        int64_t slide_offset) {
   LLDB_INSTRUMENT_VA(this, module, slide_offset);
+
+  if (slide_offset < 0) {
+    SBError sb_error;
+    sb_error.SetErrorStringWithFormat("slide must be positive");
+    return sb_error;
+  }
+
+  return SetModuleLoadAddress(module, static_cast<uint64_t>(slide_offset));
+}
+
+SBError SBTarget::SetModuleLoadAddress(lldb::SBModule module,
+                                               uint64_t slide_offset) {
 
   SBError sb_error;
 
@@ -2219,12 +2321,26 @@ lldb::SBValue SBTarget::EvaluateExpression(const char *expr,
     std::lock_guard<std::recursive_mutex> guard(target_sp->GetAPIMutex());
     ExecutionContext exe_ctx(m_opaque_sp.get());
 
-
     frame = exe_ctx.GetFramePtr();
     Target *target = exe_ctx.GetTargetPtr();
+    Process *process = exe_ctx.GetProcessPtr();
 
     if (target) {
-      target->EvaluateExpression(expr, frame, expr_value_sp, options.ref());
+      // If we have a process, make sure to lock the runlock:
+      if (process) {
+        Process::StopLocker stop_locker;
+        if (stop_locker.TryLock(&process->GetRunLock())) {
+          target->EvaluateExpression(expr, frame, expr_value_sp, options.ref());
+        } else {
+          Status error;
+          error = Status::FromErrorString("can't evaluate expressions when the "
+                                          "process is running.");
+          expr_value_sp =
+              ValueObjectConstResult::Create(nullptr, std::move(error));
+        }
+      } else {
+        target->EvaluateExpression(expr, frame, expr_value_sp, options.ref());
+      }
 
       expr_result.SetSP(expr_value_sp, options.GetFetchDynamicValue());
     }

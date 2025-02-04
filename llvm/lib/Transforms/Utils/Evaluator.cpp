@@ -29,7 +29,6 @@
 #include "llvm/IR/Instruction.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/IntrinsicInst.h"
-#include "llvm/IR/Operator.h"
 #include "llvm/IR/Type.h"
 #include "llvm/IR/User.h"
 #include "llvm/IR/Value.h"
@@ -121,7 +120,7 @@ isSimpleEnoughValueToCommit(Constant *C,
 }
 
 void Evaluator::MutableValue::clear() {
-  if (auto *Agg = Val.dyn_cast<MutableAggregate *>())
+  if (auto *Agg = dyn_cast_if_present<MutableAggregate *>(Val))
     delete Agg;
   Val = nullptr;
 }
@@ -130,9 +129,9 @@ Constant *Evaluator::MutableValue::read(Type *Ty, APInt Offset,
                                         const DataLayout &DL) const {
   TypeSize TySize = DL.getTypeStoreSize(Ty);
   const MutableValue *V = this;
-  while (const auto *Agg = V->Val.dyn_cast<MutableAggregate *>()) {
+  while (const auto *Agg = dyn_cast_if_present<MutableAggregate *>(V->Val)) {
     Type *AggTy = Agg->Ty;
-    Optional<APInt> Index = DL.getGEPIndexForOffset(AggTy, Offset);
+    std::optional<APInt> Index = DL.getGEPIndexForOffset(AggTy, Offset);
     if (!Index || Index->uge(Agg->Elements.size()) ||
         !TypeSize::isKnownLE(TySize, DL.getTypeStoreSize(AggTy)))
       return nullptr;
@@ -140,11 +139,11 @@ Constant *Evaluator::MutableValue::read(Type *Ty, APInt Offset,
     V = &Agg->Elements[Index->getZExtValue()];
   }
 
-  return ConstantFoldLoadFromConst(V->Val.get<Constant *>(), Ty, Offset, DL);
+  return ConstantFoldLoadFromConst(cast<Constant *>(V->Val), Ty, Offset, DL);
 }
 
 bool Evaluator::MutableValue::makeMutable() {
-  Constant *C = Val.get<Constant *>();
+  Constant *C = cast<Constant *>(Val);
   Type *Ty = C->getType();
   unsigned NumElements;
   if (auto *VT = dyn_cast<FixedVectorType>(Ty)) {
@@ -171,12 +170,12 @@ bool Evaluator::MutableValue::write(Constant *V, APInt Offset,
   MutableValue *MV = this;
   while (Offset != 0 ||
          !CastInst::isBitOrNoopPointerCastable(Ty, MV->getType(), DL)) {
-    if (MV->Val.is<Constant *>() && !MV->makeMutable())
+    if (isa<Constant *>(MV->Val) && !MV->makeMutable())
       return false;
 
-    MutableAggregate *Agg = MV->Val.get<MutableAggregate *>();
+    MutableAggregate *Agg = cast<MutableAggregate *>(MV->Val);
     Type *AggTy = Agg->Ty;
-    Optional<APInt> Index = DL.getGEPIndexForOffset(AggTy, Offset);
+    std::optional<APInt> Index = DL.getGEPIndexForOffset(AggTy, Offset);
     if (!Index || Index->uge(Agg->Elements.size()) ||
         !TypeSize::isKnownLE(TySize, DL.getTypeStoreSize(AggTy)))
       return false;
@@ -254,38 +253,15 @@ Evaluator::getCalleeWithFormalArgs(CallBase &CB,
 
 bool Evaluator::getFormalParams(CallBase &CB, Function *F,
                                 SmallVectorImpl<Constant *> &Formals) {
-  if (!F)
-    return false;
-
   auto *FTy = F->getFunctionType();
-  if (FTy->getNumParams() > CB.arg_size()) {
-    LLVM_DEBUG(dbgs() << "Too few arguments for function.\n");
+  if (FTy != CB.getFunctionType()) {
+    LLVM_DEBUG(dbgs() << "Signature mismatch.\n");
     return false;
   }
 
-  auto ArgI = CB.arg_begin();
-  for (Type *PTy : FTy->params()) {
-    auto *ArgC = ConstantFoldLoadThroughBitcast(getVal(*ArgI), PTy, DL);
-    if (!ArgC) {
-      LLVM_DEBUG(dbgs() << "Can not convert function argument.\n");
-      return false;
-    }
-    Formals.push_back(ArgC);
-    ++ArgI;
-  }
+  for (Value *Arg : CB.args())
+    Formals.push_back(getVal(Arg));
   return true;
-}
-
-/// If call expression contains bitcast then we may need to cast
-/// evaluated return value to a type of the call expression.
-Constant *Evaluator::castCallResultIfNeeded(Type *ReturnType, Constant *RV) {
-  if (!RV || RV->getType() == ReturnType)
-    return RV;
-
-  RV = ConstantFoldLoadThroughBitcast(RV, ReturnType, DL);
-  if (!RV)
-    LLVM_DEBUG(dbgs() << "Failed to fold bitcast call expr\n");
-  return RV;
 }
 
 /// Evaluate all instructions in block BB, returning true if successful, false
@@ -413,16 +389,28 @@ bool Evaluator::EvaluateBlock(BasicBlock::iterator CurInst, BasicBlock *&NextBB,
           }
 
           Constant *Val = getVal(MSI->getValue());
-          APInt Len = LenC->getValue();
-          while (Len != 0) {
-            Constant *DestVal = ComputeLoadResult(GV, Val->getType(), Offset);
-            if (DestVal != Val) {
-              LLVM_DEBUG(dbgs() << "Memset is not a no-op at offset "
-                                << Offset << " of " << *GV << ".\n");
+          // Avoid the byte-per-byte scan if we're memseting a zeroinitializer
+          // to zero.
+          if (!Val->isNullValue() || MutatedMemory.contains(GV) ||
+              !GV->hasDefinitiveInitializer() ||
+              !GV->getInitializer()->isNullValue()) {
+            APInt Len = LenC->getValue();
+            if (Len.ugt(64 * 1024)) {
+              LLVM_DEBUG(dbgs() << "Not evaluating large memset of size "
+                                << Len << "\n");
               return false;
             }
-            ++Offset;
-            --Len;
+
+            while (Len != 0) {
+              Constant *DestVal = ComputeLoadResult(GV, Val->getType(), Offset);
+              if (DestVal != Val) {
+                LLVM_DEBUG(dbgs() << "Memset is not a no-op at offset "
+                                  << Offset << " of " << *GV << ".\n");
+                return false;
+              }
+              ++Offset;
+              --Len;
+            }
           }
 
           LLVM_DEBUG(dbgs() << "Ignoring no-op memset.\n");
@@ -509,9 +497,7 @@ bool Evaluator::EvaluateBlock(BasicBlock::iterator CurInst, BasicBlock *&NextBB,
         if (Callee->isDeclaration()) {
           // If this is a function we can constant fold, do it.
           if (Constant *C = ConstantFoldCall(&CB, Callee, Formals, TLI)) {
-            InstResult = castCallResultIfNeeded(CB.getType(), C);
-            if (!InstResult)
-              return false;
+            InstResult = C;
             LLVM_DEBUG(dbgs() << "Constant folded function call. Result: "
                               << *InstResult << "\n");
           } else {
@@ -533,10 +519,7 @@ bool Evaluator::EvaluateBlock(BasicBlock::iterator CurInst, BasicBlock *&NextBB,
             return false;
           }
           ValueStack.pop_back();
-          InstResult = castCallResultIfNeeded(CB.getType(), RetVal);
-          if (RetVal && !InstResult)
-            return false;
-
+          InstResult = RetVal;
           if (InstResult) {
             LLVM_DEBUG(dbgs() << "Successfully evaluated function. Result: "
                               << *InstResult << "\n\n");
@@ -626,10 +609,8 @@ bool Evaluator::EvaluateFunction(Function *F, Constant *&RetVal,
   CallStack.push_back(F);
 
   // Initialize arguments to the incoming values specified.
-  unsigned ArgNo = 0;
-  for (Function::arg_iterator AI = F->arg_begin(), E = F->arg_end(); AI != E;
-       ++AI, ++ArgNo)
-    setVal(&*AI, ActualArgs[ArgNo]);
+  for (const auto &[ArgNo, Arg] : llvm::enumerate(F->args()))
+    setVal(&Arg, ActualArgs[ArgNo]);
 
   // ExecutedBlocks - We only handle non-looping, non-recursive code.  As such,
   // we can only evaluate any one basic block at most once.  This set keeps

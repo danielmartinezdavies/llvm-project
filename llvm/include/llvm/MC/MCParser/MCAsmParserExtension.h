@@ -22,7 +22,7 @@ class Twine;
 /// which is implemented by target and object file assembly parser
 /// implementations.
 class MCAsmParserExtension {
-  MCAsmParser *Parser;
+  MCAsmParser *Parser = nullptr;
 
 protected:
   MCAsmParserExtension();
@@ -98,7 +98,7 @@ public:
     return getParser().parseOptionalToken(T);
   }
 
-  bool ParseDirectiveCGProfile(StringRef, SMLoc);
+  bool parseDirectiveCGProfile(StringRef, SMLoc);
 
   bool check(bool P, const Twine &Msg) {
     return getParser().check(P, Msg);

@@ -6,6 +6,11 @@ add_llvm_component_library(LLVMGlobalISel
   GlobalISel.cpp
   Combiner.cpp
   CombinerHelper.cpp
+  CombinerHelperArtifacts.cpp
+  CombinerHelperCasts.cpp
+  CombinerHelperCompares.cpp
+  CombinerHelperVectorOps.cpp
+  GIMatchTableExecutor.cpp
   GISelChangeObserver.cpp
   IRTranslator.cpp
   InlineAsmLowering.cpp
@@ -33,6 +38,7 @@ add_llvm_component_library(LLVMGlobalISel
   LINK_COMPONENTS
   Analysis
   CodeGen
+  CodeGenTypes
   Core
   MC
   SelectionDAG

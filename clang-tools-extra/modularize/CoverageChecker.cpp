@@ -89,8 +89,9 @@ public:
   void InclusionDirective(SourceLocation HashLoc, const Token &IncludeTok,
                           StringRef FileName, bool IsAngled,
                           CharSourceRange FilenameRange,
-                          Optional<FileEntryRef> File, StringRef SearchPath,
-                          StringRef RelativePath, const Module *Imported,
+                          OptionalFileEntryRef File, StringRef SearchPath,
+                          StringRef RelativePath, const Module *SuggestedModule,
+                          bool ModuleImported,
                           SrcMgr::CharacteristicKind FileType) override {
     Checker.collectUmbrellaHeaderHeader(File->getName());
   }
@@ -207,28 +208,27 @@ void CoverageChecker::collectModuleHeaders() {
 // FIXME: Doesn't collect files from umbrella header.
 bool CoverageChecker::collectModuleHeaders(const Module &Mod) {
 
-  if (const FileEntry *UmbrellaHeader = Mod.getUmbrellaHeader().Entry) {
+  if (std::optional<Module::Header> UmbrellaHeader =
+          Mod.getUmbrellaHeaderAsWritten()) {
     // Collect umbrella header.
-    ModuleMapHeadersSet.insert(ModularizeUtilities::getCanonicalPath(
-      UmbrellaHeader->getName()));
+    ModuleMapHeadersSet.insert(
+        ModularizeUtilities::getCanonicalPath(UmbrellaHeader->Entry.getName()));
     // Preprocess umbrella header and collect the headers it references.
-    if (!collectUmbrellaHeaderHeaders(UmbrellaHeader->getName()))
+    if (!collectUmbrellaHeaderHeaders(UmbrellaHeader->Entry.getName()))
       return false;
-  }
-  else if (const DirectoryEntry *UmbrellaDir = Mod.getUmbrellaDir().Entry) {
+  } else if (std::optional<Module::DirectoryName> UmbrellaDir =
+                 Mod.getUmbrellaDirAsWritten()) {
     // Collect headers in umbrella directory.
-    if (!collectUmbrellaHeaders(UmbrellaDir->getName()))
+    if (!collectUmbrellaHeaders(UmbrellaDir->Entry.getName()))
       return false;
   }
 
-  for (auto &HeaderKind : Mod.Headers)
-    for (auto &Header : HeaderKind)
-      ModuleMapHeadersSet.insert(ModularizeUtilities::getCanonicalPath(
-        Header.Entry->getName()));
+  for (const auto &Header : Mod.getAllHeaders())
+    ModuleMapHeadersSet.insert(
+        ModularizeUtilities::getCanonicalPath(Header.Entry.getName()));
 
-  for (auto MI = Mod.submodule_begin(), MIEnd = Mod.submodule_end();
-       MI != MIEnd; ++MI)
-    collectModuleHeaders(**MI);
+  for (auto *Submodule : Mod.submodules())
+    collectModuleHeaders(*Submodule);
 
   return true;
 }
@@ -278,15 +278,15 @@ CoverageChecker::collectUmbrellaHeaderHeaders(StringRef UmbrellaHeaderName) {
     sys::fs::current_path(PathBuf);
 
   // Create the compilation database.
-  std::unique_ptr<CompilationDatabase> Compilations;
-  Compilations.reset(new FixedCompilationDatabase(Twine(PathBuf), CommandLine));
+  FixedCompilationDatabase Compilations(Twine(PathBuf), CommandLine);
 
   std::vector<std::string> HeaderPath;
   HeaderPath.push_back(std::string(UmbrellaHeaderName));
 
   // Create the tool and run the compilation.
-  ClangTool Tool(*Compilations, HeaderPath);
-  int HadErrors = Tool.run(new CoverageCheckerFrontendActionFactory(*this));
+  ClangTool Tool(Compilations, HeaderPath);
+  CoverageCheckerFrontendActionFactory ActionFactory(*this);
+  int HadErrors = Tool.run(&ActionFactory);
 
   // If we had errors, exit early.
   return !HadErrors;
@@ -302,7 +302,7 @@ void CoverageChecker::collectUmbrellaHeaderHeader(StringRef HeaderName) {
     sys::fs::current_path(PathBuf);
   // HeaderName will have an absolute path, so if it's the module map
   // directory, we remove it, also skipping trailing separator.
-  if (HeaderName.startswith(PathBuf))
+  if (HeaderName.starts_with(PathBuf))
     HeaderName = HeaderName.substr(PathBuf.size() + 1);
   // Save header name.
   ModuleMapHeadersSet.insert(ModularizeUtilities::getCanonicalPath(HeaderName));
@@ -356,8 +356,8 @@ bool CoverageChecker::collectFileSystemHeaders(StringRef IncludePath) {
     sys::path::append(Directory, IncludePath);
   if (Directory.size() == 0)
     Directory = ".";
-  if (IncludePath.startswith("/") || IncludePath.startswith("\\") ||
-    ((IncludePath.size() >= 2) && (IncludePath[1] == ':'))) {
+  if (IncludePath.starts_with("/") || IncludePath.starts_with("\\") ||
+      ((IncludePath.size() >= 2) && (IncludePath[1] == ':'))) {
     llvm::errs() << "error: Include path \"" << IncludePath
       << "\" is not relative to the module map file.\n";
     return false;

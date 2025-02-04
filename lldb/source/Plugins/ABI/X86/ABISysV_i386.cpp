@@ -8,14 +8,11 @@
 #include "ABISysV_i386.h"
 
 #include "llvm/ADT/STLExtras.h"
-#include "llvm/ADT/Triple.h"
+#include "llvm/TargetParser/Triple.h"
 
 #include "lldb/Core/Module.h"
 #include "lldb/Core/PluginManager.h"
 #include "lldb/Core/Value.h"
-#include "lldb/Core/ValueObjectConstResult.h"
-#include "lldb/Core/ValueObjectMemory.h"
-#include "lldb/Core/ValueObjectRegister.h"
 #include "lldb/Symbol/UnwindPlan.h"
 #include "lldb/Target/Process.h"
 #include "lldb/Target/RegisterContext.h"
@@ -27,6 +24,10 @@
 #include "lldb/Utility/Log.h"
 #include "lldb/Utility/RegisterValue.h"
 #include "lldb/Utility/Status.h"
+#include "lldb/ValueObject/ValueObjectConstResult.h"
+#include "lldb/ValueObject/ValueObjectMemory.h"
+#include "lldb/ValueObject/ValueObjectRegister.h"
+#include <optional>
 
 using namespace lldb;
 using namespace lldb_private;
@@ -181,7 +182,7 @@ bool ABISysV_i386::GetArgumentValues(Thread &thread, ValueList &values) const {
 
     // Currently: Support for extracting values with Clang QualTypes only.
     CompilerType compiler_type(value->GetCompilerType());
-    llvm::Optional<uint64_t> bit_size = compiler_type.GetBitSize(&thread);
+    std::optional<uint64_t> bit_size = compiler_type.GetBitSize(&thread);
     if (bit_size) {
       bool is_signed;
       if (compiler_type.IsIntegerOrEnumerationType(is_signed)) {
@@ -200,13 +201,13 @@ Status ABISysV_i386::SetReturnValueObject(lldb::StackFrameSP &frame_sp,
                                           lldb::ValueObjectSP &new_value_sp) {
   Status error;
   if (!new_value_sp) {
-    error.SetErrorString("Empty value object for return value.");
+    error = Status::FromErrorString("Empty value object for return value.");
     return error;
   }
 
   CompilerType compiler_type = new_value_sp->GetCompilerType();
   if (!compiler_type) {
-    error.SetErrorString("Null clang type for return value.");
+    error = Status::FromErrorString("Null clang type for return value.");
     return error;
   }
 
@@ -219,7 +220,7 @@ Status ABISysV_i386::SetReturnValueObject(lldb::StackFrameSP &frame_sp,
   bool register_write_successful = true;
 
   if (data_error.Fail()) {
-    error.SetErrorStringWithFormat(
+    error = Status::FromErrorStringWithFormat(
         "Couldn't convert return value to raw data: %s",
         data_error.AsCString());
     return error;
@@ -232,7 +233,8 @@ Status ABISysV_i386::SetReturnValueObject(lldb::StackFrameSP &frame_sp,
   if (type_flags & eTypeIsPointer) // 'Pointer'
   {
     if (num_bytes != sizeof(uint32_t)) {
-      error.SetErrorString("Pointer to be returned is not 4 bytes wide");
+      error =
+          Status::FromErrorString("Pointer to be returned is not 4 bytes wide");
       return error;
     }
     lldb::offset_t offset = 0;
@@ -317,7 +319,8 @@ Status ABISysV_i386::SetReturnValueObject(lldb::StackFrameSP &frame_sp,
         else if (num_bytes == 12)
           value_long_dbl = data.GetLongDouble(&offset);
         else {
-          error.SetErrorString("Invalid number of bytes for this return type");
+          error = Status::FromErrorString(
+              "Invalid number of bytes for this return type");
           return error;
         }
         st0_value.SetLongDouble(value_long_dbl);
@@ -329,22 +332,24 @@ Status ABISysV_i386::SetReturnValueObject(lldb::StackFrameSP &frame_sp,
             reg_ctx->WriteRegister(ftag_info, ftag_value);
       } else if (num_bytes == 16) // handles __float128
       {
-        error.SetErrorString("Implementation is missing for this clang type.");
+        error = Status::FromErrorString(
+            "Implementation is missing for this clang type.");
       }
     } else {
       // Neither 'Integral' nor 'Floating Point'. If flow reaches here then
       // check type_flags. This type_flags is not a valid type.
-      error.SetErrorString("Invalid clang type");
+      error = Status::FromErrorString("Invalid clang type");
     }
   } else {
     /* 'Complex Floating Point', 'Packed', 'Decimal Floating Point' and
     'Aggregate' data types
     are yet to be implemented */
-    error.SetErrorString("Currently only Integral and Floating Point clang "
-                         "types are supported.");
+    error = Status::FromErrorString(
+        "Currently only Integral and Floating Point clang "
+        "types are supported.");
   }
   if (!register_write_successful)
-    error.SetErrorString("Register writing failed");
+    error = Status::FromErrorString("Register writing failed");
   return error;
 }
 
@@ -386,7 +391,7 @@ ValueObjectSP ABISysV_i386::GetReturnValueObjectSimple(
              (type_flags & eTypeIsEnumeration)) //'Integral' + 'Floating Point'
   {
     value.SetValueType(Value::ValueType::Scalar);
-    llvm::Optional<uint64_t> byte_size =
+    std::optional<uint64_t> byte_size =
         return_compiler_type.GetByteSize(&thread);
     if (!byte_size)
       return return_valobj_sp;
@@ -511,7 +516,7 @@ ValueObjectSP ABISysV_i386::GetReturnValueObjectSimple(
     // ToDo: Yet to be implemented
   } else if (type_flags & eTypeIsVector) // 'Packed'
   {
-    llvm::Optional<uint64_t> byte_size =
+    std::optional<uint64_t> byte_size =
         return_compiler_type.GetByteSize(&thread);
     if (byte_size && *byte_size > 0) {
       const RegisterInfo *vec_reg = reg_ctx->GetRegisterInfoByName("xmm0", 0);
@@ -528,7 +533,7 @@ ValueObjectSP ABISysV_i386::GetReturnValueObjectSimple(
             RegisterValue reg_value;
             if (reg_ctx->ReadRegister(vec_reg, reg_value)) {
               Status error;
-              if (reg_value.GetAsMemoryData(vec_reg, heap_data_up->GetBytes(),
+              if (reg_value.GetAsMemoryData(*vec_reg, heap_data_up->GetBytes(),
                                             heap_data_up->GetByteSize(),
                                             byte_order, error)) {
                 DataExtractor data(DataBufferSP(heap_data_up.release()),
@@ -556,11 +561,12 @@ ValueObjectSP ABISysV_i386::GetReturnValueObjectSimple(
                   reg_ctx->ReadRegister(vec_reg2, reg_value2)) {
 
                 Status error;
-                if (reg_value.GetAsMemoryData(vec_reg, heap_data_up->GetBytes(),
-                                              vec_reg->byte_size, byte_order,
-                                              error) &&
+                if (reg_value.GetAsMemoryData(
+                        *vec_reg, heap_data_up->GetBytes(), vec_reg->byte_size,
+                        byte_order, error) &&
                     reg_value2.GetAsMemoryData(
-                        vec_reg2, heap_data_up->GetBytes() + vec_reg->byte_size,
+                        *vec_reg2,
+                        heap_data_up->GetBytes() + vec_reg->byte_size,
                         heap_data_up->GetByteSize() - vec_reg->byte_size,
                         byte_order, error)) {
                   DataExtractor data(DataBufferSP(heap_data_up.release()),

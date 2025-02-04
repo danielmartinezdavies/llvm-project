@@ -1,5 +1,5 @@
-# RUN: llvm-mc -arch=amdgcn -mcpu=gfx1010 -mattr=+wavefrontsize32,-wavefrontsize64 -disassemble -show-encoding < %s | FileCheck -strict-whitespace -check-prefix=GFX10 %s
-# RUN: llvm-mc -arch=amdgcn -mcpu=gfx1010 -mattr=-wavefrontsize32,+wavefrontsize64 -disassemble -show-encoding < %s | FileCheck -strict-whitespace -check-prefix=GFX10 %s
+# RUN: llvm-mc -triple=amdgcn -mcpu=gfx1010 -mattr=+wavefrontsize32 -disassemble -show-encoding < %s | FileCheck -strict-whitespace -check-prefix=GFX10 %s
+# RUN: llvm-mc -triple=amdgcn -mcpu=gfx1010 -mattr=+wavefrontsize64 -disassemble -show-encoding < %s | FileCheck -strict-whitespace -check-prefix=GFX10 %s
 
 
 # GFX10: s_barrier                               ; encoding: [0x00,0x00,0x8a,0xbf]
@@ -136,6 +136,12 @@
 
 # GFX10: s_endpgm                                ; encoding: [0x00,0x00,0x81,0xbf]
 0x00,0x00,0x81,0xbf
+
+# GFX10: s_endpgm 1                              ; encoding: [0x01,0x00,0x81,0xbf]
+0x01,0x00,0x81,0xbf
+
+# GFX10: s_endpgm 65535                          ; encoding: [0xff,0xff,0x81,0xbf]
+0xff,0xff,0x81,0xbf
 
 # GFX10: s_endpgm_ordered_ps_done                ; encoding: [0x00,0x00,0x9e,0xbf]
 0x00,0x00,0x9e,0xbf

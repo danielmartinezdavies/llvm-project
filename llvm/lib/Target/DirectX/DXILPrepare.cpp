@@ -11,17 +11,24 @@
 /// Language (DXIL).
 //===----------------------------------------------------------------------===//
 
+#include "DXILResourceAnalysis.h"
+#include "DXILShaderFlags.h"
 #include "DirectX.h"
-#include "PointerTypeAnalysis.h"
+#include "DirectXIRPasses/PointerTypeAnalysis.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/StringSet.h"
+#include "llvm/Analysis/DXILMetadataAnalysis.h"
+#include "llvm/Analysis/DXILResource.h"
 #include "llvm/CodeGen/Passes.h"
+#include "llvm/IR/AttributeMask.h"
 #include "llvm/IR/IRBuilder.h"
 #include "llvm/IR/Instruction.h"
 #include "llvm/IR/Module.h"
 #include "llvm/InitializePasses.h"
 #include "llvm/Pass.h"
 #include "llvm/Support/Compiler.h"
+#include "llvm/Support/VersionTuple.h"
 
 #define DEBUG_TYPE "dxil-prepare"
 
@@ -46,7 +53,6 @@ constexpr bool isValidForDXIL(Attribute::AttrKind Attr) {
                        Attribute::Nest,
                        Attribute::NoAlias,
                        Attribute::NoBuiltin,
-                       Attribute::NoCapture,
                        Attribute::NoDuplicate,
                        Attribute::NoImplicitFloat,
                        Attribute::NoInline,
@@ -54,6 +60,7 @@ constexpr bool isValidForDXIL(Attribute::AttrKind Attr) {
                        Attribute::NonNull,
                        Attribute::Dereferenceable,
                        Attribute::DereferenceableOrNull,
+                       Attribute::Memory,
                        Attribute::NoRedZone,
                        Attribute::NoReturn,
                        Attribute::NoUnwind,
@@ -61,7 +68,6 @@ constexpr bool isValidForDXIL(Attribute::AttrKind Attr) {
                        Attribute::OptimizeNone,
                        Attribute::ReadNone,
                        Attribute::ReadOnly,
-                       Attribute::ArgMemOnly,
                        Attribute::Returned,
                        Attribute::ReturnsTwice,
                        Attribute::SExt,
@@ -77,6 +83,62 @@ constexpr bool isValidForDXIL(Attribute::AttrKind Attr) {
                        Attribute::UWTable,
                        Attribute::ZExt},
                       Attr);
+}
+
+static void collectDeadStringAttrs(AttributeMask &DeadAttrs, AttributeSet &&AS,
+                                   const StringSet<> &LiveKeys,
+                                   bool AllowExperimental) {
+  for (auto &Attr : AS) {
+    if (!Attr.isStringAttribute())
+      continue;
+    StringRef Key = Attr.getKindAsString();
+    if (LiveKeys.contains(Key))
+      continue;
+    if (AllowExperimental && Key.starts_with("exp-"))
+      continue;
+    DeadAttrs.addAttribute(Key);
+  }
+}
+
+static void removeStringFunctionAttributes(Function &F,
+                                           bool AllowExperimental) {
+  AttributeList Attrs = F.getAttributes();
+  const StringSet<> LiveKeys = {"waveops-include-helper-lanes",
+                                "fp32-denorm-mode"};
+  // Collect DeadKeys in FnAttrs.
+  AttributeMask DeadAttrs;
+  collectDeadStringAttrs(DeadAttrs, Attrs.getFnAttrs(), LiveKeys,
+                         AllowExperimental);
+  collectDeadStringAttrs(DeadAttrs, Attrs.getRetAttrs(), LiveKeys,
+                         AllowExperimental);
+
+  F.removeFnAttrs(DeadAttrs);
+  F.removeRetAttrs(DeadAttrs);
+}
+
+static void cleanModuleFlags(Module &M) {
+  NamedMDNode *MDFlags = M.getModuleFlagsMetadata();
+  if (!MDFlags)
+    return;
+
+  SmallVector<llvm::Module::ModuleFlagEntry> FlagEntries;
+  M.getModuleFlagsMetadata(FlagEntries);
+  bool Updated = false;
+  for (auto &Flag : FlagEntries) {
+    // llvm 3.7 only supports behavior up to AppendUnique.
+    if (Flag.Behavior <= Module::ModFlagBehavior::AppendUnique)
+      continue;
+    Flag.Behavior = Module::ModFlagBehavior::Warning;
+    Updated = true;
+  }
+
+  if (!Updated)
+    return;
+
+  MDFlags->eraseFromParent();
+
+  for (auto &Flag : FlagEntries)
+    M.addModuleFlag(Flag.Behavior, Flag.Key->getString(), Flag.Val);
 }
 
 class DXILPrepareModule : public ModulePass {
@@ -97,7 +159,7 @@ class DXILPrepareModule : public ModulePass {
     PointerType *PtrTy = cast<PointerType>(Operand->getType());
     return Builder.Insert(
         CastInst::Create(Instruction::BitCast, Operand,
-                         Builder.getInt8PtrTy(PtrTy->getAddressSpace())));
+                         Builder.getPtrTy(PtrTy->getAddressSpace())));
   }
 
 public:
@@ -109,9 +171,19 @@ public:
       if (!isValidForDXIL(I))
         AttrMask.addAttribute(I);
     }
+
+    const dxil::ModuleMetadataInfo MetadataInfo =
+        getAnalysis<DXILMetadataAnalysisWrapperPass>().getModuleMetadata();
+    VersionTuple ValVer = MetadataInfo.ValidatorVersion;
+    bool SkipValidation = ValVer.getMajor() == 0 && ValVer.getMinor() == 0;
+
     for (auto &F : M.functions()) {
       F.removeFnAttrs(AttrMask);
       F.removeRetAttrs(AttrMask);
+      // Only remove string attributes if we are not skipping validation.
+      // This will reserve the experimental attributes when validation version
+      // is 0.0 for experiment mode.
+      removeStringFunctionAttributes(F, SkipValidation);
       for (size_t Idx = 0, End = F.arg_size(); Idx < End; ++Idx)
         F.removeParamAttrs(Idx, AttrMask);
 
@@ -126,9 +198,6 @@ public:
             I.eraseFromParent();
             continue;
           }
-          // Only insert bitcasts if the IR is using opaque pointers.
-          if (M.getContext().supportsTypedPointers())
-            continue;
 
           // Emtting NoOp bitcast instructions allows the ValueEnumerator to be
           // unmodified as it reserves instruction IDs during contruction.
@@ -156,18 +225,33 @@ public:
           if (auto GEP = dyn_cast<GetElementPtrInst>(&I)) {
             if (Value *NoOpBitcast = maybeGenerateBitcast(
                     Builder, PointerTypes, I, GEP->getPointerOperand(),
-                    GEP->getResultElementType()))
+                    GEP->getSourceElementType()))
               GEP->setOperand(0, NoOpBitcast);
+            continue;
+          }
+          if (auto *CB = dyn_cast<CallBase>(&I)) {
+            CB->removeFnAttrs(AttrMask);
+            CB->removeRetAttrs(AttrMask);
+            for (size_t Idx = 0, End = CB->arg_size(); Idx < End; ++Idx)
+              CB->removeParamAttrs(Idx, AttrMask);
             continue;
           }
         }
       }
     }
+    // Remove flags not for DXIL.
+    cleanModuleFlags(M);
     return true;
   }
 
   DXILPrepareModule() : ModulePass(ID) {}
-
+  void getAnalysisUsage(AnalysisUsage &AU) const override {
+    AU.addRequired<DXILMetadataAnalysisWrapperPass>();
+    AU.addPreserved<ShaderFlagsAnalysisWrapper>();
+    AU.addPreserved<DXILResourceMDWrapper>();
+    AU.addPreserved<DXILMetadataAnalysisWrapperPass>();
+    AU.addPreserved<DXILResourceBindingWrapperPass>();
+  }
   static char ID; // Pass identification.
 };
 char DXILPrepareModule::ID = 0;
@@ -176,6 +260,7 @@ char DXILPrepareModule::ID = 0;
 
 INITIALIZE_PASS_BEGIN(DXILPrepareModule, DEBUG_TYPE, "DXIL Prepare Module",
                       false, false)
+INITIALIZE_PASS_DEPENDENCY(DXILMetadataAnalysisWrapperPass)
 INITIALIZE_PASS_END(DXILPrepareModule, DEBUG_TYPE, "DXIL Prepare Module", false,
                     false)
 

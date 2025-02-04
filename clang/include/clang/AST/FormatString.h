@@ -19,6 +19,7 @@
 #define LLVM_CLANG_AST_FORMATSTRING_H
 
 #include "clang/AST/CanonicalType.h"
+#include <optional>
 
 namespace clang {
 
@@ -170,6 +171,14 @@ public:
 
     ZArg, // MS extension
 
+    // ISO/IEC TR 18037 (fixed-point) specific specifiers.
+    kArg, // %k for signed accum types
+    KArg, // %K for unsigned accum types
+    rArg, // %r for signed fract types
+    RArg, // %R for unsigned fract types
+    FixedPointArgBeg = kArg,
+    FixedPointArgEnd = RArg,
+
     // Objective-C specific specifiers.
     ObjCObjArg, // '@'
     ObjCBeg = ObjCObjArg,
@@ -236,12 +245,15 @@ public:
   bool isDoubleArg() const {
     return kind >= DoubleArgBeg && kind <= DoubleArgEnd;
   }
+  bool isFixedPointArg() const {
+    return kind >= FixedPointArgBeg && kind <= FixedPointArgEnd;
+  }
 
   const char *toString() const;
 
   bool isPrintfKind() const { return IsPrintf; }
 
-  Optional<ConversionSpecifier> getStandardSpecifier() const;
+  std::optional<ConversionSpecifier> getStandardSpecifier() const;
 
 protected:
   bool IsPrintf;
@@ -261,11 +273,19 @@ public:
     /// instance, "%d" and float.
     NoMatch = 0,
     /// The conversion specifier and the argument type are compatible. For
-    /// instance, "%d" and _Bool.
+    /// instance, "%d" and int.
     Match = 1,
+    /// The conversion specifier and the argument type are compatible because of
+    /// default argument promotions. For instance, "%hhd" and int.
+    MatchPromotion,
+    /// The conversion specifier and the argument type are compatible but still
+    /// seems likely to be an error. For instanace, "%hhd" and short.
+    NoMatchPromotionTypeConfusion,
     /// The conversion specifier and the argument type are disallowed by the C
     /// standard, but are in practice harmless. For instance, "%p" and int*.
     NoMatchPedantic,
+    /// The conversion specifier and the argument type have different sign.
+    NoMatchSignedness,
     /// The conversion specifier and the argument type are compatible, but still
     /// seems likely to be an error. For instance, "%hd" and _Bool.
     NoMatchTypeConfusion,
@@ -460,7 +480,7 @@ public:
 
   bool hasStandardLengthModifier() const;
 
-  Optional<LengthModifier> getCorrectedLengthModifier() const;
+  std::optional<LengthModifier> getCorrectedLengthModifier() const;
 
   bool hasStandardConversionSpecifier(const LangOptions &LangOpt) const;
 

@@ -26,7 +26,6 @@ function(clang_tablegen)
 
   if(CTG_TARGET)
     add_public_tablegen_target(${CTG_TARGET})
-    set_target_properties( ${CTG_TARGET} PROPERTIES FOLDER "Clang tablegenning")
     set_property(GLOBAL APPEND PROPERTY CLANG_TABLEGEN_TARGETS ${CTG_TARGET})
   endif()
 endfunction(clang_tablegen)
@@ -37,7 +36,7 @@ macro(set_clang_windows_version_resource_properties name)
       VERSION_MAJOR ${CLANG_VERSION_MAJOR}
       VERSION_MINOR ${CLANG_VERSION_MINOR}
       VERSION_PATCHLEVEL ${CLANG_VERSION_PATCHLEVEL}
-      VERSION_STRING "${CLANG_VERSION} (${BACKEND_PACKAGE_STRING})"
+      VERSION_STRING "${CLANG_VERSION}"
       PRODUCT_NAME "clang")
   endif()
 endmacro()
@@ -70,7 +69,7 @@ macro(add_clang_library name)
         ${CLANG_SOURCE_DIR}/include/clang/${lib_path}/*.td
       )
       source_group("TableGen descriptions" FILES ${tds})
-      set_source_files_properties(${tds}} PROPERTIES HEADER_FILE_ONLY ON)
+      set_source_files_properties(${tds} PROPERTIES HEADER_FILE_ONLY ON)
 
       if(headers OR tds)
         set(srcs ${headers} ${tds})
@@ -97,13 +96,29 @@ macro(add_clang_library name)
     else()
       set(LIBTYPE STATIC)
     endif()
-    if(NOT XCODE)
+    if(NOT XCODE AND NOT MSVC_IDE)
       # The Xcode generator doesn't handle object libraries correctly.
+      # The Visual Studio CMake generator does handle object libraries
+      # correctly, but it is preferable to list the libraries with their
+      # source files (instead of the object files and the source files in
+      # a separate target in the "Object Libraries" folder)
       list(APPEND LIBTYPE OBJECT)
     endif()
     set_property(GLOBAL APPEND PROPERTY CLANG_STATIC_LIBS ${name})
   endif()
   llvm_add_library(${name} ${LIBTYPE} ${ARG_UNPARSED_ARGUMENTS} ${srcs})
+
+  if(MSVC AND NOT CLANG_LINK_CLANG_DYLIB)
+    # Make sure all consumers also turn off visibility macros so they're not
+    # trying to dllimport symbols.
+    target_compile_definitions(${name} PUBLIC CLANG_BUILD_STATIC)
+    if(TARGET "obj.${name}")
+      target_compile_definitions("obj.${name}" PUBLIC CLANG_BUILD_STATIC)
+    endif()
+  elseif(TARGET "obj.${name}" AND NOT ARG_SHARED AND NOT ARG_STATIC)
+    # Clang component libraries linked to clang-cpp are declared without SHARED or STATIC
+    target_compile_definitions("obj.${name}" PUBLIC CLANG_EXPORTS)
+  endif()
 
   set(libs ${name})
   if(ARG_SHARED AND ARG_STATIC)
@@ -138,14 +153,13 @@ macro(add_clang_library name)
     endif()
   endforeach()
 
-  set_target_properties(${name} PROPERTIES FOLDER "Clang libraries")
   set_clang_windows_version_resource_properties(${name})
 endmacro(add_clang_library)
 
 macro(add_clang_executable name)
   add_llvm_executable( ${name} ${ARGN} )
-  set_target_properties(${name} PROPERTIES FOLDER "Clang executables")
   set_clang_windows_version_resource_properties(${name})
+  set_target_properties(${name} PROPERTIES XCODE_GENERATE_SCHEME ON)
 endmacro(add_clang_executable)
 
 macro(add_clang_tool name)
@@ -153,7 +167,10 @@ macro(add_clang_tool name)
   if (NOT CLANG_BUILD_TOOLS)
     set(EXCLUDE_FROM_ALL ON)
   endif()
-  if(ARG_GENERATE_DRIVER AND LLVM_TOOL_LLVM_DRIVER_BUILD)
+  if(ARG_GENERATE_DRIVER
+     AND LLVM_TOOL_LLVM_DRIVER_BUILD
+     AND (NOT LLVM_DISTRIBUTION_COMPONENTS OR ${name} IN_LIST LLVM_DISTRIBUTION_COMPONENTS)
+    )
     set(get_obj_args ${ARGN})
     list(FILTER get_obj_args EXCLUDE REGEX "^SUPPORT_PLUGINS$")
     generate_llvm_objects(${name} ${get_obj_args})
@@ -177,12 +194,16 @@ macro(add_clang_tool name)
       set_property(GLOBAL APPEND PROPERTY CLANG_EXPORTS ${name})
     endif()
   endif()
+  set_target_properties(${name} PROPERTIES XCODE_GENERATE_SCHEME ON)
 endmacro()
 
 macro(add_clang_symlink name dest)
   get_property(LLVM_DRIVER_TOOLS GLOBAL PROPERTY LLVM_DRIVER_TOOLS)
-  if(LLVM_TOOL_LLVM_DRIVER_BUILD AND ${dest} IN_LIST LLVM_DRIVER_TOOLS)
-    set_property(GLOBAL APPEND PROPERTY LLVM_DRIVER_TOOL_SYMLINKS ${name})
+  if(LLVM_TOOL_LLVM_DRIVER_BUILD
+     AND ${dest} IN_LIST LLVM_DRIVER_TOOLS
+     AND (NOT LLVM_DISTRIBUTION_COMPONENTS OR ${dest} IN_LIST LLVM_DISTRIBUTION_COMPONENTS)
+    )
+    set_property(GLOBAL APPEND PROPERTY LLVM_DRIVER_TOOL_ALIASES_${dest} ${name})
   else()
     llvm_add_tool_symlink(CLANG ${name} ${dest} ALWAYS_GENERATE)
     # Always generate install targets

@@ -32,7 +32,7 @@
 #endif
 
 #if defined(_WIN32)
- #if defined(_LIBCXXABI_DISABLE_VISIBILITY_ANNOTATIONS)
+ #if defined(_LIBCXXABI_DISABLE_VISIBILITY_ANNOTATIONS) || (defined(__MINGW32__) && !defined(_LIBCXXABI_BUILDING_LIBRARY))
   #define _LIBCXXABI_HIDDEN
   #define _LIBCXXABI_DATA_VIS
   #define _LIBCXXABI_FUNC_VIS
@@ -101,6 +101,12 @@
 #define _LIBCXXABI_DTOR_FUNC __thiscall
 #else
 #define _LIBCXXABI_DTOR_FUNC
+#endif
+
+#if __cplusplus < 201103L
+#  define _LIBCXXABI_NOEXCEPT throw()
+#else
+#  define _LIBCXXABI_NOEXCEPT noexcept
 #endif
 
 #endif // ____CXXABI_CONFIG_H

@@ -19,6 +19,8 @@
 
 #include "AMDGPU.h"
 #include "llvm/CodeGen/BasicTTIImpl.h"
+#include "llvm/Support/AMDGPUAddrSpace.h"
+#include <optional>
 
 namespace llvm {
 
@@ -54,6 +56,8 @@ public:
 
   void getPeelingPreferences(Loop *L, ScalarEvolution &SE,
                              TTI::PeelingPreferences &PP);
+
+  int64_t getMaxMemIntrinsicInlineSizeThreshold() const;
 };
 
 class GCNTTIImpl final : public BasicTTIImplBase<GCNTTIImpl> {
@@ -68,6 +72,7 @@ class GCNTTIImpl final : public BasicTTIImplBase<GCNTTIImpl> {
   bool IsGraphics;
   bool HasFP32Denormals;
   bool HasFP64FP16Denormals;
+  static constexpr bool InlinerVectorBonusPercent = 0;
 
   static const FeatureBitset InlineFeatureIgnoreList;
 
@@ -99,8 +104,7 @@ class GCNTTIImpl final : public BasicTTIImplBase<GCNTTIImpl> {
 public:
   explicit GCNTTIImpl(const AMDGPUTargetMachine *TM, const Function &F);
 
-  bool hasBranchDivergence() { return true; }
-  bool useGPUDivergenceAnalysis() const;
+  bool hasBranchDivergence(const Function *F = nullptr) const;
 
   void getUnrollingPreferences(Loop *L, ScalarEvolution &SE,
                                TTI::UnrollingPreferences &UP,
@@ -132,17 +136,20 @@ public:
                                    unsigned AddrSpace) const;
   bool isLegalToVectorizeStoreChain(unsigned ChainSizeInBytes, Align Alignment,
                                     unsigned AddrSpace) const;
-  Type *getMemcpyLoopLoweringType(LLVMContext &Context, Value *Length,
-                                  unsigned SrcAddrSpace, unsigned DestAddrSpace,
-                                  unsigned SrcAlign, unsigned DestAlign,
-                                  Optional<uint32_t> AtomicElementSize) const;
+
+  int64_t getMaxMemIntrinsicInlineSizeThreshold() const;
+  Type *
+  getMemcpyLoopLoweringType(LLVMContext &Context, Value *Length,
+                            unsigned SrcAddrSpace, unsigned DestAddrSpace,
+                            Align SrcAlign, Align DestAlign,
+                            std::optional<uint32_t> AtomicElementSize) const;
 
   void getMemcpyLoopResidualLoweringType(
       SmallVectorImpl<Type *> &OpsOut, LLVMContext &Context,
       unsigned RemainingBytes, unsigned SrcAddrSpace, unsigned DestAddrSpace,
-      unsigned SrcAlign, unsigned DestAlign,
-      Optional<uint32_t> AtomicCpySize) const;
-  unsigned getMaxInterleaveFactor(unsigned VF);
+      Align SrcAlign, Align DestAlign,
+      std::optional<uint32_t> AtomicCpySize) const;
+  unsigned getMaxInterleaveFactor(ElementCount VF);
 
   bool getTgtMemIntrinsic(IntrinsicInst *Inst, MemIntrinsicInfo &Info) const;
 
@@ -150,8 +157,7 @@ public:
       unsigned Opcode, Type *Ty, TTI::TargetCostKind CostKind,
       TTI::OperandValueInfo Op1Info = {TTI::OK_AnyValue, TTI::OP_None},
       TTI::OperandValueInfo Op2Info = {TTI::OK_AnyValue, TTI::OP_None},
-      ArrayRef<const Value *> Args = ArrayRef<const Value *>(),
-      const Instruction *CxtI = nullptr);
+      ArrayRef<const Value *> Args = {}, const Instruction *CxtI = nullptr);
 
   InstructionCost getCFInstrCost(unsigned Opcode, TTI::TargetCostKind CostKind,
                                  const Instruction *I = nullptr);
@@ -161,9 +167,37 @@ public:
 
   using BaseT::getVectorInstrCost;
   InstructionCost getVectorInstrCost(unsigned Opcode, Type *ValTy,
-                                     unsigned Index);
+                                     TTI::TargetCostKind CostKind,
+                                     unsigned Index, Value *Op0, Value *Op1);
+
+  bool isReadRegisterSourceOfDivergence(const IntrinsicInst *ReadReg) const;
   bool isSourceOfDivergence(const Value *V) const;
   bool isAlwaysUniform(const Value *V) const;
+
+  bool isValidAddrSpaceCast(unsigned FromAS, unsigned ToAS) const {
+    // Address space casts must cast between different address spaces.
+    if (FromAS == ToAS)
+      return false;
+
+    if (FromAS == AMDGPUAS::FLAT_ADDRESS)
+      return AMDGPU::isExtendedGlobalAddrSpace(ToAS) ||
+             ToAS == AMDGPUAS::LOCAL_ADDRESS ||
+             ToAS == AMDGPUAS::PRIVATE_ADDRESS;
+
+    if (AMDGPU::isExtendedGlobalAddrSpace(FromAS))
+      return AMDGPU::isFlatGlobalAddrSpace(ToAS) ||
+             ToAS == AMDGPUAS::CONSTANT_ADDRESS_32BIT;
+
+    if (FromAS == AMDGPUAS::LOCAL_ADDRESS ||
+        FromAS == AMDGPUAS::PRIVATE_ADDRESS)
+      return ToAS == AMDGPUAS::FLAT_ADDRESS;
+
+    return false;
+  }
+
+  bool addrspacesMayAlias(unsigned AS0, unsigned AS1) const {
+    return AMDGPU::addrspacesMayAlias(AS0, AS1);
+  }
 
   unsigned getFlatAddressSpace() const {
     // Don't bother running InferAddressSpaces pass on graphics shaders which
@@ -184,11 +218,15 @@ public:
   Value *rewriteIntrinsicWithAddressSpace(IntrinsicInst *II, Value *OldV,
                                           Value *NewV) const;
 
-  bool canSimplifyLegacyMulToMul(const Value *Op0, const Value *Op1,
-                                 InstCombiner &IC) const;
-  Optional<Instruction *> instCombineIntrinsic(InstCombiner &IC,
-                                               IntrinsicInst &II) const;
-  Optional<Value *> simplifyDemandedVectorEltsIntrinsic(
+  bool canSimplifyLegacyMulToMul(const Instruction &I, const Value *Op0,
+                                 const Value *Op1, InstCombiner &IC) const;
+
+  bool simplifyDemandedLaneMaskArg(InstCombiner &IC, IntrinsicInst &II,
+                                   unsigned LaneAgIdx) const;
+
+  std::optional<Instruction *> instCombineIntrinsic(InstCombiner &IC,
+                                                    IntrinsicInst &II) const;
+  std::optional<Value *> simplifyDemandedVectorEltsIntrinsic(
       InstCombiner &IC, IntrinsicInst &II, APInt DemandedElts, APInt &UndefElts,
       APInt &UndefElts2, APInt &UndefElts3,
       std::function<void(Instruction *, unsigned, APInt, APInt &)>
@@ -200,25 +238,44 @@ public:
                                  ArrayRef<int> Mask,
                                  TTI::TargetCostKind CostKind, int Index,
                                  VectorType *SubTp,
-                                 ArrayRef<const Value *> Args = None);
+                                 ArrayRef<const Value *> Args = {},
+                                 const Instruction *CxtI = nullptr);
+
+  bool isProfitableToSinkOperands(Instruction *I,
+                                  SmallVectorImpl<Use *> &Ops) const;
 
   bool areInlineCompatible(const Function *Caller,
                            const Function *Callee) const;
 
-  unsigned getInliningThresholdMultiplier() { return 11; }
+  int getInliningLastCallToStaticBonus() const;
+  unsigned getInliningThresholdMultiplier() const { return 11; }
   unsigned adjustInliningThreshold(const CallBase *CB) const;
+  unsigned getCallerAllocaCost(const CallBase *CB, const AllocaInst *AI) const;
 
-  int getInlinerVectorBonusPercent() { return 0; }
+  int getInlinerVectorBonusPercent() const { return InlinerVectorBonusPercent; }
 
   InstructionCost getArithmeticReductionCost(
-      unsigned Opcode, VectorType *Ty, Optional<FastMathFlags> FMF,
+      unsigned Opcode, VectorType *Ty, std::optional<FastMathFlags> FMF,
       TTI::TargetCostKind CostKind);
 
   InstructionCost getIntrinsicInstrCost(const IntrinsicCostAttributes &ICA,
                                         TTI::TargetCostKind CostKind);
-  InstructionCost getMinMaxReductionCost(
-      VectorType *Ty, VectorType *CondTy, bool IsUnsigned,
-      TTI::TargetCostKind CostKind);
+  InstructionCost getMinMaxReductionCost(Intrinsic::ID IID, VectorType *Ty,
+                                         FastMathFlags FMF,
+                                         TTI::TargetCostKind CostKind);
+
+  /// Data cache line size for LoopDataPrefetch pass. Has no use before GFX12.
+  unsigned getCacheLineSize() const override { return 128; }
+
+  /// How much before a load we should place the prefetch instruction.
+  /// This is currently measured in number of IR instructions.
+  unsigned getPrefetchDistance() const override;
+
+  /// \return if target want to issue a prefetch in address space \p AS.
+  bool shouldPrefetchAddressSpace(unsigned AS) const override;
+  void collectKernelLaunchBounds(
+      const Function &F,
+      SmallVectorImpl<std::pair<StringRef, int64_t>> &LB) const;
 };
 
 } // end namespace llvm

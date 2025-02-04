@@ -6,12 +6,11 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "llvm/DebugInfo/GSYM/InlineInfo.h"
 #include "llvm/DebugInfo/GSYM/FileEntry.h"
 #include "llvm/DebugInfo/GSYM/FileWriter.h"
 #include "llvm/DebugInfo/GSYM/GsymReader.h"
-#include "llvm/DebugInfo/GSYM/InlineInfo.h"
 #include "llvm/Support/DataExtractor.h"
-#include <algorithm>
 #include <inttypes.h>
 
 using namespace llvm;
@@ -53,11 +52,12 @@ static bool getInlineStackHelper(const InlineInfo &II, uint64_t Addr,
   return false;
 }
 
-llvm::Optional<InlineInfo::InlineArray> InlineInfo::getInlineStack(uint64_t Addr) const {
+std::optional<InlineInfo::InlineArray>
+InlineInfo::getInlineStack(uint64_t Addr) const {
   InlineArray Result;
   if (getInlineStackHelper(*this, Addr, Result))
     return Result;
-  return llvm::None;
+  return std::nullopt;
 }
 
 /// Skip an InlineInfo object in the specified data at the specified offset.
@@ -134,7 +134,7 @@ static bool lookup(const GsymReader &GR, DataExtractor &Data, uint64_t &Offset,
       Done = lookup(GR, Data, Offset, ChildBaseAddr, Addr, SrcLocs, Err);
   }
 
-  Optional<FileEntry> CallFile = GR.getFile(Inline.CallFile);
+  std::optional<FileEntry> CallFile = GR.getFile(Inline.CallFile);
   if (!CallFile) {
     Err = createStringError(std::errc::invalid_argument,
                             "failed to extract file[%" PRIu32 "]",
@@ -262,4 +262,15 @@ llvm::Error InlineInfo::encode(FileWriter &O, uint64_t BaseAddr) const {
     O.writeULEB(0);
   }
   return Error::success();
+}
+
+static uint64_t GetTotalNumChildren(const InlineInfo &II) {
+  uint64_t NumChildren = II.Children.size();
+  for (const auto &Child : II.Children)
+    NumChildren += GetTotalNumChildren(Child);
+  return NumChildren;
+}
+
+bool InlineInfo::operator<(const InlineInfo &RHS) const {
+  return GetTotalNumChildren(*this) < GetTotalNumChildren(RHS);
 }

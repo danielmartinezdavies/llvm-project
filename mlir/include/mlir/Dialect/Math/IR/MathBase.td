@@ -30,6 +30,8 @@ def Math_Dialect : Dialect {
     ```
   }];
   let hasConstantMaterializer = 1;
-  let emitAccessorPrefix = kEmitAccessorPrefix_Prefixed;
+  let dependentDialects = [
+    "::mlir::arith::ArithDialect"
+  ];
 }
 #endif // MATH_BASE
